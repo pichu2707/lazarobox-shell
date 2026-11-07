@@ -9,7 +9,7 @@ Terms: "read tool" = `find_dir`, `list_dir`, `read_file`. "Write tool" = `run_in
 ## Requirements
 
 ### Requirement: Tool registry
-There MUST be one registry of tools, the single source of truth for names, argument schemas, descriptions, the family and the read-only or write classification. The same registry MUST serve every adapter (MCP and native). The original built-in tools are `find_dir`, `list_dir`, `read_file` (read tools) and `run_in_pane` (write tool); the `tools/list` entry of each of these four MUST stay byte-identical to release 0.18.0. The default tool list also holds `list_panes` (see its requirement). Further built-in tools (search, write, run and git, see code-search, code-write, command-runner, git-tools) are present only when their family toggle is on. A user MCP tool MUST be added to the registry only under a server-qualified name that cannot equal a built-in name. Registry lookup, argument validation and the path policy MUST be pure functions without IO. A call to an unknown tool, with missing or mistyped arguments, or with unknown extra arguments, MUST return an error result and MUST NOT execute anything.
+There MUST be one registry of tools, the single source of truth for names, argument schemas, descriptions, the family and the read-only or write classification. The same registry MUST serve every adapter (MCP and native). The original built-in tools are `find_dir`, `list_dir`, `read_file` (read tools) and `run_in_pane` (write tool); the `tools/list` entry of each of these four MUST stay byte-identical to release 0.18.0. The default tool list also holds `list_panes` and `read_pane` (see their requirements). Further built-in tools (search, write, run and git, see code-search, code-write, command-runner, git-tools) are present only when their family toggle is on. A user MCP tool MUST be added to the registry only under a server-qualified name that cannot equal a built-in name. Registry lookup, argument validation and the path policy MUST be pure functions without IO. A call to an unknown tool, with missing or mistyped arguments, or with unknown extra arguments, MUST return an error result and MUST NOT execute anything.
 
 #### Scenario: One registry, all engines [auto]
 - GIVEN the registry
@@ -562,12 +562,12 @@ Each registry entry MUST declare its arguments (name, kind string, integer, bool
 - THEN both reject it
 
 ### Requirement: Off equals 0.18.0
-With every coding-tools toggle off, the tool list, the schemas, the requests and the behaviour MUST be identical to those of release 0.18.0, except that the default tool list also holds `list_panes` (see its requirement; since 1.2.1 the pinned bytes are no longer the 0.18.0 ones, on purpose). A characterization test MUST pin this.
+With every coding-tools toggle off, the tool list, the schemas, the requests and the behaviour MUST be identical to those of release 0.18.0, except that the default tool list also holds `list_panes` and `read_pane` (see their requirements; the pinned bytes are no longer the 0.18.0 ones, on purpose). A characterization test MUST pin this.
 
 #### Scenario: Characterization [auto]
 - GIVEN all family toggles off
 - WHEN the tool list and an Ollama request are built
-- THEN they equal the stored fixtures byte for byte (the 0.18.0 ones plus `list_panes` since 1.2.1)
+- THEN they equal the stored fixtures byte for byte (the 0.18.0 ones plus `list_panes` and `read_pane`), and the golden `tools_list.json` holds `read_pane`
 
 ### Requirement: Tool root is the current chat folder
 Every tool family (read, search, write, command, git) MUST take its root from the chat folder at the moment a call is executed, not from the folder the chat was opened in and not from the moment the tool list was offered. After a folder change (see chat-folder) the next call uses the new root; a path argument that was valid in the old folder is judged against the new root only. The root policies are unchanged: choosing a folder never relaxes them. When the chat folder is unknown, `$HOME` or `/`, tools behave as they do today for such a root (refusals, asks). The write refusals for such a root name the folder as the reason (`path not available: the chat's folder is ~, where files cannot be written; ask the user to run /cd <project folder>`), and the command and git refusals use one fixed text (`path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>`) so a model stops retrying and asks for `/cd`; a refused path inside a concrete folder keeps one uniform text.
@@ -713,3 +713,55 @@ Once a conversation is blocked (see pane-execution, Auto-run block after a GitHu
 - GIVEN the Ollama engine with a model ending in `-cloud`
 - WHEN `list_panes` and then a GitHub tool are called
 - THEN `list_panes` runs without asking and the GitHub tool asks
+
+### Requirement: read_pane tool
+A read-only tool `read_pane` of the `Pane` family MUST let a chat read the text of one pane. It MUST be part of the default tool list and MUST NOT be offered to a `Toolset::Code` worker, an orchestrator (coordinator) session or a worker session. Arguments: `pane` (integer, required) and `scrollback` (integer, optional, a number of lines). The target MUST be a pane that `list_panes` lists, EXCLUDING the chat's own pane; any other number returns an error result and reads nothing.
+
+By default the text is the visible screen. With `scrollback` it also holds scrollback lines, at most 200 lines and 8 KiB. The cap MUST also bound a large visible screen. When the text is over a cap the TAIL is kept and the text MUST say it was cut. There is no paging and nothing is stored.
+
+The call MUST ask on EVERY call, on every engine (local included, an Ollama `*-cloud` model too). No approval mode (`ask`, `auto`, `run`), grant or toggle answers it for the user. The text MUST be read and frozen when the prompt opens; the approved frozen text is what is returned, even if the pane changes or closes afterwards. The text MUST pass through `redact(clean())` and then the untrusted wrapper with a fresh nonce (see Tool output is untrusted data). The tool has no side effects and MUST NOT write to a pane.
+
+#### Scenario: Asks in every mode and engine [auto]
+- GIVEN a local engine and a cloud engine, each in `ask`, `auto` and `run`
+- WHEN `read_pane` is called
+- THEN each call raises a pending approval and nothing is returned before `y`
+
+#### Scenario: Approved text is the sent text [auto]
+- GIVEN a prompt opened on pane 2 and the pane then prints more lines
+- WHEN the user presses `y`
+- THEN the result equals the previewed text, wrapped as untrusted
+
+#### Scenario: Pane closes after the freeze [auto]
+- GIVEN an open prompt and pane 2 then closed
+- WHEN the user presses `y`
+- THEN the frozen text is still returned
+
+#### Scenario: Secrets redacted [auto]
+- GIVEN a screen showing `API_KEY=sk-abc123secret`
+- WHEN the prompt text is built
+- THEN neither the preview nor the result contains the secret value
+
+#### Scenario: Scrollback tail kept [auto]
+- GIVEN 500 scrollback lines and `scrollback: 500`
+- WHEN the text is built
+- THEN it holds the last 200 lines at most, within 8 KiB, and says it was cut
+
+#### Scenario: Large visible screen capped [auto]
+- GIVEN a visible screen over 8 KiB
+- WHEN the text is built
+- THEN the tail within 8 KiB is kept and the cut is marked
+
+#### Scenario: Targets limited [auto]
+- GIVEN the chat in pane 1 and `list_panes` listing panes 1 and 2
+- WHEN `read_pane` is called with pane 1, with 9 and with 2
+- THEN pane 1 and 9 return an error and read nothing; pane 2 asks
+
+#### Scenario: Not offered to other roles [auto]
+- GIVEN a worker, an orchestrator and a `Toolset::Code` session
+- WHEN each tool list is built
+- THEN none holds `read_pane`, and a call to it is refused unasked
+
+#### Scenario: Bad arguments [auto]
+- GIVEN `read_pane` with no `pane`, `pane: "2"`, `scrollback: "x"` and an extra key
+- WHEN each is dispatched
+- THEN each returns an error result and no pane is read

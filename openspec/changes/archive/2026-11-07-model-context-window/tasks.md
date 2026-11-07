@@ -75,7 +75,7 @@ Each commit includes its own tests. No attribution lines.
 ## Phase 7: Verify
 
 - [x] 7.1 `cargo test`, clippy, fmt; confirm chat.db `user_version` 3, mode 0600.
-- [ ] 7.2 (deferred to the owner: not run by the apply agent) Manual: `/api/ps` `context_length` equals `num_ctx`; `prompt_eval_count` < `num_ctx - 1`; no reload after 10 min idle.
+- [x] 7.2 Manual (recorded 2026-11-07 on Ollama `qwen3:14b-nothink`: `/api/ps` `context_length` 16384 = min(model window 40960, default cap 16384) = the sent `num_ctx`; peak `usage: in` 5566; after 10m20s idle `/api/ps` was identical, same `expires_at`, no reload): `/api/ps` `context_length` equals `num_ctx`; `prompt_eval_count` < `num_ctx - 1`; no reload after 10 min idle.
 
 ## Apply notes
 

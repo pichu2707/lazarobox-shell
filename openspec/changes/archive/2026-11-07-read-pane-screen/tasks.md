@@ -38,6 +38,7 @@ Fallback: if PR2 forecasts above 380 at apply time, move README to PR3.
 - [x] 1.7 GUARD: golden `tools_list.json` and default tool list unchanged.
 - [x] 1.8 REFACTOR; module wiring only.
 - Manual PR1: none visible; confirm app behaves exactly as before.
+  - Recorded 2026-11-07: nothing visible changed (PR2 checks below ran on top of it).
 
 ## PR 2: wiring
 
@@ -53,3 +54,4 @@ Fallback: if PR2 forecasts above 380 at apply time, move README to PR3.
 - [x] 2.10 README: `read_pane` section (~25 lines). Fallback: PR 3.
 - [x] 2.11 REFACTOR; run `cargo test`, clippy, fmt.
 - Manual PR2: Ollama and one cloud engine, `ask`/`auto`/`run`: model calls `read_pane` on another pane; review opens; `y` locked until scrolled to end; secrets redacted; `n` denies with a notice; closed pane, own pane, blank pane and `vim` with scrollback each show the notice; worker/orchestrator never see the tool.
+  - Recorded 2026-11-07 on Ollama `qwen3:14b-nothink`, v1.14.0 debug build, isolated HOME: all seven checks PASS in ask, auto and run (review opens, `y` locked until `seen 150/150`; `ghp_` token split by a wrap redacted; `n`/Esc/Ctrl+C deny with `screen read denied: pane 1` and keep the draft; closed pane, chat's own number and blank pane give a line and no review; `vim` scrollback shows `full-screen app: visible screen only`; frozen text reached the model (TICK2 while the pane showed TICK10); a worker reported no `read_pane`). Cloud-engine variant not run (no authenticated CLI in the isolated HOME); the tool path is engine-independent and covered by unit tests.
