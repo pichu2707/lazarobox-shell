@@ -206,3 +206,17 @@ async fn read_pane_is_refused_without_the_pane_family() {
     assert!(out.is_error, "{out:?}");
     assert!(asks.asked.lock().unwrap().is_empty());
 }
+
+// The second check refuses a screen read for every toolset of a worker or the
+// orchestrator, which never get the pane family.
+#[test]
+fn the_gate_refuses_read_pane_in_a_worker_or_orchestrator_scope() {
+    use crate::core::ai::orchestra::Toolset;
+    use crate::core::ai::tools::mcp::refusal_text;
+    let off = refusal_text(ToolError::UnknownTool);
+    for toolset in [Toolset::ReadOnly, Toolset::Code, Toolset::Orchestrator] {
+        let (mut turn, _rx) = scope(Locality::Cloud, std::path::Path::new("/"));
+        turn.families = toolset.families();
+        assert_eq!(files::gate(&turn, &read_pane(2)), Err(off), "{toolset:?}");
+    }
+}

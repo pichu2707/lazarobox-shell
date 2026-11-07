@@ -252,6 +252,8 @@ pub fn refusal_text(error: ToolError) -> &'static str {
         ToolError::WrongType => "argument must be a string",
         ToolError::ExtraArgument => "unexpected argument",
         ToolError::TooLong => "argument too long",
+        ToolError::PaneRange => "pane must be a pane number from list_panes",
+        ToolError::ScrollbackRange => "scrollback must be 1 to 200",
     }
 }
 
@@ -626,6 +628,33 @@ mod tests {
             server.handle(&request(json!(3), "tools/call", params)),
             Action::Call { .. }
         ));
+    }
+
+    // A worker or orchestrator shim never lists `read_pane` and refuses a
+    // forged call as an unknown tool: no Call reaches the host, so no ask.
+    #[test]
+    fn a_worker_or_orchestrator_shim_hides_and_refuses_read_pane() {
+        use crate::core::ai::{
+            orchestra::Toolset,
+            tools::{registry::Family, registry_with},
+        };
+        let init = request(
+            json!(0),
+            "initialize",
+            json!({"protocolVersion": "2025-06-18", "capabilities": {}}),
+        );
+        for toolset in [Toolset::ReadOnly, Toolset::Code, Toolset::Orchestrator] {
+            let set = toolset.families();
+            assert!(!set.contains(Family::Pane), "{toolset:?}");
+            let mut server = Server::new(registry_with(&[], set)).with_families(set);
+            reply(server.handle(&init));
+            let listed = reply(server.handle(&request(json!(1), "tools/list", json!({}))));
+            assert!(!listed.to_string().contains("read_pane"), "{toolset:?}");
+            let params = json!({"name": "read_pane", "arguments": {"pane": 2}});
+            let out = reply(server.handle(&request(json!(2), "tools/call", params)));
+            assert_eq!(out["result"]["isError"], true, "{toolset:?}");
+            assert_eq!(out["result"]["content"][0]["text"], "unknown tool");
+        }
     }
 
     #[test]
