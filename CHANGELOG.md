@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-11-07
+
 ### Added
 
 - Tools with llama.cpp: `llamacpp` joins the engines whose requests carry
@@ -2251,7 +2253,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.12.0...HEAD
+[1.12.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.8.0...v1.9.0
