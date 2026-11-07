@@ -69,7 +69,6 @@ impl Audit {
         } else {
             "no file named in the handoff"
         };
-        let blank = prior.map_or(blank, |audit| audit.blank);
         Self {
             claims,
             blank,
@@ -197,10 +196,19 @@ fn flagged_line(paths: &[String]) -> String {
 /// such as `Über` or `[id]`, is dropped whole: cutting it would name another
 /// file.
 fn scan(text: &str) -> (Vec<String>, bool) {
-    let mut capped = text.len() > SCAN_BYTES;
+    let head = cut(text, SCAN_BYTES);
+    let tail = &text[head.len()..];
+    let mut capped = tail.contains(|c: char| !c.is_whitespace());
+    let mut words: Vec<_> = head.split_whitespace().collect();
+    // A word cut by the limit would name another file.
+    if capped && !head.ends_with(char::is_whitespace) && !tail.starts_with(char::is_whitespace) {
+        words.pop();
+    }
     let mut found: Vec<String> = Vec::new();
-    for word in cut(text, SCAN_BYTES).split_whitespace() {
-        if word.contains("://") || word.starts_with("www.") || word.starts_with("mailto:") {
+    for word in words {
+        let remote = word.split_once(':').is_some_and(|(h, _)| h.contains('@'));
+        let url = word.contains("://") || word.starts_with("www.");
+        if remote || url || word.starts_with("mailto:") {
             continue;
         }
         let word = word.replace('\\', "/");
@@ -214,9 +222,12 @@ fn scan(text: &str) -> (Vec<String>, bool) {
                 continue;
             }
             let Some(path) = as_path(piece) else { continue };
+            if found.iter().any(|known| known.eq_ignore_ascii_case(&path)) {
+                continue;
+            }
             if found.len() >= MAX_CLAIMS {
                 capped = true;
-            } else if !found.iter().any(|known| known.eq_ignore_ascii_case(&path)) {
+            } else {
                 found.push(path);
             }
         }

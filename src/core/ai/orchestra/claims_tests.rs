@@ -700,3 +700,53 @@ fn a_cut_path_a_cut_line_and_a_capped_claim_list_say_so() {
         read.lines()
     );
 }
+
+// A cut in the middle of a word must not invent another file.
+#[test]
+fn a_word_cut_by_the_read_limit_is_dropped() {
+    let text = format!("{}y src/x.tsx", "x ".repeat(2043));
+    assert_eq!(text.find("src/x.ts").unwrap() + "src/x.ts".len(), 4096);
+    assert_eq!(
+        check(&text, &[]),
+        Check::NotChecked("no file named in the handoff")
+    );
+}
+
+#[test]
+fn scp_style_remotes_are_not_claims() {
+    assert_eq!(
+        check(
+            "see git@github.com:org/repo.rs and user@host:dir/file.md",
+            &[]
+        ),
+        Check::NotChecked("no file named in the handoff")
+    );
+    assert_eq!(check("src/a.rs", &[]), flagged(&["src/a.rs"]));
+}
+
+#[test]
+fn the_blank_reason_follows_the_current_handoff() {
+    let held = ledger(&[]);
+    let first = Audit::new(None, "none", Some(&held), Verdict::Unknown);
+    let second = Audit::new(Some(&first), "did the work", Some(&held), Verdict::Unknown);
+    assert_eq!(
+        second.check(),
+        &Check::NotChecked("no file named in the handoff")
+    );
+}
+
+#[test]
+fn capped_needs_something_actually_left_out() {
+    let held = ledger(&[]);
+    let spaces = format!("d/a.rs{}", " ".repeat(5000));
+    let audit = Audit::new(None, &spaces, Some(&held), Verdict::Unknown);
+    assert!(!audit.lines()[0].contains("more not checked"));
+    let full: String = (0..32).map(|n| format!("d/f{n}.rs ")).collect();
+    let again = format!("{full}D/F3.rs");
+    let audit = Audit::new(None, &again, Some(&held), Verdict::Unknown);
+    assert!(
+        !audit.lines()[0].contains("more not checked"),
+        "{:?}",
+        audit.lines()
+    );
+}
