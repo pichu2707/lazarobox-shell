@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-11-07
+
 ### Added
 
 - The chat can now read the screen of another pane with the new `read_pane`
@@ -2316,7 +2318,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.13.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.0...HEAD
+[1.14.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.10.0...v1.11.0
