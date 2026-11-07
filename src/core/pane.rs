@@ -376,12 +376,25 @@ impl Pane {
 
     /// The visible rows plus up to `scrollback` rows of history above them,
     /// whole lines. On the alternate screen there is no history: only the
-    /// visible rows.
-    pub fn screen_span(&self, scrollback: usize) -> LineSpan {
+    /// visible rows. A first row that continues a soft-wrapped line is moved
+    /// up to the head of that line, within the history kept.
+    pub fn screen_span(&mut self, scrollback: usize) -> LineSpan {
         let (rows, cols) = self.parser.screen().size();
         let top = self.first_line + self.history_len;
+        let mut first = top.saturating_sub(scrollback).max(self.first_line);
+        let saved = self.scrollback_offset();
+        while first > self.first_line {
+            let wrapped = self
+                .page_to(first - 1)
+                .is_some_and(|row| self.parser.screen().row_wrapped(row));
+            if !wrapped {
+                break;
+            }
+            first -= 1;
+        }
+        self.set_scrollback(saved);
         LineSpan {
-            first: top.saturating_sub(scrollback).max(self.first_line),
+            first,
             last: top + usize::from(rows).saturating_sub(1),
             first_col: 0,
             last_col: cols.saturating_sub(1),
@@ -803,6 +816,30 @@ mod tests {
         // More than the history keeps what exists.
         let span = p.screen_span(500);
         assert_eq!(texts(&mut p, span).len(), 8 + 3);
+    }
+
+    #[test]
+    fn screen_span_starts_at_the_head_of_a_wrapped_line() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        feed_lines(&mut p, 4);
+        // 25 chars on 10 columns: three rows, the first two soft-wrapped.
+        p.feed(b"export MY_SECRET=abcde\r\n");
+        p.feed(b"tail\r\n");
+        let span = p.screen_span(1);
+        let rows = texts(&mut p, span);
+        assert_eq!(rows[0], "export MY_");
+        // Without a wrap above the first row nothing is added.
+        let mut q = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        feed_lines(&mut q, 10);
+        assert_eq!(q.screen_span(2).first, q.screen_span(0).first - 2);
+    }
+
+    #[test]
+    fn screen_span_never_goes_above_the_available_history() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        p.feed(b"0123456789abcdefghij0123456789abcdefghij");
+        let span = p.screen_span(0);
+        assert!(span.first >= p.first_line);
     }
 
     #[test]

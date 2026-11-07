@@ -8,6 +8,7 @@
 
 use crate::core::ai::memory::redact::redact;
 use crate::core::ai::sanitize::clean;
+use crate::core::ai::tools::content::is_hidden;
 use crate::core::copy::{LineText, join};
 
 /// Largest text sent, in bytes, cut marker and notes included.
@@ -17,7 +18,7 @@ pub const TEXT_CAP: usize = 8 * 1024;
 pub const ALT_NOTE: &str = "full-screen app: visible screen only";
 
 /// What a pane's screen says, ready to review and to send.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Screen {
     /// The exact text: optional notes, then the lines.
     pub text: String,
@@ -29,6 +30,18 @@ pub struct Screen {
     pub no_scrollback: bool,
 }
 
+/// Sizes only: the text is screen content and stays out of logs.
+impl std::fmt::Debug for Screen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Screen")
+            .field("bytes", &self.text.len())
+            .field("lines", &self.lines)
+            .field("cut", &self.cut)
+            .field("no_scrollback", &self.no_scrollback)
+            .finish()
+    }
+}
+
 fn marker(kept: usize) -> String {
     format!("[earlier lines cut: kept the last {kept} lines]")
 }
@@ -37,12 +50,21 @@ fn marker(kept: usize) -> String {
 /// the pane runs an alternate-screen app; `scrollback_asked`: the model asked
 /// for history.
 pub fn build(rows: &[LineText], alt: bool, scrollback_asked: bool) -> Option<Screen> {
-    let redacted = redact(&clean(&join(rows))).text;
-    if redacted.trim().is_empty() {
+    // Strip what the review shows as `<U+XXXX>`, so the preview is the text.
+    let visible: String = clean(&join(rows))
+        .chars()
+        .filter(|&c| !is_hidden(c))
+        .collect();
+    let redacted = redact(&visible).text;
+    let redacted = redacted.trim_end();
+    if redacted.is_empty() {
         return None;
     }
     let note = (alt && scrollback_asked).then_some(ALT_NOTE);
-    let lines: Vec<&str> = redacted.lines().collect();
+    let lines: Vec<&str> = redacted
+        .lines()
+        .skip_while(|l| l.trim().is_empty())
+        .collect();
     let prefix = note.map_or(0, |n| n.len() + 1);
     let mut skip = 0;
     let mut cut = false;
@@ -202,12 +224,87 @@ mod tests {
     // D5: what the user reads is what the model gets.
     #[test]
     fn every_line_is_its_own_escape_and_the_wrapped_result_holds_the_text() {
-        let screen = build(&rows(&["$ ls", "a\tb", "ünï ✓"]), true, true).unwrap();
+        let screen = build(
+            &rows(&["$ ls", "a\tb", "ünï ✓", "❤\u{fe0f}x\u{2800}y\u{3164}z"]),
+            true,
+            true,
+        )
+        .unwrap();
+        assert!(screen.text.contains("❤x"), "{}", screen.text);
         for line in screen.text.lines() {
             assert_eq!(escape(line), line);
         }
         let wrapped = label::wrap("0123456789abcdef", &screen.text);
         assert!(wrapped.contains(&screen.text), "{wrapped}");
         assert!(!wrapped.contains("[truncated"));
+    }
+
+    #[test]
+    fn debug_shows_sizes_never_the_text() {
+        let screen = build(&rows(&["top secret screen"]), false, false).unwrap();
+        let shown = format!("{screen:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+        assert!(shown.contains("bytes"), "{shown}");
+    }
+
+    #[test]
+    fn blank_lines_that_redaction_leaves_at_the_edges_are_trimmed() {
+        let screen = build(
+            &rows(&["", "\u{2800}", "one", "two", "\u{3164}", ""]),
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(screen.text, "one\ntwo");
+        assert_eq!(screen.lines, 2);
+    }
+
+    #[test]
+    fn exactly_the_cap_is_not_cut_and_one_byte_more_is() {
+        let fit = "a".repeat(TEXT_CAP / 2 - 1);
+        let two = [fit.as_str(), fit.as_str()];
+        // 2 * (4095) + 1 newline = 8191; pad the last line to 8192 exactly.
+        let exact = format!("{}a", two[1]);
+        let screen = build(&rows(&[&fit, &exact]), false, false).unwrap();
+        assert_eq!(screen.text.len(), TEXT_CAP);
+        assert!(!screen.cut);
+        let over = format!("{exact}a");
+        let screen = build(&rows(&[&fit, &over]), false, false).unwrap();
+        assert!(screen.cut);
+        assert!(screen.text.len() <= TEXT_CAP);
+    }
+
+    #[test]
+    fn the_alt_note_counts_toward_the_cap_with_a_cut_and_with_the_single_line_fallback() {
+        let lines: Vec<String> = (0..400)
+            .map(|i| format!("{i:03} {}", "x".repeat(55)))
+            .collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let screen = build(&rows(&refs), true, true).unwrap();
+        assert!(screen.cut && screen.no_scrollback);
+        assert!(screen.text.starts_with(ALT_NOTE));
+        assert!(screen.text.len() <= TEXT_CAP, "{}", screen.text.len());
+        let long = "y".repeat(TEXT_CAP * 2);
+        let screen = build(&rows(&[&long]), true, true).unwrap();
+        assert!(
+            screen.cut && screen.text.len() <= TEXT_CAP,
+            "{}",
+            screen.text.len()
+        );
+        assert!(screen.text.starts_with(ALT_NOTE));
+    }
+
+    #[test]
+    fn the_marker_growing_from_99_to_100_lines_still_fits() {
+        for width in 70..90 {
+            let lines: Vec<String> = (0..300).map(|_| "z".repeat(width)).collect();
+            let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+            let screen = build(&rows(&refs), true, true).unwrap();
+            assert!(
+                screen.text.len() <= TEXT_CAP,
+                "{width}: {}",
+                screen.text.len()
+            );
+        }
     }
 }
