@@ -19,6 +19,21 @@ baseline.
   worker the coordinator spawns (a worker that is already running keeps its
   tools) and, in a plain chat, the next turn. Only you can open it: a model,
   a worker or a tool result cannot.
+- Two `code` workers of one ORCH run can now write at the same time, each
+  with a batch of its own. When one proposes, the review lists only its
+  files, and it is labelled with the worker; two pending proposals are
+  reviewed one at a time, in arrival order. Approving one does not touch the
+  other. The review lenses and the correction read the batch of the worker
+  they review, a worker that staged and never proposed is named even when a
+  sibling did propose, and a closed pane or a finished run leaves one orphan
+  badge that counts all of them. A plain chat is not a worker and keeps its
+  single batch.
+- When two workers of a run start on the same local server (Ollama, llama.cpp
+  and the like), the chat says once per run and engine that the server may
+  queue their requests and names the key that fixes it, `max_parallel = 1` in
+  `[ai.orchestrator]`. `max_parallel` stays your only limit: nothing is
+  throttled for you. Cloud engines and Ollama `*-cloud` models are not
+  counted.
 
 ### Changed
 
