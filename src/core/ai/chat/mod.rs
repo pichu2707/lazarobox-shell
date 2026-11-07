@@ -518,6 +518,9 @@ pub struct ChatState {
     /// The gate refusal the `Enter gates off` key can act on, while it can
     /// (agent-orchestrator [W3], D24). Ends with the run it was about.
     gate_offer: Option<GateOffer>,
+    /// The run that waits for the user's reply after a spawn gate refusal; the
+    /// next message of the pane attaches to it (W3, option B).
+    waiting_run: Option<RunId>,
     /// The last turn ended cleanly (`Done`); false for an error, a cut-off or
     /// an interruption. True before any turn ended.
     last_turn_clean: bool,
@@ -628,6 +631,7 @@ impl ChatState {
             orch_undelegated: None,
             delegate: None,
             gate_offer: None,
+            waiting_run: None,
             last_turn_clean: true,
             orch_cancelled: None,
             turn_failure: None,
@@ -811,6 +815,19 @@ impl ChatState {
     }
 
     /// The gate passed or the run is over: nothing is left to lift.
+    pub fn waiting_run(&self) -> Option<RunId> {
+        self.waiting_run
+    }
+
+    /// The run only waits for the reply: no orchestrator turn is in flight.
+    pub fn only_waits(&self) -> bool {
+        self.waiting_run.is_some() && !self.orch_turn_in_flight()
+    }
+
+    pub fn set_waiting_run(&mut self, run: Option<RunId>) {
+        self.waiting_run = run;
+    }
+
     pub fn drop_gate_offer(&mut self) {
         self.gate_offer = None;
     }
@@ -839,6 +856,7 @@ impl ChatState {
         self.orch_undelegated = None;
         self.delegate = None;
         self.gate_offer = None;
+        self.waiting_run = None;
         self.orch_cancelled = Some(run);
     }
 

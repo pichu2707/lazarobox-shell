@@ -81,6 +81,10 @@ pub enum NextTurn {
     Continue(usize),
     /// Work is pending but `max_turns` turns were taken: the run ends.
     Capped(usize),
+    /// Nothing is pending but a spawn refusal of a step gate stands, naming
+    /// this step: the run stays open for the user's reply, who may lift the
+    /// gates (W3, option B). The reply turn is counted here.
+    Wait(Step),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -297,6 +301,22 @@ impl Run {
     /// The user lifts both step gates for this run, all or nothing (W3, D24).
     pub fn lift_gates(&mut self) {
         self.gates_lifted = true;
+        self.last_gate = None;
+    }
+
+    /// Whether the user lifted the step gates of this run.
+    pub fn gates_lifted(&self) -> bool {
+        self.gates_lifted
+    }
+
+    /// The orchestrator turns taken so far, the first included.
+    pub fn turns(&self) -> usize {
+        self.turns
+    }
+
+    /// Forgets the standing refusal: the reply turn starts clean, and a new
+    /// refusal sets it again.
+    pub fn forget_gate(&mut self) {
         self.last_gate = None;
     }
 
@@ -1079,6 +1099,16 @@ impl Run {
             .iter()
             .any(|status| !self.ids(*status, |_| true).is_empty());
         let pending = live || !self.without_handoff().is_empty();
+        if self.state == RunState::Open
+            && !pending
+            && let Some((Gate::Spawn, step)) = self.last_gate
+        {
+            if self.turns >= self.limits.turns {
+                return NextTurn::Capped(self.turns);
+            }
+            self.turns += 1;
+            return NextTurn::Wait(step);
+        }
         if self.state != RunState::Open || !pending {
             return NextTurn::Settle;
         }

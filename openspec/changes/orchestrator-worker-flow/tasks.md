@@ -393,6 +393,14 @@ Files: `src/core/ai/orchestra/steps.rs` (`grant()` accessor), `src/core/ai/orche
 
 ---
 
+## W3 follow-up (option B): the run waits for the reply after a refused spawn
+
+- [x] 13.13 RED/GREEN (core): `NextTurn::Wait(step)` when a turn ends open, with nothing pending and a spawn gate refusal standing; it counts a turn and is `Capped` at `max_turns`; `Run::forget_gate()`, `gates_lifted()`, `turns()`. The finish gate keeps settling (spawn only, by design: a text reply after a refused finish ends the run as before).
+- [x] 13.14 RED/GREEN (runtime): `OrchestraEvent::Waits { run, step }`; `Live.waiting` keeps `settle` from ending the run; `attach` clears it and forgets the standing refusal; `RunManager::reply_note(pane, run)` returns the one-time line (`LIFT_NOTE`) when the run waited and the user lifted the gates; `runtime/chat.rs` appends it to the coordinator's copy of the reply only.
+- [x] 13.15 RED/GREEN (app): `ChatState.waiting_run`; the `Waits` event says `run waits for your reply: step <step> is not closed (Enter gates off)`; `send_text` attaches the reply to the waiting run; `Ended` and ORCH toggle say `run no longer waits for your reply: ...`; the ORCH toggle cancels a waiting run instead of refusing; Ctrl+C clears it through `cancel_run`.
+- Review fixes: Ctrl+C says the wait ended; the footer no longer says cancel first while only waiting; the app ignores a `Waits` for a run already ended or cancelled; an engine error after the wait keeps it (the user can reply).
+- As built: branch `feat/orch-gate-wait`. Tests: `gate_tests.rs` (core), `runtime/orchestra/tests/gate_wait.rs`, `app/app_tests/orchestra_gate_wait.rs`. Known limit: a lift pressed while the first turn still runs (before the wait) is kept only if the coordinator then spawns; the run still settles when that turn ends with no refusal standing.
+
 ## Slice W4: handoff check against the ledger (one PR)
 
 Spec references: orchestrator-handoffs "App check of a handoff against the ledger [W4]" ("Claimed file not in the ledger", "Claim matches the ledger", "The orchestrator cannot clear a flag", "Nothing to check says so") and "A code worker with an empty ledger [W1, W4]" (the W4 half: the claimed file is flagged; the empty-ledger notice shipped in PR1). Design: D28. The `simple` kind does not exist yet (W8a); the check keys off a worker that has a ledger, `Task::Code` today.

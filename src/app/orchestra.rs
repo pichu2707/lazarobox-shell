@@ -397,6 +397,19 @@ impl App {
                     chat.offer_gates(GateOffer { run, gate, step });
                 }
             }
+            // The turn ended with the spawn gate standing: the run stays open
+            // for the reply, and the pane says why (W3, option B).
+            OrchestraEvent::Waits { run, step } => {
+                // A `Waits` that comes after the run ended or was cancelled
+                // marks nothing.
+                if chat.orch_run() == Some(run) && !chat.run_cancelled(run) {
+                    chat.set_waiting_run(Some(run));
+                    chat.push_system_line(format!(
+                        "run waits for your reply: step {} is not closed (Enter gates off)",
+                        step.label()
+                    ));
+                }
+            }
             // A worker turn that runs as text: said before it starts.
             OrchestraEvent::Degraded {
                 run,
@@ -469,6 +482,12 @@ impl App {
             // one started.
             OrchestraEvent::Ended { run } => {
                 chat.end_orch_run(run);
+                if chat.waiting_run() == Some(run) {
+                    chat.set_waiting_run(None);
+                    chat.push_system_line(
+                        "run no longer waits for your reply: the run ended".to_owned(),
+                    );
+                }
                 // No live run is left to take a lift.
                 if chat.gate_offer().is_some_and(|offer| offer.run == run) {
                     chat.drop_gate_offer();
@@ -1082,7 +1101,12 @@ impl App {
         if !self.orch_gate() {
             return None;
         }
-        Some(if self.orch_run_active(id) {
+        let waits = self
+            .panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .is_some_and(ChatState::only_waits);
+        Some(if self.orch_run_active(id) && !waits {
             OrchHint::CancelRunFirst
         } else {
             OrchHint::Toggle
@@ -1096,7 +1120,25 @@ impl App {
         if !self.orch_gate() {
             return Vec::new();
         }
-        if self.orch_run_active(id) {
+        // A run that only waits for the reply gives way: the toggle ends it.
+        let mut effects = Vec::new();
+        let waiting = self
+            .panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .is_some_and(ChatState::only_waits);
+        if waiting {
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                if let Some(run) = chat.waiting_run() {
+                    chat.cancel_run(run);
+                }
+                chat.set_waiting_run(None);
+                chat.push_system_line(
+                    "run no longer waits for your reply: ORCH was toggled off".to_owned(),
+                );
+            }
+            effects.push(Effect::ChatCancel(id));
+        } else if self.orch_run_active(id) {
             self.notice = Some(HINT_RUN.to_owned());
             self.dirty = true;
             return Vec::new();
@@ -1131,9 +1173,9 @@ impl App {
         self.release_wait(id, false);
         // The first ORCH of a start asks which runs a restart interrupted.
         if now_on {
-            return self.recover_runs(id);
+            effects.extend(self.recover_runs(id));
         }
-        Vec::new()
+        effects
     }
 
     /// The engine a turn of pane `id` goes to: the effective `orchestrate`

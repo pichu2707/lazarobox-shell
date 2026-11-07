@@ -546,6 +546,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::SpawnRefused { .. }
         | OrchestraEvent::GateRefused { .. }
         | OrchestraEvent::Undelegated { .. }
+        | OrchestraEvent::Waits { .. }
         | OrchestraEvent::Ended { .. } => None,
     }
 }
@@ -1593,6 +1594,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::SpawnRefused { .. }
             | OrchestraEvent::GateRefused { .. }
             | OrchestraEvent::Undelegated { .. }
+            | OrchestraEvent::Waits { .. }
             | OrchestraEvent::Unavailable => None,
         })
         .collect()
@@ -6138,5 +6140,6 @@ async fn a_degraded_code_worker_with_call_text_gives_the_coordinator_no_line() {
 }
 
 mod claims;
+mod gate_wait;
 mod gates;
 mod parallel;
