@@ -46,6 +46,8 @@ pub struct Audit {
     blank: &'static str,
     check: Check,
     idle: bool,
+    /// More names were left unread or unkept than the caps allow.
+    capped: bool,
 }
 
 impl Audit {
@@ -58,9 +60,16 @@ impl Audit {
         verdict: Verdict,
     ) -> Self {
         let mut claims = prior.map(|audit| audit.claims.clone()).unwrap_or_default();
-        for path in scan(done) {
-            if claims.len() < MAX_CLAIMS && !claims.contains(&path) {
+        let (found, mut capped) = scan(done);
+        capped |= prior.is_some_and(|audit| audit.capped);
+        for path in found {
+            if claims.iter().any(|known| known.eq_ignore_ascii_case(&path)) {
+                continue;
+            }
+            if claims.len() < MAX_CLAIMS {
                 claims.push(path);
+            } else {
+                capped = true;
             }
         }
         let blank = if done.trim() == NONE {
@@ -74,6 +83,7 @@ impl Audit {
             blank,
             check: Check::Matches,
             idle: false,
+            capped,
         }
         .recheck(ledger, verdict)
     }
@@ -81,16 +91,16 @@ impl Audit {
     /// The same claims against the ledger as it is now.
     pub(super) fn recheck(&self, ledger: Option<&ChangeLedger>, verdict: Verdict) -> Self {
         let check = match ledger {
-            None => Check::NotChecked("no change ledger"),
+            None => Check::NotChecked(NO_LEDGER),
             Some(ledger) => self.check_against(ledger),
         };
-        let idle = verdict == Verdict::OnCourse
-            && ledger.is_some_and(|ledger| ledger.changes().iter().all(|c| !c.applied));
+        // Only a writer that staged nothing: staged files waiting for the
+        // user's review are the normal state and say nothing.
+        let idle = verdict == Verdict::OnCourse && ledger.is_some_and(|l| l.changes().is_empty());
         Self {
-            claims: self.claims.clone(),
-            blank: self.blank,
             check,
             idle,
+            ..self.clone()
         }
     }
 
@@ -99,18 +109,20 @@ impl Audit {
             return Check::NotChecked(self.blank);
         }
         let held = |claim: &str| ledger.changes().iter().any(|c| same(&c.path, claim));
-        // An absolute path may lie outside the root: it can match, never flag.
-        let (absolute, relative): (Vec<_>, Vec<_>) =
-            self.claims.iter().partition(|claim| claim.starts_with('/'));
-        let missing: Vec<_> = relative
+        // Only a path with a directory in it can be flagged: a bare name may be
+        // prose, and an absolute path may lie outside the project. Both can
+        // still match.
+        let (flaggable, other): (Vec<_>, Vec<_>) =
+            (self.claims.iter()).partition(|claim| !claim.starts_with('/') && claim.contains('/'));
+        let missing: Vec<_> = flaggable
             .iter()
             .filter(|claim| !held(claim))
             .map(|claim| (*claim).clone())
             .collect();
         if !missing.is_empty() {
             Check::Flagged(missing)
-        } else if relative.is_empty() && !absolute.iter().any(|claim| held(claim)) {
-            Check::NotChecked("only paths outside the project named")
+        } else if flaggable.is_empty() && !other.iter().any(|claim| held(claim)) {
+            Check::NotChecked("no path with a directory named")
         } else {
             Check::Matches
         }
@@ -126,35 +138,52 @@ impl Audit {
         self.idle
     }
 
-    /// Everything the check says, one plain ASCII line each.
+    /// What the ack and a collect say: the check, unless the worker has no
+    /// ledger (a read-only worker is not told), and the neutral idle line.
     pub fn lines(&self) -> Vec<String> {
-        let first = match &self.check {
-            Check::Flagged(paths) => flagged_line(paths),
-            Check::Matches => "claims match the ledger".to_owned(),
-            Check::NotChecked(why) => format!("not checked: {why}"),
-        };
-        let mut lines = vec![first];
+        if self.check == Check::NotChecked(NO_LEDGER) {
+            return Vec::new();
+        }
+        let mut lines = self.note_lines();
         lines.extend(self.idle.then(|| IDLE.to_owned()));
         lines
     }
 
-    /// Only the lines that call for the user's eye.
+    /// What the stored note says: the check alone. The idle line is true only
+    /// when it is read, so a note written at save time would go stale.
+    pub fn note_lines(&self) -> Vec<String> {
+        let mut line = match &self.check {
+            Check::Flagged(paths) => flagged_line(paths),
+            Check::Matches => "claims match the ledger".to_owned(),
+            Check::NotChecked(why) => format!("not checked: {why}"),
+        };
+        if self.capped {
+            line.push_str(" (+more not checked)");
+        }
+        vec![line]
+    }
+
+    /// Only the line that calls for the user's eye.
     pub fn flags(&self) -> Vec<String> {
-        let flagged = matches!(self.check, Check::Flagged(_));
-        let lines = self.lines();
-        let skip = usize::from(!flagged);
-        lines.into_iter().skip(skip).collect()
+        match self.check {
+            Check::Flagged(_) => self.note_lines(),
+            _ => Vec::new(),
+        }
     }
 }
 
-/// The neutral line of a worker judged `on_course` with nothing applied.
-const IDLE: &str = "on_course, nothing applied yet";
+/// The neutral line of a worker judged `on_course` that staged nothing.
+const IDLE: &str = "on_course, nothing staged";
+
+/// Why a read-only worker has nothing to check.
+const NO_LEDGER: &str = "no change ledger";
 
 fn flagged_line(paths: &[String]) -> String {
-    let shown: Vec<_> = paths
-        .iter()
-        .take(SHOWN)
-        .map(|p| cut(p, PATH_BYTES))
+    let shown: Vec<_> = (paths.iter().take(SHOWN))
+        .map(|path| match cut(path, PATH_BYTES) {
+            head if head.len() < path.len() => format!("{head}..."),
+            head => head.to_owned(),
+        })
         .collect();
     let more = paths.len().saturating_sub(SHOWN);
     let tail = if more > 0 {
@@ -162,32 +191,52 @@ fn flagged_line(paths: &[String]) -> String {
     } else {
         String::new()
     };
-    format!("claimed, not in ledger: {}{tail}", shown.join(", "))
+    format!(
+        "named in handoff, not in ledger: {}{tail}",
+        shown.join(", ")
+    )
 }
 
-/// The path-like names of `text`, normalised, each once, in order. Only the
-/// first [`SCAN_BYTES`] are read. A name is a run of `[A-Za-z0-9._/-]` whose
-/// last segment ends in a known source extension.
-fn scan(text: &str) -> Vec<String> {
+/// The path-like names of `text`, normalised, each once, in order, and whether
+/// more were left. Only the first [`SCAN_BYTES`] are read. A name is a whole
+/// word (a backslash reads as a slash; `, ; :` separate words and a quote, a
+/// bracket or a full stop at an end is trimmed) made only of `[A-Za-z0-9._/-]`
+/// and ending in a known source extension. A word with any other character,
+/// such as `Über` or `[id]`, is dropped whole: cutting it would name another
+/// file.
+fn scan(text: &str) -> (Vec<String>, bool) {
+    let mut capped = text.len() > SCAN_BYTES;
     let mut found: Vec<String> = Vec::new();
     for word in cut(text, SCAN_BYTES).split_whitespace() {
         if word.contains("://") || word.starts_with("www.") || word.starts_with("mailto:") {
             continue;
         }
-        let pieces = word.split(|c: char| !(c.is_ascii_alphanumeric() || "._/-".contains(c)));
-        for path in pieces.filter_map(as_path) {
-            if found.len() < MAX_CLAIMS && !found.contains(&path) {
+        let word = word.replace('\\', "/");
+        for piece in word.split([',', ';', ':']) {
+            let piece = piece.trim_start_matches(['`', '\'', '"', '(']);
+            let piece = piece.trim_end_matches(['`', '\'', '"', ')', '.']);
+            if !piece
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._/-".contains(c))
+            {
+                continue;
+            }
+            let Some(path) = as_path(piece) else { continue };
+            if found.len() >= MAX_CLAIMS {
+                capped = true;
+            } else if !found.iter().any(|known| known.eq_ignore_ascii_case(&path)) {
                 found.push(path);
             }
         }
     }
-    found
+    (found, capped)
 }
 
 /// `piece` as a normalised path, or `None` when it is not clearly one: no
-/// known extension, a directory, a `..` step, a version, a product name.
+/// known extension, a directory, a `..` step, a version, a product name, a
+/// domain-like first component.
 fn as_path(piece: &str) -> Option<String> {
-    let mut rest = piece.trim_end_matches('.');
+    let mut rest = piece;
     while let Some(tail) = rest.strip_prefix("./") {
         rest = tail;
     }
@@ -208,7 +257,14 @@ fn as_path(piece: &str) -> Option<String> {
         && stem.starts_with(|c: char| c.is_ascii_uppercase());
     // `a.b.c` is not `a.b.c`: a one-letter extension after a dotted stem.
     let initials = ext.len() == 1 && stem.contains('.');
-    if stem.is_empty() || !EXTENSIONS.contains(&ext.as_str()) || product || initials {
+    // `github.com/a/b.rs`: a first component with a dot, which is no hidden
+    // folder and no file, is a host.
+    let host = !absolute
+        && parts.len() > 1
+        && parts[0]
+            .rsplit_once('.')
+            .is_some_and(|(head, ext)| !head.is_empty() && !is_source(ext));
+    if stem.is_empty() || !is_source(&ext) || product || initials || host {
         return None;
     }
     let joined = parts.join("/");
@@ -219,13 +275,18 @@ fn as_path(piece: &str) -> Option<String> {
     })
 }
 
+fn is_source(ext: &str) -> bool {
+    EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+}
+
 /// Whether the ledger path and the claimed path name the same file: equal, or
-/// one a suffix of the other on a component boundary.
+/// one a suffix of the other on a component boundary, ASCII case aside.
 fn same(ledger_path: &str, claim: &str) -> bool {
-    let ledger_path = ledger_path.trim_start_matches("./");
+    let ledger_path = ledger_path.trim_start_matches("./").to_ascii_lowercase();
+    let claim = claim.to_ascii_lowercase();
     ledger_path == claim
-        || ends_with_component(ledger_path, claim)
-        || ends_with_component(claim, ledger_path)
+        || ends_with_component(&ledger_path, &claim)
+        || ends_with_component(&claim, &ledger_path)
 }
 
 fn ends_with_component(long: &str, short: &str) -> bool {

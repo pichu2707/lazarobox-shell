@@ -430,7 +430,9 @@ impl Ledger {
             // A shortened row drops its flag lines; the count below stays.
             if *max > SHORT_BYTES {
                 for flag in &row.flags {
-                    out.push_str(&format!("\n  {}", cut(flag, FLAG_BYTES)));
+                    let head = cut(flag, FLAG_BYTES);
+                    let dots = if head.len() < flag.len() { "..." } else { "" };
+                    out.push_str(&format!("\n  {head}{dots}"));
                 }
             }
         }

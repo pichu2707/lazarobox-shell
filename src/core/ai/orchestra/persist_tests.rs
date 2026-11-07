@@ -176,9 +176,11 @@ fn a_worker_note_holds_the_check_line() {
     };
     let note = Item::of_handoff(&with).note.content;
     assert!(
-        note.contains("\ncheck: claimed, not in ledger: src/b.rs; on_course, nothing applied yet"),
+        note.contains("\ncheck: named in handoff, not in ledger: src/b.rs"),
         "{note}"
     );
+    // The idle line goes stale in a note written at save time: never stored.
+    assert!(!note.contains("nothing staged"), "{note}");
     let without = Item::of_handoff(&handoff(2)).note.content;
     assert!(!without.contains("check:"), "{without}");
 }

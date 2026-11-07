@@ -1338,8 +1338,9 @@ impl RunManager {
                     };
                     // The app's check of the claimed files, next to the verdict
                     // and never in its place (W4).
-                    if let Some(audit) = &handoff.audit {
-                        text.push_str(&format!("; {}", audit.lines().join("; ")));
+                    let lines = handoff.audit.iter().flat_map(|audit| audit.lines());
+                    for line in lines {
+                        text.push_str(&format!("; {line}"));
                     }
                     self.announce_handoff(pane, run, handoff);
                     fine(text)

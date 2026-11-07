@@ -88,7 +88,7 @@ impl Item {
         );
         // The app's check of the claimed files (W4).
         if let Some(audit) = &handoff.audit {
-            content.push_str(&format!("\ncheck: {}", audit.lines().join("; ")));
+            content.push_str(&format!("\ncheck: {}", audit.note_lines().join("; ")));
         }
         Self {
             key,

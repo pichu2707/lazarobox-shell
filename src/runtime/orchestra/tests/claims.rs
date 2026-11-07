@@ -37,7 +37,7 @@ async fn the_handoff_ack_carries_the_flag_and_the_verdict() {
         .await;
     assert_eq!(
         ack,
-        fine("handoff 1: off_course; claimed, not in ledger: src/b.rs")
+        fine("handoff 1: off_course; named in handoff, not in ledger: src/b.rs")
     );
 }
 
@@ -56,8 +56,8 @@ async fn a_second_save_cannot_clear_the_flag() {
     assert_eq!(
         ack,
         fine(
-            "handoff 1: on_course; claimed, not in ledger: src/b.rs; \
-             on_course, nothing applied yet"
+            "handoff 1: on_course; named in handoff, not in ledger: src/b.rs; \
+             on_course, nothing staged"
         )
     );
 }
@@ -91,7 +91,7 @@ async fn a_later_collect_shows_the_check_outside_the_wrapper() {
     assert!(
         after
             .text
-            .starts_with("lazarobox: handoff check: claimed, not in ledger: src/b.rs\n\n"),
+            .starts_with("lazarobox: handoff check: named in handoff, not in ledger: src/b.rs\n\n"),
         "{after:?}"
     );
     assert!(after.text.contains("all done"), "{after:?}");
@@ -105,12 +105,14 @@ async fn a_degraded_worker_is_checked_too() {
     let lab = lab(Script::Answer(call));
     let handle = empty_code_worker(&lab).await;
     handle
-        .call(claiming(1, Verdict::OffCourse, "created a.txt"))
+        .call(claiming(1, Verdict::OffCourse, "created dir/a.txt"))
         .await;
     let got = handle.call(collect(1)).await.text;
     let open = got.find("<untrusted-tool-output").unwrap();
     assert!(
-        got.find("claimed, not in ledger: a.txt").unwrap() < open,
+        got.find("named in handoff, not in ledger: dir/a.txt")
+            .unwrap()
+            < open,
         "{got}"
     );
     assert!(!got.contains("tool calls written as text"), "{got}");
@@ -141,7 +143,7 @@ async fn the_close_report_shows_the_flag_under_the_worker() {
         panic!("{ledgers:?}");
     };
     assert!(
-        ledger.contains("\n  claimed, not in ledger: src/b.rs"),
+        ledger.contains("\n  named in handoff, not in ledger: src/b.rs"),
         "{ledger}"
     );
     assert!(ledger.contains("Flags: 1"), "{ledger}");
@@ -159,7 +161,7 @@ async fn the_handoff_event_holds_the_check_for_the_stored_note() {
     let sent = handoffs(&lab.sent());
     assert_eq!(sent.len(), 1);
     let audit = sent[0].audit.as_ref().expect("a worker's handoff");
-    assert_eq!(audit.flags(), ["claimed, not in ledger: src/b.rs"]);
+    assert_eq!(audit.flags(), ["named in handoff, not in ledger: src/b.rs"]);
 }
 
 // Bypass: a worker that failed has its forced handoff checked like any other.
@@ -175,7 +177,7 @@ async fn a_failed_workers_forced_handoff_is_checked_too() {
     assert!(!ack.is_error, "{ack:?}");
     assert!(
         ack.text
-            .starts_with("handoff 1: blocked (forced: worker 1 failed); claimed"),
+            .starts_with("handoff 1: blocked (forced: worker 1 failed); named in handoff"),
         "{ack:?}"
     );
 }

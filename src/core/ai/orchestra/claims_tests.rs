@@ -83,7 +83,7 @@ fn more_than_eight_flagged_paths_show_a_count() {
     let audit = Audit::new(None, &done.join(" "), Some(&ledger(&[])), Verdict::Unknown);
     let lines = audit.lines();
     assert!(
-        lines[0].starts_with("claimed, not in ledger: src/f0.rs, "),
+        lines[0].starts_with("named in handoff, not in ledger: src/f0.rs, "),
         "{lines:?}"
     );
     assert!(lines[0].ends_with("src/f7.rs (+4 more)"), "{lines:?}");
@@ -99,15 +99,17 @@ fn nothing_to_check_says_why_and_never_ok() {
     assert_eq!(check("none", &[]), Check::NotChecked("no handoff text"));
     let audit = Audit::new(None, "wrote src/a.rs", None, Verdict::Unknown);
     assert_eq!(audit.check(), &Check::NotChecked("no change ledger"));
-    assert_eq!(audit.lines(), ["not checked: no change ledger"]);
+    // A read-only worker is not told: the line is audit evidence in the note.
+    assert!(audit.lines().is_empty());
+    assert_eq!(audit.note_lines(), ["not checked: no change ledger"]);
 }
 
 // Spec "A code worker with an empty ledger".
 #[test]
 fn an_empty_ledger_flags_every_claimed_path() {
     assert_eq!(
-        check("wrote src/a.rs and Cargo.toml", &[]),
-        flagged(&["src/a.rs", "Cargo.toml"])
+        check("wrote src/a.rs and src/lib/b.rs", &[]),
+        flagged(&["src/a.rs", "src/lib/b.rs"])
     );
 }
 
@@ -122,7 +124,10 @@ fn a_suffix_of_whole_components_matches_either_way() {
         Check::Matches
     );
     // Not whole components: `ba.rs` is not `a.rs`.
-    assert_eq!(check("wrote a.rs", &["src/ba.rs"]), flagged(&["a.rs"]));
+    assert_eq!(
+        check("wrote a.rs", &["src/ba.rs"]),
+        Check::NotChecked("no path with a directory named")
+    );
     assert_eq!(check("wrote src/ba.rs", &["a.rs"]), flagged(&["src/ba.rs"]));
 }
 
@@ -219,25 +224,37 @@ fn a_flag_is_sticky_across_handoffs_until_the_ledger_holds_the_path() {
     assert_eq!(third.check(), &Check::Matches);
 }
 
-// Spec: a write-capable worker with on_course and nothing applied.
+// A write-capable worker judged on_course whose ledger is EMPTY gets a neutral
+// second line. A ledger with staged files, applied or not, is the normal
+// review state and raises nothing.
 #[test]
-fn on_course_with_nothing_applied_is_a_neutral_second_flag() {
-    let mut led = ledger(&["src/a.rs"]);
+fn on_course_with_an_empty_ledger_is_a_neutral_second_line() {
     let on = |led: &ChangeLedger, verdict| Audit::new(None, "wrote src/a.rs", Some(led), verdict);
-    assert!(on(&led, Verdict::OnCourse).idle());
+    let empty = ledger(&[]);
+    assert!(on(&empty, Verdict::OnCourse).idle());
     assert_eq!(
-        on(&led, Verdict::OnCourse).lines(),
-        ["claims match the ledger", "on_course, nothing applied yet"]
+        on(&empty, Verdict::OnCourse).lines(),
+        [
+            "named in handoff, not in ledger: src/a.rs",
+            "on_course, nothing staged"
+        ]
     );
     for verdict in [Verdict::OffCourse, Verdict::Blocked, Verdict::Unknown] {
-        assert!(!on(&led, verdict).idle(), "{verdict:?}");
+        assert!(!on(&empty, verdict).idle(), "{verdict:?}");
     }
-    assert!(on(&ledger(&[]), Verdict::OnCourse).idle());
-    // Recomputed from the ledger: a later apply clears it.
-    let audit = on(&led, Verdict::OnCourse);
+    // GUARD: staged and not applied is the normal state while a batch waits.
+    let mut led = ledger(&["src/a.rs"]);
+    assert!(!on(&led, Verdict::OnCourse).idle());
+    assert_eq!(
+        on(&led, Verdict::OnCourse).lines(),
+        ["claims match the ledger"]
+    );
     led.applied(&["src/a.rs".to_owned()]);
+    assert!(!on(&led, Verdict::OnCourse).idle());
+    // Recomputed from the ledger: a later stage clears it.
+    let audit = on(&empty, Verdict::OnCourse);
     assert!(!audit.recheck(Some(&led), Verdict::OnCourse).idle());
-    // A worker with no ledger has nothing to apply.
+    // A worker with no ledger has nothing to stage.
     assert!(!Audit::new(None, "x", None, Verdict::OnCourse).idle());
 }
 
@@ -246,13 +263,18 @@ fn flags_lists_only_what_needs_the_user() {
     let led = ledger(&["src/a.rs"]);
     let ok = Audit::new(None, "wrote src/a.rs", Some(&led), Verdict::OffCourse);
     assert!(ok.flags().is_empty());
-    let bad = Audit::new(None, "wrote src/b.rs", Some(&led), Verdict::OnCourse);
+    // The idle line is never a flag, and is never stored in the note.
+    let bad = Audit::new(
+        None,
+        "wrote src/b.rs",
+        Some(&ledger(&[])),
+        Verdict::OnCourse,
+    );
+    assert!(bad.idle());
+    assert_eq!(bad.flags(), ["named in handoff, not in ledger: src/b.rs"]);
     assert_eq!(
-        bad.flags(),
-        [
-            "claimed, not in ledger: src/b.rs",
-            "on_course, nothing applied yet"
-        ]
+        bad.note_lines(),
+        ["named in handoff, not in ledger: src/b.rs"]
     );
 }
 
@@ -415,6 +437,7 @@ mod in_a_run {
         let audit = handoff.audit.unwrap();
         assert_eq!(audit.check(), &Check::NotChecked("no change ledger"));
         assert!(!audit.idle());
+        assert!(audit.lines().is_empty(), "a read-only worker is not told");
     }
 
     // Spec "The orchestrator cannot clear a flag", at the run, with the verdict
@@ -441,12 +464,12 @@ mod in_a_run {
     #[test]
     fn the_audit_is_recomputed_from_the_ledger_and_the_stored_verdict() {
         let mut run = run();
-        let id = worker(&mut run, Task::Code, &["src/a.rs"]);
+        let id = worker(&mut run, Task::Code, &[]);
         assert_eq!(run.audit(id), None, "no handoff, no check");
         run.handoff(id, note(Verdict::OnCourse, "wrote src/a.rs"))
             .unwrap();
         assert!(run.audit(id).unwrap().idle());
-        run.applied(id, &["src/a.rs".to_owned()]);
+        run.staged(id, change("src/a.rs"));
         assert!(!run.audit(id).unwrap().idle());
     }
 
@@ -462,7 +485,9 @@ mod in_a_run {
             .unwrap();
         let got = run.collect_wrapped([7; 8], id).unwrap();
         assert!(
-            got.starts_with("lazarobox: handoff check: claimed, not in ledger: src/b.rs\n"),
+            got.starts_with(
+                "lazarobox: handoff check: named in handoff, not in ledger: src/b.rs\n"
+            ),
             "{got}"
         );
         assert!(
@@ -502,7 +527,7 @@ mod in_a_run {
         let rest = &text[at..];
         let row = rest.lines().next().unwrap();
         assert!(
-            rest.lines().nth(1).unwrap().trim() == "claimed, not in ledger: src/b.rs",
+            rest.lines().nth(1).unwrap().trim() == "named in handoff, not in ledger: src/b.rs",
             "{text}"
         );
         assert!(!row.contains("not in ledger"));
@@ -539,6 +564,139 @@ mod in_a_run {
             .unwrap();
         let stored = run.stored_handoff(id).unwrap();
         let audit: &Audit = stored.audit.as_ref().unwrap();
-        assert_eq!(audit.flags(), ["claimed, not in ledger: src/a.rs"]);
+        assert_eq!(audit.flags(), ["named in handoff, not in ledger: src/a.rs"]);
     }
+
+    // A shortened row drops its flag line but never the count.
+    #[test]
+    fn a_shortened_row_drops_its_flag_line_and_keeps_the_count() {
+        let mut run = run();
+        let id = worker(&mut run, Task::Code, &["src/a.rs"]);
+        let done = format!("{} wrote src/b.rs", "padding ".repeat(12));
+        run.handoff(id, note(Verdict::OffCourse, &done)).unwrap();
+        let ledger = run.run_ledger("goal");
+        let full = ledger.render();
+        assert!(
+            full.contains("\n  named in handoff, not in ledger: src/b.rs"),
+            "{full}"
+        );
+        let tight = ledger.render_within(full.len() - 60);
+        assert!(tight.contains("1 code done: "), "the row stays: {tight}");
+        assert!(!tight.contains("not in ledger"), "{tight}");
+        assert!(tight.contains("Flags: 1"), "{tight}");
+    }
+
+    // A flag line cut at its bound says so.
+    #[test]
+    fn a_cut_flag_line_ends_with_dots() {
+        let mut run = run();
+        let id = worker(&mut run, Task::Code, &["src/a.rs"]);
+        let done: Vec<String> = (0..8)
+            .map(|n| format!("dir/{}{n}.rs", "y".repeat(40)))
+            .collect();
+        run.handoff(id, note(Verdict::OffCourse, &done.join(" ")))
+            .unwrap();
+        let text = run.run_ledger("goal").render();
+        let flag = text.lines().find(|l| l.contains("not in ledger")).unwrap();
+        assert!(flag.ends_with("..."), "{flag}");
+        assert!(flag.is_ascii());
+    }
+}
+
+// ---- review probes: prose, odd characters, case, separators, truncation ----
+
+// GUARD: a bare name is never flagged (it may be prose), and a domain-like
+// first component is not a directory.
+#[test]
+fn bare_names_and_domain_like_paths_are_never_flagged() {
+    for done in [
+        "used three.js and res.json, see docs.rs",
+        "cloned github.com/a/b.rs",
+        "see crates.io/crates/x.toml",
+        "I checked README.md, no change needed",
+    ] {
+        assert!(
+            matches!(check(done, &[]), Check::NotChecked(_)),
+            "{done}: {:?}",
+            check(done, &[])
+        );
+    }
+    // A hidden folder is a folder, and a bare name still counts as a match.
+    assert_eq!(
+        check("wrote .github/workflows/ci.yml", &[]),
+        flagged(&[".github/workflows/ci.yml"])
+    );
+    assert_eq!(check("wrote three.js", &["web/three.js"]), Check::Matches);
+}
+
+// GUARD: a name next to a character a path does not hold is dropped, never
+// cut into a wrong path (`Über.rs` must not become `ber.rs`).
+#[test]
+fn names_with_characters_outside_the_path_set_are_dropped_whole() {
+    for done in [
+        "wrote src/\u{dc}ber.rs",
+        "wrote src/a+b.rs",
+        "wrote @scope/pkg/x.ts",
+        "wrote app/[id]/page.tsx",
+        "wrote \u{dc}src/a.rs",
+        "wrote src/a.rs\u{e9}",
+        "wrote src/*.rs",
+    ] {
+        assert_eq!(
+            check(done, &[]),
+            Check::NotChecked("no file named in the handoff"),
+            "{done}"
+        );
+    }
+    // Plain punctuation around a name is still fine.
+    assert_eq!(
+        check("(wrote `src/a.rs`), 'src/b.rs'; \"src/c.rs\": done.", &[]),
+        flagged(&["src/a.rs", "src/b.rs", "src/c.rs"])
+    );
+}
+
+#[test]
+fn paths_compare_ignoring_ascii_case_and_backslashes_are_slashes() {
+    assert_eq!(check("wrote README.md", &["readme.md"]), Check::Matches);
+    assert_eq!(check("wrote Src/A.rs", &["src/a.rs"]), Check::Matches);
+    assert_eq!(check("wrote src/a.rs", &["SRC/A.RS"]), Check::Matches);
+    assert_eq!(check("wrote src\\x.rs", &["src/x.rs"]), Check::Matches);
+    assert_eq!(check("wrote src\\x.rs", &[]), flagged(&["src/x.rs"]));
+    // ... also across two handoffs.
+    let first = Audit::new(None, "src/a.rs", Some(&ledger(&[])), Verdict::Unknown);
+    let again = Audit::new(
+        Some(&first),
+        "Src/A.rs",
+        Some(&ledger(&[])),
+        Verdict::Unknown,
+    );
+    assert_eq!(again.check(), &flagged(&["src/a.rs"]));
+    // The same path in two cases is listed once.
+    assert_eq!(check("src/a.rs Src/A.rs", &[]), flagged(&["src/a.rs"]));
+}
+
+// Truncation is always visible.
+#[test]
+fn a_cut_path_a_cut_line_and_a_capped_claim_list_say_so() {
+    let long = format!("src/{}.rs", "x".repeat(200));
+    let audit = Audit::new(None, &long, Some(&ledger(&[])), Verdict::Unknown);
+    let line = &audit.lines()[0];
+    assert!(line.ends_with("..."), "{line}");
+    assert!(line.len() < 140, "{line}");
+    let many: String = (0..40).map(|n| format!("d/f{n}.rs ")).collect();
+    let capped = Audit::new(None, &many, Some(&ledger(&[])), Verdict::Unknown);
+    assert!(
+        capped.lines()[0].ends_with("(+more not checked)"),
+        "{:?}",
+        capped.lines()
+    );
+    let few = Audit::new(None, "d/f1.rs", Some(&ledger(&[])), Verdict::Unknown);
+    assert!(!few.lines()[0].contains("more not checked"));
+    let late = format!("{}d/late.rs", "x ".repeat(3000));
+    let read = Audit::new(None, &late, Some(&ledger(&[])), Verdict::Unknown);
+    assert!(
+        read.lines()[0].ends_with("(+more not checked)"),
+        "{:?}",
+        read.lines()
+    );
 }

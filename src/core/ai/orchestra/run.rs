@@ -754,9 +754,14 @@ impl Run {
         };
         // The same for the check of its handoff (W4): app evidence, built
         // from the stored claims and the ledger, never from the worker's text.
-        Ok(match self.audit(id) {
-            Some(audit) => format!("{CHECK_PREFIX}{}\n\n{wrapped}", audit.lines().join("; ")),
-            None => wrapped,
+        let lines = self
+            .audit(id)
+            .map(|audit| audit.lines())
+            .unwrap_or_default();
+        Ok(if lines.is_empty() {
+            wrapped
+        } else {
+            format!("{CHECK_PREFIX}{}\n\n{wrapped}", lines.join("; "))
         })
     }
 
