@@ -901,6 +901,14 @@ impl Run {
         } else {
             Vec::new()
         };
+        // The spawn gate that last refused now stands at the next open step,
+        // or no longer stands: the turn cap names only what is true.
+        if matches!(self.last_gate, Some((Gate::Spawn, _))) {
+            self.last_gate = match self.steps.check(Step::Implement) {
+                Err(StepError::Order { open, .. }) => Some((Gate::Spawn, open)),
+                _ => None,
+            };
+        }
         StepDone { handoff, refused }
     }
 

@@ -339,3 +339,57 @@ fn a_queued_internal_code_worker_starts_from_the_queue_with_steps_open() {
 fn write_off_keeps_its_text() {
     assert!(WRITE_OFF.contains("/write"));
 }
+
+// The cap message names a gate that still stands: handing off the step that
+// blocked the spawn moves the memory to the next open step, and closing them
+// all clears it.
+#[test]
+fn handing_off_the_blocking_step_updates_the_remembered_gate() {
+    let mut run = run();
+    let _ = run.spawn(Instant::now(), Task::Code, "p");
+    assert_eq!(run.last_gate(), Some((Gate::Spawn, Step::Authorize)));
+    authorize(&mut run, Grant::Implement);
+    assert_eq!(run.last_gate(), Some((Gate::Spawn, Step::Explore)));
+    close(&mut run, Step::Explore, Mark::None);
+    close(&mut run, Step::Resolve, Mark::None);
+    close(&mut run, Step::Classify, Mark::Size(Size::Small));
+    assert_eq!(run.last_gate(), None);
+}
+
+// The finish gate asks that a code worker RAN, not that it succeeded: one that
+// failed and was retried, or was cancelled at once, still counts.
+#[test]
+fn a_code_worker_that_failed_or_was_cancelled_counts_as_having_run() {
+    let now = Instant::now();
+    let mut failed = run();
+    close_early(&mut failed);
+    let id = failed.spawn(now, Task::Code, "p").unwrap();
+    failed.on_event(
+        now,
+        id,
+        WorkerEvent::Failed {
+            class: ErrorClass::Other,
+            text: "boom".to_owned(),
+        },
+    );
+    assert_eq!(failed.finish("done"), Err(FinishError::Paused));
+    failed.decide(now, UserChoice::Retry).unwrap();
+    failed.on_event(
+        now,
+        id,
+        WorkerEvent::Done {
+            text: "ok".to_owned(),
+        },
+    );
+    assert!(
+        failed.finish("done").is_err(),
+        "handoff missing, asked once"
+    );
+    assert!(failed.finish("done").is_ok());
+
+    let mut cancelled = run();
+    close_early(&mut cancelled);
+    let id = cancelled.spawn(now, Task::Code, "p").unwrap();
+    cancelled.cancel(now, id);
+    assert_ne!(cancelled.finish("done"), Err(FinishError::Gate));
+}
