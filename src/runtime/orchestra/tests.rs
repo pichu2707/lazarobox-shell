@@ -6137,5 +6137,6 @@ async fn a_degraded_code_worker_with_call_text_gives_the_coordinator_no_line() {
     assert!(!got.text.contains("lazarobox:"), "{got:?}");
 }
 
+mod claims;
 mod gates;
 mod parallel;

@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::changes::{Change, ChangeLedger, Disclosure};
+use super::claims::Audit;
 use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
 use super::receipt::{self, Evidence};
@@ -163,6 +164,9 @@ pub struct NotHalted;
 /// file and whose reply holds tool calls written as text: ASCII and neutral,
 /// and true whatever the cause. It stands outside the worker's wrapper.
 const CALLS_AS_TEXT: &str = "lazarobox: this worker changed no file, and its reply holds tool calls written as text. Do not report its files as created.";
+
+/// What lazarobox says before the check of a handoff, outside the wrapper.
+const CHECK_PREFIX: &str = "lazarobox: handoff check: ";
 
 /// A receipt and the counts the ledger line is made of.
 #[derive(Clone, Debug)]
@@ -743,11 +747,31 @@ impl Run {
         // lazarobox's own word, outside the worker's wrapper: the worker
         // cannot forge it, and the coordinator must not claim files exist.
         let said = self.slot(id).is_some_and(Slot::said_calls_as_text);
-        Ok(if said {
+        let wrapped = if said {
             format!("{CALLS_AS_TEXT}\n\n{wrapped}")
         } else {
             wrapped
+        };
+        // The same for the check of its handoff (W4): app evidence, built
+        // from the stored claims and the ledger, never from the worker's text.
+        let lines = self
+            .audit(id)
+            .map(|audit| audit.lines())
+            .unwrap_or_default();
+        Ok(if lines.is_empty() {
+            wrapped
+        } else {
+            format!("{CHECK_PREFIX}{}\n\n{wrapped}", lines.join("; "))
         })
+    }
+
+    /// The claim check of worker `id`'s stored handoff, against its ledger as
+    /// it is now.
+    pub fn audit(&self, id: WorkerId) -> Option<Audit> {
+        let slot = self.slot(id)?;
+        let handoff = slot.handoff.as_ref()?;
+        let audit = handoff.audit.as_ref()?;
+        Some(audit.recheck(slot.writer_ledger(), handoff.verdict))
     }
 
     /// The handoff stored for worker `id`, the orchestrator's or a fallback.
@@ -832,6 +856,8 @@ impl Run {
             engine: slot.spec.engine.clone(),
             model: slot.spec.model.clone(),
             status: slot.status,
+            ledger: slot.writer_ledger().cloned(),
+            prior: slot.handoff.as_ref().and_then(|h| h.audit.clone()),
         }
     }
 
@@ -889,6 +915,8 @@ impl Run {
             engine,
             model,
             status: WorkerStatus::Done,
+            ledger: None,
+            prior: None,
         };
         // A step closes even while the run is halted, its verdict forced to
         // `blocked`: the same rule as a worker's handoff (D17).
@@ -1070,7 +1098,8 @@ impl Run {
     pub fn run_ledger(&self, goal: &str) -> Ledger {
         let rows = self.slots.iter().enumerate().map(|(i, slot)| {
             let id = WorkerId(i as u32 + 1);
-            Row::new(id, slot.spec.task, slot.status, slot.handoff.as_ref())
+            let row = Row::new(id, slot.spec.task, slot.status, slot.handoff.as_ref());
+            row.flagged(self.audit(id).map(|a| a.flags()).unwrap_or_default())
         });
         let feature = self.feature.as_ref();
         let (reviews, reviews_short) = self.reviews_lines();
@@ -1260,6 +1289,11 @@ impl Run {
 }
 
 impl Slot {
+    /// The ledger of a worker whose role can write; the claim check needs it.
+    fn writer_ledger(&self) -> Option<&ChangeLedger> {
+        (self.spec.toolset.families().contains(Family::Write)).then_some(&self.ledger)
+    }
+
     /// The worker ended `done` with a write tool offered and nothing staged,
     /// and its answer holds a call to a write tool written as text.
     fn said_calls_as_text(&self) -> bool {

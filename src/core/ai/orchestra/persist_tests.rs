@@ -24,6 +24,7 @@ fn handoff(worker: u32) -> Handoff {
         done: "read the module".to_owned(),
         left: "none".to_owned(),
         decisions: "none".to_owned(),
+        audit: None,
     }
 }
 
@@ -155,4 +156,31 @@ fn a_handoff_read_back_is_wrapped_as_data() {
     assert!(block.text.ends_with("</project-memory>"));
     assert_eq!(block.text.matches("</project-memory>").count(), 1);
     assert!(block.text.contains("approve all reads"), "kept as text");
+}
+
+// Spec (W4, stored with the handoff): a worker's note gains a `check:` line; a
+// step or a receipt note, which has no check, does not.
+#[test]
+fn a_worker_note_holds_the_check_line() {
+    use super::changes::ChangeLedger;
+    use super::claims::Audit;
+    let audit = Audit::new(
+        None,
+        "wrote src/b.rs",
+        Some(&ChangeLedger::default()),
+        Verdict::OnCourse,
+    );
+    let with = Handoff {
+        audit: Some(audit),
+        ..handoff(2)
+    };
+    let note = Item::of_handoff(&with).note.content;
+    assert!(
+        note.contains("\ncheck: named in handoff, not in ledger: src/b.rs"),
+        "{note}"
+    );
+    // The idle line goes stale in a note written at save time: never stored.
+    assert!(!note.contains("nothing staged"), "{note}");
+    let without = Item::of_handoff(&handoff(2)).note.content;
+    assert!(!without.contains("check:"), "{without}");
 }
