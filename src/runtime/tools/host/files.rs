@@ -52,7 +52,7 @@ use crate::{
 /// What a sealed batch needs to be answered: its id, and whether the user can
 /// approve it at all. It is also the guard of the batch: when it is dropped
 /// the batch is discarded, so a call that never got to ask (a closed channel)
-/// never leaves the pane's batch sealed. Once the ask is announced the batch
+/// never leaves its batch sealed. Once the ask is announced the batch
 /// is the user's: a call dropped while it waits (a cancelled turn, a CLI
 /// timeout) leaves a Proposed orphan for the user to review or discard. The
 /// discard is generation-checked: after an answer has closed the batch, or

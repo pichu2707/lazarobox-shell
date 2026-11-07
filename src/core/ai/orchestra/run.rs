@@ -12,9 +12,11 @@ use super::steps::{Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
 use super::textcall;
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
-use crate::core::ai::chat::engine::{Availability, Usage};
+use crate::core::ai::chat::engine::{Availability, Usage, locality};
 use crate::core::ai::chat::guidance::guidance;
 use crate::core::ai::config::Task;
+use crate::core::ai::tools::Locality;
+use crate::core::ai::tools::github::forwards_off_machine;
 use crate::core::ai::tools::label;
 use crate::core::ai::tools::registry::{Family, FamilySet};
 
@@ -173,7 +175,7 @@ struct Slot {
     started: Option<Instant>,
     result: Option<WorkerResult>,
     /// What the worker staged (S7). Kept across a retry: the staged files
-    /// stay in the pane's batch whatever the attempt.
+    /// stay in the writer's own batch whatever the attempt.
     ledger: ChangeLedger,
     /// What the worker's engine reported so far, over every attempt: a failed
     /// attempt spent its tokens too.
@@ -308,6 +310,27 @@ impl Run {
         self.slot(id).map(|slot| &slot.spec)
     }
 
+    /// Another worker whose turn is in flight on the same local server as
+    /// worker `id` (owner decision 5, design D11): the server may queue their
+    /// requests. A worker counts only while it runs and is not parked, and an
+    /// engine only when it is a local server that does not forward the model
+    /// off the machine (an Ollama `*-cloud` model is not).
+    pub fn shares_engine(&self, id: WorkerId) -> Option<WorkerId> {
+        let local = |slot: &Slot| {
+            let spec = &slot.spec;
+            slot.status == WorkerStatus::Running
+                && !slot.parked
+                && locality(&spec.engine) == Some(Locality::Local)
+                && !forwards_off_machine(&spec.engine, spec.model.as_deref())
+        };
+        let mine = self.slot(id).filter(|slot| local(slot))?;
+        let other = |(n, slot): &(usize, &Slot)| {
+            WorkerId(*n as u32 + 1) != id && local(slot) && slot.spec.engine == mine.spec.engine
+        };
+        let found = self.slots.iter().enumerate().find(other)?;
+        Some(WorkerId(found.0 as u32 + 1))
+    }
+
     /// What worker `id` reported using so far; `None` when its engine
     /// reported nothing (shown as `n/a`, never as zero).
     pub fn usage(&self, id: WorkerId) -> Option<Usage> {
@@ -353,7 +376,7 @@ impl Run {
     /// What the user should be told about how worker `id` ended, when nothing
     /// else shows it (agent-orchestrator [W1]): a `code` worker that ended
     /// `done` and staged nothing, or a worker with staged paths whose batch
-    /// is still unproposed. `unproposed` asks the pane's batch and runs only
+    /// is still unproposed. `unproposed` asks the worker's own batch and runs only
     /// when the worker has paths staged and not on disk.
     pub fn disclosure(
         &self,

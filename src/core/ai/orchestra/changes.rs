@@ -2,7 +2,7 @@
 //! its size and a hash of its diff, and whether the user's batch review
 //! applied it. Pure: the host reports what it staged and what was applied.
 //!
-//! A worker's writes are staged in its pane's batch and reach the disk only
+//! A worker's writes are staged in a batch of its own and reach the disk only
 //! when the user approves that batch: the ledger only records, it never
 //! approves anything.
 

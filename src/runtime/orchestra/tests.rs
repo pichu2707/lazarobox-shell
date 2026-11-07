@@ -83,6 +83,8 @@ enum Script {
     FailThenHang(&'static str),
     /// The first turn hangs; later turns answer `fixed`.
     HangOnce,
+    /// Turn number `n` (from 1) fails with the message; every other hangs.
+    FailOn(usize, &'static str),
     /// The first two turns fail with these messages, in order; later turns
     /// answer `fixed`.
     FailTwice(&'static str, &'static str),
@@ -124,6 +126,17 @@ impl Seen {
         panic!("no request");
     }
 
+    /// Request number `n` (from 0), once its turn has made it.
+    async fn nth(&self, n: usize) -> ChatRequest {
+        for _ in 0..500 {
+            if let Some(found) = self.requests().into_iter().nth(n) {
+                return found;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("no request {n}");
+    }
+
     fn engines(&self) -> Vec<String> {
         self.requests().into_iter().map(|r| r.engine).collect()
     }
@@ -157,6 +170,10 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                     ("", StreamEvent::Error(ChatError::Failed(error.into())))
                 }
                 Script::FailThenHang(_) => return std::future::pending().await,
+                Script::FailOn(at, error) if n == at => {
+                    ("", StreamEvent::Error(ChatError::Failed(error.into())))
+                }
+                Script::FailOn(..) => return std::future::pending().await,
                 Script::HangOnce if first => {
                     let _dropped = OnDrop(mine);
                     return std::future::pending().await;
@@ -2867,9 +2884,8 @@ async fn a_worker_timed_out_in_review_leaves_its_batch_as_an_orphan() {
     let status = lock(&lab.manager.runs)[&pane()].run.status(WorkerId(1));
     assert_eq!(status, Some(WorkerStatus::TimedOut));
     let host = lab.host();
-    let key = crate::core::ai::tools::stage::StageKey::Pane(pane());
     let (_, review) = host
-        .review_batch(key.pane(), false)
+        .review_batch(pane(), false)
         .expect("an orphan to review");
     assert_eq!(review.counts(), "1 file, +1 -0");
     assert!(!lab.app().join("a.txt").exists());
@@ -2937,9 +2953,8 @@ async fn a_worker_that_staged_and_never_proposed_is_disclosed() {
             what: Disclosure::StagedNotProposed { files: 1 },
         }
     );
-    let key = crate::core::ai::tools::stage::StageKey::Pane(pane());
     assert!(
-        lab.host().review_batch(key.pane(), false).is_some(),
+        lab.host().review_batch(pane(), false).is_some(),
         "an orphan"
     );
 }
@@ -5936,7 +5951,14 @@ async fn a_correction_refused_for_write_off_does_not_tell_anyone_to_spawn() {
     let (run, _handle) = lab.manager.start(pane(), scope).unwrap();
     let said = lab
         .manager
-        .start_review(pane(), run, Role::Correction, "fix".into(), None)
+        .start_review(
+            pane(),
+            run,
+            Role::Correction,
+            WorkerId(1),
+            "fix".into(),
+            None,
+        )
         .unwrap_err();
     assert!(said.contains("Write") && said.contains("/write"), "{said}");
     assert!(said.contains("review"), "{said}");
@@ -6036,7 +6058,14 @@ async fn a_correction_worker_does_not_get_the_worker_prompt() {
     let lab = writing_lab(Script::Hang);
     let (run, _handle) = lab.start_writing_run(&Waits::new(), TEN_MINUTES);
     lab.manager
-        .start_review(pane(), run, Role::Correction, "fix".into(), None)
+        .start_review(
+            pane(),
+            run,
+            Role::Correction,
+            WorkerId(1),
+            "fix".into(),
+            None,
+        )
         .unwrap();
     let request = lab.seen.first().await;
     let kind = load_prompt(None, Profile::Programmer, Task::Code).text;
@@ -6092,3 +6121,5 @@ async fn a_degraded_code_worker_with_call_text_gives_the_coordinator_no_line() {
     assert!(got.text.contains("write_file"), "{got:?}");
     assert!(!got.text.contains("lazarobox:"), "{got:?}");
 }
+
+mod parallel;

@@ -16,7 +16,7 @@ use crate::core::ai::{
     orchestra::{
         RunId, WorkerId,
         changes::Disclosure,
-        event::{Continuation, Degrade, OrchestraEvent, WorkerRow},
+        event::{Continuation, Degrade, OrchestraEvent, WorkerRow, shared_engine_notice},
         ledger::{Handoff, Unit, Verdict},
         run::UserChoice,
         worker::{ErrorClass, WorkerStatus},
@@ -1106,4 +1106,55 @@ fn the_answer_to_a_failure_carries_the_menu_as_it_is_now() {
     a.ai.set_toggle(ToolToggle::Write, true);
     let on = ceiling(a.update(key('r')));
     assert!(on.contains(Family::Write));
+}
+
+// Decision 5 [W10b] / chat-pane Notice is a system line, not history: the
+// shared-engine notice is one transcript line, in ASCII, and the next
+// orchestrator turn carries only the user's words and the coordinator's.
+#[test]
+fn the_shared_engine_notice_is_a_system_line_out_of_the_next_turn() {
+    let (mut a, turn) = running();
+    let text = shared_engine_notice(WorkerId(1), WorkerId(2), "ollama");
+    a.update(event(OrchestraEvent::Notice { text }));
+    a.update(delta(turn, "all done"));
+    a.update(finish(turn));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let shown = system_lines(&a);
+    assert!(shown.is_ascii(), "{shown}");
+    insta::assert_snapshot!("orch_shared_engine_notice", shown);
+    let request = match ask(&mut a, "next").as_slice() {
+        [.., Effect::OrchestrateSend { request, .. }] => request.clone(),
+        other => panic!("an orchestrator turn: {other:?}"),
+    };
+    let sent: Vec<&str> = request
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(sent, ["plan it", "all done", "next"]);
+}
+
+// A notice of a run goes through `ascii()` like the other worker notices: an
+// engine name that is not ASCII shows as `?`.
+#[test]
+fn a_run_notice_with_non_ascii_text_is_shown_in_ascii() {
+    let (mut a, _) = running();
+    let text = shared_engine_notice(WorkerId(1), WorkerId(2), "ollamä");
+    a.update(event(OrchestraEvent::Notice { text }));
+    let shown = system_lines(&a);
+    assert!(shown.is_ascii(), "{shown}");
+    assert!(shown.contains("share ollam?,"), "{shown}");
+}
+
+// The run-id diagnostic quotes an external error that may hold a non-ASCII
+// path: it is shown as it is, not with `?` in place of the letters.
+#[test]
+fn the_run_id_diagnostic_keeps_a_non_ascii_path_intact() {
+    let (mut a, _) = running();
+    let text =
+        "run ids could not be checked against stored runs: cannot read /home/jos\u{e9}/runs.db"
+            .to_owned();
+    a.update(event(OrchestraEvent::Notice { text: text.clone() }));
+    let shown = system_lines(&a);
+    assert!(shown.contains(&text), "{shown}");
 }

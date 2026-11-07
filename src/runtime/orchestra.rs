@@ -16,7 +16,7 @@
 //! and error classes, never a prompt, an answer, an error text or a path.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     io::Read,
     panic::AssertUnwindSafe,
@@ -71,7 +71,7 @@ use crate::core::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
             errors::classify,
-            event::Degrade,
+            event::{Degrade, shared_engine_notice},
             feature::FeatureError,
             ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
             review::Assessment,
@@ -524,6 +524,8 @@ struct Live {
     turn_over: bool,
     /// The app was told the run is undelegated (once per run).
     told_undelegated: bool,
+    /// The local engines the pane was told two workers share (once each).
+    told_shared: HashSet<String>,
     /// What the run keeps for its receipt-driven reviews (S7b).
     review: review::State,
     /// Ends the run when its wall clock passes (`run_timeout_mins`).
@@ -736,6 +738,7 @@ impl RunManager {
             review: review::State::default(),
             turn_over: false,
             told_undelegated: false,
+            told_shared: HashSet::new(),
             clock: self.start_clock(pane, run, scope.limits.wall),
         };
         let old = {
@@ -1457,8 +1460,6 @@ impl RunManager {
                 }
                 self.close_session(&live.approver, WorkerKey { run, worker: id });
                 self.sync(pane, live);
-                // The pane's batch is still Staging with entries, which may include a
-                // sibling's files, until W10a gives each writer its own.
                 self.disclose(pane, live, id);
                 fine(format!("worker {}: cancelled", id.0))
             }
@@ -1486,6 +1487,7 @@ impl RunManager {
                 self.announce(pane, live, id, status);
             }
             if status == WorkerStatus::Running && !live.tasks.contains_key(&id) {
+                self.tell_shared(pane, live, id);
                 self.launch(pane, live, id);
             }
         }
@@ -1508,6 +1510,25 @@ impl RunManager {
             _ => live.alerted = None,
         }
         self.changed.notify_waiters();
+    }
+
+    /// Tells the pane, once per run and engine, that the worker about to start
+    /// shares a local server with a running one (owner decision 5): the
+    /// server may queue them, and `max_parallel` is the user's own ceiling.
+    fn tell_shared(&self, pane: PaneId, live: &mut Live, id: WorkerId) {
+        let (Some(other), Some(spec)) = (live.run.shares_engine(id), live.run.spec(id)) else {
+            return;
+        };
+        if !live.told_shared.insert(spec.engine.clone()) {
+            return;
+        }
+        let (first, second) = if other.0 < id.0 {
+            (other, id)
+        } else {
+            (id, other)
+        };
+        let text = shared_engine_notice(first, second, &spec.engine);
+        self.send(pane, OrchestraEvent::Notice { text });
     }
 
     fn announce(&self, pane: PaneId, live: &Live, id: WorkerId, status: WorkerStatus) {
@@ -1593,10 +1614,10 @@ impl RunManager {
             live.pending.clone(),
         );
         live.routes.insert(id, route.clone());
-        let views = live.review.views(id);
+        let proposer = live.review.proposer(id);
         trace.send(TraceItem::Begin);
         // A turn without tools still runs, as text, and the pane is told why.
-        let session = match self.open_session(pane, key, &spec, views, &mut request, route) {
+        let session = match self.open_session(pane, key, &spec, proposer, &mut request, route) {
             Ok(dispatch) => Some((live.pending.clone(), dispatch)),
             Err(why) => {
                 live.run.ran_without_tools(id);
@@ -1665,7 +1686,7 @@ impl RunManager {
         pane: PaneId,
         key: WorkerKey,
         spec: &WorkerSpec,
-        views: bool,
+        proposer: Option<WorkerId>,
         request: &mut ChatRequest,
         route: Arc<Route>,
     ) -> Result<Option<Arc<dyn Dispatch>>, Degrade> {
@@ -1687,11 +1708,12 @@ impl RunManager {
             approver: Arc::new(Rerouted(route)),
             external: Slot::default(),
             families,
-            // A `code` worker stages in its pane's batch (S7, user decision
-            // "El worker propone su lote", 2026-10-29): the batch review, its
-            // badge and its orphan are the pane's, as for a chat's batch.
-            // A review worker reads that batch too, and stages nothing (S7b).
-            stage_key: (families.contains(Family::Write) || views).then_some(StageKey::Pane(pane)),
+            // A writer stages in a batch of its own (W10, D7); the batch
+            // review, its badge and its orphan are the pane's. A review
+            // worker reads the batch of the worker it reviews, and the
+            // correction stages into it (S7b): both name their proposer.
+            stage_key: (families.contains(Family::Write) || proposer.is_some())
+                .then(|| review::batch_of(pane, key.run, proposer.unwrap_or(key.worker))),
             // A worker never writes on a Windows drive: the grant is the
             // chat's, for its own turns (openspec `wsl-drive-access`).
             drive_grant: None,
@@ -1770,10 +1792,11 @@ impl RunManager {
 
     /// Tells the pane what the worker that just ended left unsaid: a `code`
     /// worker that changed nothing, or a batch it staged and never proposed
-    /// (the batch is the pane's, so the pane's state answers).
+    /// (each writer has its own batch, so its own state answers).
     fn disclose(&self, pane: PaneId, live: &Live, id: WorkerId) {
         let host = self.tooling.as_ref().map(|tooling| &tooling.host);
-        let unproposed = || host.is_some_and(|host| host.unproposed(StageKey::Pane(pane)));
+        let batch = review::batch_of(pane, live.run.id(), id);
+        let unproposed = || host.is_some_and(|host| host.unproposed(batch));
         let (Some(what), Some(spec)) = (live.run.disclosure(id, unproposed), live.run.spec(id))
         else {
             return;
