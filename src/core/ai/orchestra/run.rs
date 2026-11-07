@@ -8,7 +8,7 @@ use super::changes::{Change, ChangeLedger, Disclosure};
 use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
 use super::receipt::{self, Evidence};
-use super::steps::{Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
+use super::steps::{Gate, Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
 use super::textcall;
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
@@ -117,6 +117,9 @@ pub enum Refusal {
     /// The menu has Write off: no `code` worker (D18). The text is
     /// [`WRITE_OFF`].
     WriteOff,
+    /// A write-capable worker needs the steps before `implement` closed; the
+    /// step is the first one still open (W3, D23).
+    Gate(Step),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -227,6 +230,11 @@ pub struct Run {
     receipts: Vec<Stored>,
     /// The feature document of a large goal, once `track` built it (S5).
     feature: Option<FeatureDoc>,
+    /// The user lifted the step gates for this run (W3, D24).
+    gates_lifted: bool,
+    /// The last gate that refused and the step it saw; cleared when that gate
+    /// passes, so the turn cap names only a gate that still stands.
+    last_gate: Option<(Gate, Step)>,
 }
 
 impl Run {
@@ -248,7 +256,49 @@ impl Run {
             steps: Steps::default(),
             receipts: Vec::new(),
             feature: None,
+            gates_lifted: false,
+            last_gate: None,
         }
+    }
+
+    /// Test fixture (W3): closes the steps a `code` spawn needs, granting
+    /// `implement` for a small goal, so tests of workers need not hand off.
+    #[cfg(test)]
+    pub(crate) fn close_steps_for_tests(&mut self) {
+        if self.steps.is_closed(Step::Classify) {
+            return;
+        }
+        for step in [
+            Step::Authorize,
+            Step::Explore,
+            Step::Resolve,
+            Step::Classify,
+        ] {
+            let mark = match step {
+                Step::Authorize => Mark::Grant(Grant::Implement),
+                Step::Classify => Mark::Size(super::steps::Size::Small),
+                _ => Mark::None,
+            };
+            let note = Judgement {
+                verdict: super::ledger::Verdict::OnCourse,
+                reason: "fixture".to_owned(),
+                done: "fixture".to_owned(),
+                left: String::new(),
+                decisions: String::new(),
+            };
+            self.handoff_step(step, mark, note).expect("fixture step");
+        }
+    }
+
+    /// The user lifts both step gates for this run, all or nothing (W3, D24).
+    pub fn lift_gates(&mut self) {
+        self.gates_lifted = true;
+        self.last_gate = None;
+    }
+
+    /// The gate that last refused and has not passed since.
+    pub fn last_gate(&self) -> Option<(Gate, Step)> {
+        self.last_gate
     }
 
     /// Bounds the run by `limits` (at least one worker runs at a time).
@@ -449,6 +499,27 @@ impl Run {
     /// with the reason, and halts the run like any failure: no other engine
     /// is tried. Only a paused or ended run refuses outright.
     pub fn spawn(&mut self, now: Instant, task: Task, prompt: &str) -> Result<WorkerId, Refusal> {
+        self.spawn_as(now, task, prompt, true)
+    }
+
+    /// A worker lazarobox starts itself (a review lens, a correction): the
+    /// step gates are the coordinator's, so they do not apply (W3).
+    pub fn spawn_internal(
+        &mut self,
+        now: Instant,
+        task: Task,
+        prompt: &str,
+    ) -> Result<WorkerId, Refusal> {
+        self.spawn_as(now, task, prompt, false)
+    }
+
+    fn spawn_as(
+        &mut self,
+        now: Instant,
+        task: Task,
+        prompt: &str,
+        gated: bool,
+    ) -> Result<WorkerId, Refusal> {
         match self.state {
             RunState::Halted { .. } => return Err(Refusal::Paused),
             RunState::Finished | RunState::Cancelled => return Err(Refusal::Ended),
@@ -463,6 +534,14 @@ impl Run {
         }
         if self.slots.len() >= self.limits.workers {
             return Err(Refusal::WorkerCap(self.limits.workers));
+        }
+        if writer && gated && !self.gates_lifted {
+            // `Implement` has no `Locked` or `NotLarge` case: only an open
+            // step in front of it can refuse.
+            if let Err(StepError::Order { open, .. }) = self.steps.check(Step::Implement) {
+                self.last_gate = Some((Gate::Spawn, open));
+                return Err(Refusal::Gate(open));
+            }
         }
         if writer && !spec.writes() {
             return Err(Refusal::WriteOff);
@@ -481,6 +560,10 @@ impl Run {
             no_tools: false,
         });
         let id = WorkerId(self.slots.len() as u32);
+        if writer {
+            // A code worker exists: neither gate stands any more.
+            self.last_gate = None;
+        }
         self.enqueue(now, id, refusal, false);
         self.promote(now);
         Ok(id)
@@ -927,6 +1010,14 @@ impl Run {
             RunState::Finished | RunState::Cancelled => return Err(FinishError::Ended),
             RunState::Halted { .. } => return Err(FinishError::Paused),
             RunState::Open => {}
+        }
+        // A run granted `implement` is not done before a code worker ran. A
+        // spawn that was refused made no slot, so it does not count (W3).
+        let ran =
+            (self.slots.iter()).any(|slot| slot.spec.toolset.families().contains(Family::Write));
+        if !self.gates_lifted && self.steps.grant() == Some(Grant::Implement) && !ran {
+            self.last_gate = Some((Gate::Finish, Step::Implement));
+            return Err(FinishError::Gate);
         }
         let live = self.ids(WorkerStatus::Queued, |_| true);
         let live = [live, self.ids(WorkerStatus::Running, |_| true)].concat();

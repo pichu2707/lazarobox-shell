@@ -175,13 +175,15 @@ fn a_read_only_goal_refuses_a_code_worker() {
 fn read_only_is_refused_while_a_code_worker_runs() {
     let mut run = run();
     let now = Instant::now();
+    run.close_steps_for_tests();
     let code = run.spawn(now, Task::Code, "p").expect("spawn");
     assert_eq!(
         run.handoff_step(Step::Authorize, Mark::Grant(Grant::ReadOnly), note("x")),
         Err(StepError::CodeRunning(code))
     );
     assert!(!run.steps().read_only());
-    assert!(!run.steps().is_closed(Step::Authorize));
+    // The refused handoff changed nothing: the grant is still `implement`.
+    assert_eq!(run.steps().grant(), Some(Grant::Implement));
     run.cancel(now, code);
     assert!(
         run.handoff_step(Step::Authorize, Mark::Grant(Grant::ReadOnly), note("x"))
@@ -196,6 +198,7 @@ fn read_only_refuses_the_queued_code_workers() {
     let mut run = run().with_limits(RunLimits::default());
     let now = Instant::now();
     let review = run.spawn(now, Task::Review, "a").expect("spawn");
+    run.close_steps_for_tests();
     let code = run.spawn(now, Task::Code, "b").expect("spawn");
     let second = run.spawn(now, Task::Review, "c").expect("spawn");
     assert_eq!(run.status(code), Some(WorkerStatus::Queued));
@@ -220,6 +223,7 @@ fn read_only_refuses_the_queued_code_workers() {
 
 fn failed_code(run: &mut Run) -> WorkerId {
     let now = Instant::now();
+    run.close_steps_for_tests();
     let code = run.spawn(now, Task::Code, "p").expect("spawn");
     run.on_event(
         now,
@@ -315,8 +319,15 @@ fn a_step_closes_while_halted_with_a_blocked_verdict() {
 #[test]
 fn a_goal_that_allows_implementing_spawns_a_code_worker() {
     let mut run = run();
-    run.handoff_step(Step::Authorize, Mark::Grant(Grant::Implement), note("fix"))
-        .expect("authorized");
+    close_all(
+        &mut run,
+        &[
+            Step::Authorize,
+            Step::Explore,
+            Step::Resolve,
+            Step::Classify,
+        ],
+    );
     assert!(run.spawn(Instant::now(), Task::Code, "p").is_ok());
 }
 

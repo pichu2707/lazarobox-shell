@@ -80,7 +80,7 @@ use crate::core::{
                 RunState, StepDone, UserChoice, WorkerEvent,
             },
             scope::{Dropped, ReadScope},
-            steps::{Mark, READ_ONLY, Step, StepError, WRITE_OFF, WRITE_OFF_CORRECTION},
+            steps::{Gate, Mark, READ_ONLY, Step, StepError, WRITE_OFF, WRITE_OFF_CORRECTION},
             tools::OrchCall,
             worker::{ErrorClass, WorkerSpec, WorkerStatus},
         },
@@ -915,9 +915,21 @@ impl RunManager {
         let max = live.run.limits().turns;
         match live.run.next_turn() {
             NextTurn::Settle => Next::Settle,
-            NextTurn::Capped(taken) => Next::Stop(format!(
-                "run stopped: it took max_turns ({taken}) orchestrator turns; running workers were cancelled"
-            )),
+            NextTurn::Capped(taken) => {
+                let gate = live
+                    .run
+                    .last_gate()
+                    .map_or_else(String::new, |(gate, step)| {
+                        format!(
+                            "; the {} gate still refused at step {}",
+                            gate.label(),
+                            step.label()
+                        )
+                    });
+                Next::Stop(format!(
+                    "run stopped: it took max_turns ({taken}) orchestrator turns; running workers were cancelled{gate}"
+                ))
+            }
             NextTurn::Continue(turn) => match (self.nonce)() {
                 Some(bytes) => {
                     let ledger = live.run.run_ledger(&live.goal).render();
@@ -1140,6 +1152,11 @@ impl RunManager {
         let spawned = self.on_run(pane, run, |live| {
             let id = match live.run.spawn(now(), task, prompt) {
                 Ok(id) => id,
+                // A gate has its own event: the pane hears the gate and the
+                // step, not a bare spawn refusal.
+                Err(Refusal::Gate(step)) => {
+                    return self.gate_refused(pane, live, Gate::Spawn, step);
+                }
                 Err(refusal) => {
                     let said = match refusal {
                         Refusal::Paused => "run paused".to_owned(),
@@ -1149,6 +1166,8 @@ impl RunManager {
                         Refusal::WorkerCap(cap) => {
                             format!("worker limit reached: max_workers is {cap}")
                         }
+                        // Taken by the arm above.
+                        Refusal::Gate(_) => String::new(),
                     };
                     let said = refusal_reason(&said);
                     return self.refused(pane, live, task, said.clone(), said);
@@ -1176,6 +1195,22 @@ impl RunManager {
             }
         });
         spawned.unwrap_or_else(|| error(ENDED))
+    }
+
+    /// The error result of a step gate that refused: the coordinator gets
+    /// `gate`'s text and the pane the same, redacted and capped once. The run
+    /// goes on (W3).
+    fn gate_refused(&self, pane: PaneId, live: &Live, gate: Gate, step: Step) -> Outcome {
+        let reason = refusal_reason(&gate.refusal(step));
+        let run = live.run.id();
+        let event = OrchestraEvent::GateRefused {
+            run,
+            gate,
+            step,
+            reason: reason.clone(),
+        };
+        self.send(pane, event);
+        error(reason)
     }
 
     /// The error result of a spawn that did not run: the coordinator gets
@@ -1405,6 +1440,7 @@ impl RunManager {
             }
             Err(FinishError::Ended) => error(ENDED),
             Err(FinishError::Paused) => error("run paused"),
+            Err(FinishError::Gate) => self.gate_refused(pane, live, Gate::Finish, Step::Implement),
             Err(FinishError::Live(ids)) => {
                 error(format!("workers not finished: {}", ids_text(&ids)))
             }

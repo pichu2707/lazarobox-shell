@@ -9,6 +9,7 @@ use super::{
     changes::Disclosure,
     feature::FeatureDoc,
     ledger::Handoff,
+    steps::{Gate, Step},
     worker::{ErrorClass, WorkerStatus},
 };
 use crate::core::ai::{
@@ -209,6 +210,16 @@ pub enum OrchestraEvent {
     SpawnRefused {
         run: RunId,
         kind: Task,
+        reason: String,
+    },
+    /// A step gate refused a spawn or the `finish` (agent-orchestrator [W3]):
+    /// `reason` is the text the coordinator got, redacted and capped, and it
+    /// names the gate, the step and the user's override. Never sent to a
+    /// model. The run goes on: nothing pauses and no failure alert opens.
+    GateRefused {
+        run: RunId,
+        gate: Gate,
+        step: Step,
         reason: String,
     },
     /// A worker turn that runs as text because its tools could not be

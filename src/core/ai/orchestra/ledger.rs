@@ -193,6 +193,8 @@ pub enum FinishError {
     Live(Vec<WorkerId>),
     /// These ended with no handoff; a second `finish` builds them.
     Missing(Vec<WorkerId>),
+    /// The run was granted `implement` and no code worker ever ran (W3).
+    Gate,
 }
 
 /// One worker of the ledger.

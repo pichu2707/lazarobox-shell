@@ -376,6 +376,12 @@ impl App {
                     )));
                 }
             }
+            // A step gate refused a spawn or the finish: its line, as told.
+            OrchestraEvent::GateRefused { run, reason, .. } => {
+                if chat.orch_run().is_none_or(|current| current == run) {
+                    chat.push_system_line(ascii(reason));
+                }
+            }
             // A worker turn that runs as text: said before it starts.
             OrchestraEvent::Degraded {
                 run,

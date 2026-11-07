@@ -36,7 +36,9 @@ fn with_parallel(lab: &Lab, roster: Roster, parallel: usize) -> (RunId, OrchHand
         limits,
         ..lab.scope(roster, &[])
     };
-    lab.manager.start(pane(), scope).unwrap()
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    lab.open_steps(run);
+    (run, handle)
 }
 
 /// The texts of the notices the pane got.
@@ -251,7 +253,9 @@ mod writers {
             limits,
             ..lab.scope(codex_both(), &["~/dev/app"])
         };
-        lab.manager.start(pane(), scope).unwrap()
+        let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+        lab.open_steps(run);
+        (run, handle)
     }
 
     /// The socket of request `n` (from 0), connected as its CLI would be.

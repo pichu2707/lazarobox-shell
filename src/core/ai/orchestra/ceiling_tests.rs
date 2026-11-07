@@ -68,7 +68,9 @@ fn write_off() -> FamilySet {
 }
 
 fn run_with(menu: FamilySet) -> Run {
-    Run::new(RunId(1), full_roster(), Duration::from_secs(600)).with_ceiling(menu)
+    let mut run = Run::new(RunId(1), full_roster(), Duration::from_secs(600)).with_ceiling(menu);
+    run.close_steps_for_tests();
+    run
 }
 
 // Spec (agent-orchestrator, "The menu never widens [W2, auto]"): whatever the

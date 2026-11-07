@@ -31,6 +31,9 @@ fn run() -> Run {
 /// A worker of `task` that ended `done` with `text` as its transcript.
 fn finished(run: &mut Run, task: Task, text: &str) -> WorkerId {
     let now = Instant::now();
+    if task == Task::Code {
+        run.close_steps_for_tests();
+    }
     let id = run.spawn(now, task, "p").expect("spawn");
     run.on_event(
         now,
@@ -120,6 +123,7 @@ fn an_unresolved_failure_forces_blocked() {
     let mut run = run();
     let now = Instant::now();
     let ok = finished(&mut run, Task::Review, "t");
+    run.close_steps_for_tests();
     let bad = run.spawn(now, Task::Code, "p").expect("spawn");
     run.on_event(
         now,
@@ -269,6 +273,7 @@ fn fallbacks_are_blocked_while_halted_and_never_replace_a_real_handoff() {
     let kept = finished(&mut run, Task::Review, "t");
     let bare = finished(&mut run, Task::Review, "t");
     run.handoff(kept, note(Verdict::OnCourse)).expect("stored");
+    run.close_steps_for_tests();
     let bad = run.spawn(now, Task::Code, "p").expect("spawn");
     run.on_event(
         now,
@@ -318,6 +323,7 @@ fn a_big_ledger_shortens_the_oldest_summaries_and_keeps_the_goal_and_failures() 
         };
         run.handoff(id, wordy).expect("stored");
     }
+    run.close_steps_for_tests();
     let bad = run.spawn(now, Task::Code, "p").expect("spawn");
     run.on_event(
         now,

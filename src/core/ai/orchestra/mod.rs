@@ -125,6 +125,8 @@ mod ceiling_tests;
 #[cfg(test)]
 mod feature_tests;
 #[cfg(test)]
+mod gate_tests;
+#[cfg(test)]
 mod ledger_tests;
 #[cfg(test)]
 mod persist_tests;
