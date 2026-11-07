@@ -20,6 +20,7 @@ pub mod paths;
 pub mod registry;
 pub mod report;
 pub mod run;
+pub mod screen;
 pub mod servers;
 pub mod settle;
 pub mod stage;

@@ -24,7 +24,9 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 mod commit;
+mod screen;
 pub use commit::CommitReview;
+pub use screen::ScreenReview;
 
 use crate::core::ai::chat::wrap::{clusters, expand_tabs, row_end, text_width};
 use crate::core::ai::orchestra::WorkerKey;
@@ -219,6 +221,9 @@ pub struct BatchReview {
     /// change (S7b): one line of its own words and counts, shown in the
     /// header. It informs and decides nothing: `y` and `n` stay the user's.
     receipt: Option<String>,
+    /// What [`BatchReview::counts`] says instead of the file counts, for a
+    /// review that is not a batch of files (a pane's screen).
+    summary: Option<String>,
 }
 
 impl BatchReview {
@@ -228,6 +233,7 @@ impl BatchReview {
             label: None,
             worker: None,
             receipt: None,
+            summary: None,
         }
     }
 
@@ -238,6 +244,7 @@ impl BatchReview {
             label: Some(label),
             worker: Some(worker),
             receipt: None,
+            summary: None,
         }
     }
 
@@ -247,6 +254,12 @@ impl BatchReview {
         if self.label.is_some() {
             self.receipt = line;
         }
+        self
+    }
+
+    /// The review with `summary` in the place of the file counts.
+    fn with_summary(mut self, summary: String) -> Self {
+        self.summary = Some(summary);
         self
     }
 
@@ -271,6 +284,9 @@ impl BatchReview {
 
     /// `2 files, +3 -1`: counts only, safe to show and to send.
     pub fn counts(&self) -> String {
+        if let Some(summary) = &self.summary {
+            return summary.clone();
+        }
         let s = if self.doc.files == 1 { "" } else { "s" };
         format!(
             "{} file{s}, +{} -{}",
