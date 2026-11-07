@@ -369,13 +369,16 @@ impl RunManager {
     }
 
     /// Ends the workers of a review and unparks its proposer.
-    fn release(self: &Arc<Self>, pane: PaneId, run: RunId, worker: WorkerId, spawned: &[WorkerId]) {
+    pub(super) fn release(self: &Arc<Self>, pane: PaneId, run: RunId, worker: WorkerId, spawned: &[WorkerId]) {
         for id in spawned {
             // One that already ended answers "already ended".
             self.cancel_worker(pane, run, *id);
         }
         self.on_run(pane, run, |live| {
             live.run.unpark(worker);
+            // It holds its slot again: a worker that started while it was
+            // parked may now share its server.
+            self.tell_shared(pane, live, worker);
             for id in spawned {
                 if live.review.viewers.remove(id) {
                     live.review.proposers.remove(id);

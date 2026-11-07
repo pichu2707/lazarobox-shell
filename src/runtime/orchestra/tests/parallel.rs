@@ -183,6 +183,26 @@ async fn a_retry_on_the_engine_already_told_says_nothing_more() {
     assert!(notices(&mut lab).is_empty(), "told once");
 }
 
+// Unpark reaches it: a worker parked on its review sends no request, so B
+// starts next to it unannounced; when A comes back the two share the server.
+#[tokio::test]
+async fn a_worker_that_resumes_next_to_a_local_one_is_told() {
+    let mut lab = lab(Script::Hang);
+    let (run, handle) = with_parallel(&lab, local_pair(), 2);
+    handle.call(spawn(Task::General, "a")).await;
+    lab.manager.on_run(pane(), run, |live| {
+        live.run.park(now(), WorkerId(1));
+    });
+    handle.call(spawn(Task::Review, "b")).await;
+    lab.seen.nth(1).await;
+    assert!(notices(&mut lab).is_empty(), "A is parked");
+    lab.manager.release(pane(), run, WorkerId(1), &[]);
+    assert_eq!(notices(&mut lab), [SHARED]);
+    // Once per run and engine: a second release says nothing more.
+    lab.manager.release(pane(), run, WorkerId(1), &[]);
+    assert!(notices(&mut lab).is_empty());
+}
+
 // Writers on their own keys -----------------------------------------------
 //
 // These drive the writing lab (real socket I/O, so real deadlines and never a
