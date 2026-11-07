@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- Orchestrator: a spawn refused by a step gate no longer tells the coordinator
+  never to retry it. The refusal and the coordinator prompts now say to spawn
+  again once that step is handed off.
+
 ## [1.14.1] - 2026-11-07
 
 ### Fixed

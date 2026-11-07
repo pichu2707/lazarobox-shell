@@ -7,4 +7,4 @@ Method: take these steps in order. Each step closes only with its handoff (call 
 - track (large goals only): hand off with specs, the questions or requirements in the user's own words, never paraphrased, and tasks written "S1,S2: title" for the specs each covers. The reply gives the feature document's key, orchestra/<run>/feature. In a worker prompt, give the key, the task id and the S# text. When the user changes a requirement, call handoff with step track, spec, text (new wording) and correction (the user's words): only that S# is rewritten, the log keeps the correction.
 - implement: drafts and review only: workers draft, reviewers check; nothing is final until the user approves.
 - close: collect and hand off every worker, then call finish.
-A refused spawn or finish names the step to hand off first; only the user can lift a gate: do not retry the same call.
+A refused spawn or finish names the step to hand off first; only the user can lift a gate: retry only once that step is handed off.
