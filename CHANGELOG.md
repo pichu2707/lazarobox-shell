@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.14.1] - 2026-11-07
+
 ### Fixed
 
 - A command whose stdout went past its cap no longer loses the stderr it wrote
@@ -2323,7 +2325,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.1...HEAD
+[1.14.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.11.0...v1.12.0
