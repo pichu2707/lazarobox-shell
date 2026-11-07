@@ -5659,11 +5659,11 @@ async fn a_worker_on_an_unverified_engine_is_reported_with_its_own_reason() {
     let mut lab = lab_with(Script::Answer("done"), tooled);
     let assigned = [
         (Task::Orchestrate, "claude", "opus"),
-        (Task::Review, "llamacpp", "m"),
+        (Task::Review, "lmstudio", "m"),
     ];
     let roster = roster(
         &assigned,
-        vec![found("claude", &[]), found("llamacpp", &["m"])],
+        vec![found("claude", &[]), found("lmstudio", &["m"])],
         JAIL,
     );
     let (_, handle) = lab.start(roster);
@@ -5672,7 +5672,7 @@ async fn a_worker_on_an_unverified_engine_is_reported_with_its_own_reason() {
     let OrchestraEvent::Degraded { why, engine, .. } = &event else {
         panic!("{event:?}");
     };
-    assert_eq!((*why, engine.as_str()), (Degrade::ToolsOff, "llamacpp"));
+    assert_eq!((*why, engine.as_str()), (Degrade::ToolsOff, "lmstudio"));
 }
 
 // A hub that cannot open (no private folder for its sockets) is a third
@@ -6104,6 +6104,22 @@ async fn a_retried_writing_worker_has_the_worker_text_once() {
     let want = crate::core::ai::chat::prompts::worker_system(&kind);
     assert_eq!(requests[0].system, want);
     assert_eq!(requests[1].system, want);
+}
+
+// A worker whose turn ran without tools had no tool to call: the coordinator
+// is not told its reply holds calls as text (only the degrade notice stands).
+#[tokio::test]
+async fn a_degraded_code_worker_with_call_text_gives_the_coordinator_no_line() {
+    let call = r#"{"name": "write_file", "arguments": {"path": "a", "content": "x"}}"#;
+    let lab = lab(Script::Answer(call));
+    let (_, handle) = lab.start(codex_code());
+    let spawned = handle.call(spawn(Task::Code, "write it")).await;
+    assert!(!spawned.is_error, "{spawned:?}");
+    handle.call(wait(1)).await;
+    let got = handle.call(collect(1)).await;
+    assert!(!got.is_error, "{got:?}");
+    assert!(got.text.contains("write_file"), "{got:?}");
+    assert!(!got.text.contains("lazarobox:"), "{got:?}");
 }
 
 mod parallel;

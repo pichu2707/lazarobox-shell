@@ -784,6 +784,30 @@ fn degraded(why: Degrade) -> OrchestraEvent {
     }
 }
 
+// A worker that wrote its tool calls as text gets the cause and the remedy.
+#[test]
+fn a_tool_call_written_as_text_names_the_cause_and_the_remedy() {
+    let (mut a, _) = running();
+    a.update(event(disclosed(1, Disclosure::ToolCallAsText)));
+    let shown = system_lines(&a);
+    let line = shown.lines().find(|l| l.starts_with("worker ")).unwrap();
+    assert!(line.is_ascii(), "{line}");
+    assert!(
+        line.ends_with(
+            "ended done and changed no file; its reply holds tool calls written as text: the model may lack tool support"
+        ),
+        "{line}"
+    );
+}
+
+// Guard: the plain empty-ledger notice does not claim the cause.
+#[test]
+fn guard_the_plain_empty_ledger_notice_does_not_name_a_cause() {
+    let (mut a, _) = running();
+    a.update(event(disclosed(1, Disclosure::EmptyLedger)));
+    assert!(!system_lines(&a).contains("as text"));
+}
+
 fn refused(reason: &str) -> OrchestraEvent {
     OrchestraEvent::SpawnRefused {
         run: RUN,

@@ -1620,6 +1620,7 @@ impl RunManager {
         let session = match self.open_session(pane, key, &spec, proposer, &mut request, route) {
             Ok(dispatch) => Some((live.pending.clone(), dispatch)),
             Err(why) => {
+                live.run.ran_without_tools(id);
                 self.send(
                     pane,
                     OrchestraEvent::Degraded {

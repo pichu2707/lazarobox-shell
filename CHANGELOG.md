@@ -12,13 +12,6 @@ baseline.
 
 ### Added
 
-- `/write` in a chat turns Write on for that chat only. It opens a `y` dialog
-  that names the Write toggle and the folder; the grant lives in memory, is not
-  saved to the config, and ends (with a line) on a folder change, a resume,
-  tools turned off or a change of the saved Write toggle. It reaches the next
-  worker the coordinator spawns (a worker that is already running keeps its
-  tools) and, in a plain chat, the next turn. Only you can open it: a model,
-  a worker or a tool result cannot.
 - Two `code` workers of one ORCH run can now write at the same time, each
   with a batch of its own. When one proposes, the review lists only its
   files, and it is labelled with the worker; two pending proposals are
@@ -34,6 +27,26 @@ baseline.
   `[ai.orchestrator]`. `max_parallel` stays your only limit: nothing is
   throttled for you. Cloud engines and Ollama `*-cloud` models are not
   counted.
+
+## [1.12.0] - 2026-11-07
+
+### Added
+
+- Tools with llama.cpp: `llamacpp` joins the engines whose requests carry
+  tools, so chat turns and ORCH workers on a `llama-server` run the same tool
+  loop as on Ollama. Verified on Qwen2.5-7B-Instruct Q4_K_M with llama-server
+  b11935 (`--jinja --parallel 1`); Qwen3.8-27B was not run. It needs a model
+  and chat template that support tool calls: Qwen2.5-Coder-7B answers its tool
+  calls as text and fails, as Ollama's `qwen2.5-coder:14b` does. `lmstudio` and
+  `vllm` stay text-only.
+
+- `/write` in a chat turns Write on for that chat only. It opens a `y` dialog
+  that names the Write toggle and the folder; the grant lives in memory, is not
+  saved to the config, and ends (with a line) on a folder change, a resume,
+  tools turned off or a change of the saved Write toggle. It reaches the next
+  worker the coordinator spawns (a worker that is already running keeps its
+  tools) and, in a plain chat, the next turn. Only you can open it: a model,
+  a worker or a tool result cannot.
 
 ### Changed
 
@@ -54,6 +67,16 @@ baseline.
   `propose_batch` was refused with "waiting for review" and the batch could
   only be reviewed from the pane badge. This applies to a plain chat and to
   workers; a second proposal while your first ask is still open stays refused.
+
+### Fixed
+
+- An ORCH `code` worker that changed no file and whose reply holds tool calls
+  written as JSON text (small local models on Ollama or llama.cpp do this
+  instead of calling the tools) now gets a notice that says so: `... ended done
+  and changed no file; its reply holds tool calls written as text: the model
+  may lack tool support`. The coordinator is told the same, so it no longer
+  reports files that were never created. A worker whose turn ran without tools
+  keeps the plain notice.
 
 ## [1.11.0] - 2026-11-06
 
@@ -2248,7 +2271,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.12.0...HEAD
+[1.12.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.8.0...v1.9.0

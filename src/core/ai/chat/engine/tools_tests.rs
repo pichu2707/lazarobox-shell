@@ -5,8 +5,11 @@ fn origin() -> Option<PathBuf> {
 }
 
 #[test]
-fn the_four_engines_are_verified() {
-    assert_eq!(MCP_VERIFIED, ["claude", "codex", "gemini", "ollama"]);
+fn the_five_engines_are_verified() {
+    assert_eq!(
+        MCP_VERIFIED,
+        ["claude", "codex", "gemini", "ollama", "llamacpp"]
+    );
     for engine in MCP_VERIFIED {
         assert_eq!(
             tools_for(engine, true, origin(), MCP_VERIFIED),
@@ -51,4 +54,32 @@ fn tools_off_or_an_unverified_engine_stay_off() {
         Tools::Off
     );
     assert_eq!(tools_for("codex", true, origin(), &["claude"]), Tools::Off);
+}
+
+#[test]
+fn the_text_only_servers_and_opencode_stay_off() {
+    for engine in ["lmstudio", "vllm", "opencode"] {
+        assert_eq!(
+            tools_for(engine, true, origin(), MCP_VERIFIED),
+            Tools::Off,
+            "{engine}"
+        );
+    }
+}
+
+#[test]
+fn the_readme_states_llamacpp_tools_and_their_template_requirement() {
+    let readme = include_str!("../../../../../README.md");
+    assert!(
+        !readme.contains("Ninguno de los tres muestra razonamiento ni ofrece herramientas"),
+        "the old limit still says llama.cpp offers no tools"
+    );
+    let section = readme
+        .split("### Tools with llama.cpp")
+        .nth(1)
+        .expect("a `### Tools with llama.cpp` section");
+    let section = section.split("\n### ").next().unwrap();
+    for needle in ["--jinja", "Qwen2.5", "texto"] {
+        assert!(section.contains(needle), "{needle}");
+    }
 }
