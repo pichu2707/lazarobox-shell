@@ -1124,12 +1124,12 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 
 #### Paneles: `read_pane`
 
-`read_pane` deja que el modelo lea el texto de la pantalla de **otro** panel (el número que muestra `list_panes`, nunca el del propio chat). Se ofrece junto a `list_panes` y solo a los chats: ni los _workers_ ni el orquestador la tienen. Argumentos: `pane` y, opcional, `scrollback` (de 1 a 200 líneas de historial; un valor mayor se rechaza).
+`read_pane` deja que el modelo lea el texto de la pantalla de **otro** panel (el número que muestra `list_panes`, nunca el del propio chat). Se ofrece junto a `list_panes` y solo a los chats: ni los _workers_ ni el orquestador la tienen. Argumentos: `pane` y, opcional, `scrollback` (de 1 a 200 líneas de historial; 0, un valor mayor, un negativo o un decimal se rechazan con un mensaje que nombra el rango).
 
 - **Pregunta siempre.** En cualquier motor, local o en la nube, y en los tres modos de aprobación (`ask`, `auto`, `run`): ninguno la responde por ti. Un panel puede contener lo que escribiste o ejecutaste.
 - **Ves el texto exacto.** Al llegar la petición se lee el panel y se congela. Se abre la revisión (la misma vista de los lotes) con ese texto; `y` queda bloqueada hasta que hayas visto todas las líneas. Lo que se envía es el texto congelado, aunque el panel cambie o se cierre mientras decides.
 - **Censura y límite.** Se quitan los caracteres de control, se censuran los secretos (también los partidos por un salto de línea automático) y se envían como mucho 8 KiB; si no caben se conserva el final y se avisa.
-- **Avisos visibles.** Si lo deniegas, si el panel ya no existe, si está en blanco o si pides historial en una aplicación a pantalla completa (solo se lee la pantalla visible) lo ves en el chat; el modelo recibe el resultado correspondiente.
+- **Avisos visibles.** Si lo deniegas, si el panel ya no existe, si está en blanco o si ya hay otra aprobación pendiente lo ves en el chat; el modelo recibe el resultado correspondiente. Si pides historial en una aplicación a pantalla completa (solo se lee la pantalla visible), el aviso aparece dentro de la revisión, no como una línea del chat.
 
 #### GitHub: `gh_issue_list`, `gh_issue_view` y `gh_pr_view`
 

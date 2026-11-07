@@ -217,3 +217,19 @@ fn chat_mut(a: &mut App) -> &mut ChatState {
         .and_then(PaneState::chat_mut)
         .unwrap()
 }
+
+#[test]
+fn a_screen_ask_refused_before_prompting_says_so_in_the_chat() {
+    use crate::core::ai::chat::approval::ANOTHER_PENDING;
+    let (mut a, turn) = asked(5, None);
+    assert_eq!(
+        announce_now(&mut a, turn, 2, screen_ask(1, None)),
+        vec![decision(turn, 2, Decision::Denied(ANOTHER_PENDING))]
+    );
+    assert_eq!(
+        lines_with(&a, "screen read"),
+        ["• screen read denied: pane 1 (another approval is pending)"]
+    );
+    // The first review is untouched and nothing else was said.
+    assert_eq!(pending(&a).map(|p| p.1), Some(Some((turn, CallId(1)))));
+}

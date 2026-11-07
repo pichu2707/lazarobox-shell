@@ -256,6 +256,10 @@ impl App {
     ) -> Vec<Effect> {
         let armed_at = (self.clock)() + ask.arm_delay();
         let worker = ask.worker();
+        let screen_pane = match &ask {
+            ApprovalAsk::Screen { pane, .. } => Some(*pane),
+            _ => None,
+        };
         let batch = match &ask {
             ApprovalAsk::Batch(review) => Some(review.clone()),
             ApprovalAsk::Commit(commit) => Some(commit.review().clone()),
@@ -287,6 +291,14 @@ impl App {
             Err(refusal) => {
                 if refusal.reason() == QUEUE_FULL {
                     self.notice = Some(QUEUE_FULL_NOTICE.to_owned());
+                }
+                // A screen read refused here never reaches the user's review:
+                // say so in the chat instead of failing silently.
+                if let Some(pane) = screen_pane {
+                    chat.push_system_line(format!(
+                        "screen read denied: pane {pane} ({})",
+                        refusal.reason()
+                    ));
                 }
                 Self::deny_for(id, worker, turn, call, refusal.reason())
             }
