@@ -2884,9 +2884,8 @@ async fn a_worker_timed_out_in_review_leaves_its_batch_as_an_orphan() {
     let status = lock(&lab.manager.runs)[&pane()].run.status(WorkerId(1));
     assert_eq!(status, Some(WorkerStatus::TimedOut));
     let host = lab.host();
-    let key = crate::core::ai::tools::stage::StageKey::Pane(pane());
     let (_, review) = host
-        .review_batch(key.pane(), false)
+        .review_batch(pane(), false)
         .expect("an orphan to review");
     assert_eq!(review.counts(), "1 file, +1 -0");
     assert!(!lab.app().join("a.txt").exists());
@@ -2954,9 +2953,8 @@ async fn a_worker_that_staged_and_never_proposed_is_disclosed() {
             what: Disclosure::StagedNotProposed { files: 1 },
         }
     );
-    let key = crate::core::ai::tools::stage::StageKey::Pane(pane());
     assert!(
-        lab.host().review_batch(key.pane(), false).is_some(),
+        lab.host().review_batch(pane(), false).is_some(),
         "an orphan"
     );
 }
@@ -5953,7 +5951,14 @@ async fn a_correction_refused_for_write_off_does_not_tell_anyone_to_spawn() {
     let (run, _handle) = lab.manager.start(pane(), scope).unwrap();
     let said = lab
         .manager
-        .start_review(pane(), run, Role::Correction, "fix".into(), None)
+        .start_review(
+            pane(),
+            run,
+            Role::Correction,
+            WorkerId(1),
+            "fix".into(),
+            None,
+        )
         .unwrap_err();
     assert!(said.contains("Write") && said.contains("/write"), "{said}");
     assert!(said.contains("review"), "{said}");
@@ -6053,7 +6058,14 @@ async fn a_correction_worker_does_not_get_the_worker_prompt() {
     let lab = writing_lab(Script::Hang);
     let (run, _handle) = lab.start_writing_run(&Waits::new(), TEN_MINUTES);
     lab.manager
-        .start_review(pane(), run, Role::Correction, "fix".into(), None)
+        .start_review(
+            pane(),
+            run,
+            Role::Correction,
+            WorkerId(1),
+            "fix".into(),
+            None,
+        )
         .unwrap();
     let request = lab.seen.first().await;
     let kind = load_prompt(None, Profile::Programmer, Task::Code).text;

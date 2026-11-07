@@ -31,9 +31,8 @@ pub const READ_CAP: usize = 64 * 1024;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum StageKey {
     Pane(PaneId),
-    /// A worker of a run started from the pane. Built outside tests from
-    /// PR12 (the writer flip), which removes the allow.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// A worker of a run started from the pane, or a review worker's view of
+    /// its proposer's batch.
     Worker(PaneId, WorkerKey),
 }
 

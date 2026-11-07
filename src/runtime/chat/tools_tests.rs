@@ -782,6 +782,36 @@ async fn an_orphan_is_reviewed_applied_or_discarded_through_the_chats() {
     assert_eq!(chats.review_batch(pane(3)), None);
 }
 
+// GUARD (W10b, the plain chat): a chat turn is not a worker. What it stages
+// through its own session stays under the pane's key, so the writer flip of
+// the workers does not move it and the orphan review finds it there.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_plain_chat_turn_stages_under_its_pane_key() {
+    let lab = lab();
+    let (mut chats, _rx) = tooled(&lab, idle());
+    let proj = lab.home.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let mut req = with_tools(&lab);
+    if let Tools::On { origin, .. } = &mut req.tools {
+        *origin = Some(proj);
+    }
+    req.families = crate::core::ai::tools::registry::FamilySet::LEGACY
+        .with(crate::core::ai::tools::registry::Family::Write);
+    chats.send(pane(1), 1, req);
+    let mut client = Client::open(&chats, pane(1)).await;
+    client
+        .call(1, "write_file", json!({"path": "a.txt", "content": "x"}))
+        .await;
+    let staged = client.reply().await.expect("a reply");
+    assert!(staged.to_string().contains("staged a.txt"), "{staged}");
+    chats.cancel(pane(1));
+    let Some(BatchEvent::Review(id, _)) = chats.review_batch(pane(1)) else {
+        panic!("a cancelled turn leaves an orphan");
+    };
+    assert_eq!(id.key, StageKey::Pane(pane(1)));
+}
+
 // The pane badge (chat-pane, "Staged batch indicator") is polled from the
 // store: a batch is staged while a turn of its pane runs and an orphan once
 // no turn does; closing the chat clears it.

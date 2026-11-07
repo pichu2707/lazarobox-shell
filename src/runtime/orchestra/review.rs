@@ -125,12 +125,16 @@ pub(super) struct State {
     pub(super) reviews: Vec<Reviewed>,
     /// The system prompt of a review worker, instead of its kind's.
     pub(super) systems: HashMap<WorkerId, &'static str>,
-    /// Review workers: read-only, with the pane's batch to look at.
+    /// Review workers: read-only, with their proposer's batch to look at.
     pub(super) viewers: HashSet<WorkerId>,
     /// The correction worker of a review: it may not propose the batch. Kept
     /// for the life of the run, so a retry or a relaunch of it is no
     /// proposer and no second correction.
     pub(super) correcting: HashSet<WorkerId>,
+    /// The worker whose batch each review worker reads (a lens, the refuter)
+    /// or stages into (the correction): its proposer. A reader's entry goes
+    /// with its review; a correction's stays, like `correcting`.
+    pub(super) proposers: HashMap<WorkerId, WorkerId>,
     /// What review workers could not read, by worker.
     pub(super) unread: HashMap<WorkerId, Vec<String>>,
 }
@@ -140,8 +144,10 @@ impl State {
         self.systems.get(&id).copied()
     }
 
-    pub(super) fn views(&self, id: WorkerId) -> bool {
-        self.viewers.contains(&id)
+    /// The proposer whose batch worker `id` works on, when `id` is a lens, a
+    /// refuter or the correction of a review (S7b, D7).
+    pub(super) fn proposer(&self, id: WorkerId) -> Option<WorkerId> {
+        self.proposers.get(&id).copied()
     }
 
     pub(super) fn corrects(&self, id: WorkerId) -> bool {
@@ -152,6 +158,17 @@ impl State {
 pub(super) fn reviews(manager: &RunManager, pane: PaneId, run: RunId) -> Vec<Reviewed> {
     let kept = manager.on_run(pane, run, |live| live.review.reviews.clone());
     kept.unwrap_or_default()
+}
+
+/// The batch of `proposer`: a review reads and a correction stages into it.
+pub(super) fn batch_of(pane: PaneId, run: RunId, proposer: WorkerId) -> StageKey {
+    StageKey::Worker(
+        pane,
+        WorkerKey {
+            run,
+            worker: proposer,
+        },
+    )
 }
 
 /// What kind of review worker to start.
@@ -360,7 +377,9 @@ impl RunManager {
         self.on_run(pane, run, |live| {
             live.run.unpark(worker);
             for id in spawned {
-                live.review.viewers.remove(id);
+                if live.review.viewers.remove(id) {
+                    live.review.proposers.remove(id);
+                }
                 live.review.systems.remove(id);
                 live.review.unread.remove(id);
             }
@@ -652,7 +671,7 @@ impl RunManager {
                 room.1, room.0
             )));
         }
-        let diff = self.diff_text(pane, run).await;
+        let diff = self.diff_text(pane, run, worker).await;
         let mut lenses = Vec::new();
         for lens in DEFAULT_LENSES {
             review
@@ -662,7 +681,7 @@ impl RunManager {
             guard.note(&prompt);
             let system = Some(lens_builtin(profile, lens));
             let id = self
-                .start_review(pane, run, Role::Reader, prompt.text, system)
+                .start_review(pane, run, Role::Reader, worker, prompt.text, system)
                 .map_err(Stop::Start)?;
             guard.spawned.push(id);
             lenses.push((lens, id));
@@ -736,7 +755,7 @@ impl RunManager {
         let profile = self
             .on_run(pane, run, |live| live.profile)
             .ok_or(Stop::Start(ENDED.to_owned()))?;
-        let diff = self.diff_text(pane, run).await;
+        let diff = self.diff_text(pane, run, worker).await;
         let claims: Vec<&Finding> = asked
             .iter()
             .filter_map(|&at| review.findings().get(at))
@@ -753,7 +772,7 @@ impl RunManager {
         };
         guard.note(&prompt);
         let id = self
-            .start_review(pane, run, Role::Reader, prompt.text, Some(system))
+            .start_review(pane, run, Role::Reader, worker, prompt.text, Some(system))
             .map_err(Stop::Start)?;
         guard.spawned.push(id);
         let texts = self.finished(pane, run, worker, &[id]).await?;
@@ -802,10 +821,10 @@ impl RunManager {
             .iter()
             .filter_map(|&at| review.findings().get(at))
             .collect();
-        let diff = self.diff_text(pane, run).await;
+        let diff = self.diff_text(pane, run, worker).await;
         let prompt = correction_prompt(nonce, changes, &blockers, &diff);
         guard.note(&prompt);
-        let started = self.start_review(pane, run, Role::Correction, prompt.text, None);
+        let started = self.start_review(pane, run, Role::Correction, worker, prompt.text, None);
         let id = match started {
             Ok(id) => id,
             Err(why) => {
@@ -825,7 +844,7 @@ impl RunManager {
         }
         // The check reads what is staged now, not the listing of before; a
         // correction that staged nothing new fixed nothing.
-        let Some(fresh) = self.restaged(pane, run, changes).await else {
+        let Some(fresh) = self.restaged(pane, run, worker, changes).await else {
             self.say(
                 pane,
                 run,
@@ -889,7 +908,13 @@ impl RunManager {
     }
 
     /// The staged change set now; `None` when it cannot be read.
-    async fn restaged(&self, pane: PaneId, run: RunId, _before: &[Change]) -> Option<Vec<Change>> {
+    pub(super) async fn restaged(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        proposer: WorkerId,
+        _before: &[Change],
+    ) -> Option<Vec<Change>> {
         #[cfg(test)]
         if let Some(restage) = self.restage {
             return restage(_before);
@@ -898,14 +923,19 @@ impl RunManager {
         let tooling = self.tooling.as_ref()?;
         tooling
             .host
-            .staged_changes(StageKey::Pane(pane), &origin)
+            .staged_changes(batch_of(pane, run, proposer), &origin)
             .await
     }
 
     /// What a review may be shown of the staged batch: its files within the
     /// run's scope, the other paths named. When the batch cannot be read the
     /// prompt says so and the review is incomplete.
-    async fn diff_text(self: &Arc<Self>, pane: PaneId, run: RunId) -> StagedDiff {
+    pub(super) async fn diff_text(
+        self: &Arc<Self>,
+        pane: PaneId,
+        run: RunId,
+        proposer: WorkerId,
+    ) -> StagedDiff {
         #[cfg(test)]
         if let Some(diff) = self.diff {
             return diff();
@@ -921,7 +951,7 @@ impl RunManager {
         };
         tooling
             .host
-            .staged_diff(StageKey::Pane(pane), &origin, allow)
+            .staged_diff(batch_of(pane, run, proposer), &origin, allow)
             .await
             .unwrap_or_else(StagedDiff::unavailable)
     }
@@ -932,6 +962,7 @@ impl RunManager {
         pane: PaneId,
         run: RunId,
         role: Role,
+        proposer: WorkerId,
         prompt: String,
         system: Option<&'static str>,
     ) -> Result<WorkerId, String> {
@@ -956,6 +987,7 @@ impl RunManager {
             if let Some(system) = system {
                 live.review.systems.insert(id, system);
             }
+            live.review.proposers.insert(id, proposer);
             match role {
                 Role::Reader => live.review.viewers.insert(id),
                 Role::Correction => live.review.correcting.insert(id),

@@ -1460,8 +1460,6 @@ impl RunManager {
                 }
                 self.close_session(&live.approver, WorkerKey { run, worker: id });
                 self.sync(pane, live);
-                // The pane's batch is still Staging with entries, which may include a
-                // sibling's files, until W10a gives each writer its own.
                 self.disclose(pane, live, id);
                 fine(format!("worker {}: cancelled", id.0))
             }
@@ -1616,10 +1614,10 @@ impl RunManager {
             live.pending.clone(),
         );
         live.routes.insert(id, route.clone());
-        let views = live.review.views(id);
+        let proposer = live.review.proposer(id);
         trace.send(TraceItem::Begin);
         // A turn without tools still runs, as text, and the pane is told why.
-        let session = match self.open_session(pane, key, &spec, views, &mut request, route) {
+        let session = match self.open_session(pane, key, &spec, proposer, &mut request, route) {
             Ok(dispatch) => Some((live.pending.clone(), dispatch)),
             Err(why) => {
                 self.send(
@@ -1687,7 +1685,7 @@ impl RunManager {
         pane: PaneId,
         key: WorkerKey,
         spec: &WorkerSpec,
-        views: bool,
+        proposer: Option<WorkerId>,
         request: &mut ChatRequest,
         route: Arc<Route>,
     ) -> Result<Option<Arc<dyn Dispatch>>, Degrade> {
@@ -1709,11 +1707,12 @@ impl RunManager {
             approver: Arc::new(Rerouted(route)),
             external: Slot::default(),
             families,
-            // A `code` worker stages in its pane's batch (S7, user decision
-            // "El worker propone su lote", 2026-10-29): the batch review, its
-            // badge and its orphan are the pane's, as for a chat's batch.
-            // A review worker reads that batch too, and stages nothing (S7b).
-            stage_key: (families.contains(Family::Write) || views).then_some(StageKey::Pane(pane)),
+            // A writer stages in a batch of its own (W10, D7); the batch
+            // review, its badge and its orphan are the pane's. A review
+            // worker reads the batch of the worker it reviews, and the
+            // correction stages into it (S7b): both name their proposer.
+            stage_key: (families.contains(Family::Write) || proposer.is_some())
+                .then(|| review::batch_of(pane, key.run, proposer.unwrap_or(key.worker))),
             // A worker never writes on a Windows drive: the grant is the
             // chat's, for its own turns (openspec `wsl-drive-access`).
             drive_grant: None,
@@ -1792,10 +1791,11 @@ impl RunManager {
 
     /// Tells the pane what the worker that just ended left unsaid: a `code`
     /// worker that changed nothing, or a batch it staged and never proposed
-    /// (the batch is the pane's, so the pane's state answers).
+    /// (each writer has its own batch, so its own state answers).
     fn disclose(&self, pane: PaneId, live: &Live, id: WorkerId) {
         let host = self.tooling.as_ref().map(|tooling| &tooling.host);
-        let unproposed = || host.is_some_and(|host| host.unproposed(StageKey::Pane(pane)));
+        let batch = review::batch_of(pane, live.run.id(), id);
+        let unproposed = || host.is_some_and(|host| host.unproposed(batch));
         let (Some(what), Some(spec)) = (live.run.disclosure(id, unproposed), live.run.spec(id))
         else {
             return;
