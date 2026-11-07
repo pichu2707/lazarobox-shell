@@ -527,8 +527,9 @@ pub async fn spawn_capped(run: Run, stdout_cap: usize) -> io::Result<Split> {
         _ = &mut deadline => timed_out = true,
     }
     let status = bounded(group.kill_and_reap(&mut child), REAP).await?;
-    // What was written last is still in the pipes: at most what a pipe holds,
-    // so a flood is not read on.
+    // What was written last is still in the pipes. Both are read to their
+    // end, kept to their caps, for at most DRAIN: a writer that escaped the
+    // group and holds a pipe open is not read on.
     let rest = drain_lanes(&mut out, &mut out_pipe, &mut err, &mut err_pipe);
     let _ = tokio::time::timeout(DRAIN, rest).await;
     Ok(Split {
