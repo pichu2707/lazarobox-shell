@@ -88,6 +88,7 @@ mod write;
 
 use auto_run::RunSlot;
 pub use auto_run::{CALL_OVER, PANE_GONE, RunEvent, RunScope};
+pub use tool::CANCELLED;
 use tool::ToolEvent;
 
 /// Rows of history kept by the emulator.

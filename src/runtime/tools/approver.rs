@@ -31,6 +31,10 @@ use crate::core::{
 /// What a call is told when its chat or turn ended before the user answered.
 pub const ENDED: &str = "the chat ended before the user answered";
 
+/// What a call is told when the user cancelled (Ctrl+C) instead of answering.
+/// Like `ENDED`, it is no verdict on the work: a staged batch is kept.
+pub const CANCELLED: &str = crate::app::CANCELLED;
+
 /// What a call is told when its turn or chat ended while a command it had
 /// started was still running: the command did run.
 pub const RAN_ENDED: &str = "the command was typed and run, but the turn ended before it finished";

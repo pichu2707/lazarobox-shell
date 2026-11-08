@@ -10,6 +10,18 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- Batch review: Ctrl+C on an open review (or on a proposal cancelled before
+  its ask showed) no longer discards the staged work; the batch stays as an
+  orphan for you to review or discard, as the README promises. Only your own
+  `n` or `Esc` discards it.
+- Orchestrator: the review of an orphaned worker batch keeps the worker label
+  (`n/m kind engine>model`) instead of opening unlabelled.
+- Orchestrator: the close report no longer says the claims match the ledger
+  while a bare name or an absolute path in the handoff was not compared; it
+  says `not checked`. Only project-relative paths with a directory are compared.
+
 ## [1.14.3] - 2026-11-08
 
 ### Changed

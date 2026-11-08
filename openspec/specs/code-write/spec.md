@@ -177,7 +177,7 @@ The model closes a batch by calling the propose tool. It MAY stage across severa
 - THEN the review holds all of them
 
 ### Requirement: Batch review and coverage gate
-A proposed batch MUST open a full-pane review view in the chat pane. It shows every change: a create shows the new text, an overwrite or edit shows a diff, a `create_dir` shows its path. The approving key MUST stay disabled until every row of the whole batch has been drawn on screen (the coverage gate; a row in a hidden pane does not count), and it MUST stay disabled for the arm delay after the view is first drawn (longer than the delay of other approvals, value pinned by design). The review is all-or-nothing: the user approves the whole batch or rejects the whole batch. A change to a build file (for example `Makefile`, `build.rs`, `package.json`) MUST carry a visible warning. A rejected, timed-out or cancelled review MUST end as `denied`, MUST write nothing, and MUST discard the batch. A pending approval of another kind MUST make the propose tool return `denied` (`another approval is pending`).
+A proposed batch MUST open a full-pane review view in the chat pane. It shows every change: a create shows the new text, an overwrite or edit shows a diff, a `create_dir` shows its path. The approving key MUST stay disabled until every row of the whole batch has been drawn on screen (the coverage gate; a row in a hidden pane does not count), and it MUST stay disabled for the arm delay after the view is first drawn (longer than the delay of other approvals, value pinned by design). The review is all-or-nothing: the user approves the whole batch or rejects the whole batch. A change to a build file (for example `Makefile`, `build.rs`, `package.json`) MUST carry a visible warning. A rejected or timed-out review MUST end as `denied`, MUST write nothing, and MUST discard the batch. A review cancelled with Ctrl+C MUST also end as `denied` and write nothing, but MUST leave the batch as an orphan (see Orphan, close and quit); a propose call dropped after the batch was sealed and before its ask shows MUST NOT discard the batch either. A pending approval of another kind MUST make the propose tool return `denied` (`another approval is pending`).
 
 #### Scenario: Gate blocks early approval [auto]
 - GIVEN a batch of 40 diff rows of which 12 have been shown
@@ -193,6 +193,16 @@ A proposed batch MUST open a full-pane review view in the chat pane. It shows ev
 - GIVEN a proposed batch
 - WHEN `n` or Esc is pressed
 - THEN the disk is unchanged, the batch is gone and the propose call returns `denied`
+
+#### Scenario: Ctrl+C on review keeps an orphan [auto]
+- GIVEN a proposed batch under review
+- WHEN Ctrl+C is pressed
+- THEN the propose call returns `denied`, nothing is written and the batch is kept as an orphan, while `n` still discards it
+
+#### Scenario: A propose dropped before its ask shows keeps the batch [auto]
+- GIVEN a batch sealed by a propose call whose ask has not been announced yet
+- WHEN the call is dropped (the turn is cancelled)
+- THEN the batch is kept and can be reviewed as an orphan
 
 #### Scenario: Build file warning [auto]
 - GIVEN a batch that stages `build.rs`

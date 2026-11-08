@@ -750,3 +750,14 @@ fn capped_needs_something_actually_left_out() {
         audit.lines()
     );
 }
+
+// DIAGNOSIS (investigate/orch-orphans, F3): a handoff that names two bare files
+// where the ledger holds only one says `claims match the ledger`, because a
+// bare name can only match, never be flagged (claims.rs `check_against`). The
+// false claim is invisible. This pins the gap: the check must not report a
+// match while a named file is absent from the ledger.
+#[test]
+fn a_bare_name_the_ledger_lacks_is_not_reported_as_a_match() {
+    let got = check("wrote m10_a.txt and m10_b.txt", &["m10_a.txt"]);
+    assert_ne!(got, Check::Matches, "m10_b.txt is not in the ledger");
+}
