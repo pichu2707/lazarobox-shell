@@ -2143,16 +2143,32 @@ async fn a_propose_dropped_before_its_ask_is_announced_keeps_the_staged_work() {
     // Fill the channel so the announcement of the ask has no room.
     while tx.try_send(StreamEvent::Slow).is_ok() {}
     let mut propose = d.call(Call::ProposeBatch);
-    for _ in 0..50 {
+    // Wait for the seal itself (the proposed state), not for a fixed time.
+    let sealed = || {
+        let stages = w.host.stages.lock().unwrap();
+        stages
+            .batch(owner)
+            .is_some_and(|b| b.state() == crate::core::ai::tools::stage::State::Proposed)
+    };
+    for _ in 0..2000 {
         assert!(futures::poll!(&mut propose).is_pending());
+        if sealed() {
+            break;
+        }
         tokio::task::yield_now().await;
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
+    assert!(sealed(), "the batch never reached the sealed state");
     // Sealed, not announced: the cancel arrives now.
+    assert!(futures::poll!(&mut propose).is_pending());
     drop(propose);
     assert_eq!(
         w.staged_of(owner),
         1,
         "a cancel before the announcement lost the batch"
+    );
+    assert!(
+        w.host.review_batch(owner.pane(), false).is_some(),
+        "the kept batch is not a reviewable orphan"
     );
 }

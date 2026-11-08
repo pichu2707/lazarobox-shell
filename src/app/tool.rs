@@ -26,7 +26,7 @@ use crate::core::ai::{
 /// Why a call is denied without the user being asked, or when a refusal has no
 /// other reason to give. Short, and it goes back to the model.
 pub(super) const DECLINED: &str = "the user declined";
-pub(super) const CANCELLED: &str = "cancelled";
+pub const CANCELLED: &str = "cancelled";
 const TOOLS_OFF: &str = "tools are off";
 const WORKER_OVER: &str = "the worker already ended";
 const APPROVAL_CHAT_ONLY: &str = "The approval mode is for chat panes; open one with Ctrl+Space c";

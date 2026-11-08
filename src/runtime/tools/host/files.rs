@@ -42,7 +42,7 @@ use crate::{
     },
     runtime::tools::{
         ToolEnv, WorkerScope,
-        approver::ENDED,
+        approver::{CANCELLED, ENDED},
         fs::{Within, load_roots},
         stage::{StageFailed, Stages, Unreadable, disk_bytes},
         staged::StagedView,
@@ -50,11 +50,10 @@ use crate::{
 };
 
 /// What a sealed batch needs to be answered: its id, and whether the user can
-/// approve it at all. It is also the guard of the batch: when it is dropped
-/// the batch is discarded, so a call that never got to ask (a closed channel)
-/// never leaves its batch sealed. Once the ask is announced the batch
-/// is the user's: a call dropped while it waits (a cancelled turn, a CLI
-/// timeout) leaves a Proposed orphan for the user to review or discard. The
+/// approve it at all. It is also the guard of the batch: a call dropped after
+/// the seal (before or after its ask is announced: a cancelled turn, a CLI
+/// timeout) leaves a Proposed orphan for the user to review or discard, never
+/// a lost batch. Only an answer decides otherwise (`answered`). The
 /// discard is generation-checked: after an answer has closed the batch, or
 /// when a newer batch has taken its place, it finds nothing and does nothing.
 pub(super) struct Sealed {
@@ -64,7 +63,8 @@ pub(super) struct Sealed {
     /// ([`ledger_path`]): what an apply marks applied.
     paths: Vec<String>,
     stages: Arc<Mutex<Stages>>,
-    /// The ask is open: dropping now leaves the batch as an orphan.
+    /// Dropping now leaves the batch as an orphan: true from the seal on, until
+    /// an answer says otherwise.
     keep: bool,
     /// The batch was already proposed when this call asked: the user may hold
     /// it, so a drop before the announcement only ends this ask.
@@ -72,9 +72,10 @@ pub(super) struct Sealed {
 }
 
 impl Sealed {
-    /// The ask was announced: the user may now be looking at the batch.
-    pub(super) fn announced(&mut self) {
-        self.keep = true;
+    /// The turn's channel is closed: no one can see the batch, so a drop
+    /// discards it again (unless it was proposed before this ask).
+    pub(super) fn unseen(&mut self) {
+        self.keep = false;
     }
 
     /// The wait ended with an answer, not with a drop: nothing is left open.
@@ -203,7 +204,9 @@ fn seal_in(
             reviewable,
             paths,
             stages: shared,
-            keep: false,
+            // Not announced yet, but sealed: a drop now leaves the work
+            // staged for the user instead of discarding it.
+            keep: true,
             reasked,
         },
         review,
@@ -793,7 +796,8 @@ pub(super) async fn answered(
     };
     // Held to the end: any way out of here closes the batch (see `Sealed`),
     // except an answer that is no user's: the turn ended with the ask open.
-    sealed.keep = matches!(decision, Decision::Denied(ENDED));
+    // A cancel is no verdict on the work either: only the user's `n` discards.
+    sealed.keep = matches!(decision, Decision::Denied(ENDED | CANCELLED));
     let (id, reviewable) = (sealed.id, sealed.reviewable);
     let paths = std::mem::take(&mut sealed.paths);
     // `sealed` discards the batch when it goes out of scope.

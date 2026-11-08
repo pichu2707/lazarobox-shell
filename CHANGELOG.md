@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- Batch review: Ctrl+C on an open review (or on a proposal cancelled before
+  its ask showed) no longer discards the staged work; the batch stays as an
+  orphan for you to review or discard, as the README promises. Only your own
+  `n` or `Esc` discards it.
+
 ## [1.14.3] - 2026-11-08
 
 ### Changed

@@ -40,7 +40,9 @@ use std::{
 use futures::{FutureExt, future::BoxFuture};
 use tokio::sync::mpsc;
 
-use super::{Limits, OrchHandle, ToolEnv, WorkerScope, fs::Within, stage::Stages};
+use super::{
+    Limits, OrchHandle, ToolEnv, WorkerScope, approver::CANCELLED, fs::Within, stage::Stages,
+};
 use crate::core::ai::tools::windows::WinDrives;
 use crate::{
     core::ai::{
@@ -360,8 +362,6 @@ impl Dispatch for TurnDispatch {
     }
 }
 
-/// What a result row says when the call was dropped before its answer.
-const CANCELLED: &str = "cancelled";
 /// A run answered a call that is not a command: nothing ran.
 const NOT_COMMAND: &str = "that call is not a command";
 /// No nonce could be made, so the rows cannot be wrapped as data.
@@ -834,6 +834,13 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     // miss its wait, which loses a decision; a short pause of the timers
     // while the channel drains costs nothing, and the total limit still runs.
     let pending = ask.as_ref().map(|ask| scope.approver.ask(id, ask));
+    // A closed channel: nobody will ever see the batch, so it is not left
+    // sealed. A mere drop while waiting for room keeps it (see `Sealed`).
+    let unseen = |sealed: &mut Option<files::Sealed>| {
+        if let Some(batch) = sealed.as_mut() {
+            batch.unseen();
+        }
+    };
     let gone = || Outcome {
         text: CANCELLED.to_owned(),
         is_error: true,
@@ -841,6 +848,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     // The slot for the result comes first: waiting for it happens before
     // anything is announced.
     let Ok(slot) = scope.events.clone().reserve_owned().await else {
+        unseen(&mut sealed);
         return gone();
     };
     // The worker's session ended while the slot was awaited (a cancel): the
@@ -861,11 +869,8 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
         approval: ask.map(Box::new),
     };
     if scope.events.send(announce).await.is_err() {
+        unseen(&mut sealed);
         return gone();
-    }
-    // From here the user may see the ask: a batch dropped now is an orphan.
-    if let Some(batch) = sealed.as_mut() {
-        batch.announced();
     }
     // Only an announced call owes a result.
     let owed = Owed {
