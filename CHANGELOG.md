@@ -10,6 +10,17 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- Orchestrator: the review of an orphaned worker batch that was never proposed
+  (the worker was cancelled while staging, or ended without `propose_batch`)
+  now opens with the worker label too, as 1.14.4 promised. A batch from plain
+  chat stays unlabelled.
+- Orchestrator: a worker ending or being cancelled no longer takes away a review
+  you opened on an orphan. Reviews a worker asked for are withdrawn as before.
+- Batch review: a drifted apply says `1 path changed` instead of `1 paths
+  changed`.
+
 ## [1.14.4] - 2026-11-08
 
 ### Fixed
