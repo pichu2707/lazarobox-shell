@@ -769,6 +769,13 @@ fn stage_as(
             .map_err(failed),
         _ => return Err(refusal_text(ToolError::UnknownTool).to_owned()),
     }?;
+    // A worker may never propose this batch: its orphan review still names it.
+    // A correction stages into its proposer's batch and never names it.
+    if let Some(worker) = worker
+        && !matches!(key, StageKey::Worker(_, owner) if owner != worker.key())
+    {
+        stages.label_staging(key, (worker.ask_label(), worker.key(), None));
+    }
     let batch = stages.batch(key).ok_or_else(refused)?;
     let staged = batch
         .entries()
