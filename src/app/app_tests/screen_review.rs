@@ -238,8 +238,13 @@ fn a_screen_ask_refused_before_prompting_says_so_in_the_chat() {
 
 /// The first row of the chat pane (pane 2) as the app draws it.
 fn header_row(a: &mut App) -> String {
+    // Wide enough for the folder to have room beside the counter.
+    a.update(AppEvent::Resize {
+        cols: 200,
+        rows: 25,
+    });
     let theme = LazaroboxTheme::default();
-    let mut terminal = Terminal::new(TestBackend::new(120, 25)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(200, 25)).unwrap();
     terminal
         .draw(|frame| crate::ui::render(frame, a, &theme))
         .unwrap();

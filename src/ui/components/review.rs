@@ -38,8 +38,10 @@ fn seconds(left: Duration) -> String {
     format!("{}.{}s", tenths / 10, tenths % 10)
 }
 
-/// Narrower than this, the counter and the gate take the whole row.
-const FOLDER_MIN_WIDTH: usize = 24;
+/// The fewest cells a cut folder is worth showing in.
+const FOLDER_MIN: usize = 8;
+/// What `headed` adds around the folder: the ` · ` after it.
+const FOLDER_SEP: usize = 3;
 
 /// `path` cut from the front to `room` cells: the end is where the project is.
 fn tail(path: &str, room: usize) -> String {
@@ -60,13 +62,13 @@ fn tail(path: &str, room: usize) -> String {
 }
 
 /// `text` headed by the folder the batch lands in, so the destination is read
-/// before `y`. The folder takes at most two fifths of the row and keeps its
-/// end; a row too narrow for both keeps the counter and the gate.
+/// before `y`. The folder gets only the room the counter and the gate leave
+/// and keeps its end; with less than [`FOLDER_MIN`] cells left it is left out,
+/// so the gate is never pushed off the row.
 fn headed(folder: Option<&str>, text: String, width: usize) -> String {
+    let room = width.saturating_sub(cells(&text) + FOLDER_SEP);
     match folder {
-        Some(folder) if width >= FOLDER_MIN_WIDTH => {
-            format!("{} · {text}", tail(folder, width * 2 / 5))
-        }
+        Some(folder) if room >= FOLDER_MIN => format!("{} · {text}", tail(folder, room)),
         _ => text,
     }
 }
@@ -297,40 +299,67 @@ mod label_tests {
         assert_eq!(shown, format!("~/code/app · {plain}"));
     }
 
-    // A long path keeps its end, where the project is, and never takes more
-    // than two fifths of the row from the counter and the gate.
+    // The folder only gets the room the counter and the gate leave: at any
+    // width the row ends with the same gate text it had without the folder,
+    // or the folder is left out. It is never the gate that gives way.
     #[test]
-    fn a_long_folder_keeps_its_end_and_leaves_the_gate_room() {
-        let view = batch_view();
+    fn the_folder_never_displaces_the_gate() {
         let long = "/home/ana/work/clients/acme/services/billing/app";
-        for width in [80_u16, 50, 30] {
-            let shown = first_row_in(&view, width, long);
-            let head = shown.split(" · ").next().unwrap();
-            assert!(
-                head.starts_with('…') && head.ends_with("billing/app"),
-                "{shown}"
-            );
-            assert!(
-                head.chars().count() <= usize::from(width) * 2 / 5,
-                "{shown}"
-            );
-            assert!(shown.chars().count() <= usize::from(width), "{shown}");
+        let plain_batch = review_of(&[("a.txt", "one\n", false)]);
+        let worker = Arc::new(
+            BatchReview::labelled(
+                plain_batch.doc().clone(),
+                "code codex>default".into(),
+                crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+            )
+            .with_receipt(Some("review: high \u{b7} clean".into())),
+        );
+        for review in [plain_batch, worker] {
+            let view = ReviewView::new(review, (80, 20));
+            for width in [120_u16, 90, 80, 60, 50, 30, 24] {
+                let plain = first_row(&view, width);
+                for folder in ["~/app", long] {
+                    let shown = first_row_in(&view, width, folder);
+                    assert!(shown.chars().count() <= usize::from(width), "{shown}");
+                    assert!(
+                        shown == plain || shown.ends_with(&plain),
+                        "{width}: {shown:?} vs {plain:?}"
+                    );
+                }
+            }
         }
-        assert!(first_row_in(&view, 80, long).contains("remaining"));
     }
 
-    // Below the width where a folder and a counter can both be read, the
-    // counter and the gate win: the status line still names the folder.
+    // A wide pane shows the folder, and a long one keeps its end.
     #[test]
-    fn a_very_narrow_pane_shows_the_counter_alone() {
+    fn a_wide_pane_shows_the_folder_and_a_long_one_keeps_its_end() {
         let view = batch_view();
-        for width in [10_u16, 23] {
-            assert_eq!(
-                first_row_in(&view, width, "~/code/app"),
-                first_row(&view, width),
-                "{width}"
-            );
-        }
+        let long = "/home/ana/work/clients/acme/services/billing/app";
+        let plain = first_row(&view, 120);
+        assert_eq!(
+            first_row_in(&view, 120, "~/code/app"),
+            format!("~/code/app \u{b7} {plain}")
+        );
+        let wide = u16::try_from(plain.chars().count()).unwrap() + 3 + 20;
+        let cut = first_row_in(&view, wide, long);
+        let head = cut.split(" \u{b7} ").next().unwrap();
+        assert!(
+            head.starts_with('\u{2026}') && head.ends_with("billing/app"),
+            "{cut}"
+        );
+        assert!(head.chars().count() <= 20, "{cut}");
+    }
+
+    // Too little room for a useful folder: the counter alone.
+    #[test]
+    fn a_row_with_no_room_left_shows_the_counter_alone() {
+        let view = batch_view();
+        let plain = first_row(&view, 120);
+        let tight = u16::try_from(plain.chars().count()).unwrap() + 5;
+        assert_eq!(
+            first_row_in(&view, tight, "~/code/app"),
+            first_row(&view, tight)
+        );
     }
 
     // The refusal row (`y can't approve`, empty batch) names the folder too.

@@ -175,27 +175,21 @@ fn home_first() -> ChatState {
 fn the_current_row_is_marked_and_its_implications_are_spelled_out() {
     let drawn = text(&draw(&home_first(), 90, 10));
     assert!(drawn.contains("▸ current ⚠ · /h"), "{drawn}");
-    for implication in [
-        "no writes or git",
-        "cloud commands ask",
-        "orchestrator has no read scope",
-    ] {
-        assert!(drawn.contains(implication), "{implication}: {drawn}");
-    }
+    assert!(drawn.contains("no writes, commands or git"), "{drawn}");
 }
 
 #[test]
 fn the_warning_follows_the_selection_and_never_hides_a_refusal() {
     let mut chat = home_first();
     press(&mut chat, KeyCode::Down);
-    assert!(!text(&draw(&chat, 90, 10)).contains("no writes or git"));
+    assert!(!text(&draw(&chat, 90, 10)).contains("no writes, commands or git"));
     press(&mut chat, KeyCode::Up);
-    assert!(text(&draw(&chat, 90, 10)).contains("no writes or git"));
+    assert!(text(&draw(&chat, 90, 10)).contains("no writes, commands or git"));
     // A refusal takes the line: the reason is what the user must read.
     chat.folder_picker_mut().unwrap().note("folder not found");
     let drawn = text(&draw(&chat, 90, 10));
     assert!(drawn.contains("folder not found"), "{drawn}");
-    assert!(!drawn.contains("no writes or git"), "{drawn}");
+    assert!(!drawn.contains("no writes, commands or git"), "{drawn}");
 }
 
 #[test]

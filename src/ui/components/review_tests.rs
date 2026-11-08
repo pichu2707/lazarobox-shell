@@ -446,7 +446,7 @@ fn the_chat_view_passes_its_folder_to_the_review_header() {
     let chat = reviewing(numbered(30), 60, 14);
     let theme = LazaroboxTheme::default();
     let draw_with = |folder: Option<&str>| {
-        let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
         terminal
             .draw(|frame| {
                 let view = ChatView::new(&chat, &theme).now(at(0)).folder(folder);
@@ -457,8 +457,5 @@ fn the_chat_view_passes_its_folder_to_the_review_header() {
     };
     let plain = draw_with(None);
     assert!(!plain.contains("~/app"), "{plain}");
-    // The row is cut at the pane width: the folder only pushes the counter.
-    let headed = draw_with(Some("~/app"));
-    assert!(headed.starts_with("~/app · 1 file, +30 -0"), "{headed}");
-    assert!(headed.chars().count() <= 60, "{headed}");
+    assert_eq!(draw_with(Some("~/app")), format!("~/app · {plain}"));
 }

@@ -20,11 +20,11 @@ const TITLE: &str = "Choose the chat folder";
 const KEYS: &str = "↵ open · Tab complete · Esc keep this folder";
 const GATHERING: &str = "looking for folders…";
 const NONE: &str = "no suggestions: type a path";
-/// What choosing the folder the pane had implies when it is broad: the write
-/// and git refusals, the cloud commands that always ask, the orchestrator's
-/// read scope (`TOO_BROAD`).
-const BROAD: &str =
-    "⚠ broad folder: no writes or git; cloud commands ask; orchestrator has no read scope";
+/// What choosing the folder the pane had implies when it is broad (`$HOME`, a
+/// folder above it, a broad Windows drive folder), on every engine: the tools
+/// refuse writes (`files::broad_folder`), `run_command` and git
+/// (`exec::root_of`).
+const BROAD: &str = "⚠ broad folder: no writes, commands or git here";
 
 /// Where the parts of the picker sit in an area of `height` rows.
 struct Plan {
