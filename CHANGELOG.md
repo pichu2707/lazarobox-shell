@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.14.3] - 2026-11-08
+
 ### Changed
 
 - Folder picker: when you open a chat from a pane that is in `$HOME`, the
@@ -2353,7 +2355,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.2...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.3...HEAD
+[1.14.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.2...v1.14.3
 [1.14.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.1...v1.14.2
 [1.14.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.13.0...v1.14.0
