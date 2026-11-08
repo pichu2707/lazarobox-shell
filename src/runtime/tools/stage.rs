@@ -16,6 +16,7 @@ use super::{
 };
 use crate::core::ai::{
     chat::review::{Badge, BatchReview, ReviewDoc},
+    orchestra::WorkerKey,
     tools::{
         paths::SecretRoots,
         stage::{Batch, BatchId, Outcome, StageError, StageKey, State},
@@ -52,7 +53,13 @@ pub struct Stages {
     /// The generation of the next batch. One counter for every key: it only
     /// grows, so a generation is never handed out twice.
     next: u64,
+    /// The worker label a sealed batch was headed with, by key and the
+    /// generation it belongs to: an orphan review shows it again.
+    labels: HashMap<StageKey, (u64, WorkerLabel)>,
 }
+
+/// The ask label, worker and receipt line a worker's review is headed with.
+pub type WorkerLabel = (String, WorkerKey, Option<String>);
 
 impl Stages {
     /// The batch of `key` open for staging, or a new one when the key has none.
@@ -134,6 +141,14 @@ impl Stages {
         self.current(id)?.ask()
     }
 
+    /// Remembers the head of the review of the sealed batch `id`, for the
+    /// review of its orphan. A stale id is ignored.
+    pub fn label(&mut self, id: BatchId, label: WorkerLabel) {
+        if self.current(id).is_ok() {
+            self.labels.insert(id.key, (id.generation, label));
+        }
+    }
+
     /// The ask for the batch `id` is over without an answer (see
     /// [`Batch::ask_gone`]). A stale id is ignored.
     pub fn ask_gone(&mut self, id: BatchId) {
@@ -152,7 +167,14 @@ impl Stages {
     ) -> Result<(BatchId, BatchReview), StageError> {
         let batch = self.batches.get_mut(&key).ok_or(StageError::NotOrphan)?;
         let id = batch.review_orphan(turn_live)?;
-        Ok((id, BatchReview::new(ReviewDoc::build(batch))))
+        let doc = ReviewDoc::build(batch);
+        let review = match self.labels.get(&key) {
+            Some((generation, (label, worker, receipt))) if *generation == id.generation => {
+                BatchReview::labelled(doc, label.clone(), *worker).with_receipt(receipt.clone())
+            }
+            _ => BatchReview::new(doc),
+        };
+        Ok((id, review))
     }
 
     /// Applies the proposed batch `id` to the disk below `roots`.
@@ -176,6 +198,7 @@ impl Stages {
         if let Some(outcome) = closed {
             batch.resolve(id, outcome)?;
             self.batches.remove(&id.key);
+            self.labels.remove(&id.key);
         }
         Ok(result)
     }
@@ -184,6 +207,7 @@ impl Stages {
     pub fn discard(&mut self, id: BatchId) -> Result<(), StageError> {
         self.current(id)?.discard();
         self.batches.remove(&id.key);
+        self.labels.remove(&id.key);
         Ok(())
     }
 
@@ -200,6 +224,7 @@ impl Stages {
     /// entries were lost; `None` when nothing worth a notice was.
     pub fn discard_pane(&mut self, pane: PaneId) -> Option<usize> {
         let mut lost = 0;
+        self.labels.retain(|key, _| key.pane() != pane);
         self.batches.retain(|key, batch| {
             let ours = key.pane() == pane;
             if ours {

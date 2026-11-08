@@ -185,6 +185,9 @@ fn seal_in(
         .batch(key)
         .is_some_and(|batch| batch.state() == State::Proposed);
     stages.seal(id).map_err(|why| why.to_string())?;
+    if let Some(label) = &label {
+        stages.label(id, label.clone());
+    }
     let batch = stages.batch(key).ok_or(StageError::Stale.to_string())?;
     let doc = ReviewDoc::build(batch);
     let review = Arc::new(match label {

@@ -16,6 +16,8 @@ baseline.
   its ask showed) no longer discards the staged work; the batch stays as an
   orphan for you to review or discard, as the README promises. Only your own
   `n` or `Esc` discards it.
+- Orchestrator: the review of an orphaned worker batch keeps the worker label
+  (`n/m kind engine>model`) instead of opening unlabelled.
 
 ## [1.14.3] - 2026-11-08
 
