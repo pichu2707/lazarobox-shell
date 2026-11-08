@@ -114,6 +114,9 @@ impl Audit {
             Check::Flagged(missing)
         } else if flaggable.is_empty() && !other.iter().any(|claim| held(claim)) {
             Check::NotChecked("no path with a directory named")
+        } else if other.iter().any(|claim| !held(claim)) {
+            // Not flaggable, so not proven either: no "match" is claimed.
+            Check::NotChecked("a bare name or an absolute path is not compared")
         } else {
             Check::Matches
         }
