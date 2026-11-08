@@ -1,7 +1,7 @@
 use super::folder::{Probed, Refusal, Verdict};
 use super::folder_picker::*;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn found(source: Source, path: &str, verdict: Verdict) -> (Source, Result<Probed, Refusal>) {
     (
@@ -70,6 +70,95 @@ fn at_most_twelve_rows() {
     let rows = merge(many);
     assert_eq!(rows.len(), ROWS_MAX);
     assert_eq!(rows[0].path, PathBuf::from("/h/00"));
+}
+
+#[test]
+fn the_current_folder_is_the_first_row_even_when_it_is_broad() {
+    for verdict in [Verdict::Home, Verdict::AboveHome, Verdict::BroadDrive] {
+        let rows = merge(vec![
+            concrete(Source::LastUsed, "/h/last"),
+            found(Source::Current, "/h", verdict),
+        ]);
+        assert_eq!(paths(&rows), ["/h", "/h/last"], "{verdict:?}");
+        assert_eq!(rows[0].source, Source::Current);
+    }
+}
+
+#[test]
+fn a_current_folder_the_picker_cannot_accept_is_no_row() {
+    let rows = merge(vec![
+        found(Source::Current, "/usr", Verdict::Outside),
+        (Source::Current, Err(Refusal::Root)),
+        (Source::Current, Err(Refusal::NotFound)),
+        (Source::Current, Err(Refusal::NotAllowed)),
+        (Source::Current, Err(Refusal::NotAFolder)),
+        concrete(Source::Recent, "/h/ok"),
+    ]);
+    assert_eq!(paths(&rows), ["/h/ok"]);
+}
+
+#[test]
+fn a_broad_folder_from_any_other_source_is_still_no_row() {
+    let rows = merge(vec![
+        found(Source::Recent, "/h", Verdict::Home),
+        found(Source::PaneRoot, "/home", Verdict::AboveHome),
+        found(Source::LastShell, "/mnt/c", Verdict::BroadDrive),
+    ]);
+    assert!(rows.is_empty(), "{rows:?}");
+}
+
+#[test]
+fn the_current_folder_is_listed_once_under_its_own_source() {
+    let rows = merge(vec![
+        concrete(Source::LastUsed, "/h"),
+        found(Source::Current, "/h", Verdict::Home),
+        concrete(Source::Recent, "/h"),
+    ]);
+    assert_eq!(paths(&rows), ["/h"]);
+    assert_eq!(rows[0].source, Source::Current);
+}
+
+#[test]
+fn the_current_folder_counts_toward_the_row_cap() {
+    let mut many: Vec<_> = (0..20)
+        .map(|n| concrete(Source::Recent, &format!("/h/{n:02}")))
+        .collect();
+    many.push(found(Source::Current, "/h", Verdict::Home));
+    let rows = merge(many);
+    assert_eq!(rows.len(), ROWS_MAX);
+    assert_eq!(rows[0].path, PathBuf::from("/h"));
+    assert_eq!(rows[1].path, PathBuf::from("/h/00"));
+}
+
+#[test]
+fn the_current_row_is_preselected_ahead_of_the_last_used_folder() {
+    let mut p = FolderPicker::new(1, PathBuf::from("/h"), None);
+    p.set_rows(
+        1,
+        merge(vec![
+            concrete(Source::LastUsed, "/h/last"),
+            found(Source::Current, "/h", Verdict::Home),
+        ]),
+    );
+    assert_eq!(p.selected(), 0);
+    assert_eq!(p.rows()[0].path, PathBuf::from("/h"));
+    // Enter alone picks it; a held Enter does not.
+    assert_eq!(
+        p.on_key(&press(KeyCode::Enter), true),
+        PickerOutcome::Handled
+    );
+    assert_eq!(
+        key(&mut p, KeyCode::Enter),
+        PickerOutcome::Probe(PathBuf::from("/h"))
+    );
+}
+
+#[test]
+fn the_picker_remembers_the_current_folder_it_was_opened_for() {
+    let p = FolderPicker::new(1, PathBuf::from("/h"), None);
+    assert_eq!(p.current(), None);
+    let p = p.with_current(Some(PathBuf::from("/h")));
+    assert_eq!(p.current(), Some(Path::new("/h")));
 }
 
 fn names(names: &[String]) -> Completion {

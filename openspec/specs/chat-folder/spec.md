@@ -44,7 +44,7 @@ When a chat pane is opened and its folder is broad, the pane MUST show a folder 
 #### Scenario: Opened from an ancestor or a system folder [auto]
 - GIVEN `HOME=/home/u` and the focused pane's folder is `/home`, and in other runs `/usr` and `/srv/x`
 - WHEN a chat is opened
-- THEN the picker is shown each time and none of those folders is a candidate row
+- THEN the picker is shown each time; `/usr` and `/srv/x` are not candidate rows, and `/home` is the first row as the current folder (see Picker candidates)
 
 #### Scenario: Opened from a project [auto]
 - GIVEN the focused pane's folder is an acceptable folder `/w/proj`
@@ -62,7 +62,7 @@ When a chat pane is opened and its folder is broad, the pane MUST show a folder 
 - THEN the picker appears with that project selected and one Enter opens the chat there
 
 ### Requirement: Picker candidates
-The picker MUST offer these candidates, each shown once (duplicates by resolved path collapsed), only when they are acceptable folders and not `$HOME`: the last used project folder, the git roots of the current tab's shell panes, recent chat folders from the conversation store (newest last activity first), and the last non-home shell cwd of the tab. The last used project folder MUST be first and pre-selected, so one Enter accepts it; when there is none, the first candidate is highlighted. A highlighted candidate is never accepted without a key press. The list MUST be bounded (at most 12 rows). A candidate that no longer exists when the picker is drawn or accepted MUST be omitted or refused, never accepted. A store that is unavailable contributes no candidates and does not block the picker. The picker also MUST have a typed-path field (see next requirement).
+The picker MUST offer these candidates, each shown once (duplicates by resolved path collapsed), only when they are acceptable folders and not `$HOME`: the last used project folder, the git roots of the current tab's shell panes, recent chat folders from the conversation store (newest last activity first), and the last non-home shell cwd of the tab. The one exception is the current folder: when a NEW chat opens the picker because the folder of its pane is broad, and that folder is one the picker accepts when typed (`$HOME`, an ancestor of it other than `/`, a broad Windows drive folder; never `/`, a system folder or a folder outside `$HOME`), that folder MUST be the first row, labelled `current`, and MUST be pre-selected, so one Enter keeps the user where they are. The row MUST carry a visible warning of what a broad folder implies: no writes or git, commands of a cloud engine always ask, and the orchestrator has no read scope. A folder that cannot be accepted gets no row. The current row replaces the last used folder as the pre-selected one; the other candidates keep their order. When there is no current row, the last used project folder MUST be first and pre-selected, so one Enter accepts it; when there is none, the first candidate is highlighted. The picker that opens over a resumed conversation has no current row. A highlighted candidate is never accepted without a key press. The list MUST be bounded (at most 12 rows). A candidate that no longer exists when the picker is drawn or accepted MUST be omitted or refused, never accepted. A store that is unavailable contributes no candidates and does not block the picker. The picker also MUST have a typed-path field (see next requirement).
 
 #### Scenario: Order and pre-selection [auto]
 - GIVEN a last used project A, two panes with git roots B and C, recent chat folders A and D, and a shell cwd E
@@ -73,6 +73,21 @@ The picker MUST offer these candidates, each shown once (duplicates by resolved 
 - GIVEN the picker with A pre-selected
 - WHEN Enter is pressed
 - THEN the chat folder is A and the conversation list opens
+
+#### Scenario: The folder the user is in comes first [auto]
+- GIVEN a chat opened from a pane in `$HOME` and a last used project A
+- WHEN the picker opens
+- THEN the first row is `$HOME`, labelled `current` with the warning, it is highlighted, A is the second row, and nothing is chosen until a key is pressed
+
+#### Scenario: One Enter keeps the folder [auto]
+- GIVEN the picker with the current row highlighted
+- WHEN Enter is pressed (not held)
+- THEN the chat folder is `$HOME` and the conversation list opens; a held Enter chooses nothing and Esc behaves as before
+
+#### Scenario: A current folder that cannot be accepted is not a row [auto]
+- GIVEN a chat opened from a pane in `/`, `/usr` or an unknown folder
+- WHEN the picker opens
+- THEN no current row exists and the last used project is pre-selected as before
 
 #### Scenario: Unusable candidates are dropped [auto]
 - GIVEN candidates that are `$HOME`, `/`, a deleted directory and a secret root
@@ -136,7 +151,7 @@ Esc in the picker MUST keep today's behaviour: the chat opens in the broad folde
 - THEN the picker is still open and the chat folder is unchanged
 
 ### Requirement: Explicit `$HOME`
-`$HOME` MUST be accepted as a chat folder only when the user explicitly picks it by typing it (`~`, `$HOME`'s path) in the picker or with `/cd`; it is never a candidate row. Choosing it does not relax any tool policy: tools that refuse a `$HOME` root keep refusing, and reads that ask in a broad folder keep asking, with a cloud engine as with any other. A chat whose folder is `$HOME` shows the picker again when it is reopened or resumed (the folder is broad).
+`$HOME` MUST be accepted as a chat folder only when the user explicitly picks it by typing it (`~`, `$HOME`'s path) in the picker or with `/cd`, or by pressing Enter on the `current` row of a picker opened from a pane in `$HOME`; it is never any other candidate row. Choosing it does not relax any tool policy: tools that refuse a `$HOME` root keep refusing, and reads that ask in a broad folder keep asking, with a cloud engine as with any other. A chat whose folder is `$HOME` shows the picker again when it is reopened or resumed (the folder is broad).
 
 #### Scenario: Home picker every time [auto]
 - GIVEN a conversation whose stored folder is an explicit `$HOME`

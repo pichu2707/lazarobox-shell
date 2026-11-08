@@ -139,7 +139,7 @@ impl App {
                     path,
                     purpose: Purpose::Open,
                 }),
-                None => effects.extend(self.open_folder_picker(pane)),
+                None => effects.extend(self.open_folder_picker(pane, None)),
             }
         }
         effects

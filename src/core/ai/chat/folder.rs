@@ -237,9 +237,11 @@ impl ChatState {
     }
 
     /// Shows an empty picker named `id`; typed relative paths read against the folder
-    /// the chat has now.
-    pub fn open_folder_picker(&mut self, id: u64, home: PathBuf) {
-        self.folder_picker = Some(FolderPicker::new(id, home, self.origin_cwd.clone()));
+    /// the chat has now. `current` is the broad folder the pane had, offered
+    /// as the first candidate.
+    pub fn open_folder_picker(&mut self, id: u64, home: PathBuf, current: Option<PathBuf>) {
+        self.folder_picker =
+            Some(FolderPicker::new(id, home, self.origin_cwd.clone()).with_current(current));
     }
 
     pub fn close_folder_picker(&mut self) {
@@ -297,8 +299,9 @@ impl ChatState {
     }
 }
 
-/// Whether a verdict opens the picker: never a candidate row, never silently
-/// chosen.
+/// Whether a verdict opens the picker. Never silently chosen; only the folder
+/// the pane had can be a candidate row of its own (`Source::Current`), and
+/// then only when the picker accepts it (`typed`).
 pub fn is_broad(verdict: Verdict) -> bool {
     !matches!(verdict, Verdict::Concrete)
 }

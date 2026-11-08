@@ -10,6 +10,16 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- Folder picker: when you open a chat from a pane that is in `$HOME`, the
+  first row is now that folder (`current`, preselected, with a warning that a
+  broad folder means no writes or git, commands that always ask with a cloud
+  engine and no orchestrator read scope) instead of the last used project, so
+  one Enter no longer moves you to another project. `/`, system folders and
+  folders outside `$HOME` are still never a row, and nothing is chosen
+  without a key press.
+
 ## [1.14.2] - 2026-11-07
 
 ### Fixed
