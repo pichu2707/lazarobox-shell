@@ -138,11 +138,10 @@ async fn a_non_200_pull_fails_with_the_status_and_the_error() {
 
 #[tokio::test]
 async fn nothing_listening_cannot_connect() {
-    // A port nothing listens on: bind one and let it go.
-    let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let closed = free.local_addr().unwrap().port();
-    drop(free);
-    let (end, _) = pull_to("127.0.0.1", closed, PULL_PATH).await;
+    // A port nothing listens on. On Linux the helper keeps it bound, so no
+    // parallel test can be handed it; on macOS it relies on random ports.
+    let refused = crate::runtime::refused_port::RefusedPort::new();
+    let (end, _) = pull_to("127.0.0.1", refused.port(), PULL_PATH).await;
     assert_eq!(end, Err(PULL_CANNOT_CONNECT.to_owned()));
 }
 
