@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.14.4] - 2026-11-08
+
 ### Fixed
 
 - Batch review: Ctrl+C on an open review (or on a proposal cancelled before
@@ -2367,7 +2369,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.3...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.4...HEAD
+[1.14.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.3...v1.14.4
 [1.14.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.2...v1.14.3
 [1.14.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.1...v1.14.2
 [1.14.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.0...v1.14.1
