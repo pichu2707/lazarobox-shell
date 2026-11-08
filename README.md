@@ -623,7 +623,7 @@ Mientras hay un bloque de razonamiento en curso, la línea de espera no se dibuj
 
 - Empieza en la carpeta actual del panel **con foco** en el momento de pulsar `Ctrl+Espacio` y `c`. Un `cd` posterior en un shell no la mueve: se cambia con el selector al abrir el chat o con `/cd` (más abajo).
 - Los CLIs (**codex**, **claude**, **gemini**) corren en una carpeta privada propia (`cli-cwd`; con gemini conectado, una carpeta `work` por turno) y llegan al proyecto solo por las herramientas de lazarobox. Pedirle al modelo que haga `cd` no sirve de nada.
-- Con un motor en la nube y la carpeta del chat en `$HOME` o en `/`, todo comando se rechaza (`the chat's folder is your home or /`).
+- Con la carpeta del chat en `$HOME`, una carpeta superior o `/`, la herramienta `run_command` del modelo no ejecuta nada (`where commands cannot run`). Con un motor en la nube, además, todo comando de tu panel en modo `run` pide confirmación (`the chat's folder is your home or /`).
 - Si lanzas lazarobox desde rofi o un lanzador de escritorio, arranca en `$HOME`: al abrir el chat aparece el selector de carpeta y eliges el proyecto sin salir de lazarobox.
 
 #### El selector de carpeta y `/cd`
@@ -983,7 +983,7 @@ git_write = false  # git_add y git_commit (escriben; cada una pide tu `y`)
 github = false     # gh_issue_list, gh_issue_view y gh_pr_view (solo lectura; ver GitHub)
 ```
 
-La pestaña **AI** del menú muestra las filas **Search**, **Write**, **Exec**, **Git**, **Git write** y **GitHub** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`); **GitHub** lleva la suya (`Reads issues and PRs; locks auto-run in that chat`), porque solo lee. Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
+La pestaña **Tools** del menú muestra las filas **Search**, **Write**, **Exec**, **Git**, **Git write** y **GitHub** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`); **GitHub** lleva la suya (`Reads issues and PRs; locks auto-run in that chat`), porque solo lee. Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
 
 #### Búsqueda: `glob` y `grep`
 
@@ -1135,7 +1135,7 @@ Después del commit, lazarobox compara el árbol que se ha confirmado con el que
 
 #### GitHub: `gh_issue_list`, `gh_issue_view` y `gh_pr_view`
 
-Tres herramientas de **solo lectura** dejan que el modelo lea los issues y las pull requests del repositorio de la carpeta del chat. Están **desactivadas por defecto**: se activan con `github = true` en `[ai.tools]` (o con la fila **GitHub** de la pestaña **AI**), o solo para un chat con `/github` (ver más abajo), y solo actúan si `enabled = true` y el motor tiene las herramientas verificadas. Los _workers_ y el orquestador nunca las tienen.
+Tres herramientas de **solo lectura** dejan que el modelo lea los issues y las pull requests del repositorio de la carpeta del chat. Están **desactivadas por defecto**: se activan con `github = true` en `[ai.tools]` (o con la fila **GitHub** de la pestaña **Tools**), o solo para un chat con `/github` (ver más abajo), y solo actúan si `enabled = true` y el motor tiene las herramientas verificadas. Los _workers_ y el orquestador nunca las tienen.
 
 | Herramienta | Qué devuelve |
 |---|---|
@@ -1389,14 +1389,14 @@ El orquestador reparte un trabajo de varios pasos entre **workers**: un modelo c
 
 **Cómo se activa (dos interruptores).**
 
-1. **Interruptor global.** En la pestaña **AI** del menú (`Ctrl+Espacio` `m`), la fila `Orchestrator` (`h`/`l`, o `Enter`; `s` guarda) escribe `[ai.orchestrator] enabled`. Con él apagado no existen ni las herramientas del orquestador, ni la insignia, ni la tecla `Ctrl+O`: los chats son los de siempre.
+1. **Interruptor global.** En la pestaña **Tools** del menú (`Ctrl+Espacio` `m`), la fila `Orchestrator` (`h`/`l`, o `Enter`; `s` guarda) escribe `[ai.orchestrator] enabled`. Con él apagado no existen ni las herramientas del orquestador, ni la insignia, ni la tecla `Ctrl+O`: los chats son los de siempre.
 2. **Interruptor por panel.** En un panel de chat, `Ctrl+O` activa o desactiva su modo **ORCH** (insignia `ORCH`, junto a `AUTO` y `RUN`). Solo vive en memoria: cada panel nuevo empieza apagado y nada se guarda. Un panel con una ejecución en curso no cambia de modo; cancélala primero (`Ctrl+C`). Con el interruptor global activo y el motor listo, la línea sobre el mensaje de un panel en reposo recuerda la tecla (`Ctrl+O: orchestrate this pane` / `Ctrl+O: stop orchestrating`); la guía del motor, el aviso del proveedor y las alertas de fallo tienen prioridad sobre ella. Con una ejecución en curso esa línea dice que la canceles primero solo si no queda ningún worker vivo (con workers vivos muestra las teclas de worker); pulsar `Ctrl+O` durante una ejecución muestra siempre ese texto como aviso. El cambio vale desde el siguiente mensaje.
 
 Los dos cambios se aplican desde el siguiente mensaje y no tocan un turno que ya corre. Con la configuración por defecto de Zellij, `Ctrl+O` abre su modo Session y no llega a lazarobox: bloquéalo (`Ctrl+G` en Zellij) o reasigna su tecla (no comprobado en un Zellij real). tmux lo deja pasar. El orquestador necesita las herramientas activadas (fila `Tools`) y un motor con herramientas verificadas (`claude`, `codex`, `gemini` u `ollama`); si no, el panel lo dice y no envía nada.
 
 **Qué pierde el chat en modo ORCH.** El coordinador de un panel ORCH solo recibe las herramientas de lectura y las del orquestador. Aunque `[ai.tools]` tenga `write`, `exec` o `github` en `true` (el menú los muestra activados), el propio chat no puede escribir archivos, ejecutar comandos ni leer GitHub: delega. Quien escribe es un worker `code`, y sus cambios pasan por la revisión por lotes. Al activar ORCH con `Ctrl+O`, el panel lo dice con dos líneas de sistema (`ORCH on` y la explicación); `Ctrl+O` de nuevo vuelve a un chat normal con todas las herramientas guardadas. Si el coordinador responde con fragmentos de código en lugar de lanzar un worker, apaga ORCH o pídele de forma explícita que delegue en un worker `code`.
 
-**La fila `orchestrate`.** En la pestaña **AI** hay una fila más de tarea, `orchestrate` (`[ai.tasks.orchestrate]`), que elige el motor y el modelo del coordinador; sin asignar usa el de `general`, y su selector tiene `(default · use general)` como primera entrada. Un panel ORCH usa siempre ese motor, nunca el de `chat` ni otro de reemplazo. Elegir **Ollama** u otro servidor local para esta fila se permite pero lleva la marca **`not recommended`**: un modelo local pequeño no suele saber coordinar, y la marca no bloquea ni cambia nada.
+**La fila `orchestrate`.** En la pestaña **Models** hay una fila más de tarea, `orchestrate` (`[ai.tasks.orchestrate]`), que elige el motor y el modelo del coordinador; sin asignar usa el de `general`, y su selector tiene `(default · use general)` como primera entrada. Un panel ORCH usa siempre ese motor, nunca el de `chat` ni otro de reemplazo. Elegir **Ollama** u otro servidor local para esta fila se permite pero lleva la marca **`not recommended`**: un modelo local pequeño no suele saber coordinar, y la marca no bloquea ni cambia nada.
 
 **Cómo corre una ejecución.** Con ORCH activo, tu mensaje es el objetivo de una ejecución:
 
