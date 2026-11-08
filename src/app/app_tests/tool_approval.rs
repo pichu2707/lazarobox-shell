@@ -422,6 +422,36 @@ fn a_worker_ending_withdraws_its_own_asks_and_promotes_the_next_worker() {
     );
 }
 
+// The review the user opened on an orphan (no call) is the user's: a worker
+// ending, the one whose label heads it included, must not take it away.
+#[test]
+fn a_worker_ending_does_not_withdraw_a_review_the_user_opened() {
+    use crate::core::ai::{
+        chat::{review::BatchReview, review_view::testing::numbered},
+        orchestra::{WorkerKey, worker::WorkerStatus},
+        tools::stage::{BatchId, StageKey},
+    };
+    let (mut a, _turn) = live();
+    let doc = numbered(3).doc().clone();
+    let review = std::sync::Arc::new(BatchReview::labelled(
+        doc,
+        "1/1 code x>y".to_owned(),
+        WorkerKey::for_test(1, 2),
+    ));
+    let id = BatchId {
+        key: StageKey::Pane(id2()),
+        generation: 7,
+    };
+    a.update(AppEvent::Batch(id2(), BatchEvent::Review(id, review)));
+    assert!(chat(&a, id2()).approvals().pending().is_some());
+    worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    assert!(
+        chat(&a, id2()).approvals().pending().is_some(),
+        "the user's review stays"
+    );
+    assert_eq!(chat(&a, id2()).orphan(), Some(id));
+}
+
 // A worker's ask that reaches the app after the worker's terminal row (it
 // was announced just as the worker was cancelled) is refused, never shown; a
 // retry of the worker (running again) asks normally.
