@@ -21,6 +21,9 @@ pub const ROWS_MAX: usize = 12;
 /// Where a candidate came from, in the order the rows are listed.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Source {
+    /// The folder the pane had when the chat was opened. The only source
+    /// that may be a broad folder (`$HOME`), and always listed first.
+    Current,
     /// The folder the chat used last.
     LastUsed,
     /// The git root of a pane of the tab.
@@ -39,17 +42,23 @@ pub struct Row {
 }
 
 /// Orders probed candidates: by source, then as found; the same real path
-/// once; only folders a chat may work in (`Concrete`); at most [`ROWS_MAX`].
+/// once; only folders a chat may work in (`Concrete`), plus the current folder
+/// when the picker accepts it typed (`$HOME`, a folder above it, a broad
+/// drive folder: never `/`, never an outside one); at most [`ROWS_MAX`].
 pub fn merge(found: Vec<(Source, Result<Probed, Refusal>)>) -> Vec<Row> {
     let mut found: Vec<_> = found
         .into_iter()
-        .filter_map(|(source, result)| match result {
-            Ok(Probed {
-                path,
-                verdict: Verdict::Concrete,
-                ..
-            }) => Some(Row { path, source }),
-            _ => None,
+        .filter_map(|(source, result)| {
+            let probed = result.ok()?;
+            let accepted = if source == Source::Current {
+                typed(Ok(probed.verdict)).is_ok()
+            } else {
+                probed.verdict == Verdict::Concrete
+            };
+            accepted.then_some(Row {
+                path: probed.path,
+                source,
+            })
         })
         .collect();
     // Stable: candidates of one source keep the order they were found in.
@@ -163,6 +172,9 @@ pub struct FolderPicker {
     state: State,
     /// A completion was asked for and has not answered.
     completing: bool,
+    /// The folder the pane had, when it is broad and the picker can accept it:
+    /// it is gathered as the first candidate.
+    current: Option<PathBuf>,
 }
 
 impl FolderPicker {
@@ -177,7 +189,19 @@ impl FolderPicker {
             error: None,
             state: State::Gathering,
             completing: false,
+            current: None,
         }
+    }
+
+    /// Offers `current` (the folder the pane had) as the first candidate.
+    #[must_use]
+    pub fn with_current(mut self, current: Option<PathBuf>) -> Self {
+        self.current = current;
+        self
+    }
+
+    pub fn current(&self) -> Option<&Path> {
+        self.current.as_deref()
     }
 
     pub fn id(&self) -> u64 {

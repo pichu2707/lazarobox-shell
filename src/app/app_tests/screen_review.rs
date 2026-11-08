@@ -13,6 +13,8 @@ use crate::core::ai::chat::{
     review::ARM_DELAY,
 };
 use crate::core::ai::config::ApprovalMode;
+use crate::ui::theme::LazaroboxTheme;
+use ratatui::{Terminal, backend::TestBackend};
 
 fn screen_ask(pane: u32, scrollback: Option<u32>) -> ApprovalAsk {
     ApprovalAsk::Screen {
@@ -232,4 +234,44 @@ fn a_screen_ask_refused_before_prompting_says_so_in_the_chat() {
     );
     // The first review is untouched and nothing else was said.
     assert_eq!(pending(&a).map(|p| p.1), Some(Some((turn, CallId(1)))));
+}
+
+/// The first row of the chat pane (pane 2) as the app draws it.
+fn header_row(a: &mut App) -> String {
+    // Wide enough for the folder to have room beside the counter.
+    a.update(AppEvent::Resize {
+        cols: 200,
+        rows: 25,
+    });
+    let theme = LazaroboxTheme::default();
+    let mut terminal = Terminal::new(TestBackend::new(200, 25)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, a, &theme))
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    // The chat is the right split: its header is the first row.
+    (0..buf.area.width)
+        .map(|x| buf[(x, 0)].symbol())
+        .collect::<String>()
+}
+
+#[test]
+fn the_review_header_names_the_folder_the_batch_lands_in() {
+    let (mut a, turn) = live();
+    shell_output(&mut a, b"$ ls\r\nREADME.md\r\n");
+    announce_now(&mut a, turn, 1, screen_ask(1, None));
+    a.apply_folder(id2(), "/w/app".into());
+    let shown = header_row(&mut a);
+    assert!(shown.contains("/w/app · "), "{shown}");
+}
+
+#[test]
+fn the_review_header_writes_home_as_a_tilde() {
+    let (mut a, turn) = live();
+    a.home = Some(PathBuf::from("/w"));
+    shell_output(&mut a, b"$ ls\r\nREADME.md\r\n");
+    announce_now(&mut a, turn, 1, screen_ask(1, None));
+    a.apply_folder(id2(), "/w/app".into());
+    let shown = header_row(&mut a);
+    assert!(shown.contains("~/app · "), "{shown}");
 }

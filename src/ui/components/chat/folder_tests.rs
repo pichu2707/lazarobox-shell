@@ -30,7 +30,7 @@ fn row(path: &str, source: Source) -> Row {
 fn picking() -> ChatState {
     let mut chat = ChatState::new(Some("/h".into()));
     chat.composer_mut().paste("a draft in the composer");
-    chat.open_folder_picker(ID, "/h".into());
+    chat.open_folder_picker(ID, "/h".into(), None);
     chat
 }
 
@@ -159,4 +159,42 @@ fn a_long_path_keeps_its_source_in_view() {
     let chat = with_rows(picking(), vec![row(&long, Source::PaneRoot)]);
     let drawn = text(&draw(&chat, 30, 10));
     assert!(drawn.contains("pane"), "{drawn}");
+}
+
+fn home_first() -> ChatState {
+    with_rows(
+        picking(),
+        vec![
+            row("/h", Source::Current),
+            row("/w/client-a", Source::LastUsed),
+        ],
+    )
+}
+
+#[test]
+fn the_current_row_is_marked_and_its_implications_are_spelled_out() {
+    let drawn = text(&draw(&home_first(), 90, 10));
+    assert!(drawn.contains("▸ current ⚠ · /h"), "{drawn}");
+    assert!(drawn.contains("no writes, commands or git"), "{drawn}");
+}
+
+#[test]
+fn the_warning_follows_the_selection_and_never_hides_a_refusal() {
+    let mut chat = home_first();
+    press(&mut chat, KeyCode::Down);
+    assert!(!text(&draw(&chat, 90, 10)).contains("no writes, commands or git"));
+    press(&mut chat, KeyCode::Up);
+    assert!(text(&draw(&chat, 90, 10)).contains("no writes, commands or git"));
+    // A refusal takes the line: the reason is what the user must read.
+    chat.folder_picker_mut().unwrap().note("folder not found");
+    let drawn = text(&draw(&chat, 90, 10));
+    assert!(drawn.contains("folder not found"), "{drawn}");
+    assert!(!drawn.contains("no writes, commands or git"), "{drawn}");
+}
+
+#[test]
+fn a_narrow_pane_keeps_the_current_row_and_cuts_the_warning() {
+    let drawn = text(&draw(&home_first(), 30, 10));
+    assert!(drawn.contains("▸ current ⚠ · /h"), "{drawn}");
+    assert!(drawn.lines().all(|l| l.chars().count() <= 30), "{drawn}");
 }

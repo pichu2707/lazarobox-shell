@@ -1201,3 +1201,11 @@ fn a_bare_cd_or_a_refused_cd_keeps_the_stored_folder_of_a_resume() {
         assert_eq!(folder_of(&a), Some(PathBuf::from("/w/stored")), "{text}");
     }
 }
+
+#[test]
+fn a_resumed_chat_without_a_stored_folder_offers_no_current_row() {
+    let mut a = resuming();
+    a.update(resumed_in(None));
+    let picker = super::run_pane::chat(&a, id2()).folder_picker();
+    assert_eq!(picker.map(|p| p.current()), Some(None));
+}

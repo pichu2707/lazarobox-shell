@@ -376,7 +376,7 @@ fn a_reopened_picker_never_takes_the_answers_of_the_closed_one() {
     broad(&mut a);
     let first = picker_id(&a);
     a.update(key_code(KeyCode::Esc));
-    a.open_folder_picker(id2());
+    a.open_folder_picker(id2(), None);
     let second = picker_id(&a);
     assert_ne!(first, second);
     a.update(AppEvent::FoldersProbed {
@@ -708,4 +708,122 @@ fn picking_another_folder_after_an_outside_open_adds_no_outside_line() {
     assert!(!systems(&a).iter().any(|l| l.contains("cannot read")));
     a.update(key_code(KeyCode::Esc));
     assert!(!systems(&a).iter().any(|l| l.contains("cannot read")));
+}
+
+// ---- the folder the pane had comes first ------------------------------------
+
+/// The `Current` candidates of the gathering in `effects`.
+fn currents(effects: &[Effect]) -> Vec<PathBuf> {
+    gathers(effects)
+        .into_iter()
+        .flat_map(|(paths, _)| paths)
+        .filter(|(source, _)| *source == Source::Current)
+        .map(|(_, path)| path)
+        .collect()
+}
+
+#[test]
+fn a_broad_folder_the_picker_accepts_is_gathered_as_the_current_candidate() {
+    for verdict in [Verdict::Home, Verdict::AboveHome, Verdict::BroadDrive] {
+        for history in [false, true] {
+            let mut a = app();
+            a.history = history;
+            open(&mut a);
+            let mut effects = answer(&mut a, Purpose::Open, judged("/h", verdict));
+            if history {
+                effects = a.update(AppEvent::Store(StoreReply::RecentFolders {
+                    pane: id2(),
+                    folders: vec!["/w/a".into()],
+                }));
+            }
+            assert_eq!(
+                currents(&effects),
+                vec![PathBuf::from("/h")],
+                "{verdict:?} history={history}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_folder_the_picker_cannot_accept_gets_no_current_candidate() {
+    let cases = [
+        judged("/usr", Verdict::Outside),
+        Err(Refusal::NotFound),
+        Err(Refusal::NotAllowed),
+        Err(Refusal::NotAFolder),
+        Err(Refusal::Root),
+    ];
+    for result in cases {
+        let mut a = app();
+        open(&mut a);
+        let effects = answer(&mut a, Purpose::Open, result.clone());
+        assert!(picker_open(&a), "{result:?}");
+        assert!(currents(&effects).is_empty(), "{result:?}: {effects:?}");
+        assert_eq!(chat(&a, id2()).folder_picker().unwrap().current(), None);
+    }
+}
+
+/// The picker of a broad open, with the current row and the last used one.
+fn home_and_last_used(a: &mut App) {
+    broad(a);
+    a.update(AppEvent::FoldersProbed {
+        pane: id2(),
+        id: picker_id(a),
+        busy: false,
+        found: vec![
+            (Source::LastUsed, judged("/w/a", Verdict::Concrete)),
+            (Source::Current, judged("/h", Verdict::Home)),
+        ],
+    });
+}
+
+#[test]
+fn the_current_row_is_first_and_preselected_instead_of_the_last_used_folder() {
+    let mut a = app();
+    home_and_last_used(&mut a);
+    let picker = chat(&a, id2()).folder_picker().unwrap();
+    assert_eq!(picker.rows()[0].source, Source::Current);
+    assert_eq!(picker.rows()[1].source, Source::LastUsed);
+    assert_eq!(picker.selected(), 0);
+    // No key was pressed: nothing was chosen.
+    assert!(picker_open(&a));
+    assert_eq!(chat(&a, id2()).origin_cwd(), Some(Path::new(LAUNCH)));
+}
+
+#[test]
+fn enter_on_the_current_row_opens_the_chat_in_the_folder_it_is_in() {
+    let mut a = app();
+    a.history = true;
+    home_and_last_used(&mut a);
+    let effects = a.update(enter());
+    assert_eq!(probes(&effects), vec![(PathBuf::from("/h"), pick(&a))]);
+    let effects = answer_pick(&mut a, judged("/h", Verdict::Home));
+    assert!(!picker_open(&a));
+    assert_eq!(chat(&a, id2()).origin_cwd(), Some(Path::new("/h")));
+    assert!(origins_of_prepares(&effects).contains(&Some(PathBuf::from("/h"))));
+    assert_eq!(lists(&effects), 1, "{effects:?}");
+}
+
+#[test]
+fn a_held_enter_does_not_pick_the_current_row_and_esc_still_keeps_the_folder() {
+    let mut a = app();
+    home_and_last_used(&mut a);
+    let effects = a.update(super::chat_live::repeat(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(probes(&effects).is_empty());
+    assert!(picker_open(&a));
+    a.update(key_code(KeyCode::Esc));
+    assert!(!picker_open(&a));
+    assert_eq!(chat(&a, id2()).origin_cwd(), Some(Path::new(LAUNCH)));
+}
+
+#[test]
+fn the_current_row_refused_at_the_second_look_keeps_the_picker_with_the_reason() {
+    let mut a = app();
+    home_and_last_used(&mut a);
+    a.update(enter());
+    answer_pick(&mut a, Err(Refusal::NotFound));
+    let picker = chat(&a, id2()).folder_picker().unwrap();
+    assert_eq!(picker.error(), Some("folder not found"));
+    assert_eq!(picker.rows()[0].source, Source::Current);
 }

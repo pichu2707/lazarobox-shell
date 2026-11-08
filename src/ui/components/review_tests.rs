@@ -438,3 +438,24 @@ fn a_commit_review_shows_the_notice_the_message_and_the_staged_diff() {
     }
     insta::assert_snapshot!("commit_review_60x20", text);
 }
+
+// The chat view hands the folder it was given to the review, and only there:
+// a view built without one draws the header as it always did.
+#[test]
+fn the_chat_view_passes_its_folder_to_the_review_header() {
+    let chat = reviewing(numbered(30), 60, 14);
+    let theme = LazaroboxTheme::default();
+    let draw_with = |folder: Option<&str>| {
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+        terminal
+            .draw(|frame| {
+                let view = ChatView::new(&chat, &theme).now(at(0)).folder(folder);
+                frame.render_widget(view, frame.area());
+            })
+            .unwrap();
+        rows(terminal.backend())[0].clone()
+    };
+    let plain = draw_with(None);
+    assert!(!plain.contains("~/app"), "{plain}");
+    assert_eq!(draw_with(Some("~/app")), format!("~/app · {plain}"));
+}

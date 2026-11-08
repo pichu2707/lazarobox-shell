@@ -51,6 +51,7 @@ pub struct ChatView<'a> {
     copy: Option<ChatMarks>,
     orchestrating: bool,
     quiet_guidance: bool,
+    folder: Option<&'a str>,
 }
 
 impl<'a> ChatView<'a> {
@@ -64,7 +65,15 @@ impl<'a> ChatView<'a> {
             now: None,
             copy: None,
             orchestrating: false,
+            folder: None,
         }
+    }
+
+    /// The chat's folder as the user reads it (`~` for `$HOME`, sanitized):
+    /// the batch review names it in its header.
+    pub fn folder(mut self, folder: Option<&'a str>) -> Self {
+        self.folder = folder;
+        self
     }
 
     /// Whether the pane orchestrates (the global gate and its ORCH mode both
@@ -401,7 +410,7 @@ impl ChatView<'_> {
         }
         if let Some(view) = self.chat.approvals().review() {
             let now = self.now.unwrap_or_else(Instant::now);
-            review::render(view, now, self.theme, area, buf);
+            review::render(view, now, self.folder, self.theme, area, buf);
             return;
         }
         if self.chat.run_view().is_some() {

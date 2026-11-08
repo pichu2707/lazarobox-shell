@@ -4,7 +4,7 @@
 use super::*;
 use crate::core::ai::{
     chat::{
-        folder::{CdArg, Command, Probed, Purpose, Refusal, Verdict, parse_command},
+        folder::{CdArg, Command, Probed, Purpose, Refusal, Verdict, parse_command, typed},
         folder_picker::{
             Completion, PickerOutcome, RECENT_ASK, Source, completed, completion_target, merge,
         },
@@ -35,7 +35,13 @@ impl App {
 
     /// Shows the picker over chat `id` and starts gathering its candidates:
     /// the store's recent folders first (history on), then the judging.
-    pub(super) fn open_folder_picker(&mut self, id: PaneId) -> Vec<Effect> {
+    /// `current` is the broad folder a new chat's pane had: it becomes the
+    /// first candidate, so the folder the user is in is the one offered first.
+    pub(super) fn open_folder_picker(
+        &mut self,
+        id: PaneId,
+        current: Option<PathBuf>,
+    ) -> Vec<Effect> {
         let home = self.home.clone().unwrap_or_else(|| PathBuf::from("/"));
         // Session-unique, never per pane: a reopened picker is another one.
         self.folder_seq += 1;
@@ -43,7 +49,7 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
-        chat.open_folder_picker(picker, home);
+        chat.open_folder_picker(picker, home, current);
         self.dirty = true;
         if self.history {
             let limit = RECENT_ASK;
@@ -53,23 +59,30 @@ impl App {
         }
     }
 
-    /// The candidates of chat `id`: the folders of `recent` (the newest is the
-    /// last used one), the shells of its tab and the shell used last.
+    /// The candidates of chat `id`: the folder its pane had when it is broad,
+    /// the folders of `recent` (the newest is the last used one), the shells of
+    /// its tab and the shell used last.
     fn gather(&self, id: PaneId, recent: Vec<PathBuf>) -> Vec<Effect> {
-        let mut paths: Vec<(Source, PathBuf)> = recent
+        let current = self
+            .panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .and_then(|chat| chat.folder_picker())
+            .and_then(|picker| picker.current().map(Path::to_path_buf));
+        let mut paths: Vec<(Source, PathBuf)> = current
             .into_iter()
-            .enumerate()
-            .map(|(n, path)| {
-                (
-                    if n == 0 {
-                        Source::LastUsed
-                    } else {
-                        Source::Recent
-                    },
-                    path,
-                )
-            })
+            .map(|path| (Source::Current, path))
             .collect();
+        paths.extend(recent.into_iter().enumerate().map(|(n, path)| {
+            (
+                if n == 0 {
+                    Source::LastUsed
+                } else {
+                    Source::Recent
+                },
+                path,
+            )
+        }));
         let cwd_of = |pane: PaneId| {
             let state = self.panes.get(&pane)?;
             state.effective_cwd().map(Path::to_path_buf)
@@ -307,7 +320,13 @@ impl App {
                 if matches!(&result, Ok(p) if p.verdict == Verdict::Outside) {
                     self.outside_open.insert(id);
                 }
-                self.open_folder_picker(id)
+                // The folder the pane is in is offered first when the picker
+                // can accept it: `$HOME` today, never `/` or an outside one.
+                let current = result
+                    .ok()
+                    .filter(|p| typed(Ok(p.verdict)).is_ok())
+                    .map(|p| p.path);
+                self.open_folder_picker(id, current)
             }
         }
     }

@@ -20,6 +20,11 @@ const TITLE: &str = "Choose the chat folder";
 const KEYS: &str = "↵ open · Tab complete · Esc keep this folder";
 const GATHERING: &str = "looking for folders…";
 const NONE: &str = "no suggestions: type a path";
+/// What choosing the folder the pane had implies when it is broad (`$HOME`, a
+/// folder above it, a broad Windows drive folder), on every engine: the tools
+/// refuse writes (`files::broad_folder`), `run_command` and git
+/// (`exec::root_of`).
+const BROAD: &str = "⚠ broad folder: no writes, commands or git here";
 
 /// Where the parts of the picker sit in an area of `height` rows.
 struct Plan {
@@ -51,11 +56,22 @@ fn plan(height: u16, error: bool) -> Plan {
 
 fn label(source: Source) -> &'static str {
     match source {
+        Source::Current => "current ⚠",
         Source::LastUsed => "last used",
         Source::PaneRoot => "pane root",
         Source::Recent => "recent",
         Source::LastShell => "last shell",
     }
+}
+
+/// The line above the field: the last refusal, else the warning of the
+/// selected current-folder row.
+fn reason(picker: &FolderPicker) -> Option<&'static str> {
+    let broad = picker
+        .rows()
+        .get(picker.selected())
+        .is_some_and(|row| row.source == Source::Current);
+    picker.error().or(broad.then_some(BROAD))
 }
 
 /// The room the typed path has: after the prompt, on its row.
@@ -80,7 +96,8 @@ impl ChatView<'_> {
         let at = |buf: &mut Buffer, y: u16, text: &str, style: Style| {
             put(buf, area.x, y, area.width, text, style);
         };
-        let plan = plan(area.height, picker.error().is_some());
+        let reason = reason(picker);
+        let plan = plan(area.height, reason.is_some());
         if plan.title {
             let style = base.fg(theme.primary_cyan).add_modifier(Modifier::BOLD);
             at(buf, 0, TITLE, style);
@@ -120,7 +137,7 @@ impl ChatView<'_> {
                 );
             }
         }
-        if let (Some(y), Some(reason)) = (plan.error, picker.error()) {
+        if let (Some(y), Some(reason)) = (plan.error, reason) {
             at(buf, y, reason, base.fg(theme.warning_orange));
         }
         if let Some(y) = plan.field {
@@ -138,7 +155,7 @@ impl ChatView<'_> {
     /// Where the real cursor goes in the typed path, `None` when it has no
     /// room.
     pub(super) fn folder_cursor(&self, picker: &FolderPicker, area: Rect) -> Option<Position> {
-        let row = plan(area.height, picker.error().is_some()).field?;
+        let row = plan(area.height, reason(picker).is_some()).field?;
         let rect = field_rect(area, row)?;
         let (_, col) = picker.field().window(usize::from(rect.width));
         let col = u16::try_from(col).ok()?;

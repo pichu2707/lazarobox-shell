@@ -70,7 +70,9 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
                 let guidance = app.chat_guidance(id);
                 let approval = app.approval_prompt(id);
                 let marks = (id == focused).then(|| app.chat_copy_marks()).flatten();
+                let folder = app.chat_folder_label(id);
                 let chat_view = ChatView::new(chat, theme)
+                    .folder(folder.as_deref())
                     .now(app.now())
                     .guidance(guidance.as_deref())
                     .quiet_guidance(app.guidance_is_hint(id))

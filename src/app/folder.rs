@@ -310,7 +310,7 @@ impl App {
         if self.folder_busy(id).is_some() {
             return Vec::new();
         }
-        self.open_folder_picker(id)
+        self.open_folder_picker(id, None)
     }
 
     /// The probe of a resumed conversation's folder answered: a concrete
