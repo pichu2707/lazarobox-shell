@@ -1072,6 +1072,15 @@ mod orphan {
         assert_eq!(a.update(ctrl('g')), vec![], "nothing left to review");
     }
 
+    // DIAGNOSIS (investigate/orch-orphans, F2): Ctrl+G with no orphan badge is
+    // not silent at the app level: it sets a notice.
+    #[test]
+    fn ctrl_g_without_an_orphan_badge_says_so() {
+        let (mut a, _) = live();
+        assert_eq!(a.update(ctrl('g')), vec![]);
+        assert_eq!(a.notice(), Some(crate::core::ai::chat::review::NO_ORPHAN));
+    }
+
     #[test]
     fn cancel_then_discard_clears_the_badge_too() {
         let mut a = orphaned(4);

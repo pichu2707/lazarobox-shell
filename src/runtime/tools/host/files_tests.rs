@@ -2097,3 +2097,62 @@ async fn a_broad_drive_folder_has_a_broad_reach() {
         );
     }
 }
+
+// DIAGNOSIS (investigate/orch-orphans, F2b): Ctrl+C on an open batch review
+// makes the app answer the ask with `Denied("cancelled")` (see the app test
+// that expects `decision(turn, 1, Decision::Denied("cancelled"))`), and the
+// README says the batch then stays as an orphan. `answered` keeps the batch
+// only for `ENDED`, so the user's cancel is treated as a "no" and the whole
+// batch is discarded.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_cancel_answered_on_the_review_keeps_the_batch_as_an_orphan() {
+    for owner in [key(), worker_key(1)] {
+        let w = world();
+        let cancel = Script::new(Decision::Denied("cancelled"));
+        let (d, _rx) = w.turn_with(cancel, on(), Some(owner));
+        assert!(!d.call(write("a.txt", "hello")).await.is_error);
+        assert!(d.call(Call::ProposeBatch).await.is_error);
+        assert_eq!(
+            w.staged_of(owner),
+            1,
+            "{owner:?}: the cancel must keep the batch"
+        );
+    }
+}
+
+// DIAGNOSIS (investigate/orch-orphans, F2a candidate): a propose_batch call
+// dropped after the batch was sealed but before its ask was announced (the
+// events channel is full, so `reserve_owned` waits) discards the whole staged
+// batch (`Sealed::drop` with `keep == false`), although the user never saw it
+// and the work is only staged. A cancel there must leave the staged work as an
+// orphan, as a cancel while staging does.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_propose_dropped_before_its_ask_is_announced_keeps_the_staged_work() {
+    let w = world();
+    let owner = worker_key(1);
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut scope = TurnScope::new(tx.clone(), Locality::Local, w.proj.clone());
+    scope.approver = Arc::new(super::tests::Waiting);
+    scope.families = on();
+    scope.stage_key = Some(owner);
+    let d = w.host.dispatch(scope);
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    while rx.try_recv().is_ok() {}
+    // Fill the channel so the announcement of the ask has no room.
+    while tx.try_send(StreamEvent::Slow).is_ok() {}
+    let mut propose = d.call(Call::ProposeBatch);
+    for _ in 0..50 {
+        assert!(futures::poll!(&mut propose).is_pending());
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    // Sealed, not announced: the cancel arrives now.
+    drop(propose);
+    assert_eq!(
+        w.staged_of(owner),
+        1,
+        "a cancel before the announcement lost the batch"
+    );
+}

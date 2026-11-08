@@ -1908,3 +1908,21 @@ async fn a_review_prompt_never_carries_an_env_template() {
     assert!(!format!("{diff:?}").contains("NEW=kept"), "{diff:?}");
     assert_eq!(diff.skipped, [".env.sample"]);
 }
+
+// DIAGNOSIS (investigate/orch-orphans, F1): a worker's proposed batch whose ask
+// ended with the turn (`ENDED`) stays as an orphan, and the review the pane
+// then opens for it (`Stages::review` -> `BatchReview::new`) has no worker
+// label, so the user answers a batch of an ended run with no name on it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_orphan_review_of_a_workers_batch_keeps_the_worker_label() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let ended = Scripted::new(Decision::Denied(ENDED));
+    let d = writer(&host, Locality::Cloud, &home, handle, ended);
+    assert!(!d.call(write_call("new.rs", "fn x() {}")).await.is_error);
+    assert!(d.call(Call::ProposeBatch).await.is_error);
+    let (_, review) = host.review_batch(PANE, false).expect("an orphan to review");
+    assert_eq!(review.label(), Some("1/1 review claude>opus"));
+}
