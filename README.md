@@ -240,6 +240,8 @@ Esta sección y la tabla del prefijo de arriba son la **referencia única** de t
 
 **Revisión de un lote o de un commit**
 
+La primera fila de la revisión empieza por la carpeta del chat (`~` para `$HOME`; si es larga se corta por delante y conserva el final), así que ves dónde se escribirá antes de pulsar `y`. En un panel de menos de 24 columnas se omite y mandan el contador y el retardo.
+
 | Tecla | Acción |
 | :--- | :--- |
 | `↑` `k` / `↓` `j` | Desplaza una fila |

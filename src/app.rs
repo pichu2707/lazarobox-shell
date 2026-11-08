@@ -1729,6 +1729,14 @@ impl App {
         self.home_label(cwd)
     }
 
+    /// The folder of chat `id` as the user reads it: `$HOME` as `~`, with no
+    /// control or bidi character. `None` for a pane that is not a chat or has
+    /// no folder.
+    pub fn chat_folder_label(&self, id: PaneId) -> Option<String> {
+        let folder = self.panes.get(&id)?.chat_state()?.origin_cwd()?;
+        Some(crate::core::ai::sanitize::clean(&self.home_label(folder)))
+    }
+
     /// `cwd` as text, with `$HOME` shown as `~`.
     fn home_label(&self, cwd: &Path) -> String {
         let home = self.home.as_deref().filter(|home| home.parent().is_some());

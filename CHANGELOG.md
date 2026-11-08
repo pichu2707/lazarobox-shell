@@ -19,6 +19,10 @@ baseline.
   one Enter no longer moves you to another project. `/`, system folders and
   folders outside `$HOME` are still never a row, and nothing is chosen
   without a key press.
+- Batch review: the first row now starts with the chat's folder (`~` for
+  `$HOME`, cut from the front when long), so you see where the batch will be
+  written before you press `y`. Rows narrower than 24 columns keep only the
+  counter and the gate.
 
 ## [1.14.2] - 2026-11-07
 

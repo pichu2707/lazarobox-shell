@@ -14,7 +14,7 @@ use ratatui::{
     style::{Modifier, Style},
 };
 
-use super::chat::fill;
+use super::{chat::fill, tab_bar::cells};
 use crate::{
     core::ai::chat::{
         review::{LineKind, WARN_TRUNCATED},
@@ -36,6 +36,39 @@ const KEYS_DISCARD: &str = "n discard · ↑↓ PgUp PgDn scroll";
 fn seconds(left: Duration) -> String {
     let tenths = left.as_millis().div_ceil(100);
     format!("{}.{}s", tenths / 10, tenths % 10)
+}
+
+/// Narrower than this, the counter and the gate take the whole row.
+const FOLDER_MIN_WIDTH: usize = 24;
+
+/// `path` cut from the front to `room` cells: the end is where the project is.
+fn tail(path: &str, room: usize) -> String {
+    if cells(path) <= room {
+        return path.to_owned();
+    }
+    let (mut kept, mut used) = (Vec::new(), 1);
+    for c in path.chars().rev() {
+        let width = cells(c.encode_utf8(&mut [0; 4]));
+        if used + width > room {
+            break;
+        }
+        kept.push(c);
+        used += width;
+    }
+    kept.reverse();
+    format!("…{}", kept.into_iter().collect::<String>())
+}
+
+/// `text` headed by the folder the batch lands in, so the destination is read
+/// before `y`. The folder takes at most two fifths of the row and keeps its
+/// end; a row too narrow for both keeps the counter and the gate.
+fn headed(folder: Option<&str>, text: String, width: usize) -> String {
+    match folder {
+        Some(folder) if width >= FOLDER_MIN_WIDTH => {
+            format!("{} · {text}", tail(folder, width * 2 / 5))
+        }
+        _ => text,
+    }
 }
 
 /// The counter row, and whether it is a warning.
@@ -100,10 +133,12 @@ fn style_of(kind: LineKind, theme: &LazaroboxTheme) -> Style {
 }
 
 /// Draws the view in `area`. A pane of one row shows the keys only, of two
-/// rows the counter and the keys: the way out is the last to go.
+/// rows the counter (headed by `folder`, when known) and the keys: the way out
+/// is the last to go.
 pub fn render(
     view: &ReviewView,
     now: Instant,
+    folder: Option<&str>,
     theme: &LazaroboxTheme,
     area: Rect,
     buf: &mut Buffer,
@@ -117,6 +152,7 @@ pub fn render(
     };
     if area.height >= 2 {
         let (text, warn) = header(view, now, width);
+        let text = headed(folder, text, width);
         let colour = if warn {
             theme.warning_orange
         } else {
@@ -218,12 +254,91 @@ mod label_tests {
         let area = Rect::new(0, 0, width, 6);
         let mut buf = Buffer::empty(area);
         let later = Instant::now() + Duration::from_secs(3600);
-        render(view, later, &LazaroboxTheme::default(), area, &mut buf);
+        render(
+            view,
+            later,
+            None,
+            &LazaroboxTheme::default(),
+            area,
+            &mut buf,
+        );
         (0..width)
             .map(|x| buf[(x, 0)].symbol().to_owned())
             .collect::<String>()
             .trim_end()
             .to_owned()
+    }
+
+    /// The first row of `view` drawn `width` wide for a chat in `folder`.
+    fn first_row_in(view: &ReviewView, width: u16, folder: &str) -> String {
+        let area = Rect::new(0, 0, width, 6);
+        let mut buf = Buffer::empty(area);
+        let later = Instant::now() + Duration::from_secs(3600);
+        let theme = LazaroboxTheme::default();
+        render(view, later, Some(folder), &theme, area, &mut buf);
+        (0..width)
+            .map(|x| buf[(x, 0)].symbol().to_owned())
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    fn batch_view() -> ReviewView {
+        ReviewView::new(review_of(&[("a.txt", "one\n", false)]), (80, 20))
+    }
+
+    // The destination is read before `y`: the folder heads the counter row,
+    // and the row says everything it said before.
+    #[test]
+    fn the_folder_heads_the_counter_row() {
+        let view = batch_view();
+        let plain = first_row(&view, 80);
+        let shown = first_row_in(&view, 80, "~/code/app");
+        assert_eq!(shown, format!("~/code/app · {plain}"));
+    }
+
+    // A long path keeps its end, where the project is, and never takes more
+    // than two fifths of the row from the counter and the gate.
+    #[test]
+    fn a_long_folder_keeps_its_end_and_leaves_the_gate_room() {
+        let view = batch_view();
+        let long = "/home/ana/work/clients/acme/services/billing/app";
+        for width in [80_u16, 50, 30] {
+            let shown = first_row_in(&view, width, long);
+            let head = shown.split(" · ").next().unwrap();
+            assert!(
+                head.starts_with('…') && head.ends_with("billing/app"),
+                "{shown}"
+            );
+            assert!(
+                head.chars().count() <= usize::from(width) * 2 / 5,
+                "{shown}"
+            );
+            assert!(shown.chars().count() <= usize::from(width), "{shown}");
+        }
+        assert!(first_row_in(&view, 80, long).contains("remaining"));
+    }
+
+    // Below the width where a folder and a counter can both be read, the
+    // counter and the gate win: the status line still names the folder.
+    #[test]
+    fn a_very_narrow_pane_shows_the_counter_alone() {
+        let view = batch_view();
+        for width in [10_u16, 23] {
+            assert_eq!(
+                first_row_in(&view, width, "~/code/app"),
+                first_row(&view, width),
+                "{width}"
+            );
+        }
+    }
+
+    // The refusal row (`y can't approve`, empty batch) names the folder too.
+    #[test]
+    fn the_folder_also_heads_the_refusal_row() {
+        let view = ReviewView::new(review_of(&[]), (80, 20));
+        let shown = first_row_in(&view, 80, "~/app");
+        assert!(shown.starts_with("~/app · empty batch"), "{shown}");
     }
 
     // The receipt goes after the gate and the refusal text: a narrow pane cuts
