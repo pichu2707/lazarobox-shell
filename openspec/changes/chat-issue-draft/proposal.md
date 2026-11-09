@@ -17,17 +17,17 @@ The owner asked the chat to write up a goal from the conversation (seeing the sh
   - `kind`: `idea` or `bug`, shown as `Idea or goal` or `Bug report`;
   - `title`: at most 120 characters;
   - `description`: at most 2000 characters.
-  The caps are the form's own (`TITLE_CAP`, `DESCRIPTION_CAP`). An empty field, an unknown kind, or a field over its cap returns an error to the model, so it can fix the draft; nothing is cut silently (Q4).
+  The caps are the form's own (`TITLE_CAP`, `DESCRIPTION_CAP`). An empty field, an unknown kind, or a field over its cap returns an error to the model, so it can fix the draft; nothing is cut silently (D4).
 - **Preset kind:** the form opens on the draft's kind. Today `Feedback::new` always starts on `Bug report`.
 - **Separate fields:** the title and description fill their own fields. The first-line rule of `/feedback <text>` stays for `/feedback` only.
 - **Permission first (S4):** every call opens a y/n prompt at the composer, naming the kind and the title. Only an unmodified lowercase `y` accepts. `n`, Esc, a timeout, a cancel, a closed chat and an app quit end as `denied`. No approval mode (`ask`, `auto`, `run`) answers it, like the GitHub consent and the drive grant. The one-pending-approval rule applies: a call while another approval is pending is `denied` at once (`another approval is pending`).
-- **What the model receives:** on `y`, `ok` with a short text saying the form will open with the draft for the user to review and send; on `n`, `denied`. The tool never waits for Ctrl+S (Q2).
-- **When the form opens:** at the end of the turn, not while it streams (Q3). A form that is already open, with the user's own text, is never overwritten; the call returns `denied` (`a feedback form is already open`).
+- **What the model receives:** on `y`, `ok` with a short text saying the form will open with the draft for the user to review and send; on `n`, `denied`. The tool never waits for Ctrl+S (D2).
+- **When the form opens:** at the end of the turn, not while it streams (D3). A form that is already open, with the user's own text, is never overwritten; the call returns `denied` (`a feedback form is already open`).
 - **One decline per turn:** after a `denied` answer, later calls in the same turn return `denied` without a prompt, as GitHub consent does.
-- **Gating:** a new tool family with its own `[ai.tools]` toggle, on by default (Q1). It is offered only while the `[ai.tools]` master switch is on.
+- **Gating:** a new tool family with its own `[ai.tools]` toggle, on by default (D1). It is offered only while the `[ai.tools]` master switch is on.
 - **Engines:** the engines that get tools today (`claude`, `codex`, `gemini`, `ollama`).
-- **Prompt guidance:** one sentence in the tools block, only when the family is on. It tells the model to offer a draft when the user asks for one, and when it cannot do something because lazarobox lacks it, or a lazarobox tool fails (Q5). Calling the tool is the offer: its y/n is the permission, so the model does not ask twice.
-- **Fallback without tools:** on an engine without tools, or with the family off, a one-line hint suggests `/feedback` after a failed turn or a tool `Error` (Q6).
+- **Prompt guidance:** one sentence in the tools block, only when the family is on. It tells the model to offer a draft when the user asks for one, and when it cannot do something because lazarobox lacks it, or a lazarobox tool fails (D5). Calling the tool is the offer: its y/n is the permission, so the model does not ask twice.
+- **Fallback without tools:** on an engine without tools, or with the family off, a one-line hint suggests `/feedback` after a failed turn or a tool `Error` (D6).
 - **Send path unchanged:** Ctrl+S, the redaction pass, the similar-issue search, the attached facts and the `gh`-or-link fallback all work as today.
 - **Docs:** README, CHANGELOG, the tools list and the `[ai.tools]` key.
 
@@ -107,7 +107,7 @@ PR 1 alone answers S1-S3: the user can ask the chat for a draft.
 | Prompt fatigue: the model offers a draft after every small failure | Med | Guidance limited to lazarobox limits and errors; one decline per turn ends the asking |
 | The y/n answered out of habit | Low | A `y` only opens a form; the send is a second, separate act |
 | The form covers a streaming turn or a pending approval | Med | The form opens at turn end; an open form is never overwritten |
-| A draft about the user's own project lands in the lazarobox repository | Med | Guidance limited to lazarobox (Q5); the user reads the draft before Ctrl+S |
+| A draft about the user's own project lands in the lazarobox repository | Med | Guidance limited to lazarobox (D5); the user reads the draft before Ctrl+S |
 | Context cost of one more schema | Low | One small schema; the toggle turns it off |
 
 ## Rollback Plan
@@ -143,14 +143,14 @@ From the worktree at `f4900e12` (v1.10.0):
 - **Pending confirm owns the keys:** `ANSWER_FIRST` (`src/app/github.rs:106-108`, `src/app/run.rs:34`).
 - **Owning specs:** `config-menu` Feedback form from a chat (`openspec/specs/config-menu/spec.md:1273`), Feedback form (`:1286`); `chat-pane` Approval prompt (`openspec/specs/chat-pane/spec.md:657`), `/feedback` (`:934`); `agent-tools` Tool registry (`openspec/specs/agent-tools/spec.md:11`), Approval model, with one pending approval and timeouts ending `denied` (`:221-222`); `github-tools` Fixed read, no write (`openspec/specs/github-tools/spec.md:143-144`).
 
-## Open Questions
+## Decisions
 
-Each question has a recommended answer; "yes" accepts it.
+The owner answered each question on 2026-11-09, taking the recommended option every time. The symbols in Evidence were rechecked on `81e0a5a2`; their line numbers have moved a little since `f4900e12`.
 
-- **Q1. Toggle default: on.** Recommended: on, while the `[ai.tools]` master switch is on. Nothing leaves without a `y` and a Ctrl+S, the same reason the master switch is on by default (`config.rs:613-614`), and S1 came from the tool not being there. Tradeoff: one more schema in every tool turn, the golden tool lists change, and `ToolToggle` needs a per-toggle default. Off by default keeps the lists stable but the feature goes unfound, the problem #551 had.
-- **Q2. Return on `y`, do not wait for Ctrl+S.** Recommended: the tool returns `ok` once the draft is accepted, and `denied` on `n`. Tradeoff: the model never learns whether the issue was sent, or its URL. Waiting would hold the turn open while the user edits, block the chat, and need a new path from the menu back to the turn.
-- **Q3. Open the form at turn end.** Recommended: yes. Tradeoff: the form appears a few seconds after the `y`, and the pane holds a pending draft. Opening at once would cover a streaming turn, and a later approval of that turn could end `denied` by timeout behind the menu.
-- **Q4. Reject over-cap fields, do not cut.** Recommended: an empty field, an unknown kind, or a field over 120 or 2000 characters returns an error, so the model rewrites it. Tradeoff: one more round-trip on long drafts. Cutting silently would lose the end of the description without anyone noticing.
-- **Q5. When the model offers on its own: lazarobox limits and errors only.** Recommended: the guidance names three cases: the user asks for an issue; the model cannot do what was asked because lazarobox lacks it; a lazarobox tool or the chat fails. Not for errors in the user's own code or commands. Tradeoff: some real lazarobox gaps go unoffered when the model misjudges the cause. Offering on every error would bring prompt fatigue and drafts about the user's project in the lazarobox repository.
-- **Q6. Fallback hint: failed turns and tool `Error`, not `Denied`.** Recommended: on an engine without the tool, or with the family off, the hint suggests `/feedback` after a failed turn or a tool `Error`. Tradeoff: a lazarobox policy refusal, which ends `Denied`, gets no hint. Including `Denied` would show the hint after every `n` the user typed.
-- **Q7. Draft language: English.** Recommended: the guidance asks for the draft in English, the language of the repository's docs and specs. Tradeoff: the user's own words are translated; they can edit them in the form. Drafting in the conversation's language keeps the user's words but mixes languages in the tracker.
+- **D1. Toggle default: on,** while the `[ai.tools]` master switch is on. Nothing leaves without a `y` and a Ctrl+S. Cost: one more schema in every tool turn, the golden tool lists change, and `ToolToggle` needs a per-toggle default.
+- **D2. Return on `y`, do not wait for Ctrl+S.** The tool returns `ok` once the draft is accepted, and `denied` on `n`. The model never learns whether the issue was sent, or its URL.
+- **D3. Open the form at turn end.** It appears a few seconds after the `y`, and the pane holds a pending draft, so a later approval of that turn is not left waiting behind the menu.
+- **D4. Reject over-cap fields, do not cut.** An empty field, an unknown kind, or a field over 120 or 2000 characters returns an error, so the model rewrites it.
+- **D5. The model offers on its own only for lazarobox limits and errors.** The guidance names three cases: the user asks for an issue; the model cannot do what was asked because lazarobox lacks it; a lazarobox tool or the chat fails. Not for errors in the user's own code or commands.
+- **D6. Fallback hint: failed turns and tool `Error`, not `Denied`.** On an engine without the tool, or with the family off, the hint suggests `/feedback` after a failed turn or a tool `Error`.
+- **D7. Draft language: English,** the language of the repository's docs and specs. The user can edit the text in the form.
