@@ -15,6 +15,8 @@ baseline.
 - A click on an `http://` or `https://` link shown in a shell pane or in the
   chat opens it in the browser, on the release of the left button. A link that
   wraps opens whole. With no browser the link is copied and a notice says so.
+- `Ctrl+Space` then `u` lists the links the focused pane shows: a row's key
+  opens it, `y` copies the selected one, `Esc` closes the list.
 
 ## [1.15.2] - 2026-11-09
 

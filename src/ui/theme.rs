@@ -57,7 +57,7 @@ impl LazaroboxTheme {
             InputMode::Copy(_) | InputMode::ChatCopy(_) => self.primary_cyan,
             InputMode::Resize => self.ai_purple,
             InputMode::Confirm(_) => self.error_red,
-            InputMode::Menu => self.info_blue,
+            InputMode::Menu | InputMode::Links => self.info_blue,
         }
     }
 

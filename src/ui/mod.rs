@@ -10,6 +10,7 @@ use crate::{
 };
 use components::{
     chat::ChatView,
+    link_list::LinkListPopup,
     menu::MenuPopup,
     scroll_badge::ScrollBadge,
     separators::SeparatorView,
@@ -121,6 +122,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
                 _ => cursor_position(pane, area),
             };
             if app.menu().is_none()
+                && app.link_list().is_none()
                 && let Some(position) = position
             {
                 frame.set_cursor_position(position);
@@ -161,6 +163,10 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let line = |path| plain(path).label(label.as_deref());
     let path = app.status_path(line("").path_budget(status.width));
     frame.render_widget(line(&path), status);
+
+    if let Some(list) = app.link_list() {
+        frame.render_widget(LinkListPopup::new(list, theme), frame.area());
+    }
 
     // The menu popup goes over everything else.
     if let Some(menu) = app.menu() {

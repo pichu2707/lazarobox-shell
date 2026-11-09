@@ -52,6 +52,8 @@ pub enum PrefixAction {
     EnterCopy,
     /// Reserved for the future command viewer; no effect yet.
     ShowCommands,
+    /// Opens the list of the links the focused pane shows.
+    ShowLinks,
     Focus(Direction),
     SplitRight,
     SplitBelow,
@@ -261,6 +263,7 @@ pub const PREFIX_TREE: &[Binding] = &[
     unhinted(act('W', "worker transcript", PrefixAction::ViewWorker)),
     // Left out of the hint for the same reason: the root hint is full.
     unhinted(group('r', "run", &RUN)),
+    unhinted(act('u', "links", PrefixAction::ShowLinks)),
     unhinted(act('?', "commands (reserved)", PrefixAction::ShowCommands)),
     Binding {
         chord: PREFIX_KEY,
@@ -735,7 +738,7 @@ mod tests {
             );
         }
         // literal (the alias counted apart) + quit + copy + menu + chat + note + memory + summary + run + approval + tags + worker + resume + discard + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
-        assert_eq!(once.len(), 37);
+        assert_eq!(once.len(), 38);
     }
 
     #[test]

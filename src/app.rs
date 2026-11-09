@@ -50,6 +50,7 @@ use crate::core::{
         Axis, Direction, Node, PaneId, PaneIds, Rect, Removal, SplitError, Tiling, neighbour,
         pane_at, tile,
     },
+    link_list::{LinkList, ListAction},
     menu::{MenuCommand, MenuState},
     pane::{CursorKind, CursorShape, Pane, PaneSize},
     prefix::{self, Binding, Group, PREFIX_TREE, PrefixAction, Step},
@@ -133,6 +134,8 @@ pub enum InputMode {
     Resize,
     /// Waiting for a yes/no answer.
     Confirm(Confirm),
+    /// The list of a pane's links is open; `App.link_list` holds it.
+    Links,
     /// The config menu is open; `App.menu` holds its state (invariant:
     /// `menu.is_some() == (input == Menu)`).
     Menu,
@@ -162,6 +165,7 @@ impl InputMode {
             Self::Confirm(Confirm::ClosePane) => "Close pane? (y/n)",
             Self::Confirm(Confirm::CloseTab) => "Close tab? (y/n)",
             Self::Menu => "MENU",
+            Self::Links => "LINKS",
         }
     }
 }
@@ -1062,6 +1066,7 @@ pub struct App {
     /// The last copy was the link a failed browser open fell back to: the
     /// menu footer keeps that context.
     clip_link: bool,
+    link_list: Option<LinkList>,
     /// Where the left button went down, until it comes up.
     link_press: Option<(u16, u16)>,
     /// The Hugging Face account of the saved token, once a connect or a
@@ -1199,6 +1204,7 @@ impl App {
             clip_seq: 0,
             clip_osc52: false,
             clip_link: false,
+            link_list: None,
             link_press: None,
             hf_account: None,
             note_choices: Vec::new(),
@@ -2308,7 +2314,7 @@ impl App {
         self.dirty = true;
         let modal = matches!(
             self.input,
-            InputMode::Menu | InputMode::Confirm(_) | InputMode::Resize
+            InputMode::Menu | InputMode::Confirm(_) | InputMode::Resize | InputMode::Links
         );
         effects.extend(match self.input {
             InputMode::Terminal => self.on_terminal_key(key, held),
@@ -2319,6 +2325,7 @@ impl App {
             InputMode::Resize => self.on_resize_key(&key),
             InputMode::Confirm(confirm) => self.on_confirm_key(confirm, &key),
             InputMode::Menu => self.on_menu_key(&key, held),
+            InputMode::Links => self.on_link_list_key(&key, held),
         });
         // The rest of the hold of the key that closed a modal view is not
         // typed into the pane under it.
@@ -2740,6 +2747,7 @@ impl App {
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
+                | PrefixAction::ShowLinks
                 | PrefixAction::NewTab
                 | PrefixAction::NextTab
                 | PrefixAction::PrevTab
@@ -2760,6 +2768,7 @@ impl App {
                 action @ (PrefixAction::SendPrefixLiteral | PrefixAction::SendAliasLiteral),
             ) => self.send_prefix_literal(action == PrefixAction::SendAliasLiteral),
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
+            Step::Run(PrefixAction::ShowLinks) => self.open_link_list(),
             Step::Run(PrefixAction::OpenChat) => self.open_chat_pane(),
             // They would open a view under the folder picker.
             Step::Run(
@@ -4066,6 +4075,7 @@ mod app_tests {
     fn input_mode_labels_cover_group_resize_and_confirm() {
         assert_eq!(in_group('t').input().label(), "TAB");
         assert_eq!(InputMode::Resize.label(), "RESIZE");
+        assert_eq!(InputMode::Links.label(), "LINKS");
         assert_eq!(InputMode::Confirm(Confirm::Quit).label(), "Quit? (y/n)");
     }
 

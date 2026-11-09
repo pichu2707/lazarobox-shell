@@ -299,4 +299,125 @@ mod click {
         let r = a.tiling().panes[0].1;
         assert_eq!(click(&mut a, (r.x + 2, r.y + r.height - 1)), []);
     }
+
+    // The list of links (D3) ------------------------------------------------------
+
+    fn list_of(a: &App) -> Vec<String> {
+        a.link_list().expect("the list is open").urls().to_vec()
+    }
+
+    #[test]
+    fn prefix_u_lists_the_links_of_a_shell_pane() {
+        let (mut a, _) = shell("https://a.io and http://localhost:3000/x");
+        press(&mut a, "u");
+        assert_eq!(a.input(), InputMode::Links);
+        assert_eq!(list_of(&a), ["https://a.io", LINK]);
+    }
+
+    #[test]
+    fn prefix_u_lists_the_links_of_a_chat() {
+        let mut a = answered("Read https://a.io/docs now").with_opener(true);
+        press(&mut a, "u");
+        assert_eq!(list_of(&a), ["https://a.io/docs"]);
+    }
+
+    #[test]
+    fn a_link_scrolled_out_of_view_is_not_listed() {
+        let filler = "line\r\n".repeat(40);
+        let (mut a, _) = shell(&format!("https://old.io\r\n{filler}{LINK}"));
+        press(&mut a, "u");
+        assert_eq!(list_of(&a), [LINK]);
+    }
+
+    // Its text is read, to join a link that crosses the edge, but not shown.
+    #[test]
+    fn a_link_on_a_wrapped_row_above_the_view_is_not_listed() {
+        let (mut a, r) = shell("");
+        let wrapped = format!("https://old.io {}\r\n", "y".repeat(100));
+        let filler = "line\r\n".repeat(usize::from(r.height) - 2);
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(format!("{wrapped}{filler}{LINK}").into_bytes()),
+        ));
+        press(&mut a, "u");
+        assert_eq!(list_of(&a), [LINK]);
+    }
+
+    #[test]
+    fn with_no_links_a_notice_says_so() {
+        let (mut a, _) = shell("nothing here");
+        press(&mut a, "u");
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.notice.as_deref(), Some("No links in this pane"));
+    }
+
+    #[test]
+    fn a_rows_key_opens_it_and_closes_the_list() {
+        let (mut a, _) = shell("https://a.io and http://localhost:3000/x");
+        press(&mut a, "u");
+        assert_eq!(a.update(key('2')), opened(LINK));
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert!(a.link_list().is_none());
+    }
+
+    #[test]
+    fn y_copies_the_selected_row() {
+        let (mut a, _) = shell(LINK);
+        press(&mut a, "u");
+        let effects = a.update(key('y'));
+        assert!(
+            effects.iter().any(|e| matches!(e, Effect::SetClipboard(_))),
+            "{effects:?}"
+        );
+        assert!(!effects.iter().any(|e| matches!(e, Effect::OpenUrl(_))));
+        assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    #[test]
+    fn esc_closes_the_list_and_opens_nothing() {
+        let (mut a, _) = shell(LINK);
+        press(&mut a, "u");
+        let effects = a.update(AppEvent::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(effects, []);
+        assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    #[test]
+    fn the_list_works_with_the_mouse_off() {
+        let (mut a, _) = shell(LINK);
+        a.config.mouse = false;
+        press(&mut a, "u");
+        assert_eq!(a.update(key('1')), opened(LINK));
+    }
+
+    #[test]
+    fn a_key_in_the_list_never_reaches_the_shell() {
+        let (mut a, _) = shell(LINK);
+        press(&mut a, "u");
+        let effects = a.update(key('z'));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::WritePty(..))),
+            "{effects:?}"
+        );
+        assert_eq!(
+            a.input(),
+            InputMode::Links,
+            "a key with no row changes nothing"
+        );
+    }
+
+    #[test]
+    fn with_no_opener_a_rows_key_copies_it() {
+        let (a, _) = shell(LINK);
+        let mut a = a.with_opener(false);
+        press(&mut a, "u");
+        let effects = a.update(key('1'));
+        assert!(
+            effects.iter().any(|e| matches!(e, Effect::SetClipboard(_))),
+            "{effects:?}"
+        );
+    }
 }

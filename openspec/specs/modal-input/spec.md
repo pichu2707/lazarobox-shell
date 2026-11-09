@@ -257,6 +257,7 @@ After the prefix, the key table MUST be a tree: leaf bindings and groups `w` (la
 | `s` | the end-of-conversation summary (see Memory keys) |
 | `T` | edit the tags of the conversation (see Chat pane input) |
 | `e` | run the last shell code block of the chat in a pane (confirm; see pane-commands) |
+| `u` | list the links the focused pane shows (LINKS; see below) |
 | `a` | cycle the chat's approval mode `ask`, `auto`, `run` (see agent-tools) |
 | `q` | quit (confirm) |
 | Ctrl+Space | send the prefix key itself: a NUL byte (0x00) to the focused shell pane (see Prefix key) |
@@ -421,6 +422,19 @@ Any change of focused pane or active tab MUST exit COPY (the pane being left ret
 - GIVEN RESIZE on pane A of three
 - WHEN another pane's shell exits
 - THEN mode is still RESIZE
+
+### Requirement: LINKS mode
+`u` in PREFIX MUST list the distinct `http` and `https` links the focused pane shows, in reading order, a link shown twice listed where it was last seen, with the newest selected. When there are more links than keys the newest MUST stay. In LINKS, `1` to `9` and then letters open their row, Enter opens the selected row, `y` copies it, `j`/`k` and the arrows move the selection, and Esc or Ctrl+C close the list. Opening, copying or closing returns to TERMINAL. A held key MUST NOT pick a row. No key reaches a PTY. The list MUST work with `mouse` off.
+
+#### Scenario: No links [auto]
+- GIVEN a focused pane that shows no link
+- WHEN `u` is pressed in PREFIX
+- THEN the mode returns to TERMINAL and the notice says `No links in this pane`
+
+#### Scenario: A row's key opens it [auto]
+- GIVEN the list of a pane with two links
+- WHEN `2` is pressed
+- THEN the second link is opened, or copied when there is no opener, and the mode returns to TERMINAL
 
 ### Requirement: MENU mode
 `m` in PREFIX MUST enter MENU. MENU is a sticky mode that swallows input: the keys defined by the config-menu spec act, every other key (including Ctrl+Space) is swallowed with no WritePty, and the mode stays MENU until Enter saves successfully or Esc cancels. MENU MUST be entered only from TERMINAL through the prefix; `m` inside a group, in COPY, RESIZE or a confirmation MUST NOT open it. Press and Repeat are handled for navigation and cycling keys (Repeat on Enter and Esc MUST be ignored so a held key cannot save or cancel repeatedly, and so MUST a Press that is part of a hold, see TERMINAL mode); Release is ignored. Paste events MUST NOT reach any PTY in MENU. A focus or active-tab change MUST NOT leave MENU.

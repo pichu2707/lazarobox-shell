@@ -31,6 +31,17 @@ impl PaneLinks {
     }
 }
 
+impl PaneLinks {
+    /// The links with at least one drawn row, in reading order.
+    fn visible(self) -> Vec<String> {
+        let drawn = self.above..self.above + self.drawn;
+        (self.links.into_iter())
+            .filter(|link| link.spans.iter().any(|span| drawn.contains(&span.row)))
+            .map(|link| link.url)
+            .collect()
+    }
+}
+
 impl App {
     /// The left button came up: a click opens the link under it when the
     /// press was on the same cell, so a drag never opens one.
@@ -108,6 +119,47 @@ impl App {
             first_row: usize::from(chat.transcript_first_row(state.size.cols, state.size.rows)),
             drawn,
         })
+    }
+
+    /// The list of the links the focused pane shows; a notice with none.
+    pub(super) fn open_link_list(&mut self) -> Vec<Effect> {
+        let id = self.tab().focus;
+        let covered = self.run_view_open(id) || self.batch_pending(id);
+        let urls = (!covered)
+            .then(|| self.pane_links(id))
+            .flatten()
+            .map_or_else(Vec::new, PaneLinks::visible);
+        match LinkList::new(urls) {
+            Some(list) => {
+                self.link_list = Some(list);
+                self.input = InputMode::Links;
+            }
+            None => self.notice = Some("No links in this pane".to_owned()),
+        }
+        Vec::new()
+    }
+
+    pub(super) fn on_link_list_key(&mut self, key: &KeyEvent, held: bool) -> Vec<Effect> {
+        let Some(list) = self.link_list.as_mut() else {
+            self.input = InputMode::Terminal;
+            return Vec::new();
+        };
+        let action = list.on_key(key, held);
+        if action == ListAction::None {
+            return Vec::new();
+        }
+        self.link_list = None;
+        self.input = InputMode::Terminal;
+        match action {
+            ListAction::Open(url) => self.open_link(url),
+            ListAction::Copy(url) => self.copy_to_clipboard(&url),
+            ListAction::None | ListAction::Close => Vec::new(),
+        }
+    }
+
+    /// The open list of links, for the renderer.
+    pub fn link_list(&self) -> Option<&LinkList> {
+        self.link_list.as_ref()
     }
 
     /// Opens `url`, or copies it on a host with nothing to open it with.
