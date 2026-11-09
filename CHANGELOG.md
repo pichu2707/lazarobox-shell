@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The model picker deletes a downloaded Ollama model: `d` on its row opens a
+  confirmation with the name and the size, and only a plain `y` deletes it,
+  through the local server. A model that a task or a running chat turn uses is
+  refused and the notice says who uses it, and so is any delete while a
+  download runs. The notice says what was freed, as an upper bound, since
+  Ollama models share layers.
+
 ## [1.16.0] - 2026-11-09
 
 ### Added

@@ -754,6 +754,7 @@ mod tests {
     }
 
     mod install;
+    mod model_delete;
     mod tool_badge;
 
     #[test]

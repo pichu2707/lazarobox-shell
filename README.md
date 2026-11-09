@@ -303,7 +303,7 @@ En los editores de nota y de resumen, `↑` `↓` mueven el cursor entre líneas
 | `Enter` | En filas con acción: abre el selector de IA, actualiza (**Updates**), abre el formulario (**Feedback**) o pide el token (Hugging Face) |
 | `r` | En **Updates**, comprueba ahora; en las filas de IA, vuelve a detectar los motores y modelos |
 | `t` | En **Notify** y **Sound**, comprueba y lanza un aviso de prueba |
-| `d` | En la fila de la cuenta de Hugging Face, olvida el token |
+| `d` | En la fila de la cuenta de Hugging Face, olvida el token; en la lista de modelos de ollama, sobre un modelo descargado, pide confirmación para borrarlo |
 | `Esc` | Ver «`Esc` según la vista» |
 
 **Modo COPY** (`Ctrl+Espacio` `[`)
@@ -613,7 +613,11 @@ Con el servidor de Ollama en marcha (detectado como `available`), la lista de mo
 4. **Descarga.** La hace tu servidor de Ollama, en segundo plano. Solo corre una descarga a la vez, sea de Hugging Face o de Ollama: mientras una corre, `Enter` en la fila de la otra dice `a download is already running`. La fila muestra `↓ 42% <modelo>:<etiqueta> · <licencia>` y la barra de estado `↓ 42%`. `Enter` sobre la fila ofrece cancelarla; Ollama conserva lo ya bajado y, si vuelves a elegir la misma etiqueta, sigue donde se quedó.
 5. **Úsalo.** Al terminar se vuelven a detectar los motores y el modelo aparece en la lista de ollama.
 
-**Dónde se guarda.** Donde lo guarda tu servidor de Ollama; lazarobox nunca escribe en su almacén. Normalmente es `$OLLAMA_MODELS`, `~/.ollama/models` o, con el servicio de Linux, `/usr/share/ollama/.ollama/models`. La confirmación muestra la primera de esas carpetas que encuentra, y si no encuentra ninguna dice `the Ollama server's models folder`. Para borrar un modelo, usa `ollama rm <modelo>`.
+**Dónde se guarda.** Donde lo guarda tu servidor de Ollama; lazarobox nunca escribe en su almacén. Normalmente es `$OLLAMA_MODELS`, `~/.ollama/models` o, con el servicio de Linux, `/usr/share/ollama/.ollama/models`. La confirmación muestra la primera de esas carpetas que encuentra, y si no encuentra ninguna dice `the Ollama server's models folder`. Para borrar un modelo, pulsa `d` sobre su fila (ver «Borrar un modelo») o usa `ollama rm <modelo>`.
+
+**Borrar un modelo.** En la lista de modelos de ollama, con el cursor sobre un modelo descargado (`✓`), el pie muestra `d delete`. `d` abre una confirmación con el nombre, el tamaño y el aviso de que no se puede deshacer. Solo una `y` sin modificadores la confirma; cualquier otra tecla vuelve atrás y una tecla mantenida no cuenta. El borrado lo hace tu servidor de Ollama (`DELETE /api/delete` en `127.0.0.1`, con el nombre en el cuerpo JSON). Al terminar, un aviso dice el resultado y se vuelven a detectar los motores. Como Ollama comparte capas entre modelos, el tamaño es un máximo: el aviso dice `freed up to …` y puede liberarse menos.
+
+No se puede borrar un modelo en uso, y el aviso dice quién lo usa: una tarea que lo tiene asignado, en el borrador o en la configuración guardada (asígnale otro primero), o un turno de chat en marcha con ese modelo. Mientras corre una descarga tampoco (`a download is already running`). Se comprueba al pulsar `d` y otra vez al pulsar `y`.
 
 **Qué se envía.** Solo cuando estás en este flujo, nunca al arrancar ni en segundo plano, y sin credenciales:
 

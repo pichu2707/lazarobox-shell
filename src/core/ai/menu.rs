@@ -10,7 +10,7 @@ use super::{
     config::{AiConfig, Assignment, ManagedServer, Task},
     hf::{Answer, Ask},
     ollama_lib,
-    picker::{InstallReply, Outcome, PickRow, Picker, Running, Target, Wizard, task_label},
+    picker::{InUse, InstallReply, Outcome, PickRow, Picker, Running, Target, Wizard, task_label},
 };
 
 /// The AI draft, edited in the menu and written only on save.
@@ -24,6 +24,8 @@ pub struct AiMenu {
     warning: bool,
     /// The Hugging Face download that runs, for llamacpp's entry row.
     download: Option<Running>,
+    /// `(engine, model)` of the chat turns running now, as last told.
+    turns: Vec<(String, String)>,
 }
 
 impl AiMenu {
@@ -35,6 +37,7 @@ impl AiMenu {
             picker: None,
             warning: false,
             download: None,
+            turns: Vec::new(),
         }
     }
 
@@ -241,6 +244,52 @@ impl AiMenu {
         }
     }
 
+    /// The chat turns running now: `(engine, model)`, read before each key.
+    pub fn set_turns(&mut self, turns: Vec<(String, String)>) {
+        self.turns = turns;
+    }
+
+    /// `d` on the model level.
+    pub fn open_delete(&mut self) -> Outcome {
+        let uses = InUse {
+            draft: &self.draft,
+            saved: &self.original,
+            turns: &self.turns,
+        };
+        match &mut self.picker {
+            Some(picker) => picker.open_delete(uses, self.engines.as_ref()),
+            None => Outcome::Stay,
+        }
+    }
+
+    /// A key on the Delete screen: `yes` is an unmodified `y`.
+    pub fn delete_answer(&mut self, yes: bool) -> Outcome {
+        let uses = InUse {
+            draft: &self.draft,
+            saved: &self.original,
+            turns: &self.turns,
+        };
+        match &mut self.picker {
+            Some(picker) => picker.delete_answer(yes, uses, self.engines.as_ref()),
+            None => Outcome::Stay,
+        }
+    }
+
+    /// Whether the row under the cursor can be deleted.
+    pub fn can_delete(&self) -> bool {
+        self.picker.as_ref().is_some_and(|p| {
+            p.delete_target(&self.draft, self.engines.as_ref())
+                .is_some()
+        })
+    }
+
+    /// The reply of delete `id`, for the open picker.
+    pub fn delete_reply(&mut self, id: u64) {
+        if let Some(picker) = &mut self.picker {
+            picker.delete_reply(id, &self.draft, self.engines.as_ref());
+        }
+    }
+
     /// The rows of the open picker; none when it is closed.
     pub fn pick_rows(&self) -> Vec<PickRow> {
         self.picker
@@ -317,7 +366,9 @@ impl AiMenu {
             | Outcome::OllamaAsk(_)
             | Outcome::Pull(_)
             | Outcome::Busy
-            | Outcome::Install(_) => {}
+            | Outcome::Install(_)
+            | Outcome::Delete(_)
+            | Outcome::Refused(_) => {}
         }
         outcome
     }

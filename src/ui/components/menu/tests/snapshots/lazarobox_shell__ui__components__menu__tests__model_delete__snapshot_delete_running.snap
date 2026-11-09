@@ -1,0 +1,22 @@
+---
+source: src/ui/components/menu/tests/model_delete.rs
+expression: "text(&draw(80, POPUP_H, &menu))"
+---
+         ┌ Menu ──────────────────────────────────────────────────────┐         
+         │ Settings │ Models │ Tools │ Chat                           │         
+         │ Delete a model                                             │         
+         │ deleting qwen3:4b…                                         │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │ deleting…                                                  │         
+         └────────────────────────────────────────────────────────────┘

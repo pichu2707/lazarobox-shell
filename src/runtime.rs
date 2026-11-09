@@ -693,6 +693,8 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
             ),
             hub_tx.clone(),
         ))
+        // A model delete answers on the Hub's channel too.
+        .with_deletes(hub_tx.clone())
         // The install wizard's steps: curl, gh and tar from the same PATH,
         // into the owned folder under the data home. They answer on the
         // Hub's channel.
@@ -1432,6 +1434,9 @@ struct Panes {
     /// The Ollama library requests and pull. `None` ignores the Ollama
     /// effects (unit tests).
     ollama: Option<ollama_lib::Ollama>,
+    /// Where a model delete sends its reply. `None` ignores
+    /// `Effect::DeleteModel` (unit tests).
+    deletes: Option<mpsc::Sender<AppEvent>>,
     /// The llama-server install steps. `None` ignores `Effect::Install`
     /// (unit tests).
     installer: Option<llama_install::installer::Installer>,
@@ -1477,6 +1482,7 @@ impl Panes {
             list_running: Box::new(jobs::running),
             hub: None,
             ollama: None,
+            deletes: None,
             installer: None,
             roster: None,
             roster_busy: Arc::new(AtomicBool::new(false)),
@@ -1693,6 +1699,12 @@ impl Panes {
     /// Sets what runs the Ollama effects.
     fn with_ollama(mut self, ollama: ollama_lib::Ollama) -> Self {
         self.ollama = Some(ollama);
+        self
+    }
+
+    /// Sets where a model delete sends its reply.
+    fn with_deletes(mut self, deletes: mpsc::Sender<AppEvent>) -> Self {
+        self.deletes = Some(deletes);
         self
     }
 
@@ -2174,6 +2186,20 @@ impl Panes {
                 Effect::Pull { pull, port } => {
                     if let Some(ollama) = self.ollama.as_mut() {
                         ollama.start(port, *pull);
+                    }
+                }
+                Effect::DeleteModel { ask, port } => {
+                    if let Some(events) = self.deletes.clone() {
+                        tokio::spawn(async move {
+                            let answer = loopback::delete_with(
+                                "127.0.0.1",
+                                port,
+                                loopback::DELETE_PATH,
+                                ask.target.name(),
+                            )
+                            .await;
+                            let _ = events.send(AppEvent::DeleteReply { ask, answer }).await;
+                        });
                     }
                 }
                 // Returns at once: the step runs on its own task.
