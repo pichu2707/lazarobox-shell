@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-11-09
+
 ### Fixed
 
 - Orchestrator: the review of an orphaned worker batch that was never proposed
@@ -2390,7 +2392,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.1...HEAD
+[1.15.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.0...v1.15.1
 [1.15.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.4...v1.15.0
 [1.14.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.3...v1.14.4
 [1.14.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.2...v1.14.3
