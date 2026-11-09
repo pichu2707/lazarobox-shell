@@ -21,7 +21,7 @@ const CHAT_COPY_HINT: [&str; 6] = [
 ];
 
 /// Whether the cell `(x, y)` is inside `rect`.
-fn rect_has(rect: &Rect, x: u16, y: u16) -> bool {
+pub(super) fn rect_has(rect: &Rect, x: u16, y: u16) -> bool {
     (rect.x..rect.x.saturating_add(rect.width)).contains(&x)
         && (rect.y..rect.y.saturating_add(rect.height)).contains(&y)
 }
@@ -68,23 +68,22 @@ impl App {
         }
     }
 
-    /// A mouse event: a vertical wheel tick over a pane, or a left click on
-    /// a link line of the open menu.
+    /// A mouse event: a vertical wheel tick over a pane, a left click on a
+    /// link line of the open menu, or on a link in a pane.
     pub(super) fn on_mouse(&mut self, mouse: MouseEvent) -> Vec<Effect> {
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            self.link_press = Some((mouse.column, mouse.row));
             return self.on_click(mouse);
+        }
+        if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+            return self.on_link_release(mouse);
         }
         let dir = match mouse.kind {
             MouseEventKind::ScrollUp => WheelDir::Up,
             MouseEventKind::ScrollDown => WheelDir::Down,
             _ => return Vec::new(),
         };
-        if !self.config.mouse
-            || !matches!(
-                self.input,
-                InputMode::Terminal | InputMode::Copy(_) | InputMode::ChatCopy(_)
-            )
-        {
+        if !self.mouse_reads_panes() {
             return Vec::new();
         }
         let tiling = self.tiling();
@@ -200,6 +199,15 @@ impl App {
         self.copy_pane_mut().set_scrollback(state.offset);
         self.input = InputMode::Copy(state);
         self.dirty |= state != before;
+    }
+
+    /// Whether the mouse acts on what the panes show now.
+    pub(super) fn mouse_reads_panes(&self) -> bool {
+        self.config.mouse
+            && matches!(
+                self.input,
+                InputMode::Terminal | InputMode::Copy(_) | InputMode::ChatCopy(_)
+            )
     }
 
     /// One wheel tick on chat `id`: the transcript moves by whole lines. In
