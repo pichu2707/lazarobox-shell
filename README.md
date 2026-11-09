@@ -382,6 +382,7 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 | `Statusline position` | Barra de estado arriba o abajo (`h`/`l`) | `[statusline] position` |
 | `Tab bar position` | Barra de pestañas arriba o abajo | `[tabbar] position` |
 | `Mouse` | Captura del ratón | `mouse` |
+| `Build jobs` | Compilaciones en paralelo de los paneles nuevos: `auto` o de `1` al número de núcleos (ver abajo) | `[build] jobs` |
 | `Notify` | Aviso al terminar una respuesta del chat (`off`, `auto`, `desktop`, `bell`); `t` lo prueba | `[ai] notify` |
 | `Sound` | Sonido propio del aviso; `t` lo prueba | `[ai] notify_sound` |
 | `llama-server idle` | Minutos sin uso tras los que se para el llama-server gestionado: `5 min`, `15 min`, `30 min` o `never` | `[ai.servers.llamacpp] idle_minutes` |
@@ -390,6 +391,17 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 | `Feedback` | Abre el formulario para informar de un fallo o proponer una idea (ver abajo) | — |
 
 `Notify` y `Sound` antes estaban en la sección **AI**; solo cambian de sitio, y sus claves y su comportamiento siguen igual.
+
+**`Build jobs`.** Cada panel de shell nuevo recibe `CARGO_BUILD_JOBS` y `CMAKE_BUILD_PARALLEL_LEVEL` con el número de compilaciones que `cargo` y CMake pueden lanzar a la vez. Por defecto ambos usan un trabajo por núcleo y no miran la memoria, así que una máquina con muchos núcleos y poca RAM se queda sin memoria en una compilación completa. Con `auto` (por defecto), lazarobox usa el menor entre los núcleos y la RAM dividida entre 2 GiB, y nunca menos de 1. La fila muestra lo que sale en esta máquina, por ejemplo `auto (3)` con 16 núcleos y 7,6 GB. Desde `auto`, `l` va a `1, 2, …` hasta los núcleos y `h` salta directamente al máximo: sirve para dejar una compilación larga trabajando o para bajarlo mientras haces otras cosas. En `config.toml`:
+
+```toml
+[build]
+jobs = "auto"   # o un número, por ejemplo jobs = 4
+```
+
+- El cambio vale para los paneles que se abran después; un panel ya abierto conserva su valor (`export CARGO_BUILD_JOBS=…` en él lo cambia a mano).
+- Si tu `~/.zshrc` (o `~/.bashrc`) exporta alguna de las dos variables, esa gana, porque la shell la lee al arrancar.
+- Los comandos que el chat lanza con `run_command` no la reciben todavía.
 
 ### Feedback: fallos e ideas desde el terminal
 

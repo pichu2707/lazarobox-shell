@@ -53,7 +53,7 @@ Every `run_command` call MUST need an explicit user `y`, every time, in every ap
 - THEN the result is `denied` and no process was started
 
 ### Requirement: Refusals before start
-`run_command` MUST be refused when any of these holds: no jail is active (Landlock ABI below 3, or a non-Linux system); the chat origin fails the root policy (when the origin is `$HOME`, a parent of `$HOME` or `/`, the text is the fixed `path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>`, the same for every command and git verb and never naming the folder or a path); `cwd` resolves outside the root; the chat holds unproposed staged changes (message `propose them first`); a run is already active in this chat; or two runs are already active across the whole app. A refusal MUST happen before any prompt. Tests always run against the disk, never against staged content.
+`run_command` MUST be refused when any of these holds: no jail is active (Landlock ABI below 3, or a non-Linux system); the chat origin fails the root policy (when the origin is `$HOME`, a parent of `$HOME` or `/`, the text is the fixed `path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>`, the same for every command and git verb and never naming the folder or a path); under WSL, the chat origin is a broad Windows drive folder (a drive root, `<drive>/Users` or a `<drive>/Users/<name>` profile root, granted or not; the text is `path not available: the chat's folder is <folder>, where commands cannot run; ask the user to run /cd <project folder>`, the same for every command and git verb, like the broad-folder text of writes); under WSL, the chat origin is any other Windows drive folder without the user's grant (the folder-level drive text of code-write, Root policy, the same for every command and git verb); `cwd` resolves outside the root; the chat holds unproposed staged changes (message `propose them first`); a run is already active in this chat; or two runs are already active across the whole app. A refusal MUST happen before any prompt. Tests always run against the disk, never against staged content.
 
 #### Scenario: No jail [auto]
 - GIVEN a system where the jail probe fails
@@ -81,7 +81,7 @@ Every `run_command` call MUST need an explicit user `y`, every time, in every ap
 - THEN each is refused with the refusal text `path not available`
 
 ### Requirement: Jail profile
-The child MUST run inside the jail through the existing helper. The profile MUST grant: read and execute on the toolchain directories and system directories; read, write and execute on the root; read and write on a private temp directory and on the package caches; and nothing on `~/.ssh`, `~/.gnupg`, `~/.aws` or other credential locations. The write-and-execute class for the root MUST NOT be reachable from the CLI jail or from any other profile. Outbound network MUST stay open (a visible notice covers it). The child MUST NOT be able to read a credential directory even when the project asks for it.
+The child MUST run inside the jail through the existing helper. The profile MUST grant: read and execute on the toolchain directories and system directories; read, write and execute on the root; read and write on a private temp directory and on the package caches; and nothing on `~/.ssh`, `~/.gnupg`, `~/.aws` or other credential locations. The write-and-execute class for the root MUST NOT be reachable from the CLI jail or from any other profile. Outbound network MUST stay open (a visible notice covers it). The child MUST NOT be able to read a credential directory even when the project asks for it. When the root is on a Windows drive, the jail's broad-root check MUST also refuse, ASCII case-insensitively, a drive root, `<drive>/Users`, any `<drive>/Users/<name>`, the Windows system folders, a profile's `AppData` and `NTUSER.DAT*`, and any path with a DOS 8.3 short name, so none of them can become the read, write and execute root. The jail helper cannot know the user's own Windows profile, so the other folders the WSL drive read policy refuses (another user's profile, the secret folders of a profile) are refused earlier, by the root policy, before the jail starts.
 
 #### Scenario: Secrets unreachable [auto, tests/jail.rs]
 - GIVEN a jailed child
@@ -102,6 +102,11 @@ The child MUST run inside the jail through the existing helper. The profile MUST
 - GIVEN the CLI jail spec before and after this change
 - WHEN both are built
 - THEN they are identical
+
+#### Scenario: Broad drive roots [auto]
+- GIVEN WSL with the drive `/mnt/c`
+- WHEN the jail profile is built with `/mnt/c`, `/mnt/c/Users`, `/mnt/c/Users/ana`, `/mnt/c/Windows` and `/mnt/c/windows` as root
+- THEN each is refused as a root
 
 ### Requirement: Process rules
 The child MUST read stdin from `/dev/null`. Its environment MUST be cleared and rebuilt from a small base (path, user, locale, temp dir, plus non-interactive and no-color settings), and MUST NOT hold the session token or any lazarobox secret. It MUST run in its own process group, and the whole group MUST be killed on timeout, on cancel and on drop. `timeout_secs` MUST default to 120 and MUST NOT exceed 600; a larger value MUST be clamped or refused (design pins which). stdout and stderr MUST share one pipe so ordering is kept. Daemonizing grandchildren that leave the group are a documented limit.

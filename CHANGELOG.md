@@ -21,6 +21,16 @@ baseline.
 - Batch review: a drifted apply says `1 path changed` instead of `1 paths
   changed`.
 
+## [1.15.0] - 2026-11-09
+
+### Added
+
+- Menu: a `Build jobs` row in Settings (`[build] jobs`). New pane shells get
+  `CARGO_BUILD_JOBS` and `CMAKE_BUILD_PARALLEL_LEVEL`. `auto` (the default)
+  caps the jobs by the cores and by the memory at 2 GiB a job, so a machine
+  with many cores and little RAM no longer runs out of memory on a full
+  build; `l` counts up from 1 and `h` from `auto` jumps to all the cores.
+
 ## [1.14.4] - 2026-11-08
 
 ### Fixed
@@ -2380,7 +2390,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.4...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.0...HEAD
+[1.15.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.4...v1.15.0
 [1.14.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.3...v1.14.4
 [1.14.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.2...v1.14.3
 [1.14.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.1...v1.14.2

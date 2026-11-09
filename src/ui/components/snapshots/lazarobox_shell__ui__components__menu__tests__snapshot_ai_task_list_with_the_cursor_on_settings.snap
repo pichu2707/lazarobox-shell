@@ -7,6 +7,7 @@ expression: "text(&draw(62, POPUP_H, &mixed()))"
 │ Statusline position                                 bottom │
 │ Tab bar position                                       top │
 │ Mouse                                                   on │
+│ Build jobs                                        auto (1) │
 │ Notify                                                 off │
 │ Sound                                                   on │
 │ llama-server idle                                   15 min │

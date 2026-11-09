@@ -38,6 +38,7 @@ use crate::core::{
         picker::{InstallAsk, InstallReply},
         tools::{github::GhRepo, report::RunReport, stage::BatchId},
     },
+    build_jobs,
     clipboard::{self, Tool},
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
@@ -924,6 +925,10 @@ pub struct App {
     notice: Option<String>,
     /// The `config.toml` a menu save writes, named in its notice.
     config_path: Option<PathBuf>,
+    /// The cores and memory `[build] jobs = "auto"` is worked out from.
+    /// `None` until the runtime measured them: a new shell then gets no
+    /// job variables.
+    build_machine: Option<build_jobs::Machine>,
     /// The privacy notice of the rolling summary was shown in this run.
     summary_notice_shown: bool,
     /// The `Usage not saved` notice was shown in this run.
@@ -1125,6 +1130,7 @@ impl App {
             input: InputMode::default(),
             notice: None,
             config_path: None,
+            build_machine: None,
             summary_notice_shown: false,
             usage_notice_shown: false,
             day_noted: Vec::new(),
@@ -1380,6 +1386,13 @@ impl App {
         self.refresh_screen();
         // Nothing runs yet, so there is no PTY to tell about the new size.
         self.relayout();
+        self
+    }
+
+    /// The machine `[build] jobs` is worked out for; new pane shells then get
+    /// `CARGO_BUILD_JOBS` and `CMAKE_BUILD_PARALLEL_LEVEL`.
+    pub fn with_build_machine(mut self, machine: build_jobs::Machine) -> Self {
+        self.build_machine = Some(machine);
         self
     }
 
@@ -1718,7 +1731,12 @@ impl App {
 
     fn spawn_spec(&self, cwd: Option<PathBuf>, size: PaneSize) -> SpawnSpec {
         let cwd = cwd.unwrap_or_else(|| "/".into());
-        SpawnSpec::new(self.shell.as_deref(), cwd, size)
+        let mut spec = SpawnSpec::new(self.shell.as_deref(), cwd, size);
+        if let Some(machine) = self.build_machine {
+            spec.env
+                .extend(build_jobs::env(self.config.build_jobs, machine));
+        }
+        spec
     }
 
     /// The child's cwd for the statusline, with `$HOME` shown as `~`. Empty
@@ -2312,6 +2330,7 @@ impl App {
                 .with_hf((self.hf_tokens)(), self.hf_account.clone())
                 .with_opener(self.opener)
                 .with_sandbox(self.jail.runs_commands())
+                .with_build_machine(self.build_machine.unwrap_or_default())
                 .with_feedback(crate::core::menu::feedback::Facts {
                     engines: self
                         .engines
@@ -8331,9 +8350,9 @@ mod app_tests {
         goto_row(a, "Profile");
     }
 
-    /// Moves the menu selection to the `Notify` row (right after `Mouse`).
+    /// Moves the menu selection to the `Notify` row (right after `Build jobs`).
     fn to_notify_row(a: &mut App) {
-        for _ in 0..3 {
+        for _ in 0..4 {
             a.update(key('j'));
         }
     }
@@ -8986,6 +9005,9 @@ mod app_tests {
 
     /// The mouse capture lifecycle (pane-scroll S3).
     mod mouse_capture;
+
+    /// `[build] jobs` in the environment of new pane shells.
+    mod build_jobs;
 
     /// History in the chat pane: list, saving, resume, delete (ai-chat C9).
     mod chat_history;
