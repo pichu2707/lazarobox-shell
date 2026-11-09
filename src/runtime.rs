@@ -2363,15 +2363,16 @@ fn to_app_event(event: Event) -> Option<AppEvent> {
         // then keeps the window as focused.
         Event::FocusGained => Some(AppEvent::WindowFocus(true)),
         Event::FocusLost => Some(AppEvent::WindowFocus(false)),
-        // The vertical wheel and the left press (a link line of the menu);
-        // other buttons, releases, drags, motion and the horizontal wheel
-        // are not the app's.
+        // The vertical wheel, the left press (a link line of the menu) and
+        // its release (a link in a pane); other buttons, drags, motion and
+        // the horizontal wheel are not the app's.
         Event::Mouse(mouse)
             if matches!(
                 mouse.kind,
                 MouseEventKind::ScrollUp
                     | MouseEventKind::ScrollDown
                     | MouseEventKind::Down(MouseButton::Left)
+                    | MouseEventKind::Up(MouseButton::Left)
             ) =>
         {
             Some(AppEvent::Mouse(mouse))
@@ -2905,15 +2906,21 @@ mod tests {
         );
     }
 
-    // Spec (mouse-input): other buttons, releases, drags, motion and the
-    // horizontal wheel are dropped.
+    // pane-links D1: a link opens on the release of the left button.
+    #[test]
+    fn the_left_release_reaches_the_app() {
+        let up = mouse(MouseEventKind::Up(MouseButton::Left));
+        assert_eq!(to_app_event(Event::Mouse(up)), Some(AppEvent::Mouse(up)));
+    }
+
+    // Spec (mouse-input): other buttons, drags, motion and the horizontal
+    // wheel are dropped.
     #[test]
     fn other_mouse_events_are_dropped() {
         for kind in [
             MouseEventKind::Down(MouseButton::Right),
             MouseEventKind::Down(MouseButton::Middle),
             MouseEventKind::Up(MouseButton::Right),
-            MouseEventKind::Up(MouseButton::Left),
             MouseEventKind::Drag(MouseButton::Left),
             MouseEventKind::Moved,
             MouseEventKind::ScrollLeft,

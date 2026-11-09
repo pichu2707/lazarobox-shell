@@ -15,6 +15,8 @@ use super::osc7;
 
 /// DA1 reply: VT620-class terminal with no extensions.
 const DA1_REPLY: &[u8] = b"\x1b[?62;c";
+/// How far past the view a wrapped link is followed.
+const LINK_ROWS_PAST_VIEW: usize = 128;
 /// DSR 5n reply: terminal is operating correctly.
 const DSR_OK_REPLY: &[u8] = b"\x1b[0n";
 
@@ -434,6 +436,40 @@ impl Pane {
         }
         self.set_scrollback(saved);
         out
+    }
+
+    /// The rows the view shows, for finding its links, with the rows a link
+    /// that crosses its edges goes on to, and how many of them come before
+    /// the view. Without them, half a link would pass for a whole one. The
+    /// scrollback offset is restored.
+    pub fn link_rows(&mut self) -> (Vec<LineText>, usize) {
+        let (rows, cols) = self.parser.screen().size();
+        let live = self.first_line + self.history_len;
+        let top = live.saturating_sub(self.scrollback_offset());
+        let bottom = top + usize::from(rows).saturating_sub(1);
+        let end = live + usize::from(rows).saturating_sub(1);
+        let span = |first, last| LineSpan {
+            first,
+            last,
+            first_col: 0,
+            last_col: cols.saturating_sub(1),
+        };
+        let wrapped = |pane: &mut Self, line| {
+            let text = pane.read_lines(span(line, line));
+            text.first().is_some_and(|row| row.wrapped)
+        };
+        let mut first = top;
+        while top - first < LINK_ROWS_PAST_VIEW
+            && first > self.first_line
+            && wrapped(self, first - 1)
+        {
+            first -= 1;
+        }
+        let mut last = bottom;
+        while last - bottom < LINK_ROWS_PAST_VIEW && last < end && wrapped(self, last) {
+            last += 1;
+        }
+        (self.read_lines(span(first, last)), top - first)
     }
 
     /// Cells `from..=to` of a viewport row. A range starting on the right half

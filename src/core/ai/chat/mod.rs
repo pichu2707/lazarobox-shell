@@ -1306,6 +1306,12 @@ impl ChatState {
             && self.approvals().review().is_none()
     }
 
+    /// The pane row the first transcript line is drawn at: the batch badge
+    /// owns the row above it.
+    pub fn transcript_first_row(&self, width: u16, height: u16) -> u16 {
+        u16::from(self.badge_row(width, self.transcript_rows(width, height)))
+    }
+
     /// The rows of the transcript that are really drawn in a pane `width` x
     /// `height`: what the composer leaves, less the batch badge row and the
     /// rows `guidance` takes.

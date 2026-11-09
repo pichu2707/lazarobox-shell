@@ -70,6 +70,7 @@ mod handoff;
 mod history;
 mod hub;
 mod install;
+mod links;
 mod notes;
 mod offer;
 mod orchestra;
@@ -1061,6 +1062,8 @@ pub struct App {
     /// The last copy was the link a failed browser open fell back to: the
     /// menu footer keeps that context.
     clip_link: bool,
+    /// Where the left button went down, until it comes up.
+    link_press: Option<(u16, u16)>,
     /// The Hugging Face account of the saved token, once a connect or a
     /// check found it in this session.
     hf_account: Option<String>,
@@ -1196,6 +1199,7 @@ impl App {
             clip_seq: 0,
             clip_osc52: false,
             clip_link: false,
+            link_press: None,
             hf_account: None,
             note_choices: Vec::new(),
             engines: None,
@@ -2562,6 +2566,7 @@ impl App {
             "link copied"
         };
         self.notice = Some(format!("The browser did not open: {said}"));
+        self.dirty = true;
         effects
     }
 
