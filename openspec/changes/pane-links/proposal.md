@@ -33,10 +33,9 @@ Links printed in a shell pane or written by a model in the chat cannot be opened
 - `pane-links`: URL detection over visible pane and chat text, the click action, the link list, the scheme rule, and the copy fallback.
 
 ### Modified Capabilities
-- `mouse-input`: "Events handled" today ignores every left press outside MENU; a click on a link becomes handled (see Q1 for press or release).
+- `mouse-input`: "Events handled" today ignores every left press outside MENU; a click on a link becomes handled, on the release at the cell of the press.
 - `modal-input`: a new PREFIX key for the link list.
 - `chat-pane`: chat lines become clickable where they hold a URL.
-- `config-menu`: none, unless Q7 adds a toggle.
 
 ## Approach
 
@@ -47,9 +46,9 @@ One pure detector takes rows of text with their soft-wrap flags and returns link
 | Area | Impact |
 |------|--------|
 | `src/core/` (new `links.rs`) | Pure URL detector, scheme rule |
-| `src/core/opener.rs` | Scheme rule for pane links (see Q6); the menu's `https`-only rule stays |
+| `src/core/opener.rs` | Scheme rule for pane links (`https` and `http`); the menu's `https`-only rule stays |
 | `src/app/scroll.rs` | `on_click` handles a click on a pane link |
-| `src/runtime.rs` | `to_app_event` may also pass the left release (Q1) |
+| `src/runtime.rs` | `to_app_event` also passes the left release |
 | `src/app.rs` | `on_open_failed` without the menu: copy and a notice |
 | `src/core/pane.rs` | Read visible rows with their wrap flags for the detector |
 | `src/core/ai/chat/transcript.rs` | Visible lines and their `lead` for the detector |
@@ -60,7 +59,7 @@ One pure detector takes rows of text with their soft-wrap flags and returns link
 
 | Risk | Likelihood | Mitigation |
 |------|------------|------------|
-| A click opens a link the user did not mean to open | Med | Only on a detected URL; press and release on the same cell (Q1); the notice names what opened |
+| A click opens a link the user did not mean to open | Med | Only on a detected URL; press and release on the same cell; the notice names what opened |
 | Pane output (or a model) shows a link to a harmful site | Med | Only a human click or key opens; `http(s)` only; the URL opened is exactly the text shown, with no hidden OSC 8 target |
 | Trailing punctuation or Markdown taken as part of the URL | High | Strip trailing `.,;:!?'"` and unbalanced `)` `]` `>`; tests with Markdown links and parentheses |
 | A wrapped URL joined with the next unrelated row | Low | Join only rows marked soft-wrapped |
@@ -69,7 +68,7 @@ One pure detector takes rows of text with their soft-wrap flags and returns link
 
 ## Rollback Plan
 
-A plain revert. No stored data or config format changes, unless Q7 adds a key; old configs would ignore it.
+A plain revert. No stored data or config format changes.
 
 ## Success Criteria
 
@@ -83,7 +82,7 @@ A plain revert. No stored data or config format changes, unless Q7 adds a key; o
 
 ## Evidence
 
-Verified on `origin/main` f4900e12 (v1.10.0).
+Verified on `origin/main` f4900e12 (v1.10.0). The behaviors below were checked again on 6eaeb565 (v1.15.2) and still hold; line numbers have moved since.
 
 - **Capture is wheel-only today:** `CAPTURE_ON` enables button reporting with SGR, no motion (`src/core/mouse.rs:11-12`); `mouse` defaults to on and `mouse = false` gives the wheel and selection back to the terminal (`README.md:364`, `README.md:368`).
 - **Native selection needs a modifier:** Shift, or Option on macOS (`README.md:365`).
@@ -96,34 +95,14 @@ Verified on `origin/main` f4900e12 (v1.10.0).
 - **Failure copies the link, but only in the menu:** `on_open_failed` copies when a menu is open, and otherwise only sets `The browser did not open` (`src/app.rs:2442-2463`).
 - **Keys:** PREFIX top level binds `[ m c n q h j k o s e T W r ?` among others, and `u` is unbound (`src/core/prefix.rs:228-264`). COPY binds `g v V h l 0 $ j k G y` and Ctrl+D/U (`src/core/copy.rs:229-249`); chat COPY adds Ctrl+Y and Ctrl+B (`src/core/ai/chat/copy.rs:129-130`).
 
-## Open Questions
+## Decisions
 
-Each has a recommended answer for the review.
+Reviewed by the maintainer on 2026-11-09; each one is the option the review recommended.
 
-- **Q1. Which click opens a link?**
-  Recommended: a plain left click, opened on the release at the same cell as the press. A plain click is free today (Evidence), and Ctrl+click is a right-click on macOS Terminal, so it would not work everywhere. Opening on release, not on press, keeps a later drag selection (S2) possible without changing the gesture.
-  Tradeoff: the release must now pass `to_app_event`, and a "mouse-input" requirement changes. A future change that forwards clicks to `vim` with `mouse=a` would have to decide which wins on a link; Ctrl+click would avoid that, but would not work on every terminal.
-
-- **Q2. How are URLs detected?**
-  Recommended: plain-text detection of `https://` and `http://` up to whitespace, with trailing punctuation and unbalanced closing brackets removed, over soft-wrapped rows joined. No OSC 8.
-  Tradeoff: OSC 8 links whose text is not a URL (for example in `ls --hyperlink` or some `gh` output) stay unclickable; supporting them needs per-cell link storage that `vt100` does not have. Plain text also means the user always sees the exact target.
-
-- **Q3. What is the keyboard path?**
-  Recommended: `Ctrl+Space`, then `u`, opens a small list of the focused pane's visible links, newest last, each with a key (`1`…`9`, then letters). The key opens it; `y` on the selected row copies it; `Esc` closes.
-  Tradeoff: a new small view. The alternative, `o` in COPY on the cursor's link, reuses COPY and reaches scrollback, but needs more keys and is harder to find.
-
-- **Q4. Where does it apply first?**
-  Recommended: shell panes and the chat in the same change, through one detector; the chat slice can land first, since its lines are already plain text.
-  Tradeoff: two hit-test paths to test. Chat only would be smaller but would leave `git push` and dev-server links out.
-
-- **Q5. What happens when no browser opens?**
-  Recommended: the same as the menu: copy the link (OSC 52 and a local tool) and show a notice, `The browser did not open: link copied`. With no opener at all, copy at once.
-  Tradeoff: `on_open_failed` must work outside the menu; the notice may be missed in a busy screen.
-
-- **Q6. Which links may be opened, and is there a confirmation?**
-  Recommended: `https://` and `http://` only, one line, no whitespace or control characters; no confirmation, because only a human click or key opens a link and the target is exactly the text shown. `http://` is needed for local dev servers (`http://localhost:3000`). The menu keeps its `https`-only rule.
-  Tradeoff: no confirmation means one click on a deceptive URL opens it, as in any terminal. A confirmation would make every open two steps and does not fit the click.
-
-- **Q7. Is there a config toggle?**
-  Recommended: no new key. The click follows `mouse` (off means no capture, so no clicks); the keyboard list is always there.
-  Tradeoff: a user who wants the wheel but not link clicks cannot turn clicks off alone. A key could be added later without breaking configs.
+- **D1. Click.** A plain left click, opened on the release at the same cell as the press. A plain click is free today, and Ctrl+click is a right-click on macOS Terminal. Opening on release keeps a later drag selection (S2) possible. A future change that forwards clicks to `vim` with `mouse=a` has to decide which wins on a link.
+- **D2. Detection.** Plain-text `https://` and `http://` up to whitespace, with trailing punctuation and unbalanced closing brackets removed, over soft-wrapped rows joined. No OSC 8: `vt100` has no per-cell link storage, and the user always sees the exact target.
+- **D3. Keyboard.** `Ctrl+Space`, then `u`, opens a small list of the focused pane's visible links, newest last, each with a key (`1`…`9`, then letters). The key opens it, `y` on the selected row copies it, and `Esc` closes.
+- **D4. Where.** Shell panes and the chat in the same change, through one detector. The chat slice can land first, since its lines are already plain text.
+- **D5. No browser.** The same as the menu: copy the link (OSC 52 and a local tool) and show `The browser did not open: link copied`. With no opener at all, copy at once. `on_open_failed` must work outside the menu.
+- **D6. Which links.** `https://` and `http://` only, one line, no whitespace or control characters, and no confirmation: only a human click or key opens a link, and the target is exactly the text shown. `http://` is needed for local dev servers. The menu keeps its `https`-only rule.
+- **D7. Config.** No new key. The click follows `mouse`, and the keyboard list is always there.
