@@ -36,7 +36,7 @@ Each PR gets an independent verifier and is released on its own (patch through `
 - [x] 1.6 GREEN: `windows.rs` parsers, `WinDrives` in `SecretRoots`, startup read of `/proc/mounts` and the background `cmd.exe` probe (2 s cap).
 - [x] 1.7 Writes, `run_command` and git in a drive folder still refused (regression test), with the one path text.
 - [x] 1.8 Docs: `tools.md` reach sentence, the #558 outside-folder line, README WSL section, CHANGELOG `[Unreleased]`.
-- [ ] 1.9 Manual (real drvfs read path checked on WSL2 by a throwaway probe: own profile found, README read, `.env` and `C:\Windows`/`C:\WINDOWS` refused; the TUI check is pending): on WSL2, the chat opened in a project under `/mnt/c/Users/<me>/Documents` reads a file and lists the folder; `C:\Windows` is refused.
+- [x] 1.9 Manual (checked on WSL2 on 2026-11-09 through the real host tools with a throwaway test, not the TUI: README read and folder listed under `/mnt/c/Users/<me>/Documents`; `.env`, `C:\Windows`, `C:\WINDOWS`, `drivers/etc/hosts` and `AppData` refused): on WSL2, the chat opened in a project under `/mnt/c/Users/<me>/Documents` reads a file and lists the folder; `C:\Windows` is refused.
 
 ## PR 2: Grant and writes
 
@@ -50,7 +50,7 @@ PR 2 ships writes only (`run_command` and git stay refused until PR 3), so its t
 - [x] 2.6 RED: `rename_noreplace` seam forced to `EINVAL`: missing target created with the bytes and no temp left; existing target → `Exists`, its bytes unchanged.
 - [x] 2.7 GREEN: `drive_grant` state, prompt, `resolve_write` drive root, `linkat` fallback; the chat's grant reaches the turn's `TurnScope` through `ChatRequest.drive_grant` (`a_turn_carries_the_grant_of_its_chat`).
 - [x] 2.8 Docs: README (grant), CHANGELOG.
-- [ ] 2.9 Manual: create, edit and roll back a file in a granted drive folder on WSL2.
+- [x] 2.9 Manual: create, edit and roll back a file in a granted drive folder on WSL2. (Checked on 2026-11-09 with a throwaway test on drvfs: refused before the grant; created and edited after it; a failed batch rolled back with `undone: true`. Commands and git in a granted folder also checked: `run_command` exit 0 under the real jail, `git status`/`add`/`commit` work, the profile folder stays refused for commands.)
 
 ## PR 3: Commands and git
 
@@ -58,4 +58,4 @@ PR 2 ships writes only (`run_command` and git stay refused until PR 3), so its t
 - [x] 3.2 RED: jail broad check refuses `/mnt/c`, `/mnt/c/Users`, a profile root, `/mnt/c/Windows` and `/mnt/C/windows`-style case variants as roots.
 - [x] 3.3 RED: `run_command` and git in an ungranted drive folder give the folder-level text; in a granted one they run with the folder as cwd.
 - [x] 3.4 GREEN: `root_of` and git root with the grant, dynamic broad check.
-- [ ] 3.5 Docs: README, CHANGELOG; tick this file and archive the change after the last PR merges. (README, CHANGELOG and the ticks done; the archive waits for the merge.)
+- [x] 3.5 Docs: README, CHANGELOG; tick this file and archive the change after the last PR merges.
