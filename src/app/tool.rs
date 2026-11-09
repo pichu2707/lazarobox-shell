@@ -478,9 +478,13 @@ impl App {
     /// asks stay in their order; when the shown ask was the worker's, the
     /// oldest one left is promoted and armed afresh. The runtime has denied
     /// the calls under the worker's session already (`Waits::end_worker`), so
-    /// no answer is sent. The one door for a per-worker cancel (S3c).
+    /// no answer is sent. The one door for a per-worker cancel (S3c). A
+    /// review the user opened on an orphan has no call and is not the
+    /// worker's: it stays.
     pub(super) fn withdraw_worker(&mut self, id: PaneId, key: WorkerKey) {
-        self.withdraw_where(id, |approval| approval.ask().worker() == Some(key));
+        self.withdraw_where(id, |approval| {
+            approval.call().is_some() && approval.ask().worker() == Some(key)
+        });
     }
 
     fn withdraw_where(&mut self, id: PaneId, stale: impl Fn(&Approval) -> bool) {

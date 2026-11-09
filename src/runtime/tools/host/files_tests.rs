@@ -1076,7 +1076,7 @@ async fn a_drifted_batch_writes_nothing_and_leaves_the_model_free_to_restage() {
     d.call(edit("d.txt", "before", "after")).await;
     let out = d.call(Call::ProposeBatch).await;
     assert!(
-        out.is_error && out.text.starts_with("refused: 1 paths changed"),
+        out.is_error && out.text.starts_with("refused: 1 path changed"),
         "{out:?}"
     );
     assert!(out.text.contains("d.txt"), "{}", out.text);
@@ -1266,7 +1266,7 @@ async fn a_secret_reaches_no_other_model_facing_output() {
     assert!(!d.call(edit("d.txt", "before", "after")).await.is_error);
     let drifted = d.call(Call::ProposeBatch).await;
     assert!(
-        drifted.is_error && drifted.text.starts_with("refused: 1 paths changed"),
+        drifted.is_error && drifted.text.starts_with("refused: 1 path changed"),
         "{drifted:?}"
     );
     clean("Drifted", &drifted.text);

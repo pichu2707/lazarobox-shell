@@ -1926,3 +1926,83 @@ async fn the_orphan_review_of_a_workers_batch_keeps_the_worker_label() {
     let (_, review) = host.review_batch(PANE, false).expect("an orphan to review");
     assert_eq!(review.label(), Some("1/1 review claude>opus"));
 }
+
+// The worker staged and its turn ended before `propose_batch` (a cancel, an
+// early end): the batch was never sealed, yet the review of the orphan names
+// the worker. No receipt is made up: no review covered an unsealed batch.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_orphan_review_of_a_never_proposed_batch_keeps_the_worker_label() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let unprompted = Scripted::new(Decision::Unprompted);
+    let d = writer(&host, Locality::Cloud, &home, handle, unprompted);
+    assert!(!d.call(write_call("new.rs", "fn x() {}")).await.is_error);
+    let (_, review) = host.review_batch(PANE, false).expect("an orphan to review");
+    assert_eq!(review.label(), Some("1/1 review claude>opus"));
+    assert_eq!(review.receipt(), None);
+}
+
+// A correction worker stages into its proposer's batch (S7b). If the proposer
+// ends before it seals, the orphan is still the proposer's: its label and its
+// worker key, never the correction's.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_correction_staging_in_a_proposers_batch_does_not_take_its_label() {
+    use crate::core::ai::orchestra::WorkerKey;
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let batch = StageKey::Worker(
+        PANE,
+        WorkerKey {
+            run: RunId(1),
+            worker: WorkerId(1),
+        },
+    );
+    for number in [1, 2] {
+        let (mut scope, _rx) = worker_in_app(Locality::Cloud, &home, handle.clone());
+        scope.families = Toolset::ReadOnly.families().with(Family::Write);
+        scope.stage_key = Some(batch);
+        scope.approver = Scripted::new(Decision::Unprompted);
+        if let Some(read) = scope.read_scope.as_mut() {
+            read.worker = WorkerId(number);
+        }
+        let (tx, mut rx) = mpsc::channel(64);
+        scope.events = tx;
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let file = format!("f{number}.rs");
+        let call = write_call(&file, "fn x() {}");
+        let out = host.dispatch(scope).call(call).await;
+        assert!(!out.is_error, "{out:?}");
+    }
+    let (_, review) = host.review_batch(PANE, false).expect("an orphan to review");
+    assert_eq!(review.label(), Some("1/1 review claude>opus"));
+    assert_eq!(
+        review.worker(),
+        Some(WorkerKey {
+            run: RunId(1),
+            worker: WorkerId(1)
+        })
+    );
+}
+
+// A batch the chat staged itself has no worker: its orphan stays unlabelled.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_orphan_review_of_a_plain_chat_batch_has_no_label() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (mut scope, _rx) = scope(Locality::Cloud, &home);
+    scope.origin = home.join("dev/app");
+    scope.families = Toolset::ReadOnly.families().with(Family::Write);
+    scope.stage_key = Some(StageKey::Pane(PANE));
+    let (tx, mut rx) = mpsc::channel(64);
+    scope.events = tx;
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let d = host.dispatch(scope);
+    assert!(!d.call(write_call("new.rs", "fn x() {}")).await.is_error);
+    let (_, review) = host.review_batch(PANE, false).expect("an orphan to review");
+    assert_eq!(review.label(), None);
+}

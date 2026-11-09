@@ -149,6 +149,19 @@ impl Stages {
         }
     }
 
+    /// Remembers the head of the review of the batch `key` holds now, while a
+    /// worker stages it: a batch the worker never proposes is never sealed,
+    /// and its orphan review is still headed by the worker. It carries no
+    /// receipt: no review covered a batch that was not sealed. Staging is
+    /// refused once the batch is sealed, so this never replaces the head a
+    /// seal gave. Kept by the batch's generation, so it never heads a later
+    /// batch of the key. A key with no batch is ignored.
+    pub fn label_staging(&mut self, key: StageKey, label: WorkerLabel) {
+        if let Some(batch) = self.batches.get(&key) {
+            self.labels.insert(key, (batch.id().generation, label));
+        }
+    }
+
     /// The ask for the batch `id` is over without an answer (see
     /// [`Batch::ask_gone`]). A stale id is ignored.
     pub fn ask_gone(&mut self, id: BatchId) {
@@ -412,6 +425,25 @@ mod tests {
         // Empty batches are no loss, but they go too.
         assert_eq!(stages.discard_pane(PaneId::for_test(3)), None);
         assert!(stages.batch(worker(3, 1)).is_none());
+    }
+
+    #[test]
+    fn a_stale_worker_label_never_heads_a_later_batch_of_the_key() {
+        let mut stages = Stages::default();
+        let k = worker(1, 1);
+        let first = put(&mut stages, k, "a.txt");
+        let wkey = crate::core::ai::orchestra::WorkerKey::for_test(1, 1);
+        stages.label_staging(k, ("1/1 code x>y".into(), wkey, None));
+        // The batch goes without its label being dropped with it.
+        stages.discard_key(k);
+        let second = put(&mut stages, k, "b.txt");
+        assert!(second.generation > first.generation);
+        let (_, review) = stages.review_pane(PaneId::for_test(1), false).unwrap();
+        assert_eq!(review.label(), None);
+        // Labelled while it stages, the batch's own label heads its review.
+        stages.label_staging(k, ("1/2 code x>y".into(), wkey, None));
+        let (_, review) = stages.review_pane(PaneId::for_test(1), false).unwrap();
+        assert_eq!(review.label(), Some("1/2 code x>y"));
     }
 
     #[test]

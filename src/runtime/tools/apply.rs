@@ -174,8 +174,9 @@ impl ApplyResult {
                 out
             }
             ApplyResult::Drifted(paths) => format!(
-                "refused: {} paths changed since the review, nothing was written:{}",
+                "refused: {} path{} changed since the review, nothing was written:{}",
                 paths.len(),
+                if paths.len() == 1 { "" } else { "s" },
                 list(paths)
             ),
             ApplyResult::Invalid { path } => format!(
@@ -1155,6 +1156,10 @@ mod tests {
         assert_eq!(
             drifted.summary(),
             "refused: 2 paths changed since the review, nothing was written:\n/h/p/a\n/h/p/b"
+        );
+        assert_eq!(
+            ApplyResult::Drifted(paths(&["/h/p/a"])).summary(),
+            "refused: 1 path changed since the review, nothing was written:\n/h/p/a"
         );
         let failed = super::tests::failed("/h/p/c", true);
         assert_eq!(
