@@ -33,9 +33,46 @@ pub fn is_web_url(url: &str) -> bool {
     })
 }
 
+/// Whether a link shown in a pane may be handed to an opener: the rule of
+/// [`is_web_url`], with `http://` too, which local dev servers use.
+pub fn is_link_url(url: &str) -> bool {
+    url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .is_some_and(|rest| {
+            !rest.is_empty() && !rest.chars().any(|c| c.is_whitespace() || c.is_control())
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pane_link_may_be_https_or_http_and_nothing_else() {
+        for url in ["https://a.io/x", "http://localhost:3000/"] {
+            assert!(is_link_url(url), "{url}");
+        }
+        for url in [
+            "",
+            "https://",
+            "http://",
+            "http://a b",
+            "http://a\nb",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "ftp://a.io",
+            "--help",
+        ] {
+            assert!(!is_link_url(url), "{url}");
+        }
+    }
+
+    // The menu's own links keep the stricter rule.
+    #[test]
+    fn the_menus_rule_stays_https_only() {
+        assert!(is_web_url("https://a.io"));
+        assert!(!is_web_url("http://a.io"));
+    }
 
     #[test]
     fn each_host_gets_its_openers_best_first() {

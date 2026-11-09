@@ -2490,6 +2490,9 @@ impl App {
             MenuCommand::Pull(pull) => self.start_pull(pull),
             MenuCommand::Install(ask) => self.install_effects(ask),
             MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
+            MenuCommand::Open(url) if !crate::core::opener::is_web_url(&url) => {
+                self.on_open_failed(&url)
+            }
             MenuCommand::Open(url) => {
                 if let Some(menu) = self.menu.as_mut() {
                     menu.set_copied("Opened in your browser".to_owned());
@@ -2526,8 +2529,7 @@ impl App {
     fn on_open_failed(&mut self, url: &str) -> Vec<Effect> {
         self.opener = false;
         let Some(menu) = self.menu.as_mut() else {
-            self.notice = Some("The browser did not open".to_owned());
-            return Vec::new();
+            return self.copy_unopened_link(url);
         };
         menu.open_failed();
         self.dirty = true;
@@ -2543,6 +2545,23 @@ impl App {
             };
             menu.set_copied(format!("The browser did not open: {said}"));
         }
+        effects
+    }
+
+    /// [`App::on_open_failed`] with no menu to say so: the notice does.
+    fn copy_unopened_link(&mut self, url: &str) -> Vec<Effect> {
+        let effects = self.copy_to_clipboard(url);
+        if effects.is_empty() {
+            self.notice = Some("The browser did not open".to_owned());
+            return effects;
+        }
+        self.clip_link = self.clipboard.is_some();
+        let said = if self.clip_link {
+            "copying link"
+        } else {
+            "link copied"
+        };
+        self.notice = Some(format!("The browser did not open: {said}"));
         effects
     }
 
@@ -2611,11 +2630,12 @@ impl App {
             Err(reason) if self.clip_osc52 => clipboard::failed(tool, &reason),
             Err(reason) => clipboard::failed_too_large(tool, &reason),
         };
+        let said = match self.clip_link {
+            true => format!("The browser did not open: {said}"),
+            false => said,
+        };
         if let Some(menu) = self.menu.as_mut() {
-            menu.set_copied(match self.clip_link {
-                true => format!("The browser did not open: {said}"),
-                false => said.clone(),
-            });
+            menu.set_copied(said.clone());
         }
         self.notice = Some(said);
         self.dirty = true;
@@ -9026,6 +9046,9 @@ mod app_tests {
 
     /// `[build] jobs` in the environment of new pane shells.
     mod build_jobs;
+
+    /// A link that did not open, outside the menu (pane-links).
+    mod links;
 
     /// History in the chat pane: list, saving, resume, delete (ai-chat C9).
     mod chat_history;
