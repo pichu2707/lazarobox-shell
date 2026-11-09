@@ -17,7 +17,7 @@ Terms: "root" = the chat origin directory. "Batch" = the staged changes of one c
 - THEN no write tool is present and a call to `write_file` returns an error result
 
 ### Requirement: Root policy
-Writes MUST be allowed only under one root: the chat origin directory. They MUST be refused when the origin is missing, is `$HOME`, is a parent of `$HOME`, or is a system directory. A target path MUST be refused when, after resolving `..` and symlinks, it is outside the root. Every refusal, including the refusals of the deny rules below, MUST return the same text, `path not available (paths are relative to the chat's folder <folder>)`, where `<folder>` is the chat origin with `$HOME` shown as `~`, so the result does not reveal whether a path exists. The one exception is a chat folder that is itself broad (`$HOME`, a parent of `$HOME`, or `/`): every write then returns the folder-level text `path not available: the chat's folder is <folder>, where files cannot be written; ask the user to run /cd <project folder>`, which depends only on the folder and never on the path, so it still reveals nothing about any path. One case MAY say more: when the path passed this policy and the deny rules and only its parent folder is missing, the text MUST be `path not available: the folder <parent>/ does not exist (paths are relative to the chat's folder <folder>)`, with `<parent>` as the model wrote it.
+Writes MUST be allowed only under one root: the chat origin directory. They MUST be refused when the origin is missing, is `$HOME`, is a parent of `$HOME`, or is a system directory, and, under WSL, when the origin is a Windows drive folder (agent-tools, WSL drive read policy) that the user has not granted (chat-folder, WSL drive grant). A target path MUST be refused when, after resolving `..` and symlinks, it is outside the root. Every refusal, including the refusals of the deny rules below, MUST return the same text, `path not available (paths are relative to the chat's folder <folder>)`, where `<folder>` is the chat origin with `$HOME` shown as `~`, so the result does not reveal whether a path exists. The one exception is a chat folder that is itself broad (`$HOME`, a parent of `$HOME`, or `/`): every write then returns the folder-level text `path not available: the chat's folder is <folder>, where files cannot be written; ask the user to run /cd <project folder>`, which depends only on the folder and never on the path, so it still reveals nothing about any path. The same holds for a Windows drive folder without a grant: every write then returns `path not available: the chat's folder <folder> is on a Windows drive, where writes, commands and git need your permission; ask the user to run /cd <folder>`. One case MAY say more: when the path passed this policy and the deny rules and only its parent folder is missing, the text MUST be `path not available: the folder <parent>/ does not exist (paths are relative to the chat's folder <folder>)`, with `<parent>` as the model wrote it.
 
 #### Scenario: Origin refused [auto]
 - GIVEN origins `$HOME`, `/home`, `/usr` and a missing directory
@@ -39,6 +39,16 @@ Writes MUST be allowed only under one root: the chat origin directory. They MUST
 - WHEN `write_file` is called with `Descargas/fibonacci.py`
 - THEN it returns `path not available: the folder Descargas/ does not exist (paths are relative to the chat's folder ~/Descargas)` and nothing is staged
 - AND `nope/.env` below a missing `nope` returns the one refusal text
+
+#### Scenario: Drive folder without a grant [auto]
+- GIVEN WSL and a chat in `/mnt/c/Users/ana/Documents/app` that the user did not grant
+- WHEN `write_file` is called with `main.py` and with `../x`
+- THEN both return the folder-level drive text and nothing is staged
+
+#### Scenario: Granted drive folder [auto]
+- GIVEN the same chat after the user granted it
+- WHEN `write_file` is called with `main.py` and with `../x`
+- THEN the first is staged and the second returns the one refusal text
 
 ### Requirement: Deny rules
 A write MUST be refused (with the refusal text) when the target is inside `.git/` or `node_modules/`, or matches the existing secret lists of agent-tools (for example `.env`, `.npmrc`). The one exception is an environment template: an env name ending in `.example`, `.sample`, `.template` or `.dist` (for example `.env.example`, never `.env.local`). `write_file` and `edit_file` MAY stage it, judged by the folder it sits in, and like every write it reaches the disk only through the user's approval of the batch review, in every approval mode (#583). Its `edit_file` MUST ask like a read before it runs, on a local engine too, once per file per turn, because the answer tells whether a text occurs in a file no read may show. So MUST a `write_file` over a template that already exists, because staging it answers "staged" or "use edit_file" by what the file holds (a secret-looking run, CRLF, over the read cap); a denial, or an approval mode that answers for the user, MUST give one answer whatever the file holds, and a write of a template that does not exist yet asks nothing. A worker's `write_file` over an existing template MUST get the one refusal text whatever the file holds. It is still refused as a folder name, as the real target of a secret link of `$HOME`, to a worker's `edit_file` (a worker asks no one before it stages, and the answer would tell what the file holds), and to `read_file`; a review worker's prompt only names it. Reads of `.git/config` MUST be refused. A write MUST be refused when the content holds invalid UTF-8 or a bidi or zero-width control character, or holds CRLF line endings. `edit_file` MUST be refused on a file that is not UTF-8 or holds CRLF. Refused content MUST NOT be cleaned or rewritten.
@@ -291,3 +301,16 @@ No tool MUST change a file, directory or permission on disk except the apply ste
 - GIVEN every write tool called against a recording filesystem and no approval given
 - WHEN the calls complete
 - THEN no file or directory was created, changed or removed
+
+### Requirement: Creating a file on a Windows drive
+When the no-replace rename that publishes a new file fails with `EINVAL` (drvfs does not support it), the app MUST publish the file with `linkat` from the temp name to the target, which fails when the target exists, and then remove the temp name. A target that exists MUST give the same result as the no-replace rename (`Exists`) and MUST keep its bytes. A temp name that cannot be removed MUST NOT change the result; it is removed by the usual temp cleanup. No other error of the rename MAY fall back.
+
+#### Scenario: New file on drvfs [auto]
+- GIVEN the rename seam answering `EINVAL` and a missing target
+- WHEN a new file is applied
+- THEN the target holds the bytes and no temp name is left
+
+#### Scenario: Existing file on drvfs [auto]
+- GIVEN the rename seam answering `EINVAL` and a target that already exists
+- WHEN a new file is applied over it
+- THEN the result is `Exists` and the target's bytes are unchanged
