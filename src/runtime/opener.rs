@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::core::opener::{candidates, is_web_url, leading_args};
+use crate::core::opener::{candidates, is_link_url, leading_args};
 use crate::runtime::desktop::which;
 
 /// How long after its start an opener's error still means the link did
@@ -57,14 +57,14 @@ impl Opener {
             })
     }
 
-    /// Starts the opener on `url`. A link [`is_web_url`] refuses is never
+    /// Starts the opener on `url`. A link [`is_link_url`] refuses is never
     /// handed over. `failed` runs, on the reaping thread, when the opener
     /// exits with an error within [`LAUNCH`]: it found no browser (an SSH
     /// session, a desktop with no default). A later exit is the browser's.
     /// The exit of a Windows program (`rundll32.exe`) says nothing about the
     /// browser, so it is not read.
     pub fn open(&self, url: &str, failed: impl FnOnce() + Send + 'static) -> io::Result<()> {
-        if !is_web_url(url) {
+        if !is_link_url(url) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "not a web link",

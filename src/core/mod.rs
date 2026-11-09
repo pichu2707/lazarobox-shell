@@ -10,6 +10,7 @@ pub mod copy;
 pub mod desktop;
 pub mod keys;
 pub mod layout;
+pub mod links;
 pub mod menu;
 pub mod mouse;
 pub mod nesting;
