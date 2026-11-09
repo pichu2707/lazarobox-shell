@@ -147,6 +147,62 @@ async fn one_openai_round_runs_the_call_and_echoes_the_server_id() {
     );
 }
 
+// A tool call written as text gets one reminder on this wire too (#427): one
+// more request in the same turn, and the text itself is never run.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_tool_call_written_as_text_gets_one_reminder_on_the_openai_wire() {
+    let fake = fake(vec![
+        sse_text(&written("find_dir")),
+        sse_call("find_dir", "{\"query\":\"curso\"}", Some("abc")),
+        sse_text("Found it"),
+    ])
+    .await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    assert_eq!(reminders(&events), 1, "{events:?}");
+    assert_eq!(tool_calls(&events), 1, "only the real call runs");
+    assert_eq!(events.last(), Some(&done()));
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 3);
+    let messages = bodies[1]["messages"].as_array().unwrap();
+    let n = messages.len();
+    assert_eq!(messages[n - 2]["role"], "assistant");
+    assert_eq!(messages[n - 2]["content"], written("find_dir"));
+    assert!(messages[n - 2].get("tool_calls").is_none());
+    assert_eq!(messages[n - 1]["role"], "user");
+    assert_eq!(
+        messages[n - 1]["content"],
+        crate::core::ai::chat::text_call::reminder("find_dir")
+    );
+    assert!(bodies[1]["tools"].is_array(), "the reminder offers tools");
+}
+
+// Reasoning leaked into the answer after a tool round (#428): the text before
+// a bare `</think>` goes out as reasoning, the rest as the answer.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn reasoning_leaked_after_a_tool_round_is_split_on_the_openai_wire() {
+    let fake = fake(vec![
+        sse_call("find_dir", "{\"query\":\"curso\"}", Some("abc")),
+        sse_text("So the path is curso.\n</think>\n\nFound it"),
+    ])
+    .await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    let n = events.len();
+    assert_eq!(
+        events[n - 3..],
+        [
+            StreamEvent::ThinkingDelta("So the path is curso.".into()),
+            StreamEvent::Delta("Found it".into()),
+            done(),
+        ],
+        "{events:?}"
+    );
+    assert_eq!(fake.bodies().len(), 2);
+}
+
 // Rejected tools --------------------------------------------------------------
 
 fn notices(events: &[StreamEvent]) -> Vec<&str> {
@@ -321,7 +377,7 @@ async fn an_in_stream_error_never_matches() {
 
 // Routing ---------------------------------------------------------------------
 
-use super::ollama_tests::{finish, next_call, pane, tool_calls};
+use super::ollama_tests::{finish, next_call, pane, reminders, tool_calls, written};
 use crate::core::ai::jail::{JailOff, JailSupport};
 
 /// The request of `ask` for another engine.
