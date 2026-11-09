@@ -51,6 +51,36 @@ fn both_web_schemes_are_links_and_no_other_is() {
     }
 }
 
+// Dev servers print plain `http` on a local address.
+#[test]
+fn a_local_server_is_a_link() {
+    for url in [
+        "http://localhost:3000",
+        "http://localhost:5173/",
+        "http://127.0.0.1:8080/docs?x=1",
+        "http://0.0.0.0:8000",
+        "http://[::1]:3000/",
+        "http://192.168.1.20:8080",
+        "http://my-app.local/",
+        "https://localhost:8443/",
+    ] {
+        assert_eq!(urls(url), [url], "{url}");
+        assert!(is_link_url(url), "{url}");
+    }
+}
+
+#[test]
+fn the_line_a_dev_server_prints_holds_its_link() {
+    assert_eq!(
+        urls("  ➜  Local:   http://localhost:5173/"),
+        ["http://localhost:5173/"]
+    );
+    assert_eq!(
+        urls("Listening on http://127.0.0.1:8000 (Press CTRL+C to quit)"),
+        ["http://127.0.0.1:8000"]
+    );
+}
+
 #[test]
 fn a_scheme_with_no_host_is_not_a_link() {
     for text in ["https://", "https:// a.io", "https://.", "https://$HOST/x"] {
