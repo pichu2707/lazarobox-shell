@@ -352,3 +352,58 @@ fn an_accepted_draft_leaves_room_for_a_later_approval_of_the_turn() {
     assert!(pending(&a).is_some());
     assert!(a.menu().is_none());
 }
+
+// A second parallel call is refused; the `y` on the first still opens its form.
+#[test]
+fn a_y_on_the_first_of_two_parallel_drafts_opens_its_form() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, draft());
+    assert_eq!(
+        announce(&mut a, turn, 2, draft()),
+        vec![decision(turn, 2, Decision::Denied(ANOTHER_PENDING))]
+    );
+    result(&mut a, turn, 2, ToolStatus::Denied);
+    a.update(key('y'));
+    result(&mut a, turn, 1, ToolStatus::Ok);
+    done(&mut a, turn);
+    assert_eq!(form(&a), opened());
+}
+
+// A `y` that did not end `ok` is never silent: the chat says no draft opened.
+#[test]
+fn a_y_the_host_did_not_honour_leaves_a_line() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, draft());
+    a.update(key('y'));
+    result(&mut a, turn, 1, ToolStatus::Denied);
+    assert!(
+        lines(&a).iter().any(|l| l.contains("no draft issue")),
+        "{:?}",
+        lines(&a)
+    );
+}
+
+// The Memory warning is up when the turn ends: moving the selection under it
+// would lose its acceptance, so the form stays shut and the chat says so.
+#[test]
+fn the_form_does_not_open_under_the_memory_warning() {
+    let (mut a, turn) = accepted();
+    let _ = a.open_menu();
+    a.menu.as_mut().unwrap().goto("Memory");
+    a.update(key('l'));
+    assert!(a.menu().unwrap().in_warning());
+    done(&mut a, turn);
+    let menu = a.menu().unwrap();
+    assert!(menu.in_warning() && !menu.feedback_open());
+    assert!(
+        lines(&a)
+            .iter()
+            .any(|l| l.contains("not opened") && l.contains("See the shell over ssh")),
+        "{:?}",
+        lines(&a)
+    );
+    a.update(key('y'));
+    let menu = a.menu().unwrap();
+    assert!(!menu.in_warning());
+    assert!(menu.ai_draft().memory.enabled, "the acceptance is kept");
+}

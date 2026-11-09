@@ -643,11 +643,11 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     // How an answer of the approval mode is taken: only as the facts this
     // ask carried allow.
     let mut unprompted = Unprompted::Never;
-    // A GitHub read: what the checks before the prompt found. A GitHub read
-    // or a draft: the keys the answer is remembered under, the reason a later
-    // decline gives, and a decline made earlier in this turn.
+    // A GitHub read: what the checks before the prompt found and the keys
+    // the answer is remembered under. A GitHub read or a draft: the reason
+    // of a decline made earlier in this turn.
     let mut github_plan = None;
-    let mut turn_keys: Option<(Option<String>, String, &'static str)> = None;
+    let mut github_keys = None;
     let mut declined = None;
     // A write over a template that is on disk tells what it holds, so it asks
     // like an edit of it. Whether the file exists is read before the match.
@@ -825,7 +825,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         github::Consent::Declined => declined = Some(github::DECLINED),
                         github::Consent::Ask(question, yes, no) => {
                             ask = Some(question);
-                            turn_keys = Some((Some(yes), no, github::DECLINED));
+                            github_keys = Some((yes, no));
                         }
                     }
                     github_plan = Some(planned);
@@ -839,7 +839,6 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     declined = Some(DRAFT_DECLINED);
                 } else {
                     ask = ask_for(valid, locality);
-                    turn_keys = Some((None, DRAFT_DENIED_KEY.to_owned(), DRAFT_DECLINED));
                 }
             }
             (valid, locality, _) => ask = ask_for(valid, locality),
@@ -925,20 +924,27 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     // A decline holds for the rest of the turn, also against a
                     // parallel call asked before it: the key is read again.
                     let mut decision = decision;
-                    if let Some((yes, no, why)) = turn_keys {
+                    if let Some((yes, no)) = github_keys {
                         let mut allowed = files::lock_set(&scope.allowed);
                         match decision {
                             Decision::Sent if allowed.contains(&no) => {
-                                decision = Decision::Denied(why);
+                                decision = Decision::Denied(github::DECLINED);
                             }
                             Decision::Sent => {
-                                allowed.extend(yes);
+                                allowed.insert(yes);
                             }
                             Decision::Denied(_) => {
                                 allowed.insert(no);
                             }
                             _ => {}
                         }
+                    }
+                    // Unlike the GitHub keys, a `y` already given is never
+                    // taken back, and only the user's no counts.
+                    if matches!(call, Call::IssueDraft(_))
+                        && matches!(decision, Decision::Denied(why) if ends_draft_asks(why))
+                    {
+                        files::lock_set(&scope.allowed).insert(DRAFT_DENIED_KEY.to_owned());
                     }
                     decision
                 }
@@ -1107,6 +1113,16 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     };
     owed.answer(status, &summary);
     outcome
+}
+
+/// Whether a denied draft is the turn's decline: the user said no, or the
+/// wait ended (a cancel, a closed chat, a quit, a timeout). The app's own
+/// refusals (another approval pending, an open form) asked the user nothing.
+fn ends_draft_asks(reason: &str) -> bool {
+    matches!(
+        reason,
+        crate::app::DECLINED | CANCELLED | super::approver::ENDED
+    )
 }
 
 mod exec;

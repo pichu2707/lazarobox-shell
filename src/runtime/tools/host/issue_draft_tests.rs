@@ -1,6 +1,10 @@
 //! Spec (issue-draft): the host validates nothing more, asks the user on every
 //! call, and runs no `gh`: the draft is handed over by the app on `y`.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use futures::{FutureExt, future::BoxFuture};
+
 use super::{
     files::gate,
     tests::{Scripted, events, fixture, scope},
@@ -9,8 +13,8 @@ use super::{
 use crate::core::{
     ai::{
         chat::{
-            approval::ApprovalAsk,
-            engine::{Decision, StreamEvent, ToolStatus},
+            approval::{ANOTHER_PENDING, ApprovalAsk},
+            engine::{Answer, CallId, Decision, StreamEvent, ToolStatus},
         },
         tools::{
             Call, Locality,
@@ -161,4 +165,98 @@ async fn a_worker_scope_cannot_call_the_draft() {
         refusal_text(crate::core::ai::tools::ToolError::UnknownTool)
     );
     assert!(approver.asked.lock().unwrap().is_empty());
+}
+
+/// Each call but the first is answered with `later` at once; the first waits
+/// for `gate` and is the user's `y`.
+struct FirstWaits {
+    asked: AtomicUsize,
+    gate: Arc<tokio::sync::Notify>,
+    later: &'static str,
+}
+
+impl Approver for FirstWaits {
+    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
+        let first = self.asked.fetch_add(1, Ordering::SeqCst) == 0;
+        let (gate, later) = (self.gate.clone(), self.later);
+        async move {
+            if first {
+                gate.notified().await;
+                Decision::Sent.into()
+            } else {
+                Decision::Denied(later).into()
+            }
+        }
+        .boxed()
+    }
+}
+
+/// Two parallel drafts: the second ends with `later` before the user's `y`
+/// on the first. Returns both texts.
+async fn parallel(later: &'static str) -> (String, String) {
+    let (_dir, home, host) = fixture();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let approver = Arc::new(FirstWaits {
+        asked: AtomicUsize::new(0),
+        gate: gate.clone(),
+        later,
+    });
+    let (tools, _rx) = tools(&host, &home, approver);
+    let (first, second) = tokio::join!(tools.call(Call::IssueDraft(draft("one"))), async {
+        let second = tools.call(Call::IssueDraft(draft("two"))).await;
+        gate.notify_one();
+        second
+    });
+    (first.text, second.text)
+}
+
+// A refusal by the one-pending rule asked the user nothing: their `y` on the
+// first draft stands.
+#[tokio::test]
+async fn a_parallel_draft_refused_as_pending_does_not_take_the_users_y() {
+    let (first, second) = parallel(ANOTHER_PENDING).await;
+    assert_eq!(second, format!("denied: {ANOTHER_PENDING}"));
+    assert_eq!(first, READY);
+}
+
+// A `y` already given ends `ok`, even when another call of the turn was
+// declined while it waited.
+#[tokio::test]
+async fn a_y_ends_ok_even_after_a_decline_of_a_parallel_call() {
+    let (first, second) = parallel("the user declined").await;
+    assert_eq!(second, "denied: the user declined");
+    assert_eq!(first, READY);
+}
+
+// `another approval is pending` and `a feedback form is already open` are the
+// app's refusals: the next call of the turn still asks.
+#[tokio::test]
+async fn an_app_refusal_is_not_the_turns_decline() {
+    for reason in [ANOTHER_PENDING, "a feedback form is already open"] {
+        let (_dir, home, host) = fixture();
+        let approver = Scripted::new(Decision::Denied(reason));
+        let (tools, _rx) = tools(&host, &home, approver.clone());
+        tools.call(Call::IssueDraft(draft("one"))).await;
+        let later = tools.call(Call::IssueDraft(draft("two"))).await;
+        assert_eq!(later.text, format!("denied: {reason}"));
+        assert_eq!(approver.asked.lock().unwrap().len(), 2, "{reason}");
+    }
+}
+
+// `n` or Esc, a cancel, a closed chat, a quit or a timeout: the turn's decline.
+#[tokio::test]
+async fn the_users_no_and_an_ended_wait_are_the_turns_decline() {
+    for reason in [
+        crate::app::DECLINED,
+        crate::app::CANCELLED,
+        crate::runtime::tools::approver::ENDED,
+    ] {
+        let (_dir, home, host) = fixture();
+        let approver = Scripted::new(Decision::Denied(reason));
+        let (tools, _rx) = tools(&host, &home, approver.clone());
+        tools.call(Call::IssueDraft(draft("one"))).await;
+        let later = tools.call(Call::IssueDraft(draft("two"))).await;
+        assert_eq!(later.text, format!("denied: {DRAFT_DECLINED}"), "{reason}");
+        assert_eq!(approver.asked.lock().unwrap().len(), 1, "{reason}");
+    }
 }

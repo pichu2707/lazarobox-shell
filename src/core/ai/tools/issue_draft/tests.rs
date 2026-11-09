@@ -196,6 +196,19 @@ fn the_family_adds_exactly_one_tool() {
     );
 }
 
+// D7: the repository's docs are in English, and so is the draft.
+#[test]
+fn the_tool_asks_for_the_draft_in_english() {
+    let listed = registry_with(&[], set());
+    let tool = listed.iter().find(|t| t.name == "gh_issue_draft").unwrap();
+    assert!(
+        tool.description
+            .contains("Write the title and the description in English"),
+        "{}",
+        tool.description
+    );
+}
+
 // Workers and the orchestrator turn get no draft tool (D: agent-tools).
 #[test]
 fn no_worker_toolset_is_offered_the_draft() {

@@ -874,11 +874,13 @@ impl ChatState {
         self.issue_draft = Some((turn, call, draft));
     }
 
-    /// The host denied the call after all: its draft goes.
-    pub fn drop_issue_draft(&mut self, turn: u64, call: CallId) {
-        if matches!(&self.issue_draft, Some((t, c, _)) if (*t, *c) == (turn, call)) {
+    /// The host denied the call after all: its draft goes. Whether one did.
+    pub fn drop_issue_draft(&mut self, turn: u64, call: CallId) -> bool {
+        let held = matches!(&self.issue_draft, Some((t, c, _)) if (*t, *c) == (turn, call));
+        if held {
             self.issue_draft = None;
         }
+        held
     }
 
     /// The draft held for `turn`, once. A draft of another turn is stale and

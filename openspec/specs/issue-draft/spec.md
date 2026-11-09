@@ -28,7 +28,12 @@ Every call MUST ask a y/n at the composer naming the kind and the title (see cha
 - THEN the prompt opens and waits for the user's `y`
 
 ### Requirement: One decline per turn
-After a `denied` answer, later `gh_issue_draft` calls in the same turn MUST return `denied` without a prompt, like the GitHub consent. A new turn asks again.
+After the user's decline (`n`, Esc, a cancel, a closed chat, an app quit) or a timeout, later `gh_issue_draft` calls in the same turn MUST return `denied` without a prompt. The app's own refusals (`another approval is pending`, `a feedback form is already open`) are not the turn's decline: a later call asks again. A `y` already given MUST end `ok` and its form opens, even if a parallel call of the turn was declined meanwhile. A new turn asks again.
+
+#### Scenario: A refused parallel call keeps the user's y [auto]
+- GIVEN two parallel calls, the second refused with `another approval is pending`
+- WHEN the user answers `y` on the first
+- THEN the first ends `ok` and its form opens at the end of the turn
 
 #### Scenario: One prompt per declined turn [auto]
 - GIVEN a call the user denied
@@ -44,7 +49,7 @@ On `y` the tool MUST return `ok` with a short text saying the form will open wit
 - THEN the result is `ok`, says the user will review and send it, and no `gh` was started
 
 ### Requirement: The form opens at the end of the turn
-The form MUST open when the turn ends, however it ends (including a failure or a cancel after the `y`), not while it streams, with the `Feedback` row selected. A Feedback form already open when the call arrives MUST NOT be overwritten: the call returns `denied` (`a feedback form is already open`). A form opened between the `y` and the end of the turn, or another input mode the user is in at that moment, MUST NOT be replaced: the draft is dropped and a system line says it was not opened, naming its title. An accepted draft the host denied afterwards opens nothing. A later accepted draft of the same turn replaces an earlier one. The send path is the form's own and unchanged: Ctrl+S, the redaction pass, the similar-issue search, the attached facts and the `gh`-or-link fallback.
+The form MUST open when the turn ends, however it ends (including a failure or a cancel after the `y`), not while it streams, with the `Feedback` row selected. A Feedback form already open when the call arrives MUST NOT be overwritten: the call returns `denied` (`a feedback form is already open`). A form opened between the `y` and the end of the turn, another input mode the user is in at that moment, or a menu warning that is open, MUST NOT be replaced, and the warning and its acceptance stay untouched: the draft is dropped and a system line says it was not opened, naming its title. An accepted draft the host denied afterwards opens nothing and the chat says `no draft issue was opened`. A later accepted draft of the same turn replaces an earlier one. The send path is the form's own and unchanged: Ctrl+S, the redaction pass, the similar-issue search, the attached facts and the `gh`-or-link fallback.
 
 #### Scenario: An open form is never replaced [auto]
 - GIVEN a Feedback form with the user's own text, and in another run a form opened after the `y`

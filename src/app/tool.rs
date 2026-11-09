@@ -26,7 +26,7 @@ use crate::core::ai::{
 
 /// Why a call is denied without the user being asked, or when a refusal has no
 /// other reason to give. Short, and it goes back to the model.
-pub(super) const DECLINED: &str = "the user declined";
+pub const DECLINED: &str = "the user declined";
 pub const CANCELLED: &str = "cancelled";
 const TOOLS_OFF: &str = "tools are off";
 const WORKER_OVER: &str = "the worker already ended";
@@ -139,8 +139,9 @@ impl App {
                 // The host denied a call the user had accepted: nothing opens.
                 if status != ToolStatus::Ok
                     && let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+                    && chat.drop_issue_draft(turn, call)
                 {
-                    chat.drop_issue_draft(turn, call);
+                    chat.push_system_line(NO_DRAFT.to_owned());
                 }
                 self.withdraw_tool_approval(id, |key| key == (turn, call));
                 let ran = self
@@ -302,7 +303,9 @@ impl App {
         if self.menu.is_none() && self.input == InputMode::Terminal {
             effects = self.open_menu();
         }
-        match self.menu.as_mut().filter(|menu| !menu.feedback_open()) {
+        // The warning's answer reads the selected row: the form would move it.
+        let free = |menu: &&mut MenuState| !menu.feedback_open() && !menu.in_warning();
+        match self.menu.as_mut().filter(free) {
             Some(menu) => {
                 menu.open_feedback_draft(draft.kind, &draft.title, &draft.description);
                 self.dirty = true;

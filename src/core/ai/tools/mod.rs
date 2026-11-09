@@ -768,7 +768,7 @@ const BUILT_INS: [ToolDef; 29] = [
     },
     ToolDef {
         name: "gh_issue_draft",
-        description: "Draft a GitHub issue for lazarobox itself from this conversation: an idea or goal (kind idea) or a bug report (kind bug), with a title of at most 120 characters and a description of at most 2000. The user must accept with y; then the Feedback form opens with the draft at the end of this turn for the user to review and send. You never send it, and this does not touch GitHub.",
+        description: "Draft a GitHub issue for lazarobox itself from this conversation: an idea or goal (kind idea) or a bug report (kind bug), with a title of at most 120 characters and a description of at most 2000. Write the title and the description in English. The user must accept with y; then the Feedback form opens with the draft at the end of this turn for the user to review and send. You never send it, and this does not touch GitHub.",
         access: Access::Read,
         family: Family::IssueDraft,
         args: issue_draft::ARGS,
