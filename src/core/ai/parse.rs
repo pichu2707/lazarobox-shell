@@ -14,6 +14,23 @@ pub fn ollama_tags(body: &[u8]) -> Option<Vec<String>> {
     Some(model_names(&array_field(body, "models")?, "name"))
 }
 
+/// Name and size in bytes of each model of a valid Ollama `/api/tags` body
+/// that lists a size: same names as [`ollama_tags`].
+pub fn ollama_tag_sizes(body: &[u8]) -> Option<Vec<(String, u64)>> {
+    let items = array_field(body, "models")?;
+    Some(
+        items
+            .iter()
+            .filter_map(|item| {
+                let name = model_names(std::slice::from_ref(item), "name").pop()?;
+                let size = item.get("size").and_then(Value::as_u64)?;
+                Some((name, size))
+            })
+            .take(MAX_MODELS)
+            .collect(),
+    )
+}
+
 /// Name, size and digest of each model of a valid Ollama `/api/tags` body;
 /// tool support starts `Unknown`. Same names, in the same order, as
 /// [`ollama_tags`]. A name that sanitising or the length cap changed would not
@@ -642,6 +659,17 @@ mod tests {
         assert_eq!(facts[0].digest.as_deref(), Some("x"));
         assert_eq!(facts[1].params, None);
         assert_eq!(facts[1].digest, None);
+    }
+
+    // Spec (ollama-download, Delete through the local server): the size kept.
+    #[test]
+    fn tag_sizes_keep_the_listed_size_and_skip_a_model_without_one() {
+        let body = br#"{"models":[{"name":"a:1","size":2400000000},{"name":"b:1"},{"name":"c:1","size":"junk"}]}"#;
+        assert_eq!(
+            ollama_tag_sizes(body),
+            Some(vec![("a:1".to_owned(), 2_400_000_000)])
+        );
+        assert_eq!(ollama_tag_sizes(b"{}"), None);
     }
 
     #[test]
