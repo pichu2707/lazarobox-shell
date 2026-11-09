@@ -329,6 +329,20 @@ mod click {
         assert_eq!(list_of(&a), [LINK]);
     }
 
+    // Its text is read, to join a link that crosses the edge, but not shown.
+    #[test]
+    fn a_link_on_a_wrapped_row_above_the_view_is_not_listed() {
+        let (mut a, r) = shell("");
+        let wrapped = format!("https://old.io {}\r\n", "y".repeat(100));
+        let filler = "line\r\n".repeat(usize::from(r.height) - 2);
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(format!("{wrapped}{filler}{LINK}").into_bytes()),
+        ));
+        press(&mut a, "u");
+        assert_eq!(list_of(&a), [LINK]);
+    }
+
     #[test]
     fn with_no_links_a_notice_says_so() {
         let (mut a, _) = shell("nothing here");
