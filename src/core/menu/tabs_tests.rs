@@ -6,10 +6,11 @@ use super::picker_tests::{cursor_label, key, open, send};
 use super::*;
 use crate::core::ai::{Status, config::MemoryConfig};
 
-const SETTINGS: [&str; 9] = [
+const SETTINGS: [&str; 10] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
+    "Build jobs",
     "Notify",
     "Sound",
     "llama-server idle",
@@ -635,7 +636,7 @@ fn view_body_is_the_tallest_view_and_no_view_exceeds_it() {
         Some(VIEW_BODY),
         "{heights:?}"
     );
-    assert_eq!(VIEW_BODY, 12, "the Settings tab binds");
+    assert_eq!(VIEW_BODY, 13, "the Settings tab binds");
     assert_eq!(
         VIEW_BODY,
         SECTIONS[0].items.len() + 1 + NOTE_ROWS,
@@ -643,15 +644,15 @@ fn view_body_is_the_tallest_view_and_no_view_exceeds_it() {
     );
     assert_eq!(
         1 + crate::core::ai::picker::VIEW,
-        VIEW_BODY - 1,
-        "the picker window is one row under"
+        VIEW_BODY - 2,
+        "the picker window is two rows under since the Build jobs row"
     );
 }
 
 #[test]
 fn the_menu_body_is_the_bar_plus_the_tallest_view() {
     assert_eq!(MENU_BODY, TAB_BAR + VIEW_BODY);
-    assert_eq!(MENU_BODY, 13);
+    assert_eq!(MENU_BODY, 14);
 }
 
 #[test]
@@ -681,7 +682,7 @@ fn the_no_ai_menu_keeps_its_single_tab_layout() {
         Row::Title("Settings".into()),
         "titles stay with one tab"
     );
-    assert_eq!(rows.len(), 6);
+    assert_eq!(rows.len(), 7);
 }
 
 #[test]

@@ -45,7 +45,8 @@ fn notify_edit(value: &'static str) -> ConfigEdit {
     }
 }
 
-// Spec (Notify row): the rows sit in Settings, after Mouse, found by kind.
+// Spec (Notify row): the rows sit in Settings, after Mouse (and the Build
+// jobs row that now follows it), found by kind.
 #[test]
 fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
     let items = SECTIONS[0].items;
@@ -56,6 +57,7 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
             "Statusline position",
             "Tab bar position",
             "Mouse",
+            "Build jobs",
             "Notify",
             "Sound",
             "llama-server idle",
@@ -64,8 +66,8 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
             "Feedback"
         ]
     );
-    assert!(matches!(&items[3].kind, ItemKind::Draft(c) if c.key() == "notify"));
-    assert!(matches!(&items[4].kind, ItemKind::Draft(c) if c.test));
+    assert!(matches!(&items[4].kind, ItemKind::Draft(c) if c.key() == "notify"));
+    assert!(matches!(&items[5].kind, ItemKind::Draft(c) if c.test));
     assert!(
         [&MODELS_SECTION, &TOOLS_SECTION, &CHAT_SECTION]
             .iter()
@@ -78,13 +80,13 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
 }
 
 #[test]
-fn the_tabs_hold_nine_settings_rows_and_twenty_ai_rows() {
+fn the_tabs_hold_ten_settings_rows_and_twenty_ai_rows() {
     let ai: usize = [&MODELS_SECTION, &TOOLS_SECTION, &CHAT_SECTION]
         .iter()
         .map(|s| s.items.len())
         .sum();
     assert_eq!(ai, 20);
-    assert_eq!(SECTIONS[0].items.len(), 9);
+    assert_eq!(SECTIONS[0].items.len(), 10);
 }
 
 #[test]

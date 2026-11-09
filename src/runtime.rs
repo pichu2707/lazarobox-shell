@@ -283,6 +283,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         .with_token_check(token_in_env)
         .with_hf_tokens(hf::token_facts)
         .with_host(feedback::host_facts())
+        .with_build_machine(build_machine())
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
     let glyph = app
         .ai()
@@ -893,6 +894,12 @@ fn app_from_config(
     )
     .app(cols, rows)
     .with_config_path(config_path.map(Path::to_owned))
+}
+
+/// This machine's cores and memory, measured once for `[build] jobs`.
+fn build_machine() -> crate::core::build_jobs::Machine {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    crate::core::build_jobs::Machine::new(cores, hf::total_ram())
 }
 
 /// What startup read: the config, the start folder and the one notice to

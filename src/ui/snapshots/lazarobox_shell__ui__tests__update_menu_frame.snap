@@ -6,12 +6,12 @@ expression: frame
 
 
 
-
          ┌ Menu ──────────────────────────────────────────────────────┐
          │ Settings* │ Models │ Tools │ Chat              ⇥ Tab · 1-5 │
          │ Statusline position                                 bottom │
          │ Tab bar position                                       top │
          │ Mouse                                                   on │
+         │ Build jobs                                        auto (1) │
          │ Notify                                                 off │
          │ Sound                                                   on │
          │ llama-server idle                                   15 min │
