@@ -22,8 +22,9 @@ use super::{
         menu::AiMenu,
         ollama_lib::{self, Pull},
         picker::{
-            BUSY, HINT_ASKING, HINT_CANCEL, InstallAsk, InstallReply, Level, Mark, NOT_IN_LIST,
-            OllamaScreen, Outcome, PickKey, PickRow, Picker, QUERY_HINT, Running, Screen, Target,
+            BUSY, DeleteAsk, HINT_ASKING, HINT_CANCEL, InstallAsk, InstallReply, Level, Mark,
+            NOT_IN_LIST, OllamaScreen, Outcome, PickKey, PickRow, Picker, QUERY_HINT, Running,
+            Screen, Target,
         },
     },
     build_jobs,
@@ -1005,6 +1006,9 @@ pub enum MenuCommand {
     /// Run this llama-server install step; the reply comes back through
     /// [`MenuState::install_reply`].
     Install(InstallAsk),
+    /// Delete this model; the runtime answers through
+    /// [`MenuState::delete_reply`].
+    DeleteModel(DeleteAsk),
     /// Start this Hugging Face download (`y` on the Confirm screen).
     Download(Box<Job>),
     /// Stop the download that runs (Hugging Face or Ollama).
@@ -1038,6 +1042,9 @@ const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
 const HINT_NOTIFY: &str = "j/k move · h/l change · t test · s save · Esc cancel";
 const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
 const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
+/// The row can be deleted: `r` gives up its place to fit the popup, and
+/// works all the same.
+const HINT_PICKER_DELETE: &str = "j/k move · Enter choose · d delete · Esc back · s save";
 const HINT_NOTE: &str = "Enter or y copies the full reason · Esc back";
 const HINT_ENGINE_REFUSED: &str = "j/k move · y copies the reason · Esc back";
 const HINT_ENGINE_REASON: &str = "j/k move · Enter choose · y copies the reason · Esc back";
@@ -1710,6 +1717,21 @@ impl MenuState {
             .and_then(|w| w.asking())
     }
 
+    /// The chat turns running now, for the delete checks of the picker.
+    pub fn set_turns(&mut self, turns: Vec<(String, String)>) {
+        if let Some(ai) = &mut self.ai {
+            ai.set_turns(turns);
+        }
+    }
+
+    /// The result of delete request `id`. A picker that no longer waits for
+    /// it keeps what it shows.
+    pub fn delete_reply(&mut self, id: u64) {
+        if let Some(ai) = &mut self.ai {
+            ai.delete_reply(id);
+        }
+    }
+
     /// A frame drew the wizard: its prompts now accept `y`/`n`.
     pub fn install_arm(&mut self) {
         if let Some(ai) = &mut self.ai {
@@ -1938,6 +1960,7 @@ impl MenuState {
             Level::Hub(hub) => hub.title(),
             Level::Ollama(ollama) => ollama.title(),
             Level::Install(wizard) => wizard.title(),
+            Level::Delete(delete) => delete.title(),
         };
         if let Some(counter) = picker.counter(all.len()) {
             title = format!("{title} {counter}");
@@ -2345,6 +2368,15 @@ impl MenuState {
         if ai.picker().is_some_and(|p| p.install().is_some()) {
             return Self::on_install_key(ai, key, repeat);
         }
+        if ai.picker().is_some_and(|p| p.delete().is_some()) {
+            // Only a plain, new `y` deletes; any other key goes back.
+            if repeat {
+                return MenuCommand::None;
+            }
+            let yes = key.code == KeyCode::Char('y') && key.modifiers.is_empty();
+            let outcome = ai.delete_answer(yes);
+            return self.delete_outcome(outcome);
+        }
         // The custom field is checked before the modifier guard: Ctrl+U
         // clears it, and every letter, shortcuts included, is typed.
         if ai.picker().is_some_and(|p| p.text().is_some()) {
@@ -2383,6 +2415,10 @@ impl MenuState {
                 Outcome::Install(ask) => return MenuCommand::Install(ask),
                 _ => {}
             },
+            KeyCode::Char('d') if !repeat => {
+                let outcome = ai.open_delete();
+                return self.delete_outcome(outcome);
+            }
             KeyCode::Char('y') if !repeat => {
                 if let Outcome::Copy(text) = ai.drive(|p, d, e| p.copy(d, e)) {
                     return MenuCommand::Copy(text);
@@ -2397,6 +2433,18 @@ impl MenuState {
             {
                 return MenuCommand::Refresh;
             }
+            _ => {}
+        }
+        MenuCommand::None
+    }
+
+    /// What a key on a model row or the Delete screen led to. A refused
+    /// delete says why.
+    fn delete_outcome(&mut self, outcome: Outcome) -> MenuCommand {
+        match outcome {
+            Outcome::Delete(ask) => return MenuCommand::DeleteModel(ask),
+            Outcome::Refused(why) => self.notice = Some(why),
+            Outcome::Busy => self.error = Some(BUSY.to_owned()),
             _ => {}
         }
         MenuCommand::None
@@ -2741,6 +2789,15 @@ impl MenuState {
 
     /// The footer line: a pending error, else the hint of the current view.
     pub fn footer(&self) -> Footer<'_> {
+        // No error or notice hides the keys of the Delete screen.
+        if let Some(delete) = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::picker)
+            .and_then(Picker::delete)
+        {
+            return Footer::Hint(Cow::Borrowed(delete.hint()));
+        }
         if let Some(error) = self.error() {
             return Footer::Error(error);
         }
@@ -2872,6 +2929,8 @@ impl MenuState {
             (true, true) => Some("refreshing…"),
             (true, false) => None,
         });
+        // `d` works only on this row, so the note names it there too.
+        let delete = cue.is_none() && ai.is_some_and(AiMenu::can_delete);
         // Enter never saves and Esc at the top level discards the draft, so
         // say it while the draft differs from the saved config.
         if ai.is_some_and(AiMenu::changed) && cue.is_none() {
@@ -2880,7 +2939,13 @@ impl MenuState {
             } else {
                 "Esc discards"
             };
-            return Footer::Hint(Cow::Owned(format!("unsaved changes · s to save · {leave}")));
+            let key = if delete { "d delete · " } else { "" };
+            return Footer::Hint(Cow::Owned(format!(
+                "unsaved changes · {key}s to save · {leave}"
+            )));
+        }
+        if delete {
+            return Footer::Hint(Cow::Borrowed(HINT_PICKER_DELETE));
         }
         Footer::Hint(match cue {
             Some(cue) if in_ai_view => {

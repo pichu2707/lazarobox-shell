@@ -96,3 +96,31 @@ After `y`, lazarobox MUST send one `POST /api/pull` with the body `{"model":"<mo
 - GIVEN Ollama running and 8 GB of RAM
 - WHEN `qwen3:4b` is chosen from the Popular screen and confirmed
 - THEN it is pulled with progress, cancel then pull again resumes, and the model is listed and chats
+
+### Requirement: Delete through the local server
+A downloaded Ollama model MUST be deleted only through the local server: one `DELETE /api/delete` to `127.0.0.1` on the configured Ollama port, with the body `{"model":"<name>"}` built by a JSON serializer, and the name is never part of a URL or a path. This call has its own gate beside the pull: any other host or path is refused before connecting. 200 is success; 404 is reported as a failure that says the model was not found; any other status or a connection failure is a failure that says why. Every reply requests one forced detection and shows a notice: `deleted <name> · freed up to <size>` (the size Ollama lists is an upper bound, because models share layers; `deleted <name>` when it listed none) or `could not delete <name>: <reason>`. lazarobox never touches Ollama's store itself.
+
+#### Scenario: The request is exact [auto, fake server]
+- GIVEN a fake Ollama answering 200
+- WHEN model `qwen3:4b` is deleted
+- THEN the fake reads `DELETE /api/delete HTTP/1.1` with the body `{"model":"qwen3:4b"}`
+
+#### Scenario: A name with quotes is escaped [auto, fake server]
+- GIVEN a model name containing `"`
+- WHEN it is deleted
+- THEN the body is valid JSON and its `model` field equals the name
+
+#### Scenario: Only the one host and path [auto, fake server]
+- GIVEN a host other than `127.0.0.1`, or any path other than `/api/delete`
+- WHEN a delete is requested
+- THEN it is refused and no connection is made
+
+#### Scenario: Not found is a failure [auto, fake server]
+- GIVEN a fake Ollama answering 404
+- WHEN the model is deleted
+- THEN the result is a failure saying Ollama has no model with that name, and the engines are detected again
+
+#### Scenario: Real delete [manual]
+- GIVEN Ollama running with a small model downloaded
+- WHEN `d` then `y` are pressed on its row
+- THEN `ollama list` no longer shows it and the row is gone after the detection

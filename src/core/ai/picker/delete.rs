@@ -1,0 +1,302 @@
+//! Deleting a downloaded model from its row on the model level (config-menu,
+//! Delete a model). `d` opens a screen that names the model and its size;
+//! only an unmodified `y`, once the screen was drawn, asks the runtime.
+//! The checks of D3 run on `d` and again on `y`, since a chat turn or a
+//! download may have started in between. Pure: the request leaves as
+//! [`Outcome::Delete`] and its reply comes back through
+//! [`Picker::delete_reply`].
+//!
+//! The screen knows only a [`DeleteTarget`], so another kind of model joins
+//! by adding one.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use super::super::catalog::same_model;
+use super::super::config::{AiConfig, Task};
+use super::super::{Detection, hf};
+use super::hub::{info, shown};
+use super::{Level, Mark, Outcome, PickKey, PickRow, Picker, wrap_note};
+
+/// The footer of the confirmation: the screen's keys.
+pub const HINT_DELETE: &str = "y delete · any other key back";
+
+/// The footer while the delete runs.
+pub const HINT_DELETING: &str = "deleting…";
+
+/// The id of the last delete: a reply carries it, so one left behind by a
+/// closed menu never answers a later delete.
+static LAST_ID: AtomicU64 = AtomicU64::new(0);
+
+/// What a delete removes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum DeleteTarget {
+    /// A model of the local Ollama server, by the name it lists. `size` is
+    /// what it lists, `None` when it listed none.
+    Ollama { name: String, size: Option<u64> },
+}
+
+impl DeleteTarget {
+    /// The name the row shows.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Ollama { name, .. } => name,
+        }
+    }
+
+    fn engine(&self) -> &'static str {
+        match self {
+            Self::Ollama { .. } => "ollama",
+        }
+    }
+
+    /// The size line of the confirmation.
+    fn size_line(&self) -> String {
+        match self {
+            Self::Ollama {
+                size: Some(size), ..
+            } => format!(
+                "size: {} (models share layers, so it may free less)",
+                hf::size_label(*size)
+            ),
+            Self::Ollama { size: None, .. } => "size: unknown".to_owned(),
+        }
+    }
+
+    /// The notice of a delete that worked.
+    pub fn deleted(&self) -> String {
+        match self {
+            Self::Ollama {
+                name,
+                size: Some(size),
+            } => format!(
+                "deleted {} · freed up to {}",
+                shown(name),
+                hf::size_label(*size)
+            ),
+            Self::Ollama { name, size: None } => format!("deleted {}", shown(name)),
+        }
+    }
+
+    /// The notice of a delete that failed.
+    pub fn failed(&self, why: &str) -> String {
+        format!("could not delete {}: {why}", shown(self.name()))
+    }
+}
+
+/// A delete the runtime is asked to carry out.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DeleteAsk {
+    pub id: u64,
+    pub target: DeleteTarget,
+}
+
+/// What can keep a model from being deleted, read when `d` and `y` are
+/// pressed.
+#[derive(Clone, Copy, Debug)]
+pub struct InUse<'a> {
+    pub draft: &'a AiConfig,
+    pub saved: &'a AiConfig,
+    /// `(engine, model)` of the chat turns running now.
+    pub turns: &'a [(String, String)],
+}
+
+/// The confirmation of one delete.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Delete {
+    engine: String,
+    target: DeleteTarget,
+    /// The cursor on the model rows, to come back near the row even if it
+    /// is gone by then.
+    row: usize,
+    /// Whether the screen was drawn: a key queued before it must not answer
+    /// a question never seen.
+    armed: bool,
+    /// The id of the delete that runs; any other reply is stale.
+    in_flight: Option<u64>,
+}
+
+impl Delete {
+    pub fn title(&self) -> String {
+        "Delete a model".to_owned()
+    }
+
+    pub fn hint(&self) -> &'static str {
+        if self.in_flight.is_some() {
+            HINT_DELETING
+        } else {
+            HINT_DELETE
+        }
+    }
+
+    /// The id of the delete that runs, if any.
+    pub fn in_flight(&self) -> Option<u64> {
+        self.in_flight
+    }
+
+    /// The screen was drawn: its answers count.
+    pub(super) fn arm(&mut self) {
+        self.armed = true;
+    }
+
+    pub fn rows(&self) -> Vec<PickRow> {
+        let lines = if self.in_flight.is_some() {
+            vec![format!("deleting {}…", self.target.name())]
+        } else {
+            vec![
+                format!("delete {}?", self.target.name()),
+                self.target.size_line(),
+                "This cannot be undone.".to_owned(),
+            ]
+        };
+        lines
+            .iter()
+            .flat_map(|line| wrap_note(&shown(line)))
+            .map(info)
+            .collect()
+    }
+}
+
+impl Picker {
+    pub fn delete(&self) -> Option<&Delete> {
+        match &self.level {
+            Level::Delete(delete) => Some(delete),
+            _ => None,
+        }
+    }
+
+    /// What `d` would delete on the row under the cursor: only a downloaded
+    /// model of the Ollama server.
+    pub fn delete_target(
+        &self,
+        draft: &AiConfig,
+        detection: Option<&Detection>,
+    ) -> Option<DeleteTarget> {
+        if !matches!(&self.level, Level::Models { engine } if engine == "ollama") {
+            return None;
+        }
+        let rows = self.rows(draft, detection);
+        let row = rows.get(self.cursor)?;
+        match &row.key {
+            PickKey::Model(name) if row.mark == Mark::Downloaded => Some(DeleteTarget::Ollama {
+                name: name.clone(),
+                size: detection.and_then(|d| d.ollama_size(name)),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Why `target` cannot go now, as the outcome that says so.
+    fn refusal(&self, target: &DeleteTarget, uses: InUse<'_>) -> Option<Outcome> {
+        if self.download.is_some() {
+            return Some(Outcome::Busy);
+        }
+        let (engine, name) = (target.engine(), target.name());
+        let runs_on = |e: &str, m: &str| e == engine && same_model(engine, m, name);
+        if uses.turns.iter().any(|(e, m)| runs_on(e, m)) {
+            return Some(Outcome::Refused(format!(
+                "{} is in use by a running chat turn",
+                shown(name)
+            )));
+        }
+        // The saved config counts too: until a save, it is what runs.
+        let tasks: Vec<&str> = Task::ALL
+            .into_iter()
+            .filter(|task| {
+                [uses.draft, uses.saved].iter().any(|config| {
+                    let slot = config.get(*task);
+                    matches!(
+                        (slot.engine.as_deref(), slot.model.as_deref()),
+                        (Some(e), Some(m)) if runs_on(e, m)
+                    )
+                })
+            })
+            .map(Task::id)
+            .collect();
+        if tasks.is_empty() {
+            return None;
+        }
+        let noun = if tasks.len() == 1 { "task" } else { "tasks" };
+        Some(Outcome::Refused(format!(
+            "{} is used by {noun} {} · assign another model first",
+            shown(name),
+            tasks.join(", ")
+        )))
+    }
+
+    /// `d`: open the confirmation of the row under the cursor, or say why
+    /// the model cannot go.
+    pub fn open_delete(&mut self, uses: InUse<'_>, detection: Option<&Detection>) -> Outcome {
+        let Some(target) = self.delete_target(uses.draft, detection) else {
+            return Outcome::Stay;
+        };
+        if let Some(refused) = self.refusal(&target, uses) {
+            return refused;
+        }
+        let Level::Models { engine } = &self.level else {
+            return Outcome::Stay;
+        };
+        self.level = Level::Delete(Delete {
+            engine: engine.clone(),
+            target,
+            row: self.cursor,
+            armed: false,
+            in_flight: None,
+        });
+        self.cursor = 0;
+        self.offset = 0;
+        Outcome::Stay
+    }
+
+    /// A key on the confirmation: `yes` is an unmodified `y`. A key pressed
+    /// before the screen was drawn answers nothing, and neither does one
+    /// pressed while the delete runs.
+    pub fn delete_answer(
+        &mut self,
+        yes: bool,
+        uses: InUse<'_>,
+        detection: Option<&Detection>,
+    ) -> Outcome {
+        let Level::Delete(delete) = &self.level else {
+            return Outcome::Stay;
+        };
+        if !delete.armed || delete.in_flight.is_some() {
+            return Outcome::Stay;
+        }
+        if !yes {
+            self.close_delete(uses.draft, detection);
+            return Outcome::Stay;
+        }
+        let target = delete.target.clone();
+        if let Some(refused) = self.refusal(&target, uses) {
+            self.close_delete(uses.draft, detection);
+            return refused;
+        }
+        let id = LAST_ID.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Level::Delete(delete) = &mut self.level {
+            delete.in_flight = Some(id);
+        }
+        Outcome::Delete(DeleteAsk { id, target })
+    }
+
+    /// The reply of delete `id`: back on the model rows, near the row. A
+    /// reply that is not the delete in flight changes nothing.
+    pub fn delete_reply(&mut self, id: u64, draft: &AiConfig, detection: Option<&Detection>) {
+        if self.delete().is_some_and(|d| d.in_flight == Some(id)) {
+            self.close_delete(draft, detection);
+        }
+    }
+
+    /// Back to the model rows, the cursor on the model's row while it is
+    /// still listed.
+    pub(super) fn close_delete(&mut self, draft: &AiConfig, detection: Option<&Detection>) {
+        let Level::Delete(delete) = &self.level else {
+            return;
+        };
+        let key = PickKey::Model(delete.target.name().to_owned());
+        self.cursor = delete.row;
+        self.level = Level::Models {
+            engine: delete.engine.clone(),
+        };
+        self.reanchor(Some(key), draft, detection);
+    }
+}

@@ -1,0 +1,22 @@
+---
+source: src/ui/components/menu/tests/model_delete.rs
+expression: "text(&draw(80, POPUP_H, &confirming(None)))"
+---
+         ┌ Menu ──────────────────────────────────────────────────────┐         
+         │ Settings │ Models │ Tools │ Chat                           │         
+         │ Delete a model                                             │         
+         │ delete qwen3:4b?                                           │         
+         │ size: unknown                                              │         
+         │ This cannot be undone.                                     │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │ y delete · any other key back                              │         
+         └────────────────────────────────────────────────────────────┘
