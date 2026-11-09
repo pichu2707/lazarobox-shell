@@ -202,12 +202,14 @@ The menu footer MUST show, while there is no error, the hint of the current view
 - AI task row (including `Set all tasks`): `j/k move · Enter pick · r refresh · s save · Esc cancel`
 - Picker level 1: `j/k move · Enter choose · r refresh · Esc back · s save`
 - Picker level 2: `j/k move · Enter choose · r refresh · Esc back · s save`
+- Picker level 2, cursor on a row that can be deleted (see Delete a model): `j/k move · Enter choose · d delete · Esc back · s save`
+- Delete screen: `y delete · any other key back`, then `deleting…` while the delete runs. No error or notice hides it
 - Picker, cursor on a disabled row: `<reason> · not selectable`, where `<reason>` is the row's mark text: `download required`, `no models detected`, `engine not detected` or `checking…`
 - Picker, cursor on a CLI model that is not in the account's list: `not in your account's list · kept as typed, the list may be stale` (a warning; the row stays selectable)
 - Custom field: `type a model · Enter ok · Ctrl+U clear · Esc back`
-- Any other AI or Settings view while the AI draft differs from the saved config: `unsaved changes · s to save · Esc discards` (`Esc back` in the picker), because Enter never saves and Esc at the top level discards the draft
+- Any other AI or Settings view while the AI draft differs from the saved config: `unsaved changes · s to save · Esc discards` (`Esc back` in the picker, and `unsaved changes · d delete · s to save · Esc back` on a row that can be deleted), because Enter never saves and Esc at the top level discards the draft
 
-When a detection cue is active (see Detection cues) the hint of an AI view (task row, picker level 1 or 2) is replaced by `<cue> · s save · Esc cancel` on the task list and `<cue> · s save · Esc back` in the picker, so the footer fits the 62-column popup. Precedence, highest first: error, disabled-row text, not-in-list warning, cue, unsaved-changes hint, hint. A pending error MUST be cleared by the next key press (Press, not Repeat or Release), which then acts normally; an unlisted key clears it and has no other effect.
+When a detection cue is active (see Detection cues) the hint of an AI view (task row, picker level 1 or 2) is replaced by `<cue> · s save · Esc cancel` on the task list and `<cue> · s save · Esc back` in the picker, so the footer fits the 62-column popup. Precedence, highest first: the Delete screen's keys, error, disabled-row text, not-in-list warning, cue, the delete hint of a row, unsaved-changes hint, hint. A pending error MUST be cleared by the next key press (Press, not Repeat or Release), which then acts normally; an unlisted key clears it and has no other effect.
 
 #### Scenario: Footer hint [auto, TestBackend + insta]
 - GIVEN MENU just opened and detection finished
@@ -479,6 +481,29 @@ Enter on an AI task row MUST replace the task list with the picker, inside the s
 - GIVEN code is assigned `codex` and codex is `not installed`
 - WHEN level 1 is opened for code
 - THEN `codex` is listed with `(not detected)`, it is selectable (Enter reopens it), and the draft is unchanged until another choice is made
+
+### Requirement: Delete a model
+`d` on a downloaded model of the Ollama engine at level 2 MUST open a confirmation screen inside the picker that names the model and its size (`size: unknown` when Ollama listed none) and says `This cannot be undone.` On any other row, level or engine `d` MUST do nothing. The screen accepts an answer only once it was drawn: a key pressed before that does nothing. Only an unmodified, new `y` deletes; every other key returns to the model rows with the cursor on the row, and a held or repeated key does nothing. While the delete runs the screen shows `deleting <name>…` and ignores keys. A reply that is not for the delete in flight MUST NOT change the screen. When the reply arrives the picker returns to the model rows, the cursor stays on the row or near it, the engines are detected again, and a notice says the result (see ollama-download). A refused delete leaves the model rows as they were (see ai-task-models, Deleting a model in use). A download that runs refuses it with `a download is already running`, checked on `d` and on `y`.
+
+#### Scenario: Confirmation [auto, TestBackend + insta]
+- GIVEN level 2 of ollama with the cursor on a downloaded model of 2.4 GB
+- WHEN `d` is pressed and the screen is drawn
+- THEN the screen shows the name, `size: 2.4 GB`, `This cannot be undone.` and the footer `y delete · any other key back`
+
+#### Scenario: Only y confirms [auto]
+- GIVEN the confirmation, drawn
+- WHEN any key but an unmodified `y` is pressed
+- THEN nothing is deleted and the model rows are back with the cursor on the row
+
+#### Scenario: A key before the screen was drawn [auto]
+- GIVEN `d` was pressed and no frame has been drawn
+- WHEN `y` is pressed
+- THEN nothing is deleted and the screen stays
+
+#### Scenario: Other rows [auto]
+- GIVEN the cursor on an engine, a curated row that is not downloaded, the download row, or a model of another engine
+- WHEN `d` is pressed
+- THEN nothing changes and nothing is deleted
 
 ### Requirement: Custom model entry
 The `custom…` row exists only at level 2 of the CLI engines (`claude`, `codex`, `gemini`, `opencode`). Enter on it MUST focus the custom field, a text entry with an empty buffer. While it is focused: printable characters, including `s`, `r`, `j`, `k`, `h` and `l`, are typed into the buffer, but Space is NOT (model names have no spaces; whitespace, control and format characters are dropped); Backspace deletes the last character; `s` MUST NOT save; Enter with a valid name (see ai-task-models) assigns the engine and that model to the task, closes the picker and returns to the task list; Enter with an empty or blank buffer has no effect; Ctrl+U clears the buffer; Esc discards the buffer and returns to level 2 with the cursor on `custom…`, without changing the draft. A paste event while the custom field is focused MUST insert its first line into the buffer (text after the first line break is dropped), with whitespace, control and format characters removed and the buffer capped at 128 characters, and MUST NOT reach any PTY. Outside the custom field a paste is ignored (see Input is swallowed).

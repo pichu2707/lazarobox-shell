@@ -312,6 +312,9 @@ pub struct Detection {
     /// Size, digest and tool support of the models an engine lists (Ollama
     /// today), in listing order.
     pub model_facts: Vec<ModelFacts>,
+    /// The size in bytes Ollama lists for each model, by listed name. Models
+    /// share layers, so it is only an upper bound of what a delete frees.
+    pub ollama_sizes: Vec<(String, u64)>,
 }
 
 /// What detection knows about one listed model.
@@ -331,6 +334,15 @@ pub struct ModelFacts {
 }
 
 impl Detection {
+    /// The size Ollama lists for model `name`, with the same `:latest` rule
+    /// as [`catalog::same_model`]; `None` when it listed none.
+    pub fn ollama_size(&self, name: &str) -> Option<u64> {
+        self.ollama_sizes
+            .iter()
+            .find(|(listed, _)| catalog::same_model("ollama", listed, name))
+            .map(|(_, size)| *size)
+    }
+
     /// The facts of model `name` of engine `engine`.
     pub fn facts(&self, engine: &str, name: &str) -> Option<&ModelFacts> {
         self.model_facts
@@ -444,20 +456,24 @@ pub fn reduce(probes: &[Probe]) -> Detection {
             }
         })
         .collect();
-    let model_facts = probes
-        .iter()
-        .find_map(|probe| match probe {
-            Probe::Server {
-                id: "ollama",
-                reply: Some((200, body)),
-                ..
-            } if body.len() <= http::MAX_BODY => parse::ollama_tag_facts(body),
-            _ => None,
-        })
+    let tags = probes.iter().find_map(|probe| match probe {
+        Probe::Server {
+            id: "ollama",
+            reply: Some((200, body)),
+            ..
+        } if body.len() <= http::MAX_BODY => Some(body),
+        _ => None,
+    });
+    let model_facts = tags
+        .and_then(|body| parse::ollama_tag_facts(body))
+        .unwrap_or_default();
+    let ollama_sizes = tags
+        .and_then(|body| parse::ollama_tag_sizes(body))
         .unwrap_or_default();
     Detection {
         engines,
         model_facts,
+        ollama_sizes,
         ..Default::default()
     }
 }
@@ -803,6 +819,18 @@ mod tests {
                 "nomic-embed-text:latest"
             ]
         );
+    }
+
+    // The listing's size reaches the detection, tag-less names included.
+    #[test]
+    fn reduce_keeps_the_ollama_sizes_and_they_are_found_by_model_name() {
+        let body = r#"{"models":[{"name":"qwen3:latest","size":5},{"name":"b:1"}]}"#;
+        let d = reduce(&[server("ollama", true, Some((200, body)))]);
+        assert_eq!(d.ollama_sizes, vec![("qwen3:latest".to_owned(), 5)]);
+        assert_eq!(d.ollama_size("qwen3"), Some(5));
+        assert_eq!(d.ollama_size("qwen3:latest"), Some(5));
+        assert_eq!(d.ollama_size("b:1"), None);
+        assert_eq!(d.model_facts.len(), 2, "the facts are unchanged");
     }
 
     #[test]

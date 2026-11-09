@@ -35,7 +35,7 @@ use crate::core::{
         },
         ollama_lib::{self, Pull},
         orchestra::{RunId, WorkerKey, event::OrchestraEvent, run::UserChoice},
-        picker::{InstallAsk, InstallReply},
+        picker::{DeleteAsk, InstallAsk, InstallReply},
         tools::{github::GhRepo, report::RunReport, stage::BatchId},
     },
     build_jobs,
@@ -72,6 +72,7 @@ mod history;
 mod hub;
 mod install;
 mod links;
+mod model_delete;
 mod notes;
 mod offer;
 mod orchestra;
@@ -295,6 +296,11 @@ pub enum AppEvent {
     /// The result of the install step the wizard asked for; it names the
     /// request it answers.
     InstallReply(u64, Result<InstallReply, String>),
+    /// The result of `Effect::DeleteModel`.
+    DeleteReply {
+        ask: DeleteAsk,
+        answer: Result<(), String>,
+    },
     /// A notice about the install (an attestation that was not verified):
     /// shown, not swallowed.
     InstallWarning(String),
@@ -626,6 +632,12 @@ pub enum Effect {
     /// `AppEvent::DownloadProgress` and one `AppEvent::DownloadEnd`.
     Pull {
         pull: Box<Pull>,
+        port: u16,
+    },
+    /// Delete this model from the Ollama server on `127.0.0.1:port`; the
+    /// runtime answers with one `AppEvent::DeleteReply`.
+    DeleteModel {
+        ask: DeleteAsk,
         port: u16,
     },
     /// Run one step of the llama-server install wizard, or the newer build
@@ -2215,6 +2227,7 @@ impl App {
             AppEvent::DownloadEnd(end) => self.on_download_end(end),
             AppEvent::InstallProgress { id, done, .. } => self.on_install_progress(id, done),
             AppEvent::InstallReply(id, answer) => self.on_install_reply(id, answer),
+            AppEvent::DeleteReply { ask, answer } => self.on_delete_reply(ask, answer),
             AppEvent::InstallWarning(warning) => self.on_install_warning(warning),
             AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
@@ -2470,11 +2483,13 @@ impl App {
     }
 
     fn on_menu_key(&mut self, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
+        let turns = self.running_turns();
         let Some(menu) = self.menu.as_mut() else {
             debug_assert!(false, "MENU mode without menu state");
             return Vec::new();
         };
         menu.set_term(self.term.0, self.term.1);
+        menu.set_turns(turns);
         let command = menu.on_key(key, repeat, &mut self.config);
         self.on_menu_command(command)
     }
@@ -2500,6 +2515,7 @@ impl App {
             MenuCommand::OllamaAsk(ask) => vec![Effect::OllamaAsk(ask)],
             MenuCommand::Pull(pull) => self.start_pull(pull),
             MenuCommand::Install(ask) => self.install_effects(ask),
+            MenuCommand::DeleteModel(ask) => self.start_delete(ask),
             MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
             MenuCommand::Open(url) if !crate::core::opener::is_web_url(&url) => {
                 self.on_open_failed(&url)
@@ -9147,6 +9163,9 @@ mod app_tests {
     /// The llama-server install wizard of the llamacpp picker
     /// (llama-server-install).
     mod install;
+
+    /// Deleting a downloaded model from the picker (config-menu).
+    mod model_delete;
 
     /// The manage rows of llamacpp: remove and the newer build notice.
     mod install_manage;

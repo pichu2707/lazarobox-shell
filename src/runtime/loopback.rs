@@ -23,6 +23,11 @@ use crate::core::ai::{
 };
 use crate::runtime::tools::pending;
 
+mod delete;
+pub use delete::{
+    DELETE_CANNOT_CONNECT, DELETE_INVALID, DELETE_NO_ANSWER, DELETE_NOT_FOUND, DELETE_PATH,
+    DELETE_REFUSED, delete_with,
+};
 mod pull;
 pub use pull::{
     PULL_CANNOT_CONNECT, PULL_INVALID, PULL_NO_ANSWER, PULL_PATH, PULL_REFUSED, PULL_STALLED,
@@ -797,6 +802,8 @@ where
     }
 }
 
+#[cfg(test)]
+mod delete_tests;
 #[cfg(test)]
 mod pending_tests;
 #[cfg(test)]

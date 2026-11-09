@@ -21,10 +21,12 @@ use super::{
     status_text,
 };
 
+mod delete;
 mod hub;
 mod install;
 mod manage;
 mod ollama;
+pub use delete::{Delete, DeleteAsk, DeleteTarget, InUse};
 pub use hub::{
     Confirm, HF_ROW, HINT_ASKING, HINT_CANCEL, Hub, QUERY_HINT, Running, Screen, Source, shown,
 };
@@ -756,6 +758,8 @@ pub enum Level {
     Ollama(Ollama),
     /// The llama-server install wizard, over llamacpp's model rows.
     Install(Wizard),
+    /// The confirmation of deleting a downloaded model, over its model rows.
+    Delete(Delete),
 }
 
 /// What a picker action asks of the caller.
@@ -789,6 +793,10 @@ pub enum Outcome {
     Busy,
     /// Run this install step; the picker waits for its reply.
     Install(InstallAsk),
+    /// Ask the runtime to delete this model (`y` on the Delete screen).
+    Delete(DeleteAsk),
+    /// A delete was refused: this text says what uses the model.
+    Refused(String),
 }
 
 /// The picker state: where it is and where the cursor is. Rows are never
@@ -848,6 +856,7 @@ impl Picker {
             Level::Hub(hub) => hub.rows(),
             Level::Ollama(ollama) => ollama.rows(),
             Level::Install(wizard) => wizard.rows(),
+            Level::Delete(delete) => delete.rows(),
         }
     }
 
@@ -936,6 +945,7 @@ impl Picker {
             Level::Hub(_) => self.hub_enter(),
             Level::Ollama(_) => self.ollama_enter(),
             Level::Install(_) => self.install_enter(draft, detection),
+            Level::Delete(_) => Outcome::Stay,
             Level::Custom { engine, text } => match validate_custom(&text) {
                 Some(model) => Outcome::Commit(Assignment {
                     engine: Some(engine),
@@ -952,7 +962,11 @@ impl Picker {
     pub fn copy(&self, draft: &AiConfig, detection: Option<&Detection>) -> Outcome {
         if matches!(
             self.level,
-            Level::Custom { .. } | Level::Hub(_) | Level::Ollama(_) | Level::Install(_)
+            Level::Custom { .. }
+                | Level::Hub(_)
+                | Level::Ollama(_)
+                | Level::Install(_)
+                | Level::Delete(_)
         ) {
             return Outcome::Stay;
         }
@@ -995,6 +1009,10 @@ impl Picker {
             Level::Hub(_) => self.hub_back(draft, detection),
             Level::Ollama(_) => self.ollama_back(draft, detection),
             Level::Install(_) => self.install_back(draft, detection),
+            Level::Delete(_) => {
+                self.close_delete(draft, detection);
+                Outcome::Stay
+            }
         }
     }
 
@@ -1093,9 +1111,11 @@ impl Picker {
     /// `r`: ask for a new detection, except where `r` is typed.
     pub fn refresh(&self) -> Outcome {
         match self.level {
-            Level::Custom { .. } | Level::Hub(_) | Level::Ollama(_) | Level::Install(_) => {
-                Outcome::Stay
-            }
+            Level::Custom { .. }
+            | Level::Hub(_)
+            | Level::Ollama(_)
+            | Level::Install(_)
+            | Level::Delete(_) => Outcome::Stay,
             _ => Outcome::Refresh,
         }
     }
@@ -1105,6 +1125,8 @@ impl Picker {
 mod assign_tests;
 #[cfg(test)]
 mod custom_tests;
+#[cfg(test)]
+mod delete_tests;
 #[cfg(test)]
 mod hub_tests;
 #[cfg(test)]
