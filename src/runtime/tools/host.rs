@@ -289,6 +289,11 @@ impl ToolHost {
         self.gh.set_path(path);
     }
 
+    /// The job variables of `[build] jobs` for the next `run_command`s.
+    pub fn set_build_env(&self, env: [(String, String); 2]) {
+        self.exec.set_build_env(env);
+    }
+
     /// Where the runtime puts what the panes run, for `list_panes`.
     pub fn roster(&self) -> Roster {
         self.roster.clone()

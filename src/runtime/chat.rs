@@ -1098,6 +1098,13 @@ impl Chats {
         self.tooling.as_ref()?.host.close_batch(pane)
     }
 
+    /// The job variables the chats' `run_command`s get from now on.
+    pub fn set_build_env(&self, env: [(String, String); 2]) {
+        if let Some(tooling) = self.tooling.as_ref() {
+            tooling.host.set_build_env(env);
+        }
+    }
+
     /// The batch a turn of `pane` left behind (cancelled, timed out, or never
     /// proposed), sealed for the user to review. `None` while a turn runs,
     /// because then the batch is the model's.

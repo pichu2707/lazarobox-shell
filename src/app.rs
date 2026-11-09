@@ -597,6 +597,9 @@ pub enum Effect {
     /// Turn the host terminal's mouse capture on (`true`) or off. Emitted
     /// only when the wanted state differs from the one last asked for.
     MouseCapture(bool),
+    /// The job variables of `[build] jobs` for the chats' `run_command`s.
+    /// Emitted only when the count differs from the one last sent.
+    BuildEnv([(String, String); 2]),
     /// How long the managed llama-server may sit unused now (a menu save
     /// changed it); `None` never stops it.
     ManagedIdle(Option<Duration>),
@@ -929,6 +932,8 @@ pub struct App {
     /// `None` until the runtime measured them: a new shell then gets no
     /// job variables.
     build_machine: Option<build_jobs::Machine>,
+    /// The job count the runtime was last told for the chats' commands.
+    build_jobs_sent: Option<u16>,
     /// The privacy notice of the rolling summary was shown in this run.
     summary_notice_shown: bool,
     /// The `Usage not saved` notice was shown in this run.
@@ -1131,6 +1136,7 @@ impl App {
             notice: None,
             config_path: None,
             build_machine: None,
+            build_jobs_sent: None,
             summary_notice_shown: false,
             usage_notice_shown: false,
             day_noted: Vec::new(),
@@ -2431,12 +2437,24 @@ impl App {
         })
     }
 
+    /// Tells the runtime the job count of the chats' commands: one effect
+    /// when it differs from the one last sent, none otherwise.
+    pub fn sync_build_env(&mut self) -> Option<Effect> {
+        let machine = self.build_machine?;
+        let jobs = machine.jobs(self.config.build_jobs);
+        (self.build_jobs_sent != Some(jobs)).then(|| {
+            self.build_jobs_sent = Some(jobs);
+            Effect::BuildEnv(build_jobs::env(self.config.build_jobs, machine))
+        })
+    }
+
     /// Lays the screen out again for the live config, telling only the panes
     /// whose size changed, and brings the mouse capture in line with it.
     fn apply_config(&mut self) -> Vec<Effect> {
         self.refresh_screen();
         let mut effects = self.relayout();
         effects.extend(self.sync_mouse());
+        effects.extend(self.sync_build_env());
         effects
     }
 

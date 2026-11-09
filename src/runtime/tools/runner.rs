@@ -62,6 +62,9 @@ pub struct Job {
     /// The private `TMPDIR`, already in `spec.rw`. Removed when the run ends.
     pub scratch: Scratch,
     pub timeout: Duration,
+    /// How many compile jobs the run may start (`[build] jobs`): set on top
+    /// of the scrubbed environment.
+    pub build_env: Vec<(OsString, OsString)>,
     /// Where the changes of a run that is dropped (cancelled) before it ends
     /// go. Keep a clone and [`Unreported::drain`] it after each call.
     pub unreported: Unreported,
@@ -230,6 +233,7 @@ pub async fn run_jailed(
     let tmp = job.scratch.path().to_path_buf();
     let mut cleanup = Cleanup(vec![job.scratch]);
     let mut env = scrub(read, &job.root, &tmp);
+    env.extend(job.build_env);
     // `go run` and `go test` execute what they build, and the private TMPDIR
     // never executes: they get a folder under the `rwx` root.
     if job.tool == Program::Go {

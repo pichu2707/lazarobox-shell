@@ -263,6 +263,7 @@ impl Fixture {
             cwd: self.root.clone(),
             scratch: Scratch::unique(&self.tmp_parent, "run").unwrap(),
             timeout: Duration::from_secs(30),
+            build_env: Vec::new(),
             unreported: Unreported::default(),
         }
     }
@@ -303,6 +304,20 @@ async fn no_secret_of_the_parent_reaches_the_child() {
     }
     assert!(text.contains("PATH=/usr/bin:/bin"));
     assert!(text.contains("NO_COLOR=1"));
+}
+
+#[tokio::test]
+async fn a_run_gets_the_job_variables_it_was_given() {
+    let fx = fixture();
+    let mut job = fx.job(Program::Cargo, "/usr/bin/env");
+    job.build_env = vec![
+        ("CARGO_BUILD_JOBS".into(), "3".into()),
+        ("CMAKE_BUILD_PARALLEL_LEVEL".into(), "3".into()),
+    ];
+    let done = run_jailed(job, &parent).await.unwrap().done;
+    let text = done.capture.text();
+    assert!(text.contains("CARGO_BUILD_JOBS=3"), "{text}");
+    assert!(text.contains("CMAKE_BUILD_PARALLEL_LEVEL=3"), "{text}");
 }
 
 #[tokio::test]

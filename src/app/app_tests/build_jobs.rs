@@ -95,3 +95,54 @@ fn esc_puts_the_old_count_back_for_new_shells() {
     assert!(a.menu().is_none());
     assert_eq!(jobs_env(&new_tab_spec(&mut a)), both("3"));
 }
+
+fn build_env(effects: &[Effect]) -> Vec<&[(String, String); 2]> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::BuildEnv(env) => Some(env),
+            _ => None,
+        })
+        .collect()
+}
+
+fn pairs(n: &str) -> [(String, String); 2] {
+    crate::core::build_jobs::ENV_KEYS.map(|key| (key.to_owned(), n.to_owned()))
+}
+
+#[test]
+fn the_chats_commands_are_told_the_count_once_at_the_start() {
+    let mut a = launched(80, 25).with_build_machine(wsl());
+    let first = a.sync_build_env().map(|e| vec![e]).unwrap_or_default();
+    assert_eq!(build_env(&first), [&pairs("3")]);
+    assert_eq!(a.sync_build_env(), None, "the same count is not sent again");
+}
+
+#[test]
+fn without_a_measured_machine_the_chats_commands_are_told_nothing() {
+    let mut a = launched(80, 25);
+    assert_eq!(a.sync_build_env(), None);
+}
+
+#[test]
+fn a_menu_change_reaches_the_chats_commands_at_once() {
+    let mut a = launched(80, 25).with_build_machine(wsl());
+    a.sync_build_env();
+    open_menu(&mut a);
+    a.menu.as_mut().unwrap().goto("Build jobs");
+    // `auto` goes to 1 going forward.
+    let effects = a.update(key('l'));
+    assert_eq!(build_env(&effects), [&pairs("1")]);
+}
+
+#[test]
+fn esc_puts_the_old_count_back_for_the_chats_commands() {
+    let mut a = launched(80, 25).with_build_machine(wsl());
+    a.sync_build_env();
+    change_jobs(&mut a, 'l');
+    let effects = a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(build_env(&effects), [&pairs("3")]);
+}

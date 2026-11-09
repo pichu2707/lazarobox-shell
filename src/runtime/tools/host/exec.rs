@@ -81,6 +81,8 @@ pub(super) struct Exec {
     pub(super) helper: Option<PathBuf>,
     /// The environment the child's own is rebuilt from.
     pub(super) read: Reader,
+    /// What `[build] jobs` says now: the next run gets it.
+    pub(super) build_env: Mutex<Vec<(OsString, OsString)>>,
     /// Changes of runs that were dropped before they ended, by chat.
     pub(super) sinks: Mutex<HashMap<StageKey, Unreported>>,
 }
@@ -93,6 +95,7 @@ impl Exec {
             jail: Box::new(crate::runtime::jail::probe),
             helper: std::env::current_exe().and_then(fs::canonicalize).ok(),
             read: Arc::new(|name| std::env::var_os(name)),
+            build_env: Mutex::default(),
             sinks: Mutex::default(),
         }
     }
@@ -103,6 +106,22 @@ impl Exec {
     pub(super) fn sink(&self, key: StageKey) -> Unreported {
         let mut sinks = self.sinks.lock().unwrap_or_else(PoisonError::into_inner);
         sinks.entry(key).or_default().clone()
+    }
+
+    /// What `[build] jobs` says from now on.
+    pub(super) fn set_build_env(&self, env: [(String, String); 2]) {
+        *self
+            .build_env
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) =
+            env.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+    }
+
+    /// The job variables of the next run.
+    pub(super) fn build_env(&self) -> Vec<(OsString, OsString)> {
+        (self.build_env.lock())
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub(super) fn jailed(&self) -> bool {
@@ -458,9 +477,12 @@ async fn go(
     let job = {
         let (read, unreported) = (read.clone(), unreported.clone());
         let home = host.home.clone();
-        tokio::task::spawn_blocking(move || job(&*read, home, parent, plan, helper, unreported))
-            .await
-            .map_err(|_| COULD_NOT)??
+        let build_env = host.exec.build_env();
+        tokio::task::spawn_blocking(move || {
+            job(&*read, home, parent, plan, helper, build_env, unreported)
+        })
+        .await
+        .map_err(|_| COULD_NOT)??
     };
     // What the run changed is told on every path, an error included: the
     // watched places are read whatever the program did, and a run that is
@@ -519,6 +541,7 @@ fn job(
     parent: Option<PathBuf>,
     plan: Plan,
     helper: PathBuf,
+    build_env: Vec<(OsString, OsString)>,
     unreported: Unreported,
 ) -> Result<Job, &'static str> {
     let canonical = |path: OsString| fs::canonicalize(path).ok();
@@ -553,6 +576,7 @@ fn job(
         cwd: plan.cwd,
         scratch,
         timeout: plan.request.timeout,
+        build_env,
         unreported,
     })
 }
