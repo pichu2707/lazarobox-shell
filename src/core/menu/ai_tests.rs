@@ -117,10 +117,11 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     labels[0]
 }
 
-const SETTINGS_ORDER: [&str; 9] = [
+const SETTINGS_ORDER: [&str; 10] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
+    "Build jobs",
     "Notify",
     "Sound",
     "llama-server idle",
@@ -365,8 +366,8 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
         MenuState::open(&Config::default())
             .rows(&Config::default())
             .len(),
-        6,
-        "no AI section without AI: a title and five settings, no bar"
+        7,
+        "no AI section without AI: a title and six settings, no bar"
     );
 }
 

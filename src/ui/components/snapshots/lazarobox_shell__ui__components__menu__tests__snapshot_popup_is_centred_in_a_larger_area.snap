@@ -7,6 +7,7 @@ expression: "text(&draw(60, 11, &fresh()))"
     │ Statusline position                      bottom │     
     │ Tab bar position                            top │     
     │ Mouse                                        on │     
+    │ Build jobs                             auto (1) │     
     │ Updates                                  0.15.3 │     
     │ Feedback                     bug report or idea │     
     │                                                 │     

@@ -1606,6 +1606,28 @@ other = 1
         assert!(!out.contains("servers"), "{out:?}");
     }
 
+    // `build.jobs` is a TOML integer, and `auto` a string; both read back.
+    #[test]
+    fn build_jobs_write_a_number_or_auto_and_read_back() {
+        use crate::core::config::{BUILD_TABLE, BuildJobs};
+        let jobs = |value: &'static str| ConfigEdit {
+            table: BUILD_TABLE,
+            key: "jobs",
+            value: value.into(),
+        };
+        let out = apply_edit(Some("mouse = false\n"), &[jobs("6")]).unwrap();
+        assert!(out.contains("[build]\njobs = 6\n"), "{out:?}");
+        let read = Config::parse(&out).unwrap();
+        assert!(read.problems.is_empty(), "{:?}", read.problems);
+        assert_eq!(read.config.build_jobs.id(), "6");
+        let out = apply_edit(Some(&out), &[jobs("auto")]).unwrap();
+        assert!(out.contains("jobs = \"auto\""), "{out:?}");
+        assert_eq!(
+            Config::parse(&out).unwrap().config.build_jobs,
+            BuildJobs::Auto
+        );
+    }
+
     // The Ollama cap and keep-alive are never edited by the menu: every save,
     // also one that edits its neighbour llamacpp table, keeps them byte for
     // byte, and a file without them gains none.

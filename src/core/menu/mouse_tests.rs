@@ -66,18 +66,23 @@ fn the_cursor_goes_through_mouse_between_the_bar_row_and_the_notify_rows() {
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Mouse");
     press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "Build jobs");
+    press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Notify");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Build jobs");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Mouse");
 }
 
 #[test]
-fn without_the_ai_section_the_cursor_wraps_over_five_rows() {
+fn without_the_ai_section_the_cursor_wraps_over_six_rows() {
     let mut m = MenuState::open(&Config::default());
     let mut live = Config::default();
     for expected in [
         "Tab bar position",
         "Mouse",
+        "Build jobs",
         "Updates",
         "Feedback",
         "Statusline position",

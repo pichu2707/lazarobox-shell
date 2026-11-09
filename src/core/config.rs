@@ -6,6 +6,7 @@ use std::{
     ffi::OsString,
     fmt,
     io::{self, ErrorKind},
+    num::NonZeroU16,
     path::{Path, PathBuf},
 };
 
@@ -15,6 +16,7 @@ use super::ai::{
     self,
     config::{AiConfig, ApprovalMode, Task, ToolToggle},
 };
+pub use super::build_jobs::BuildJobs;
 
 /// Which edge of the screen a bar sits on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -49,6 +51,9 @@ pub struct Config {
     /// Whether a background check may ask crates.io for a newer version
     /// (default on; `[updates] check = false` makes no network call at all).
     pub update_check: bool,
+    /// How many compile jobs a new pane shell is told to run (`[build]
+    /// jobs`, default `auto`).
+    pub build_jobs: BuildJobs,
 }
 
 impl Default for Config {
@@ -57,6 +62,7 @@ impl Default for Config {
             bars: BarPositions::default(),
             mouse: true,
             update_check: true,
+            build_jobs: BuildJobs::Auto,
         }
     }
 }
@@ -140,10 +146,12 @@ impl ConfigEdit {
     }
 
     /// Whether the key is a TOML integer (written as a number, not as a
-    /// string): `ai.servers.llamacpp.idle_minutes`.
+    /// string): `ai.servers.llamacpp.idle_minutes`, the usage token limits
+    /// and `build.jobs` (whose `auto` stays a string).
     pub fn is_integer(&self) -> bool {
         (self.table == LLAMACPP_TABLE && self.key == "idle_minutes")
             || (self.table == USAGE_TABLE && matches!(self.key, "turn_tokens" | "day_tokens"))
+            || (self.table == BUILD_TABLE && self.key == "jobs")
     }
 
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
@@ -256,6 +264,7 @@ impl Config {
         };
         let update_check =
             read_update_check(&table, &mut problems).unwrap_or(defaults.update_check);
+        let build_jobs = read_build_jobs(&table, &mut problems).unwrap_or(defaults.build_jobs);
         let ai = ai::config::read_with_port_env(&table, &mut problems, port_env);
         let workspace_dir = read_workspace(&table, &mut problems, home);
         // Last, so a wrong value stays the first problem of the notice.
@@ -270,6 +279,7 @@ impl Config {
                 bars: BarPositions { statusline, tabbar },
                 mouse,
                 update_check,
+                build_jobs,
             },
             ai,
             workspace_dir,
@@ -354,7 +364,8 @@ impl Config {
 /// [`ai::config::note_unknown_ai_keys`]), with the keys each one holds. The
 /// root of the file is not checked: other top-level keys and tables are the
 /// user's own.
-const OWNED_SECTIONS: [(&str, &[&str]); 4] = [
+const OWNED_SECTIONS: [(&str, &[&str]); 5] = [
+    ("build", &["jobs"]),
     ("statusline", &["position"]),
     ("tabbar", &["position"]),
     ("updates", &["check"]),
@@ -417,6 +428,36 @@ fn read_workspace(
 
 /// `updates.check`, or `None` (with a problem noted) when it is missing or
 /// invalid, so the caller falls back to the default.
+/// The table of `jobs`.
+pub const BUILD_TABLE: &str = "build";
+
+/// `build.jobs`: `"auto"` or a whole number from 1, or `None` (with a
+/// problem noted) when it is missing or invalid.
+fn read_build_jobs(table: &Table, problems: &mut Vec<String>) -> Option<BuildJobs> {
+    let section = match table.get(BUILD_TABLE)? {
+        Value::Table(section) => section,
+        _ => {
+            problems.push("build: expected a table".to_owned());
+            return None;
+        }
+    };
+    let jobs = match section.get("jobs")? {
+        Value::String(text) if text == "auto" => Some(BuildJobs::Auto),
+        Value::Integer(n) => u16::try_from(*n)
+            .ok()
+            .and_then(NonZeroU16::new)
+            .map(BuildJobs::Fixed),
+        _ => None,
+    };
+    if jobs.is_none() {
+        problems.push(format!(
+            "build.jobs: expected \"auto\" or a whole number from 1 to {}",
+            u16::MAX
+        ));
+    }
+    jobs
+}
+
 fn read_update_check(table: &Table, problems: &mut Vec<String>) -> Option<bool> {
     let section = match table.get("updates")? {
         Value::Table(section) => section,
@@ -494,6 +535,7 @@ mod tests {
             bars: bars(Bottom, Top),
             mouse: true,
             update_check: true,
+            build_jobs: BuildJobs::Auto,
         };
         assert_eq!(Config::default(), expected);
         assert_eq!(parse(""), expected);
@@ -720,6 +762,63 @@ mod tests {
     fn a_bad_update_check_keeps_the_other_keys() {
         let c = parse("mouse = false\n[updates]\ncheck = 3");
         assert!(!c.mouse);
+    }
+
+    fn jobs(n: u16) -> BuildJobs {
+        BuildJobs::Fixed(NonZeroU16::new(n).unwrap())
+    }
+
+    #[test]
+    fn build_jobs_are_auto_by_default() {
+        assert_eq!(parse("").build_jobs, BuildJobs::Auto);
+        assert_eq!(parse("[build]\n").build_jobs, BuildJobs::Auto);
+        assert_eq!(
+            parse("[build]\njobs = \"auto\"").build_jobs,
+            BuildJobs::Auto
+        );
+    }
+
+    #[test]
+    fn build_jobs_read_a_whole_number() {
+        assert_eq!(parse("[build]\njobs = 1").build_jobs, jobs(1));
+        assert_eq!(parse("[build]\njobs = 24").build_jobs, jobs(24));
+    }
+
+    #[test]
+    fn bad_build_jobs_fall_back_to_auto_with_a_notice() {
+        let expected = "config: build.jobs: expected \"auto\" or a whole number from 1 to 65535";
+        for text in [
+            "jobs = 0",
+            "jobs = -2",
+            "jobs = 70000",
+            "jobs = \"max\"",
+            "jobs = 2.5",
+        ] {
+            let (config, notice) = Config::load(Ok(format!("[build]\n{text}\n")));
+            assert_eq!(config.build_jobs, BuildJobs::Auto, "{text}");
+            assert_eq!(notice.as_deref(), Some(expected), "{text}");
+        }
+        let (config, notice) = Config::load(Ok("build = 4\nmouse = false\n".into()));
+        assert_eq!(config.build_jobs, BuildJobs::Auto);
+        assert!(!config.mouse);
+        assert_eq!(notice.as_deref(), Some("config: build: expected a table"));
+    }
+
+    #[test]
+    fn an_unknown_build_key_is_noted() {
+        assert_eq!(problems("[build]\njob = 4"), ["unknown key: build.job"]);
+    }
+
+    #[test]
+    fn build_jobs_save_as_a_number_and_auto_as_a_string() {
+        let edit = |value: &'static str| ConfigEdit {
+            table: BUILD_TABLE,
+            key: "jobs",
+            value: value.into(),
+        };
+        assert!(edit("6").is_integer());
+        assert!(edit("auto").is_integer());
+        assert!(!edit("6").is_flag());
     }
 
     fn ai(engine: Option<&str>, model: Option<&str>) -> AiConfig {

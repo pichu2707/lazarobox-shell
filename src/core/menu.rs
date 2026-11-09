@@ -26,8 +26,9 @@ use super::{
             OllamaScreen, Outcome, PickKey, PickRow, Picker, QUERY_HINT, Running, Screen, Target,
         },
     },
+    build_jobs,
     config::{
-        BILLING_TABLE, BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE,
+        BILLING_TABLE, BUILD_TABLE, BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE,
         ORCHESTRATOR_TABLE, TOOLS_TABLE, USAGE_TABLE,
     },
     layout::Rect,
@@ -275,6 +276,10 @@ pub enum ItemKind {
     /// The `Usage (alpha)` row of the Settings tab: Enter opens the usage
     /// view. Its rows edit the AI draft, but the row itself writes nothing.
     Usage,
+    /// `[build] jobs`: `auto` (shown with the count it gives here) or a
+    /// count from 1 up to the cores. It changes the live config like a
+    /// [`Choice`] and is written as a TOML integer, `auto` as a string.
+    Jobs,
 }
 
 /// The version shown on the Updates row. Tests see a fixed one, so a release
@@ -361,6 +366,10 @@ pub static SECTIONS: &[Section] = &[Section {
                 get: |c| usize::from(c.mouse),
                 set: |c, i| c.mouse = i == 1,
             }),
+        },
+        Item {
+            label: "Build jobs",
+            kind: ItemKind::Jobs,
         },
         Item {
             label: "Notify",
@@ -819,7 +828,8 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Updates
             | ItemKind::HfAccount
             | ItemKind::Feedback
-            | ItemKind::Usage => None,
+            | ItemKind::Usage
+            | ItemKind::Jobs => None,
         })
 }
 
@@ -842,8 +852,8 @@ const WARNING_ROWS: usize = WARNING_TEXT.len() + 3;
 /// The body under the tab bar is fixed: the popup never jumps between the
 /// tabs, the picker (a title and `VIEW` rows), the custom field and the
 /// privacy warning. It is the maximum over every view, so adding a row grows
-/// the popup instead of overflowing it. The picker is the binding term (11
-/// rows); a test keeps this equal to the tallest view.
+/// the popup instead of overflowing it. The Settings tab with its update
+/// note is the binding term; a test keeps this equal to the tallest view.
 pub const VIEW_BODY: usize = view_body();
 /// The whole body of the tabbed popup: the bar and the tallest view.
 pub const MENU_BODY: usize = TAB_BAR + VIEW_BODY;
@@ -1157,6 +1167,8 @@ pub struct MenuState {
     /// The system has no Landlock jail, so commands will be refused (D18).
     /// Unknown counts as fine: only the app, which probed, says otherwise.
     no_sandbox: bool,
+    /// What the `Build jobs` row works `auto` out from.
+    build_machine: build_jobs::Machine,
 }
 
 /// The view that replaces the rows while it is open. One `sub_view()` picks
@@ -1221,7 +1233,15 @@ impl MenuState {
             feedback_done: None,
             opener: false,
             no_sandbox: false,
+            build_machine: build_jobs::Machine::default(),
         }
+    }
+
+    /// The cores and memory the `Build jobs` row shows `auto` for and steps
+    /// up to.
+    pub fn with_build_machine(mut self, machine: build_jobs::Machine) -> Self {
+        self.build_machine = machine;
+        self
     }
 
     /// Whether commands can run on this system: without the Linux sandbox the
@@ -1957,7 +1977,8 @@ impl MenuState {
             | ItemKind::Updates
             | ItemKind::HfAccount
             | ItemKind::Feedback
-            | ItemKind::Usage => None,
+            | ItemKind::Usage
+            | ItemKind::Jobs => None,
         }
     }
 
@@ -2071,6 +2092,19 @@ impl MenuState {
                         let row = Row::Item {
                             label: item.label,
                             value: Some(Cow::Borrowed(FEEDBACK_VALUE)),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Jobs => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: Some(Cow::Owned(build_jobs::label(
+                                config.build_jobs,
+                                self.build_machine,
+                            ))),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -2578,6 +2612,10 @@ impl MenuState {
             }
             return MenuCommand::None;
         }
+        if let Some(ItemKind::Jobs) = self.selected_kind() {
+            config.build_jobs = config.build_jobs.step(self.build_machine, forward);
+            return MenuCommand::Changed;
+        }
         let Some(ItemKind::Choice(choice) | ItemKind::Toggle(choice)) = self.selected_kind() else {
             return MenuCommand::None;
         };
@@ -2607,6 +2645,12 @@ impl MenuState {
                     _ => c.values[(c.get)(live)],
                 }),
             });
+        let jobs = (live.build_jobs != self.original.build_jobs).then(|| ConfigEdit {
+            table: BUILD_TABLE,
+            key: "jobs",
+            value: Cow::Owned(live.build_jobs.id()),
+        });
+        let settings = settings.chain(jobs);
         let tasks = self
             .ai
             .iter()
@@ -3007,6 +3051,7 @@ mod tests {
                 row("Statusline position", Some("bottom"), true),
                 row("Tab bar position", Some("top"), false),
                 row("Mouse", Some("on"), false),
+                row("Build jobs", Some("auto (1)"), false),
                 row("Updates", Some("0.15.3"), false),
                 row("Feedback", Some("bug report or idea"), false),
             ]
@@ -3050,13 +3095,17 @@ mod tests {
             menu.on_key(&down, false, &mut config);
             assert_eq!(selected(&menu), Some(2), "the Mouse row is selectable");
             menu.on_key(&down, false, &mut config);
-            assert_eq!(selected(&menu), Some(3), "so is the Updates row");
+            assert_eq!(selected(&menu), Some(3), "so is the Build jobs row");
             menu.on_key(&down, false, &mut config);
-            assert_eq!(selected(&menu), Some(4), "and the Feedback row");
+            assert_eq!(selected(&menu), Some(4), "and the Updates row");
+            menu.on_key(&down, false, &mut config);
+            assert_eq!(selected(&menu), Some(5), "and the Feedback row");
             menu.on_key(&down, false, &mut config);
             assert_eq!(selected(&menu), Some(0), "wraps past the last row");
             menu.on_key(&up, false, &mut config);
-            assert_eq!(selected(&menu), Some(4), "wraps before the first row");
+            assert_eq!(selected(&menu), Some(5), "wraps before the first row");
+            menu.on_key(&up, false, &mut config);
+            assert_eq!(selected(&menu), Some(4));
             menu.on_key(&up, false, &mut config);
             assert_eq!(selected(&menu), Some(3));
             menu.on_key(&up, false, &mut config);
@@ -3283,6 +3332,8 @@ mod profile_tests;
 #[cfg(test)]
 mod context_tests;
 
+#[cfg(test)]
+mod build_jobs_tests;
 #[cfg(test)]
 mod mouse_tests;
 #[cfg(test)]

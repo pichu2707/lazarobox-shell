@@ -482,7 +482,7 @@ mod tests {
     // Spec: Settings rows; Footer hint.
     #[test]
     fn snapshot_settings_popup_at_the_wanted_size() {
-        insta::assert_snapshot!(text(&draw(51, 9, &fresh())));
+        insta::assert_snapshot!(text(&draw(51, 10, &fresh())));
     }
 
     #[test]
@@ -493,12 +493,12 @@ mod tests {
     // Spec: the blank row is dropped first on a short height.
     #[test]
     fn snapshot_short_height_drops_the_blank_row() {
-        insta::assert_snapshot!(text(&draw(51, 9, &fresh())));
+        insta::assert_snapshot!(text(&draw(51, 10, &fresh())));
     }
 
     #[test]
     fn selected_row_is_reversed_and_the_others_are_not() {
-        let buf = draw(51, 9, &fresh());
+        let buf = draw(51, 10, &fresh());
         let reversed = |y| buf[(2, y)].modifier.contains(Modifier::REVERSED);
         assert!(!reversed(1));
         assert!(reversed(2));
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn the_mouse_row_is_drawn_like_the_other_settings() {
-        let buf = draw(51, 9, &fresh());
+        let buf = draw(51, 10, &fresh());
         let theme = LazaroboxTheme::default();
         assert_ne!(buf[(2, 4)].fg, theme.text_muted);
         assert_eq!(buf[(2, 4)].fg, buf[(2, 3)].fg);
@@ -518,7 +518,7 @@ mod tests {
     fn snapshot_error_replaces_the_hint_and_is_clipped() {
         let mut menu = fresh();
         menu.set_error("config.toml: statusline is not a table; fix it before saving".into());
-        let buf = draw(51, 9, &menu);
+        let buf = draw(51, 10, &menu);
         assert!(!text(&buf).contains("j/k move"));
         insta::assert_snapshot!(text(&buf));
     }
@@ -544,11 +544,11 @@ mod tests {
     }
 
     #[test]
-    fn exactly_24_by_9_shows_the_full_popup() {
-        let buf = draw(24, 9, &fresh());
+    fn exactly_24_by_10_shows_the_full_popup() {
+        let buf = draw(24, 10, &fresh());
         assert!(text(&buf).contains("Settings"));
         assert!(!text(&buf).contains("MENU"));
-        let below = draw(23, 9, &fresh());
+        let below = draw(23, 10, &fresh());
         assert!(!text(&below).contains("Settings"));
         assert!(text(&below).contains("MENU"));
     }
@@ -1761,14 +1761,14 @@ mod tests {
 
     #[test]
     fn titles_are_still_drawn_for_a_single_tab() {
-        let shown = lines(&draw(51, 9, &fresh()));
+        let shown = lines(&draw(51, 10, &fresh()));
         assert!(shown[1].starts_with("│ Settings"), "{}", shown[1]);
         assert!(!shown[1].contains("│ Settings │"), "no bar: {}", shown[1]);
     }
 
     #[test]
-    fn the_popup_is_seventeen_rows_on_every_tab_and_in_every_sub_level() {
-        assert_eq!(POPUP_H, 17);
+    fn the_popup_is_eighteen_rows_on_every_tab_and_in_every_sub_level() {
+        assert_eq!(POPUP_H, 18);
         let mut views = vec![mixed(), ai_tab(), with_update()];
         for digit in ['3', '5'] {
             let mut menu = mixed();
@@ -1782,7 +1782,7 @@ mod tests {
                 .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
                 .collect();
             assert_eq!(border.len(), 2);
-            assert_eq!(border[1] - border[0] + 1, 17);
+            assert_eq!(border[1] - border[0] + 1, 18);
         }
     }
 
@@ -1790,21 +1790,21 @@ mod tests {
     fn the_update_note_sits_in_the_last_two_body_rows_of_settings_only() {
         let l = lines(&draw(62, POPUP_H, &with_update()));
         assert!(
-            l[12].contains("lazarobox 0.16.0 is available."),
-            "{}",
-            l[12]
-        );
-        assert!(
-            l[13].contains("Go to Updates and press Enter."),
+            l[13].contains("lazarobox 0.16.0 is available."),
             "{}",
             l[13]
         );
+        assert!(
+            l[14].contains("Go to Updates and press Enter."),
+            "{}",
+            l[14]
+        );
         assert_eq!(
-            l[14].trim_matches(|c| c == '│' || c == ' '),
+            l[15].trim_matches(|c| c == '│' || c == ' '),
             "",
             "blank row"
         );
-        assert!(l[15].contains("s save"), "footer: {}", l[15]);
+        assert!(l[16].contains("s save"), "footer: {}", l[16]);
         let mut menu = with_update();
         tab_key(&mut menu);
         let shown = text(&draw(62, POPUP_H, &menu));
@@ -1823,10 +1823,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::UntrustedCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[12]), "lazarobox cannot update itself here. Run:");
-        assert_eq!(body(&l[13]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[13]), "lazarobox cannot update itself here. Run:");
+        assert_eq!(body(&l[14]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[15]),
+            body(&l[16]),
             "Enter or y copies it \u{b7} Rust folder is too open"
         );
     }
@@ -1838,10 +1838,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::NoCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[12]), "Install Rust first (rustup.rs), then run:");
-        assert_eq!(body(&l[13]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[13]), "Install Rust first (rustup.rs), then run:");
+        assert_eq!(body(&l[14]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[15]),
+            body(&l[16]),
             "Enter or y copies it \u{b7} Rust is not installed"
         );
     }
@@ -1933,8 +1933,8 @@ mod tests {
     }
 
     #[test]
-    fn the_smallest_full_popup_is_24_by_16_and_the_zero_size_is_empty() {
-        assert_eq!(MIN_HEIGHT, 16);
+    fn the_smallest_full_popup_is_24_by_17_and_the_zero_size_is_empty() {
+        assert_eq!(MIN_HEIGHT, 17);
         for digit in ['1', '2', '3', '5'] {
             let mut menu = mixed();
             press(&mut menu, &[KeyCode::Char(digit)]);
@@ -1964,7 +1964,7 @@ mod tests {
         let border: Vec<usize> = (0..l.len())
             .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
             .collect();
-        assert_eq!(border[1] - border[0] + 1, 10, "6 rows and the chrome");
+        assert_eq!(border[1] - border[0] + 1, 11, "7 rows and the chrome");
     }
 
     #[test]

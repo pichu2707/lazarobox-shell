@@ -7,6 +7,7 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &with_update()))"
 │ Statusline position  │
 │ Tab bar position  t… │
 │ Mouse             on │
+│ Build jobs  auto (1) │
 │ Notify           off │
 │ Sound             on │
 │ llama-server idle  … │

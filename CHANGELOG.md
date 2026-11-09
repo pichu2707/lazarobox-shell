@@ -10,6 +10,14 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Menu: a `Build jobs` row in Settings (`[build] jobs`). New pane shells get
+  `CARGO_BUILD_JOBS` and `CMAKE_BUILD_PARALLEL_LEVEL`. `auto` (the default)
+  caps the jobs by the cores and by the memory at 2 GiB a job, so a machine
+  with many cores and little RAM no longer runs out of memory on a full
+  build; `l` counts up from 1 and `h` from `auto` jumps to all the cores.
+
 ## [1.14.4] - 2026-11-08
 
 ### Fixed
