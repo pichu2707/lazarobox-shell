@@ -63,7 +63,7 @@ use crate::core::{
             steps::{Gate, Step},
             worker::{ErrorClass, WorkerStatus},
         },
-        tools::stage::BatchId,
+        tools::{issue_draft::IssueDraft, stage::BatchId},
     },
     layout::PaneId,
 };
@@ -77,7 +77,7 @@ pub enum BlockWhy {
 }
 
 use composer::Composer;
-use engine::{Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools};
+use engine::{Availability, CallId, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools};
 use prompts::Resolved;
 use transcript::{LineCache, Scroll};
 
@@ -478,6 +478,9 @@ pub struct ChatState {
     /// grant prompt's `y` (openspec `wsl-drive-access` D7). Never stored:
     /// cleared on every folder change and a resume, never inherited.
     drive_grant: Option<PathBuf>,
+    /// The draft the user accepted in the turn in flight, with its turn and
+    /// call: the Feedback form opens with it when that turn ends (D3).
+    issue_draft: Option<(u64, CallId, IssueDraft)>,
     /// What the model has yet to hear about a user-side answer to a batch it
     /// left behind: sent once with the next request, never stored.
     told: Vec<String>,
@@ -614,6 +617,7 @@ impl ChatState {
             github_granted: false,
             write_granted: false,
             drive_grant: None,
+            issue_draft: None,
             told: Vec::new(),
             told_sent: Vec::new(),
             batch_badge: None,
@@ -863,6 +867,27 @@ impl ChatState {
 
     pub fn take_continue(&mut self) -> Option<Continuation> {
         self.orch_continue.take()
+    }
+
+    /// The user accepted `draft` in `turn`: it waits for the turn's end.
+    pub fn hold_issue_draft(&mut self, turn: u64, call: CallId, draft: IssueDraft) {
+        self.issue_draft = Some((turn, call, draft));
+    }
+
+    /// The host denied the call after all: its draft goes.
+    pub fn drop_issue_draft(&mut self, turn: u64, call: CallId) {
+        if matches!(&self.issue_draft, Some((t, c, _)) if (*t, *c) == (turn, call)) {
+            self.issue_draft = None;
+        }
+    }
+
+    /// The draft held for `turn`, once. A draft of another turn is stale and
+    /// is dropped rather than opened now.
+    pub fn take_issue_draft(&mut self, turn: u64) -> Option<IssueDraft> {
+        self.issue_draft
+            .take()
+            .filter(|(held, ..)| *held == turn)
+            .map(|(_, _, draft)| draft)
     }
 
     /// `run` is over: its overrides, picker and notes go with it when it is

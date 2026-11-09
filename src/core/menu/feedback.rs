@@ -540,6 +540,16 @@ impl Feedback {
         form
     }
 
+    /// The form opened with a draft of the model's: its kind and its own two
+    /// fields, without the first-line rule of [`Self::prefilled`].
+    pub fn drafted(facts: Facts, kind: Kind, title: &str, description: &str) -> Self {
+        let mut form = Self::new(facts);
+        form.kind = kind;
+        form.title.paste(title);
+        form.description.paste(description);
+        form
+    }
+
     pub fn kind(&self) -> Kind {
         self.kind
     }

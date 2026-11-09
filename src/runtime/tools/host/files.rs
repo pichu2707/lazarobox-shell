@@ -130,6 +130,7 @@ pub(super) fn gate(scope: &TurnScope, call: &Call) -> Result<(), &'static str> {
         || (call.is_git() && !scope.families.contains(Family::Git))
         || (call.is_git_write() && !scope.families.contains(Family::GitWrite))
         || (call.is_github() && !scope.families.contains(Family::Github))
+        || (matches!(call, Call::IssueDraft(_)) && !scope.families.contains(Family::IssueDraft))
         || (matches!(call, Call::ListPanes | Call::ReadPane { .. })
             && !scope.families.contains(Family::Pane))
     {

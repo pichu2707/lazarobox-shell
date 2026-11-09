@@ -11,9 +11,9 @@ expression: text(&buf)
          │ Git                                                    off │         
          │ Git write                                              off │         
          │ GitHub                                                 off │         
+         │ Issue draft                                             on │         
          │ Approval                                               ask │         
          │ Orchestrator                                           off │         
-         │                                                            │         
          │                                                            │         
          │                                                            │         
          │ Reads issues and PRs; locks auto-run in that chat          │         

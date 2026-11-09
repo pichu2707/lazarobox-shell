@@ -141,7 +141,7 @@ const MODELS_ORDER: [&str; 8] = [
     "Hugging Face",
 ];
 
-const TOOLS_ORDER: [&str; 9] = [
+const TOOLS_ORDER: [&str; 10] = [
     "Tools",
     "Search",
     "Write",
@@ -149,6 +149,7 @@ const TOOLS_ORDER: [&str; 9] = [
     "Git",
     "Git write",
     "GitHub",
+    "Issue draft",
     "Approval",
     "Orchestrator",
 ];
@@ -355,6 +356,7 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
             "Git=off",
             "Git write=off",
             "GitHub=off",
+            "Issue draft=on",
             "Approval=ask",
             "Orchestrator=off",
             "Profile=programmer",

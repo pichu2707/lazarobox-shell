@@ -54,8 +54,9 @@ fn the_approval_row_precedes_the_gate_and_is_found_by_kind() {
     assert_eq!(approval.label, "Approval");
     assert!(matches!(&approval.kind, ItemKind::Draft(c) if c.key() == "approval"));
     assert_eq!(items[items.len() - 1].label, "Orchestrator");
-    assert_eq!(items[items.len() - 3].label, "GitHub");
-    assert_eq!(items[items.len() - 4].label, "Git write");
+    assert_eq!(items[items.len() - 3].label, "Issue draft");
+    assert_eq!(items[items.len() - 4].label, "GitHub");
+    assert_eq!(items[items.len() - 5].label, "Git write");
     let count = items
         .iter()
         .filter(|i| matches!(&i.kind, ItemKind::Draft(c) if c.key() == "approval"))
@@ -64,8 +65,8 @@ fn the_approval_row_precedes_the_gate_and_is_found_by_kind() {
 }
 
 #[test]
-fn the_tools_tab_holds_nine_rows() {
-    assert_eq!(TOOLS_SECTION.items.len(), 9);
+fn the_tools_tab_holds_ten_rows() {
+    assert_eq!(TOOLS_SECTION.items.len(), 10);
 }
 
 #[test]
@@ -80,32 +81,36 @@ fn navigation_goes_family_rows_approval_gate_then_wraps_to_the_first_tools_row()
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Approval");
     press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Issue draft");
+    press(&mut m, 'k');
     assert_eq!(selected_label(&m), "GitHub");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Git write");
+    press(&mut m, 'j');
     press(&mut m, 'j');
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Approval");
     assert_eq!(m.active_tab(), 2);
 }
 
-// Spec (config-menu, Tools tab): nine `j` presses from the first row visit
+// Spec (config-menu, Tools tab): ten `j` presses from the first row visit
 // every row, GitHub among them, and come back to the first (the tab wraps on
 // its own rows).
 #[test]
-fn nine_j_presses_walk_the_tools_tab_and_wrap() {
+fn ten_j_presses_walk_the_tools_tab_and_wrap() {
     let mut m = open_with(ApprovalMode::Ask);
     m.goto("Tools");
     let mut walked = vec![selected_label(&m)];
-    for _ in 0..9 {
+    for _ in 0..10 {
         press(&mut m, 'j');
         walked.push(selected_label(&m));
     }
     let labels: Vec<_> = TOOLS_SECTION.items.iter().map(|i| i.label).collect();
-    assert_eq!(labels.len(), 9);
-    assert_eq!(walked[..9], labels[..], "every row, in order");
-    assert!(walked[..9].contains(&"GitHub"));
-    assert_eq!(walked[9], labels[0], "the ninth press wraps");
+    assert_eq!(labels.len(), 10);
+    assert_eq!(walked[..10], labels[..], "every row, in order");
+    assert!(walked[..10].contains(&"GitHub"));
+    assert!(walked[..10].contains(&"Issue draft"));
+    assert_eq!(walked[10], labels[0], "the tenth press wraps");
     assert_eq!(m.active_tab(), 2, "still in the Tools tab");
 }
 

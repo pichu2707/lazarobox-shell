@@ -733,6 +733,7 @@ impl App {
         // The line of a cancelled turn follows the settings of now: a menu
         // save may have changed them since the last event of the turn.
         chat.set_usage_config(self.ai.usage().clone());
+        let turn = chat.turn();
         let follow = chat.cancel();
         // A run outlives its turn: Ctrl+C ends it too, which answers its
         // failure alert.
@@ -755,6 +756,7 @@ impl App {
         let mut effects = self.store_effects(id);
         if follow == Follow::CancelEngine {
             effects.extend(self.cancel_chat(id));
+            effects.extend(self.open_issue_draft(id, turn));
         } else if run {
             effects.push(Effect::ChatCancel(id));
         }

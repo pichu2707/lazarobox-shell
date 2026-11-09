@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The chat can draft an issue: the new `gh_issue_draft` tool (kind `idea` or
+  `bug`, title, description) asks a `y` at the composer and, at the end of the
+  turn, opens the Feedback form on the draft's kind with the title and the
+  description in their own fields. You review it and send it with Ctrl+S; the
+  model never writes to GitHub. New `[ai.tools] issue_draft` toggle, on by
+  default, with its own `Issue draft` row on the Tools tab.
+
 ## [1.16.0] - 2026-11-09
 
 ### Added

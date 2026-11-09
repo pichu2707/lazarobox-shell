@@ -451,6 +451,51 @@ fn open_feedback_shows_the_text_and_closes_to_the_feedback_row() {
     assert_eq!(m.selected_label(&Config::default()), Some("Feedback"));
 }
 
+// Spec (issue-draft): a draft fills its own fields and opens on its kind; the
+// first-line rule of `/feedback` stays out of it.
+#[test]
+fn open_feedback_draft_fills_kind_and_fields_and_lands_on_the_row() {
+    let mut m = MenuState::open(&Config::default()).with_feedback(facts());
+    m.open_feedback_draft(
+        feedback::Kind::Idea,
+        "A goal title",
+        "Line one\nLine two of the description",
+    );
+    let form = m.feedback_form().unwrap();
+    assert_eq!(form.kind(), feedback::Kind::Idea);
+    assert_eq!(form.title(), "A goal title");
+    assert_eq!(form.description(), "Line one\nLine two of the description");
+    send(&mut m, KeyCode::Esc);
+    assert!(!m.feedback_open());
+    assert_eq!(m.selected_label(&Config::default()), Some("Feedback"));
+    m.open_feedback_draft(feedback::Kind::Bug, "t", "d");
+    assert_eq!(m.feedback_form().unwrap().kind(), feedback::Kind::Bug);
+}
+
+// `/feedback <text>` keeps its first-line rule and still starts on `Bug report`.
+#[test]
+fn open_feedback_keeps_the_first_line_rule_and_starts_on_a_bug() {
+    let mut m = MenuState::open(&Config::default()).with_feedback(facts());
+    m.open_feedback("First line\nThe rest");
+    let form = m.feedback_form().unwrap();
+    assert_eq!(form.kind(), feedback::Kind::Bug);
+    assert_eq!(form.title(), "First line");
+    assert_eq!(form.description(), "The rest");
+}
+
+// The send path is the form's own: a drafted form sends through the same
+// Ctrl+S as a typed one.
+#[test]
+fn a_drafted_form_sends_through_the_same_path_as_a_typed_one() {
+    let mut m = on_row();
+    let typed = {
+        let mut typed = filled(true);
+        ctrl(&mut typed, 's')
+    };
+    m.open_feedback_draft(feedback::Kind::Bug, "Scroll jumps", "It jumps\nback");
+    assert_eq!(ctrl(&mut m, 's'), typed);
+}
+
 const COMMENT_URL: &str = "https://github.com/pichu2707/lazarobox-shell/issues/42#issuecomment-7";
 
 // S1-S3: GitHub has similar open issues: the form lists them; Enter adds

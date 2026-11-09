@@ -1,17 +1,18 @@
-//! Tests of the six family toggle rows of the AI section, at the
+//! Tests of the seven family toggle rows of the AI section, at the
 //! `MenuState` level.
 
 use super::ai_tests::{ch, machine, press, selected_label};
 use super::*;
 use crate::core::ai::config::ToolToggle;
 
-const ROWS: [(&str, ToolToggle); 6] = [
+const ROWS: [(&str, ToolToggle); 7] = [
     ("Search", ToolToggle::Search),
     ("Write", ToolToggle::Write),
     ("Exec", ToolToggle::Exec),
     ("Git", ToolToggle::Git),
     ("Git write", ToolToggle::GitWrite),
     ("GitHub", ToolToggle::Github),
+    ("Issue draft", ToolToggle::IssueDraft),
 ];
 
 fn open() -> MenuState {
@@ -45,12 +46,12 @@ fn value_of(menu: &MenuState, wanted: &str) -> Option<String> {
 // Spec (config-menu): six static rows between Tools and Approval, each with
 // its own kind and a distinct key path.
 #[test]
-fn the_six_rows_sit_between_tools_and_approval_in_order() {
+fn the_seven_rows_sit_between_tools_and_approval_in_order() {
     let labels: Vec<_> = TOOLS_SECTION.items.iter().map(|i| i.label).collect();
     let tools = labels.iter().position(|l| *l == "Tools").unwrap();
     let rows: Vec<_> = ROWS.iter().map(|(label, _)| *label).collect();
-    assert_eq!(labels[tools + 1..tools + 7], rows[..]);
-    assert_eq!(labels[tools + 7], "Approval");
+    assert_eq!(labels[tools + 1..tools + 8], rows[..]);
+    assert_eq!(labels[tools + 8], "Approval");
 }
 
 #[test]
@@ -70,11 +71,11 @@ fn each_row_is_found_by_its_own_kind_and_key_paths_are_distinct() {
     }
     paths.sort();
     paths.dedup();
-    assert_eq!(paths.len(), 6);
+    assert_eq!(paths.len(), 7);
 }
 
 #[test]
-fn navigation_goes_tools_then_the_six_rows_then_approval() {
+fn navigation_goes_tools_then_the_seven_rows_then_approval() {
     let mut m = on("Tools");
     for (label, _) in ROWS {
         press(&mut m, 'j');
@@ -87,8 +88,9 @@ fn navigation_goes_tools_then_the_six_rows_then_approval() {
 #[test]
 fn every_row_reads_off_by_default_and_needs_the_ai_section() {
     let m = open();
-    for (label, _) in ROWS {
-        assert_eq!(value_of(&m, label).as_deref(), Some("off"), "{label}");
+    for (label, toggle) in ROWS {
+        let want = if toggle.default_on() { "on" } else { "off" };
+        assert_eq!(value_of(&m, label).as_deref(), Some(want), "{label}");
     }
     let plain = MenuState::open(&Config::default());
     assert_eq!(value_of(&plain, "Write"), None);
@@ -106,11 +108,13 @@ fn every_cycle_key_toggles_the_draft_and_emits_nothing() {
             KeyCode::Left,
         ] {
             let mut m = on(label);
+            let first = toggle.default_on();
             assert_eq!(send(&mut m, code, false), MenuCommand::None, "{code:?}");
-            assert!(m.ai_draft().toggle(toggle), "{label} {code:?}");
-            assert_eq!(value_of(&m, label).as_deref(), Some("on"));
+            assert_eq!(m.ai_draft().toggle(toggle), !first, "{label} {code:?}");
+            let shown = if first { "off" } else { "on" };
+            assert_eq!(value_of(&m, label).as_deref(), Some(shown));
             send(&mut m, code, false);
-            assert!(!m.ai_draft().toggle(toggle), "{label} back {code:?}");
+            assert_eq!(m.ai_draft().toggle(toggle), first, "{label} back {code:?}");
         }
     }
 }
@@ -122,7 +126,10 @@ fn toggling_one_row_leaves_the_others_and_the_live_config_alone() {
     m.on_key(&ch('l'), false, &mut config);
     assert_eq!(config, Config::default());
     for toggle in ToolToggle::ALL {
-        assert_eq!(m.ai_draft().toggle(toggle), toggle == ToolToggle::Write);
+        assert_eq!(
+            m.ai_draft().toggle(toggle),
+            toggle == ToolToggle::Write || toggle == ToolToggle::IssueDraft
+        );
     }
     assert!(m.ai_draft().tools_enabled());
 }

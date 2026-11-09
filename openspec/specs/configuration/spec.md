@@ -486,8 +486,8 @@ The file MAY hold an array of tables `[[ai.mcp.servers]]`, the global list of us
 - THEN only entries from the user file for that root are active
 
 ### Requirement: Family toggle keys
-The table `[ai.tools]` MAY hold six booleans: `search`, `write`, `exec`, `git`, `git_write` and `github` (provisional names). Each defaults to `false`. They control the families Search, Write, Exec, Git read verbs, Git write verbs and the GitHub read tools (see agent-tools, Tool families). A family is active only when `[ai.tools] enabled` is also `true`. A wrong type falls back to `false` for that key only and reports `ai.tools.<key>: expected a boolean`, after the `ai.tools.approval` problem in the notice order. A non-table `ai.tools` uses the defaults with the existing `ai.tools: expected a table` problem only. Unknown keys MUST be ignored and reported as `unknown key: ai.tools.<key>` (see Unknown keys in owned tables), so a build without `github` reads a file that has it and says so. A change takes effect at the next turn, never on a stream or approval already running. A chat grant (see github-tools) is never written to this table.
-(Previously: five booleans, with no `github`.)
+The table `[ai.tools]` MAY hold seven booleans: `search`, `write`, `exec`, `git`, `git_write`, `github` (provisional names) and `issue_draft`. Each defaults to `false`, except `issue_draft`, which defaults to `true` (a draft reaches nothing without the user's `y` and Ctrl+S). `issue_draft` controls the family IssueDraft. They control the families Search, Write, Exec, Git read verbs, Git write verbs and the GitHub read tools (see agent-tools, Tool families). A family is active only when `[ai.tools] enabled` is also `true`. A wrong type falls back to that key's default for that key only and reports `ai.tools.<key>: expected a boolean`, after the `ai.tools.approval` problem in the notice order. A non-table `ai.tools` uses the defaults with the existing `ai.tools: expected a table` problem only. Unknown keys MUST be ignored and reported as `unknown key: ai.tools.<key>` (see Unknown keys in owned tables), so a build without `github` reads a file that has it and says so. A change takes effect at the next turn, never on a stream or approval already running. A chat grant (see github-tools) is never written to this table.
+(Previously: six booleans, with no `issue_draft`; before that, five, with no `github`.)
 
 #### Scenario: Defaults off [auto]
 - GIVEN a file with no family keys, and a file with no `[ai.tools]`
@@ -498,6 +498,11 @@ The table `[ai.tools]` MAY hold six booleans: `search`, `write`, `exec`, `git`, 
 - GIVEN `[ai.tools]` with `write = true` and `exec = true`
 - WHEN it is parsed
 - THEN Write and Exec are on and the other four are off
+
+#### Scenario: issue_draft defaults on and can be turned off [auto]
+- GIVEN a file with no `issue_draft`, and in another run `issue_draft = false`
+- WHEN the config is loaded
+- THEN the IssueDraft family is on in the first and off in the second, and a wrong type falls back to on with the notice `ai.tools.issue_draft: expected a boolean`
 
 #### Scenario: GitHub on [auto]
 - GIVEN `[ai.tools]` with `github = true`

@@ -620,6 +620,7 @@ pub static TOOLS_SECTION: Section = Section {
         // Not `caution`: that line says a family can change files or run code,
         // and these tools only read. The row has its own hint (`GITHUB_HINT`).
         family!("GitHub", Github, "github", 66, false, None),
+        family!("Issue draft", IssueDraft, "issue_draft", 67, false, None),
         Item {
             label: "Approval",
             kind: ItemKind::Draft(AiChoice {
@@ -1292,6 +1293,11 @@ impl MenuState {
     /// Opens the Feedback form with `text` written in it (`/feedback` in a
     /// chat). Its row is selected first, so the form closes back to it.
     pub fn open_feedback(&mut self, text: &str) {
+        self.show_feedback(feedback::Feedback::prefilled(self.facts.clone(), text));
+    }
+
+    /// Moves to the `Feedback` row and shows `form`.
+    fn show_feedback(&mut self, form: feedback::Feedback) {
         let is_row = |item: &Item| matches!(item.kind, ItemKind::Feedback);
         let tab = table().iter().position(|tab| {
             let mut items = tab.sections.iter().flat_map(|section| section.items.iter());
@@ -1301,11 +1307,24 @@ impl MenuState {
             self.go_to_tab(tab);
             self.selected = self.tab_items().position(is_row);
         }
-        self.feedback = Some(feedback::Feedback::prefilled(self.facts.clone(), text));
+        self.feedback = Some(form);
+    }
+
+    /// The model's draft accepted by the user: the form opens on its kind and
+    /// fills its two fields, with the `Feedback` row selected. Nothing leaves
+    /// before the Ctrl+S of the form.
+    pub fn open_feedback_draft(&mut self, kind: feedback::Kind, title: &str, description: &str) {
+        let form = feedback::Feedback::drafted(self.facts.clone(), kind, title, description);
+        self.show_feedback(form);
+    }
+
+    /// The Feedback form while its fields are shown.
+    pub fn feedback_form(&self) -> Option<&feedback::Feedback> {
+        self.feedback.as_ref()
     }
 
     /// Whether the Feedback form, or what became of it, is shown.
-    fn feedback_open(&self) -> bool {
+    pub fn feedback_open(&self) -> bool {
         self.feedback.is_some() || self.feedback_done.is_some()
     }
 
@@ -2985,7 +3004,7 @@ impl MenuState {
     /// Test helper: the label of the selected row, without the `* ` the
     /// Updates row wears while an update waits.
     #[cfg(test)]
-    fn selected_label(&self, config: &Config) -> Option<&'static str> {
+    pub(crate) fn selected_label(&self, config: &Config) -> Option<&'static str> {
         self.rows(config).into_iter().find_map(|row| match row {
             Row::Item {
                 label,

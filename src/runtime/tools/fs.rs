@@ -331,6 +331,7 @@ pub fn execute_within(
         | Call::GitCommit { .. }
         | Call::ProposeBatch
         | Call::Github(_)
+        | Call::IssueDraft(_)
         | Call::Orchestra(_) => Err(Failure::NotReadTool),
     }
 }

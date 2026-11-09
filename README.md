@@ -466,7 +466,7 @@ Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **Models** (`2`, o `Tab` 
 
 ![Menú de IA: pestaña Models y selector de motor y modelo](docs/assets/ai-menu.gif)
 
-Tras las filas de tarea (la última, `orchestrate`, es la del coordinador del [orquestador](#orquestador-de-agentes-experimental)), la pestaña **Models** termina con la fila **Hugging Face** (ver «Descargar modelos de Hugging Face»). La pestaña **Tools** (`3`) tiene las filas **Tools**, **Search**, **Write**, **Exec**, **Git**, **Git write**, **Approval** y **Orchestrator**, y la pestaña **Chat** (`5`) tiene **Profile**, **Context** y **Memory**. **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
+Tras las filas de tarea (la última, `orchestrate`, es la del coordinador del [orquestador](#orquestador-de-agentes-experimental)), la pestaña **Models** termina con la fila **Hugging Face** (ver «Descargar modelos de Hugging Face»). La pestaña **Tools** (`3`) tiene las filas **Tools**, **Search**, **Write**, **Exec**, **Git**, **Git write**, **Issue draft**, **Approval** y **Orchestrator**, y la pestaña **Chat** (`5`) tiene **Profile**, **Context** y **Memory**. **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
 
 `s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú. Mientras la elección difiera de la guardada, el pie del menú muestra `unsaved changes · s to save · Esc discards`.
 
@@ -985,7 +985,7 @@ Every message below says why a CLI cannot be used. None of them changes what the
 
 ### Herramientas de búsqueda y escritura (`[ai.tools]`)
 
-Además de leer, un modelo puede buscar en el proyecto y proponer cambios. Cada familia tiene su interruptor en `[ai.tools]`, **todos desactivados por defecto**, y solo actúa si `enabled = true` y el motor del chat tiene las herramientas verificadas:
+Además de leer, un modelo puede buscar en el proyecto y proponer cambios. Cada familia tiene su interruptor en `[ai.tools]`, **todos desactivados por defecto salvo `issue_draft`**, y solo actúa si `enabled = true` y el motor del chat tiene las herramientas verificadas:
 
 ```toml
 [ai.tools]
@@ -996,9 +996,10 @@ exec = false       # run_command: comandos de la cadena de herramientas (ver má
 git = false        # git_status, git_diff, git_log (solo lectura)
 git_write = false  # git_add y git_commit (escriben; cada una pide tu `y`)
 github = false     # gh_issue_list, gh_issue_view y gh_pr_view (solo lectura; ver GitHub)
+issue_draft = true # gh_issue_draft: abre el formulario de Feedback con un borrador (ver Borrador de issue)
 ```
 
-La pestaña **Tools** del menú muestra las filas **Search**, **Write**, **Exec**, **Git**, **Git write** y **GitHub** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`); **GitHub** lleva la suya (`Reads issues and PRs; locks auto-run in that chat`), porque solo lee. Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
+La pestaña **Tools** del menú muestra las filas **Search**, **Write**, **Exec**, **Git**, **Git write**, **GitHub** e **Issue draft** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`); **GitHub** lleva la suya (`Reads issues and PRs; locks auto-run in that chat`), porque solo lee. Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
 
 #### Búsqueda: `glob` y `grep`
 
@@ -1192,6 +1193,18 @@ Tres herramientas de **solo lectura** dejan que el modelo lea los issues y las p
 - Solo tú puedes abrirlo: ni el modelo, ni un _worker_, ni un resultado de herramienta, ni un mensaje que contenga `/write` pueden abrir o responder el diálogo.
 - Se niega con una línea y sin diálogo (`/write refused: ...`) si las herramientas están apagadas, el motor no las ofrece, Write ya está activo, el chat no tiene carpeta o la lista de conversaciones está abierta. `/write` con texto detrás avisa con `/write takes no arguments` y deja el texto en el compositor; para enviar un mensaje que empiece por `/write`, escribe `//write`.
 - En ORCH, un _worker_ `code` necesita Write: con Write apagado el lanzamiento se rechaza con un aviso que nombra `/write` como paso desde el chat (el menú de IA sigue valiendo). En un chat sin ORCH, `/write` también amplía el turno siguiente.
+
+#### Borrador de issue: `gh_issue_draft`
+
+El chat puede redactar un issue sobre lazarobox a partir de la conversación, por ejemplo cuando le pides «apunta esto como idea» o «reporta este fallo». La herramienta recibe `kind` (`idea` o `bug`), `title` (hasta 120 caracteres) y `description` (hasta 2000), y **nunca escribe en GitHub**: solo abre el formulario de **Feedback** ya relleno, y lo envías tú con `Ctrl+S`.
+
+- Está **activada por defecto**, con su propio interruptor `issue_draft` en `[ai.tools]` (fila **Issue draft** de la pestaña **Tools**), y solo actúa si `enabled = true` y el motor tiene las herramientas verificadas. Los _workers_ y el orquestador nunca la tienen.
+- Cada llamada pide tu `y` en el compositor, con el tipo y el título: `draft issue: Idea or goal` y el título debajo. Solo una `y` minúscula sin modificadores acepta; `n`, `Esc`, un tiempo agotado, una cancelación o cerrar el chat la deniegan. Ningún modo de aprobación (`ask`, `auto`, `run`) la responde, y si hay otra aprobación pendiente se deniega al momento.
+- Un argumento mal (un campo vacío, un tipo desconocido, un título con saltos de línea o un campo por encima de su límite) se devuelve al modelo como error para que lo corrija: nada se corta en silencio.
+- Tras una denegación, las siguientes llamadas del mismo turno se deniegan sin preguntar.
+- El formulario se abre **al terminar el turno** (no mientras escribe), en el tipo del borrador, con el título y la descripción en sus campos y la fila **Feedback** seleccionada. Si el turno falla o lo cancelas después de tu `y`, se abre igual.
+- Un formulario que ya esté abierto nunca se sobrescribe: si llega una llamada mientras lo tienes abierto, se deniega; si lo abriste después de tu `y`, o estás en otro modo (por ejemplo tras `Ctrl+Space`), el borrador no se abre y el chat lo dice con una línea del sistema (puedes volver a pedírselo). Con el menú abierto en otra fila, el borrador se abre ahí sin perder lo que estabas tocando.
+- El envío es el de siempre: `Ctrl+S`, la revisión de secretos, la búsqueda de issues parecidos, los datos adjuntos y la alternativa del enlace sin `gh`. El borrador va al repositorio de lazarobox, no al de la carpeta del chat.
 
 ### Tools with Ollama
 

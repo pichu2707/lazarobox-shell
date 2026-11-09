@@ -64,11 +64,16 @@ impl App {
     }
 
     /// Says in the chat that the user did not release the screen of `ask`.
-    pub(super) fn note_screen_denied(&mut self, id: PaneId, ask: &ApprovalAsk) {
-        if let (ApprovalAsk::Screen { pane, .. }, Some(chat)) =
-            (ask, self.panes.get_mut(&id).and_then(PaneState::chat_mut))
-        {
-            chat.push_system_line(format!("screen read denied: pane {pane}"));
+    pub(super) fn note_ask_denied(&mut self, id: PaneId, ask: &ApprovalAsk) {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        match ask {
+            ApprovalAsk::Screen { pane, .. } => {
+                chat.push_system_line(format!("screen read denied: pane {pane}"));
+            }
+            ApprovalAsk::IssueDraft(_) => chat.push_system_line(super::tool::NO_DRAFT.to_owned()),
+            _ => {}
         }
     }
 }

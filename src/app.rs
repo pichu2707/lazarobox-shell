@@ -3148,6 +3148,9 @@ impl App {
             effects.extend(self.cancel_chat(id));
         }
         effects.extend(self.on_tool_event(id, turn, (live, finished), tool));
+        if finished {
+            effects.extend(self.open_issue_draft(id, turn));
+        }
         if finished && how == Ended::Done {
             if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
                 chat.note_clean_end();
@@ -9034,6 +9037,7 @@ mod app_tests {
     mod github_grant;
     /// The hint that suggests `/github`.
     mod github_hint;
+    mod issue_draft;
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;
     mod tool_run_settle;

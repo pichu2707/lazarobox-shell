@@ -893,15 +893,14 @@ fn families_of_a_turn_on(ai: AiConfig, engines: &'static [&'static str]) -> Fami
 
 #[test]
 fn a_turn_offers_the_families_of_the_toggles() {
-    assert_eq!(families_of_a_turn(ollama()), FamilySet::LEGACY);
+    let default = FamilySet::LEGACY.with(Family::IssueDraft);
+    assert_eq!(families_of_a_turn(ollama()), default);
     let mut ai = ollama();
     ai.set_toggle(ToolToggle::Search, true);
     ai.set_toggle(ToolToggle::GitWrite, true);
     assert_eq!(
         families_of_a_turn(ai),
-        FamilySet::LEGACY
-            .with(Family::Search)
-            .with(Family::GitWrite)
+        default.with(Family::Search).with(Family::GitWrite)
     );
 }
 
@@ -913,12 +912,17 @@ fn the_github_toggle_adds_its_family_and_turning_it_off_removes_it() {
     ai.set_toggle(ToolToggle::Github, true);
     assert_eq!(
         families_of_a_turn(ai),
-        FamilySet::LEGACY.with(Family::Github)
+        FamilySet::LEGACY
+            .with(Family::Github)
+            .with(Family::IssueDraft)
     );
     let mut ai = ollama();
     ai.set_toggle(ToolToggle::Github, true);
     ai.set_toggle(ToolToggle::Github, false);
-    assert_eq!(families_of_a_turn(ai), FamilySet::LEGACY);
+    assert_eq!(
+        families_of_a_turn(ai),
+        FamilySet::LEGACY.with(Family::IssueDraft)
+    );
     // The master switch wins: no tools, no GitHub family.
     let mut ai = ollama();
     ai.set_toggle(ToolToggle::Github, true);

@@ -254,6 +254,11 @@ pub fn refusal_text(error: ToolError) -> &'static str {
         ToolError::TooLong => "argument too long",
         ToolError::PaneRange => "pane must be a pane number from list_panes",
         ToolError::ScrollbackRange => "scrollback must be 1 to 200",
+        ToolError::DraftKind => "kind must be idea or bug",
+        ToolError::DraftEmpty => "title and description must not be empty",
+        ToolError::DraftTitleLong => "title must be at most 120 characters",
+        ToolError::DraftTitleLines => "title must be one line",
+        ToolError::DraftBodyLong => "description must be at most 2000 characters",
     }
 }
 

@@ -659,6 +659,14 @@ Each tool event MUST be drawn inline in the transcript at its position in the tu
 - WHEN rendered
 - THEN nothing panics
 
+### Requirement: Issue draft prompt
+A `gh_issue_draft` call MUST be asked with a prompt at the composer naming the kind and the title (`draft issue: Idea or goal` and the title below), with keys `y open the form · n deny`. Only an unmodified lowercase `y` accepts; `n`, Esc, a timeout, a cancel and a closed chat end as `denied`, and the chat shows `no draft issue was opened`. No approval mode answers it. A call while another approval is pending, or while a Feedback form is open, MUST be denied at once. After `y` the chat holds the draft and the Feedback form opens when the turn ends (see issue-draft); while the turn streams no form opens, so a later approval of the turn is not left under it. A form opened after the `y`, or another input mode the user is in, is left alone: the draft is dropped and a system line names its title.
+
+#### Scenario: The form waits for the end of the turn [auto]
+- GIVEN a draft accepted with `y` during a streaming turn
+- WHEN the tool result arrives and the turn goes on
+- THEN no menu is open, and the Feedback form opens only when the turn ends
+
 ### Requirement: Approval prompt
 A pending confirm or tool approval MUST be drawn at the composer (replacing the composer's hint line, not the transcript), naming what will happen: for the pane command `run in pane N (<cwd>)` and the exact command text drawn visibly; for `read_file` on a cloud engine `read <path>` with the sanitized path; for a user tool the server, tool and arguments; plus the keys (`y` run/allow, `n` decline, `p` target pane for the pane command). The prompt is an overlay of the chat pane's own state, not a global input mode. The composer text and cursor MUST be kept untouched under it. While a prompt is pending the pane MUST show it even when scrolled. A multi-line or long command MUST be wrapped and clipped to a visible maximum with the clipping marked, and the full text is what `y` writes; if the command or path cannot be shown in full in the available space (more than six wrapped rows, or a pane too short) the prompt MUST say so ("pane too small to show it all: enlarge it or press n") and show no part of it, and `y` MUST NOT approve it until a resize makes the whole text visible; `n`, Esc and Ctrl+C still deny. The same function decides what is drawn and whether `y` may approve. A prompt the model opened (not one the user opened with `Prefix e`) MUST ignore `y`, `n` and Esc for a short arming delay (400 ms) so a key typed for the composer cannot answer it, and its keys line shows `…` until then; Ctrl+C always cancels.
 

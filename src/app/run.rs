@@ -10,10 +10,10 @@ use crate::core::ai::{
     chat::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
-            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, Origin,
-            PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply,
-            SEARCH_KEYS, drive_grant_prompt, exec_notice, grant_prompt, run_sent_line,
-            tool_grant_prompt,
+            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, ISSUE_DRAFT_KEYS, MULTI_LINE, NO_CWD,
+            NON_UTF8, Origin, PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS,
+            RUNNING, Reply, SEARCH_KEYS, drive_grant_prompt, exec_notice, grant_prompt,
+            run_sent_line, tool_grant_prompt,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -236,7 +236,7 @@ impl App {
     pub(super) fn decline(&mut self, id: PaneId, reason: &'static str) -> Vec<Effect> {
         let closed = self.close_approval(id, Reply::Decline);
         if let Some(approval) = &closed {
-            self.note_screen_denied(id, approval.ask());
+            self.note_ask_denied(id, approval.ask());
         }
         closed
             .and_then(|approval| Self::answer(id, &approval, Decision::Denied(reason)))
@@ -283,7 +283,11 @@ impl App {
         if is_run {
             return self.approve_run(id);
         }
-        self.close_approval(id, Reply::Approve)
+        let approval = self.close_approval(id, Reply::Approve);
+        if let Some(approval) = &approval {
+            self.hold_issue_draft(id, approval);
+        }
+        approval
             .and_then(|approval| Self::answer(id, &approval, Decision::Sent))
             .into_iter()
             .collect()
@@ -679,6 +683,15 @@ impl App {
                     notice: None,
                 })
             }
+            // The form holds the draft whole; the title is what is named here.
+            ApprovalAsk::IssueDraft(draft) => Some(ApprovalPrompt {
+                target: format!("draft issue: {}", draft.kind.label()),
+                command: draft.title.clone(),
+                keys: ISSUE_DRAFT_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
             ApprovalAsk::GithubGrant { repo, .. } => Some(grant_prompt(repo, armed)),
             ApprovalAsk::ToolGrant { toggle, folder } => {
                 Some(tool_grant_prompt(*toggle, folder, armed))
