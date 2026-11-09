@@ -152,15 +152,20 @@ fn a_tool_call_ends_the_count_and_the_next_slow_starts_it_again() {
     assert_eq!(state.wait_elapsed(at(41)), Some(Duration::from_secs(4)));
 }
 
+// A tool call that waits for the user is announced first, also when a worker
+// asks while the orchestrator's own request waits for the model: the call
+// stops the clock, and `Slow` cannot start it while a call waits
+// (`runtime::loopback`). So there is no held time to take off.
 #[test]
-fn the_time_held_for_the_user_is_not_counted() {
+fn a_tool_call_that_asks_the_user_stops_the_clock_for_good() {
     let (mut state, turn) = slow_turn("ollama", 10);
-    state.observe_hold(at(20));
+    assert_eq!(state.wait_elapsed(at(20)), Some(Duration::from_secs(13)));
+    state.apply_at(turn, call(1, "read_file"), at(30));
     state
         .approvals_mut()
         .request_call(ApprovalAsk::read("/x"), turn, CallId(1), None)
         .unwrap();
-    state.observe_hold(at(30));
+    assert_eq!(text(&state).as_deref(), Some(WAITING_USER));
     assert_eq!(
         state.wait_elapsed(at(35)),
         None,
@@ -168,9 +173,10 @@ fn the_time_held_for_the_user_is_not_counted() {
     );
     let id = state.approvals().pending().unwrap().id();
     state.approvals_mut().withdraw(id);
-    state.observe_hold(at(50));
-    // Started at 7, held from 30 to 50: at 60 the clock shows 60 - 7 - 20.
-    assert_eq!(state.wait_elapsed(at(60)), Some(Duration::from_secs(33)));
+    state.apply_at(turn, done(1), at(50));
+    assert_eq!(state.wait_elapsed(at(60)), None, "the old clock is gone");
+    state.apply_at(turn, StreamEvent::Slow, at(70));
+    assert_eq!(state.wait_elapsed(at(71)), Some(Duration::from_secs(4)));
 }
 
 #[test]
@@ -180,10 +186,8 @@ fn an_approval_of_the_user_does_not_pause_the_clock() {
         .approvals_mut()
         .request(ApprovalAsk::read("/x"), Origin::Block)
         .unwrap();
-    state.observe_hold(at(20));
     let id = state.approvals().pending().unwrap().id();
     state.approvals_mut().withdraw(id);
-    state.observe_hold(at(40));
     assert_eq!(state.wait_elapsed(at(52)), Some(Duration::from_secs(45)));
 }
 

@@ -10,9 +10,7 @@ use std::{borrow::Cow, time::Duration};
 
 use std::time::Instant;
 
-use super::{
-    ChatState, Entry, Phase, STILL_WAITING, WAITING, adapters::is_cli_engine, approval::Origin,
-};
+use super::{ChatState, Entry, Phase, STILL_WAITING, WAITING, adapters::is_cli_engine};
 
 /// No byte of a reply after this long and the server clock says `Slow`.
 pub const SLOW_AFTER: Duration = Duration::from_secs(3);
@@ -77,7 +75,7 @@ impl ChatState {
     pub fn wait_elapsed(&self, now: Instant) -> Option<Duration> {
         let waits_for_model = matches!(self.phase, Phase::Waiting { slow: true })
             && self.waiting_text().as_deref() == Some(STILL_WAITING);
-        if !waits_for_model || is_cli_engine(self.wait_engine()) || self.held_since.is_some() {
+        if !waits_for_model || is_cli_engine(self.wait_engine()) {
             return None;
         }
         self.wait_since
@@ -125,37 +123,13 @@ impl ChatState {
     /// The clock said `Slow` at `now`: it started [`SLOW_AFTER`] before.
     pub(super) fn clock_said_slow(&mut self, now: Instant) {
         self.wait_since = Some(now.checked_sub(SLOW_AFTER).unwrap_or(now));
-        self.held_since = None;
         self.idle_from = None;
     }
 
     /// The clock of the request is over or starts again: forget its start.
     pub(super) fn clock_reset(&mut self) {
         self.wait_since = None;
-        self.held_since = None;
         self.idle_from = None;
-    }
-
-    /// Follows the pauses of the clock: a tool call that waits for the user
-    /// stops it (`runtime::tools::pending`), and that time is not counted.
-    /// An approval the user started (`Origin::Block`) does not stop it.
-    /// Called on every tick.
-    pub fn observe_hold(&mut self, now: Instant) {
-        let Some(since) = self.wait_since.as_mut() else {
-            return;
-        };
-        let held = self
-            .approvals
-            .pending()
-            .is_some_and(|a| a.origin() == Origin::Tool);
-        match (held, self.held_since) {
-            (true, None) => self.held_since = Some(now),
-            (false, Some(from)) => {
-                *since += now.saturating_duration_since(from);
-                self.held_since = None;
-            }
-            _ => {}
-        }
     }
 }
 
