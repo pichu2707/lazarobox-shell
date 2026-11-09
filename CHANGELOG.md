@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- Chat: `run_command` follows `[build] jobs` too, so a build started by the
+  model cannot use more compile jobs than a build in a pane. A change in the
+  menu applies to the next command.
+
 ## [1.15.1] - 2026-11-09
 
 ### Fixed

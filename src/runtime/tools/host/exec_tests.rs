@@ -1,6 +1,7 @@
 //! `run_command` in the host: what is refused before the user is asked.
 //! Spec (command-runner, Refusals before start; Approval on every command).
 
+use crate::core::build_jobs::ENV_KEYS;
 use std::sync::Mutex;
 
 use serde_json::{Value, json};
@@ -649,6 +650,25 @@ async fn the_child_sees_none_of_the_parents_secrets() {
     let (out, _) = w.run(after_dashes("env")).await;
     assert!(out.text.contains("CI=1"), "{}", out.text);
     assert!(!out.text.contains("hunter2") && !out.text.contains("SECRET_TOKEN"));
+}
+
+// `[build] jobs`: the next run gets the count the menu holds now.
+#[tokio::test]
+async fn a_run_gets_the_job_count_the_host_was_told_last() {
+    let w = runnable(HELPER, gate());
+    let (out, _) = w.run(after_dashes("env")).await;
+    assert!(!out.text.contains("CARGO_BUILD_JOBS"), "{}", out.text);
+    let told = |n: &str| ENV_KEYS.map(|key| (key.to_owned(), n.to_owned()));
+    w.host.set_build_env(told("8"));
+    w.host.set_build_env(told("3"));
+    let (out, _) = w.run(after_dashes("env")).await;
+    assert!(out.text.contains("CARGO_BUILD_JOBS=3"), "{}", out.text);
+    assert!(
+        out.text.contains("CMAKE_BUILD_PARALLEL_LEVEL=3"),
+        "{}",
+        out.text
+    );
+    assert!(!out.text.contains("=8"), "{}", out.text);
 }
 
 // Scenario "Timeout kills the group" and "Timeout bounds".

@@ -189,6 +189,7 @@ fn startup_effects(app: &mut App) -> Vec<Effect> {
     // The capture bytes wait in `host_out` until `run` has entered the
     // terminal modes; `mouse = false` yields no effect at all.
     let mut effects: Vec<Effect> = app.sync_mouse().into_iter().collect();
+    effects.extend(app.sync_build_env());
     // Startup trigger: the first result arrives on `ai_rx` once the loop runs.
     effects.extend(app.request_detection());
     effects
@@ -2197,6 +2198,11 @@ impl Panes {
                 Effect::MouseCapture(on) => {
                     self.host_out
                         .extend_from_slice(if on { CAPTURE_ON } else { CAPTURE_OFF });
+                }
+                Effect::BuildEnv(env) => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        chats.set_build_env(env);
+                    }
                 }
                 Effect::ListRunning => {
                     (self.check_shared)();

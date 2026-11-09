@@ -382,7 +382,7 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 | `Statusline position` | Barra de estado arriba o abajo (`h`/`l`) | `[statusline] position` |
 | `Tab bar position` | Barra de pestañas arriba o abajo | `[tabbar] position` |
 | `Mouse` | Captura del ratón | `mouse` |
-| `Build jobs` | Compilaciones en paralelo de los paneles nuevos: `auto` o de `1` al número de núcleos (ver abajo) | `[build] jobs` |
+| `Build jobs` | Compilaciones en paralelo de los paneles nuevos y de `run_command` en el chat: `auto` o de `1` al número de núcleos (ver abajo) | `[build] jobs` |
 | `Notify` | Aviso al terminar una respuesta del chat (`off`, `auto`, `desktop`, `bell`); `t` lo prueba | `[ai] notify` |
 | `Sound` | Sonido propio del aviso; `t` lo prueba | `[ai] notify_sound` |
 | `llama-server idle` | Minutos sin uso tras los que se para el llama-server gestionado: `5 min`, `15 min`, `30 min` o `never` | `[ai.servers.llamacpp] idle_minutes` |
@@ -401,6 +401,7 @@ jobs = "auto"   # o un número, por ejemplo jobs = 4
 
 - El cambio vale para los paneles que se abran después; un panel ya abierto conserva su valor (`export CARGO_BUILD_JOBS=…` en él lo cambia a mano).
 - Si tu `~/.zshrc` (o `~/.bashrc`) exporta alguna de las dos variables, esa gana, porque la shell la lee al arrancar.
+- `run_command` en el chat usa siempre el valor del menú, y un cambio vale desde el siguiente comando. Su entorno se construye limpio, así que lo que exporte tu shell no le llega.
 - Los comandos que el chat lanza con `run_command` no la reciben todavía.
 
 ### Feedback: fallos e ideas desde el terminal
