@@ -1042,11 +1042,11 @@ async fn a_panicking_call_gets_an_error_result_and_the_loop_goes_on() {
 
 // A tool call written as text (local-model-writes D3) ------------------------
 
-fn written(name: &str) -> String {
+pub(super) fn written(name: &str) -> String {
     format!("```json\n{{\"name\": \"{name}\", \"arguments\": {{\"query\": \"curso\"}}}}\n```")
 }
 
-fn reminders(events: &[StreamEvent]) -> usize {
+pub(super) fn reminders(events: &[StreamEvent]) -> usize {
     let line = StreamEvent::Notice(crate::core::ai::chat::text_call::TEXT_CALL_NOTICE.into());
     events.iter().filter(|e| **e == line).count()
 }
