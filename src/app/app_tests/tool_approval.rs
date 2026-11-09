@@ -1406,10 +1406,11 @@ mod guard {
         assert_eq!(a.notice(), Some("llama-server ready"));
     }
 
-    // The wait line counts the clock of the request, and a worker's call that
-    // waits for the user stops that clock: the tick is where the app sees it.
+    // A call that waits for the user, a worker's too, is announced on the
+    // turn's channel: the announcement stops the clock of the request, so no
+    // time spent answering is ever on the wait line.
     #[test]
-    fn the_anim_tick_follows_the_pause_of_a_tool_call_that_waits_for_the_user() {
+    fn the_announced_ask_stops_the_clock_of_the_wait_line() {
         use std::time::Duration;
         NOW_MS.with(|n| n.set(0));
         let mut a = one_shell_and_a_chat("hello").with_clock(mock_now);
@@ -1428,22 +1429,29 @@ mod guard {
             a.focused_state_mut().chat_mut().unwrap().wait_elapsed(now)
         };
         assert_eq!(waits(&mut a, 12_000), Some(Duration::from_secs(5)));
-        a.focused_state_mut()
-            .chat_mut()
-            .unwrap()
-            .approvals_mut()
-            .request_call(run("cd x"), turn, CallId(9), None)
-            .unwrap();
-        at(&mut a, 20_000, AppEvent::AnimTick);
-        let id = pending(&a).map(|_| chat(&a, id2()).approvals().pending().unwrap().id());
-        a.focused_state_mut()
-            .chat_mut()
-            .unwrap()
-            .approvals_mut()
-            .withdraw(id.unwrap());
-        at(&mut a, 40_000, AppEvent::AnimTick);
-        // Slow said 3 s at t = 10 s: started at 7 s, held 20 s.
-        assert_eq!(waits(&mut a, 50_000), Some(Duration::from_secs(23)));
+        a.update(AppEvent::Chat(
+            id2(),
+            turn,
+            StreamEvent::ToolCall {
+                id: CallId(9),
+                name: "run_in_pane".into(),
+                summary: "cd x".into(),
+                approval: Some(Box::new(run("cd x"))),
+            },
+        ));
+        assert!(pending(&a).is_some(), "the ask is shown");
+        assert_eq!(waits(&mut a, 20_000), None, "no seconds under a prompt");
+        at(&mut a, 30_000, AppEvent::AnimTick);
+        a.update(AppEvent::Chat(
+            id2(),
+            turn,
+            StreamEvent::ToolResult {
+                id: CallId(9),
+                status: ToolStatus::Ok,
+                summary: "ok".into(),
+            },
+        ));
+        assert_eq!(waits(&mut a, 50_000), None, "the old clock is gone");
     }
 
     // The confirm the user opens with `Prefix e` is theirs: no delay.

@@ -362,8 +362,6 @@ pub struct ChatState {
     /// When the clock of the request in flight started, as its `Slow` event
     /// says; `None` before it. See [`wait_line`].
     wait_since: Option<Instant>,
-    /// Since when a tool call that waits for the user holds that clock.
-    held_since: Option<Instant>,
     /// The last read the runtime reported while the model was silent.
     idle_from: Option<Instant>,
     /// The model of the request in flight, as sent.
@@ -566,7 +564,6 @@ impl ChatState {
             composer: Composer::new(),
             started: None,
             wait_since: None,
-            held_since: None,
             idle_from: None,
             request_model: String::new(),
             generation: 0,
