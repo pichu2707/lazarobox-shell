@@ -209,7 +209,8 @@ fn mark_shared(parts: &mut [Part], repo: &Path) -> Result<(), String> {
 }
 
 /// The links under `dir`, without following links to folders. A folder or
-/// an entry that cannot be read is an error.
+/// an entry that cannot be read, or a folder deeper than the scan reads, is
+/// an error.
 fn links_in(
     dir: &Path,
     depth: usize,
@@ -223,7 +224,11 @@ fn links_in(
         *budget -= 1;
         let entry = entry?;
         let kind = entry.file_type()?;
-        if kind.is_dir() && depth < MAX_DEPTH {
+        if kind.is_dir() {
+            // A folder the scan does not read may hold a link to the blob.
+            if depth >= MAX_DEPTH {
+                return Err(io::Error::other("its folders are nested too deep"));
+            }
             links_in(&entry.path(), depth + 1, budget, found)?;
         } else if kind.is_symlink() {
             found.push(entry.path());
