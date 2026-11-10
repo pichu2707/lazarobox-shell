@@ -404,8 +404,9 @@ pub enum Probe {
         id: &'static str,
         path: Option<PathBuf>,
         stdout: Option<Vec<u8>>,
-        /// The CLI's model listing (`codex debug models`): its raw output, or
-        /// why it failed. `None` when the CLI has no listing.
+        /// The CLI's model listing (`codex debug models`, `claude -p /model`):
+        /// its raw output, or why it failed. `None` when the CLI has no
+        /// listing.
         listing: Option<Result<Vec<u8>, String>>,
         /// A few words on why the CLI cannot be jailed here; `None` when it
         /// can, or when the CLI has no jail.
@@ -484,24 +485,32 @@ pub const BAD_LISTING: &str = "unexpected output format";
 /// What the menu says when the catalog lists no model.
 pub const EMPTY_LISTING: &str = "the list is empty";
 
-/// An available CLI. Only codex has a listing (`codex debug models`); its
-/// models come after `default`, and a failed or empty listing leaves just
-/// `default` and the reason.
+/// Reads a CLI's listing as `(label, value)` models; `None` for a foreign
+/// shape.
+type ListingParser = fn(&str) -> Option<Vec<(String, String)>>;
+
+/// An available CLI. codex (`codex debug models`) and claude
+/// (`claude -p /model`) have a listing; its models come after `default`. A
+/// failed or empty listing gives no models and the reason: codex then offers
+/// just `default`, claude its static list (see the picker).
 fn cli_state(
     id: &'static str,
     stdout: Option<&[u8]>,
     listing: Option<&Result<Vec<u8>, String>>,
     notes: Diagnostics,
 ) -> EngineState {
-    let (labels, note) = match (id, listing) {
-        ("codex", Some(Ok(raw))) => {
-            match std::str::from_utf8(raw).ok().and_then(parse::codex_catalog) {
-                Some(labels) if labels.is_empty() => (labels, Some(EMPTY_LISTING.to_owned())),
-                Some(labels) => (labels, None),
-                None => (Vec::new(), Some(BAD_LISTING.to_owned())),
-            }
-        }
-        ("codex", Some(Err(why))) => (Vec::new(), Some(why.clone())),
+    let parse: Option<ListingParser> = match id {
+        "codex" => Some(parse::codex_catalog),
+        "claude" => Some(parse::claude_models),
+        _ => None,
+    };
+    let (labels, note) = match (parse, listing) {
+        (Some(parse), Some(Ok(raw))) => match std::str::from_utf8(raw).ok().and_then(parse) {
+            Some(labels) if labels.is_empty() => (labels, Some(EMPTY_LISTING.to_owned())),
+            Some(labels) => (labels, None),
+            None => (Vec::new(), Some(BAD_LISTING.to_owned())),
+        },
+        (Some(_), Some(Err(why))) => (Vec::new(), Some(why.clone())),
         _ => (Vec::new(), None),
     };
     let models = std::iter::once("default".to_string())
@@ -1213,11 +1222,77 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_codex_reads_a_listing() {
+    fn claude_with(listing: Option<Result<&[u8], &str>>) -> EngineState {
         let d = reduce(&[Probe::Cli {
             id: "claude",
             path: Some(PathBuf::from("/bin/claude")),
+            stdout: Some(b"2.1.322 (Claude Code)\n".to_vec()),
+            listing: listing.map(|l| l.map(<[u8]>::to_vec).map_err(str::to_owned)),
+            jail: None,
+            jail_full: None,
+            install: None,
+        }]);
+        get(&d, "claude").unwrap()
+    }
+
+    #[test]
+    fn claude_listing_becomes_its_aliases_after_default() {
+        let raw = parse::claude_tests::REAL_REPLY.as_bytes();
+        let claude = claude_with(Some(Ok(raw)));
+        let aliases = [
+            "sonnet",
+            "opus",
+            "haiku",
+            "fable",
+            "best",
+            "sonnet[1m]",
+            "opus[1m]",
+            "fable[1m]",
+            "opusplan",
+        ];
+        let labels: Vec<(String, String)> = aliases
+            .iter()
+            .map(|a| ((*a).to_owned(), (*a).to_owned()))
+            .collect();
+        assert_eq!(claude.model_labels, labels);
+        let mut models = vec!["default"];
+        models.extend(aliases);
+        assert_eq!(claude.models, models);
+        assert_eq!(claude.diagnostics.models, None, "a good list needs no note");
+        assert_eq!(claude.version.as_deref(), Some("2.1.322 (Claude Code)"));
+    }
+
+    #[test]
+    fn a_failed_or_foreign_claude_listing_has_no_aliases_and_says_why() {
+        let none = claude_with(None);
+        assert_eq!(none.models, ["default"]);
+        assert_eq!(none.diagnostics.models, None, "no listing, nothing to say");
+        let failed =
+            parse::claude_tests::REAL_REPLY.replace("\"is_error\":false", "\"is_error\":true");
+        let cases: [(Result<&[u8], &str>, &str); 5] = [
+            (Err("timed out after 5 s"), "timed out after 5 s"),
+            (Ok(b"not json"), BAD_LISTING),
+            (Ok(failed.as_bytes()), BAD_LISTING),
+            (Ok(&[0xff, 0xfe, 0x00]), BAD_LISTING),
+            (
+                Ok(br#"{"type":"result","is_error":false,"result":"Available: default, or a full model ID."}"#),
+                EMPTY_LISTING,
+            ),
+        ];
+        for (listing, note) in cases {
+            let claude = claude_with(Some(listing));
+            assert_eq!(claude.models, ["default"], "{note}");
+            assert!(claude.model_labels.is_empty(), "{note}");
+            assert_eq!(claude.diagnostics.models.as_deref(), Some(note));
+            assert_eq!(claude.status, Status::Available);
+        }
+    }
+
+    #[test]
+    fn gemini_never_reads_a_listing() {
+        let d = reduce(&[Probe::Cli {
+            id: "gemini",
+            path: Some(PathBuf::from("/bin/gemini")),
             stdout: None,
             listing: Some(Ok(
                 br#"{"models":[{"slug":"x","visibility":"list"}]}"#.to_vec()
@@ -1227,8 +1302,8 @@ mod tests {
             install: None,
         }]);
         assert_eq!(
-            get(&d, "claude"),
-            state("claude", Status::Available, &["default"], None)
+            get(&d, "gemini"),
+            state("gemini", Status::Available, &["default"], None)
         );
     }
 

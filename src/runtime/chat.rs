@@ -29,7 +29,7 @@ pub use cli::check_install;
 pub(crate) use cli::own_group_is_private;
 pub(crate) use cli::{
     JailNote, alive_by_comm, codex_install, ensure_private_dir, jail_note, own_comm, read_comm,
-    run_listing, run_version, trusted_cargo_path, trusted_real_path,
+    run_claude_listing, run_listing, run_version, trusted_cargo_path, trusted_real_path,
 };
 pub use live::LiveServers;
 pub use managed::{Lease, Managed};

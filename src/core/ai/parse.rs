@@ -168,6 +168,62 @@ pub fn codex_catalog(raw: &str) -> Option<Vec<(String, String)>> {
     )
 }
 
+/// The aliases of a `claude -p /model --output-format json` reply as
+/// `(label, value)`, both the alias, in reply order. They are read from the
+/// `Available: sonnet, opus, …, default, or a full model ID.` line of the
+/// `result` text, wherever that line is: the list ends at the end of its line
+/// or sentence, `or` and `and` join entries like commas, and a piece of more
+/// than one word (`a full model ID`) is not an alias. An alias must be a safe
+/// CLI value (see [`valid_slug`], plus `[` and `]` for `sonnet[1m]`) and not
+/// `default`; repeats are dropped. `None` when the reply is not the CLI's own
+/// successful answer (not JSON, not a `result`, an error, a turn the model
+/// took) or has no `Available:` line; `Some` and empty when the line names
+/// no alias.
+pub fn claude_models(raw: &str) -> Option<Vec<(String, String)>> {
+    let reply: Value = serde_json::from_str(raw).ok()?;
+    let ok = reply.get("type")?.as_str() == Some("result")
+        && reply.get("is_error").and_then(Value::as_bool) != Some(true)
+        && reply
+            .get("subtype")
+            .is_none_or(|s| s.as_str() == Some("success"))
+        // A slash command takes no model turn; with one, the list would be
+        // the model's words.
+        && reply.get("num_turns").is_none_or(|n| n.as_u64() == Some(0));
+    if !ok {
+        return None;
+    }
+    let text = reply.get("result")?.as_str()?;
+    let (_, after) = text.split_once("Available:")?;
+    let line = after.lines().next().unwrap_or_default();
+    let sentence = line.split(". ").next().unwrap_or_default().trim();
+    let sentence = sentence.strip_suffix('.').unwrap_or(sentence);
+    let joined = format!(" {sentence} ")
+        .replace(" or ", ",")
+        .replace(" and ", ",");
+    let mut seen = std::collections::HashSet::new();
+    Some(
+        joined
+            .split(',')
+            .map(str::trim)
+            .filter(|alias| valid_alias(alias) && seen.insert(*alias))
+            .map(|alias| (alias.to_owned(), alias.to_owned()))
+            .take(MAX_CODEX_MODELS)
+            .collect(),
+    )
+}
+
+/// [`valid_slug`]'s rules, with the `[` and `]` of claude's `sonnet[1m]`
+/// allowed too.
+fn valid_alias(alias: &str) -> bool {
+    !alias.is_empty()
+        && alias != "default"
+        && alias.len() <= MAX_NAME
+        && !alias.starts_with('-')
+        && alias
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-:/@+[]".contains(c))
+}
+
 /// A slug that is safe to show and to pass as a CLI argument: printable ASCII
 /// ids only (letters, digits and `._-:/@+`). That rules out whitespace,
 /// control, bidi, zero-width and every other Unicode format or separator
@@ -219,6 +275,9 @@ pub fn version_triplet(line: &str) -> Option<(u32, u32, u32)> {
         Some((major, minor, patch[..digits].parse().ok()?))
     })
 }
+
+#[cfg(test)]
+pub(crate) mod claude_tests;
 
 #[cfg(test)]
 mod tests {

@@ -28,7 +28,7 @@ use crate::core::ai::{
     Detection, Engine, Kind, ModelFacts, Probe, ServerPorts, Status,
     chat::{cli::last_line, engine::ChatError},
     http::{MAX_BODY, parse_response},
-    jail::{Cli, NOT_ENFORCED_MARKER, exit_error},
+    jail::{Cli, JailPolicy, NOT_ENFORCED_MARKER, Os, exit_error, jail_policy},
     marks::Tools,
     parse::{self, sanitize},
     reduce,
@@ -468,49 +468,69 @@ pub const LISTING_TIMEOUT: Duration = Duration::from_secs(4);
 /// leaves room for growth; more than this means the probe gave up.
 pub const LISTING_CAP: usize = 2 * 1024 * 1024;
 
-/// How long a successful codex listing is reused.
+/// How long a successful listing (codex, claude) is reused.
 pub const LISTING_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// The clock the listing cache reads; tests inject a fake one.
 pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
-/// A codex listing: its raw output, or why there is none.
+/// A CLI's model listing: its raw output, or why there is none.
 pub type Listing = Result<Vec<u8>, String>;
 
-/// The last successful codex listing and when it was read, kept in memory
-/// for the life of the process (no files).
+/// Longest `claude -p /model` is allowed to run. Measured cold at 2.7 s
+/// (claude 2.1.322), so 5 s leaves room for the jail and a loaded machine. It
+/// runs next to the version probe and the codex listing, so it can only add
+/// the 1 s by which it outlasts codex's.
+pub const CLAUDE_LISTING_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Most `claude -p /model` output kept. The reply is one small JSON object.
+pub const CLAUDE_LISTING_CAP: usize = 64 * 1024;
+
+/// The last successful listing of each CLI and when it was read, kept in
+/// memory for the life of the process (no files).
 pub struct ListingCache {
     clock: Clock,
-    last: Mutex<Option<(Instant, Vec<u8>)>>,
+    last: Mutex<Vec<(Cli, Instant, Vec<u8>)>>,
 }
 
 impl ListingCache {
     pub fn new(clock: Clock) -> Self {
         Self {
             clock,
-            last: Mutex::new(None),
+            last: Mutex::new(Vec::new()),
         }
     }
 
-    /// The listing to use now. Fresh enough (under [`LISTING_TTL`]) and not
-    /// `force`d: the cached one, with no process started. Otherwise the jailed
-    /// run; a success replaces the cache, a failure falls back to the cached
-    /// listing while it is still under the TTL, else the failure's reason
-    /// (just `default` in the picker).
+    /// codex's listing; see [`Self::listing_of`].
     pub async fn listing(&self, env: &CliEnv, force: bool) -> Listing {
+        self.listing_of(env, Cli::Codex, force).await
+    }
+
+    /// The listing of `cli` to use now. Fresh enough (under [`LISTING_TTL`])
+    /// and not `force`d: the cached one, with no process started. Otherwise
+    /// the jailed run; a success replaces the cache, a failure falls back to
+    /// the cached listing while it is still under the TTL, else the failure's
+    /// reason (codex then offers just `default`, claude its static list).
+    pub async fn listing_of(&self, env: &CliEnv, cli: Cli, force: bool) -> Listing {
         let now = (self.clock)();
         let cached = || {
             let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-            last.as_ref()
-                .filter(|(at, _)| now.saturating_duration_since(*at) < LISTING_TTL)
-                .map(|(_, raw)| raw.clone())
+            last.iter()
+                .find(|(of, at, _)| *of == cli && now.saturating_duration_since(*at) < LISTING_TTL)
+                .map(|(.., raw)| raw.clone())
         };
         if !force && let Some(raw) = cached() {
             return Ok(raw);
         }
-        match codex_listing(env).await {
+        let (limit, cap) = match cli {
+            Cli::Claude => (CLAUDE_LISTING_TIMEOUT, CLAUDE_LISTING_CAP),
+            _ => (LISTING_TIMEOUT, LISTING_CAP),
+        };
+        match listing_of(env, cli, limit, cap).await {
             Ok(raw) => {
-                *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, raw.clone()));
+                let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+                last.retain(|(of, ..)| *of != cli);
+                last.push((cli, now, raw.clone()));
                 Ok(raw)
             }
             // A failure is never cached as a success.
@@ -519,7 +539,7 @@ impl ListingCache {
     }
 }
 
-/// Where detection reads codex's model list from.
+/// Where detection reads the codex and claude model lists from.
 pub struct Lister<'a> {
     pub env: &'a CliEnv,
     pub cache: &'a ListingCache,
@@ -542,8 +562,35 @@ pub async fn codex_listing(env: &CliEnv) -> Listing {
     listing(env, LISTING_TIMEOUT, LISTING_CAP).await
 }
 
+/// Runs `claude -p /model --output-format json` and returns its stdout, the
+/// JSON reply whose `result` names the aliases. `Err` is the reason on any
+/// failure (no jail, a layout the jail refuses, a timeout, too much output).
+///
+/// It runs the way a claude chat turn does (the claude jail layout, the
+/// scrubbed environment, stdin closed, the private working folder, the
+/// text-only flags), except that the jail is required: a turn runs bare when
+/// the jail is missing, the listing is not started at all.
+pub async fn claude_listing(env: &CliEnv) -> Listing {
+    listing_of(env, Cli::Claude, CLAUDE_LISTING_TIMEOUT, CLAUDE_LISTING_CAP).await
+}
+
 async fn listing(env: &CliEnv, limit: Duration, cap: usize) -> Listing {
-    super::chat::run_listing(env, limit, cap).await
+    listing_of(env, Cli::Codex, limit, cap).await
+}
+
+async fn listing_of(env: &CliEnv, cli: Cli, limit: Duration, cap: usize) -> Listing {
+    match cli {
+        Cli::Claude => super::chat::run_claude_listing(env, limit, cap).await,
+        Cli::Codex => super::chat::run_listing(env, limit, cap).await,
+        Cli::Gemini => Err("gemini has no model listing".to_owned()),
+    }
+}
+
+/// Whether claude's model list is read on `os`. On macOS claude is never
+/// jailed (it keeps its Keychain login), and the listing never runs bare, so
+/// claude there keeps its static list.
+fn lists_claude(os: Os) -> bool {
+    jail_policy(Cli::Claude, os) != JailPolicy::Exempt
 }
 
 /// Waits for `pid` to exit WITHOUT reaping it, so the pid stays reserved.
@@ -640,8 +687,8 @@ pub async fn detect_with(targets: &[Target], path: &OsStr) -> Detection {
     detect_in(targets, path, None).await
 }
 
-/// Like [`detect_with`]; with a `lister`, codex's model list is read through
-/// the jail its env describes (its `path` is replaced by `path`), reusing the
+/// Like [`detect_with`]; with a `lister`, the codex and claude model lists
+/// are read through the jail its env describes (its `path` is replaced by `path`), reusing the
 /// cache unless the lister forces a fresh read.
 pub async fn detect_in(targets: &[Target], path: &OsStr, lister: Option<Lister<'_>>) -> Detection {
     let env = lister.as_ref().map(|l| CliEnv {
@@ -804,14 +851,17 @@ async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Pr
             reply: http_get(port, path).await,
         },
         Kind::Cli => {
-            // Only a resolved absolute path is ever run. Only codex has a
-            // model listing, and it runs next to the version probe, so a slow
-            // listing never adds to the version's time.
+            // Only a resolved absolute path is ever run. codex and claude
+            // have a model listing, and it runs next to the version probe, so
+            // a slow listing never adds to the version's time.
             let (stdout, listing, note, install) = match &found {
                 Some(file) => {
                     let list = async {
                         match (lister, target.id) {
                             (Some(l), "codex") => Some(l.cache.listing(l.env, l.force).await),
+                            (Some(l), "claude") if lists_claude(Os::CURRENT) => {
+                                Some(l.cache.listing_of(l.env, Cli::Claude, l.force).await)
+                            }
                             _ => None,
                         }
                     };
@@ -2464,6 +2514,8 @@ mod tests {
             )
         );
     }
+
+    mod claude_listing;
 }
 
 #[cfg(test)]

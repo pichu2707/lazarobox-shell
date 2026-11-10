@@ -12,6 +12,15 @@ baseline.
 
 ### Added
 
+- claude's model list comes from claude itself (#433): detection runs
+  `claude -p /model --output-format json` once (a slash command: no model
+  turn, no cost), jailed like a chat turn but never bare, with a 5 s timeout,
+  and the picker shows `default (CLI picks)`, then every alias claude lists in
+  its order (`sonnet`, `opus`, ..., `sonnet[1m]`, `opusplan`), then `custom…`.
+  It is cached for 10 minutes like codex's and `r` refreshes it. Without a
+  jail (and on macOS, where claude is never jailed), or when the reply cannot
+  be read, the static claude list is shown with the reason.
+
 - The chat can draft an issue: the new `gh_issue_draft` tool (kind `idea` or
   `bug`, title, description) asks a `y` at the composer and, at the end of the
   turn, opens the Feedback form on the draft's kind with the title and the
