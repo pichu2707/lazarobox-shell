@@ -33,6 +33,25 @@ Aunque nace optimizada para flujos de trabajo en **Desarrollo de Software, SEO, 
 
 ---
 
+## 🛡️ Tus datos: qué sale de tu máquina
+
+Pensado para equipos a los que les importa dónde van sus datos. **Hoy es una elección, no un bloqueo:** tú eliges el motor de cada tarea, y lazarobox no impide usar uno en la nube.
+
+- **IA local de primera:** con Ollama, LM Studio, llama.cpp o vLLM, nada de lo que lee el modelo sale de tu máquina. Los motores en la nube (claude, codex, gemini, opencode) solo se usan si los eliges, y lazarobox distingue siempre un tipo del otro. Por defecto no hay ningún motor asignado.
+- **Sin telemetría:** lazarobox no envía datos de uso. La única llamada de red que hace por su cuenta es la comprobación de versión en crates.io, y `[updates] check = false` la apaga (ver «Avisos de actualización»).
+- **Herramientas apagadas hasta que las activas:** el modelo solo lee archivos, paneles o Git si activas esa familia de herramientas. Con un motor en la nube, leer un archivo, un diff o la lista de paneles pide permiso antes; leer la pantalla de un panel o ejecutar un comando lo pide siempre, con cualquier motor. Los secretos conocidos (claves `sk-…`, `Bearer …`) se redactan en lo que devuelven las herramientas.
+- **CLIs en la jaula:** codex y gemini solo se lanzan dentro de la jaula (Landlock en Linux, Seatbelt en macOS). claude la usa cuando está disponible y avisa una vez cuando corre sin ella.
+- **El modelo adecuado para cada tarea:** cada tarea (chat, resúmenes, orquestador) puede tener su propio motor y modelo, locales o comerciales, y se cambian desde el menú.
+
+**Planificado, todavía no disponible:**
+
+- un modo local estricto que impide usar motores en la nube ([#657](https://github.com/pichu2707/lazarobox-shell/issues/657));
+- una política de motor por proyecto, «solo local» o «nube permitida» ([#658](https://github.com/pichu2707/lazarobox-shell/issues/658));
+- ajustes que un administrador puede bloquear para que el usuario no los cambie ([#659](https://github.com/pichu2707/lazarobox-shell/issues/659));
+- sincronización de equipo con la nube de tu empresa ([#570](https://github.com/pichu2707/lazarobox-shell/issues/570)).
+
+---
+
 ## 🎨 Identidad Visual (`lazarobox-theme`)
 
 Inspirado en la paleta de colores de lazarobox (tonos oscuros suavizados con acentos cian/turquesa):
