@@ -544,3 +544,23 @@ fn a_file_that_became_a_link_after_its_check_is_not_removed() {
     );
     assert!(exists(&link) && blob.path.is_file());
 }
+
+// Review: a link to the blob nested deeper than the scan reads cannot be
+// ruled out, so the delete is refused rather than breaking that link.
+#[test]
+fn a_link_nested_deeper_than_the_scan_refuses_the_delete() {
+    let home = Home::new();
+    let repo = new_repo(&home, "deep");
+    let ours = linked(&repo, "old", "m.gguf", "same", 8);
+    let nested = "a/b/c/d/e/f/g/m.gguf";
+    let deep = linked(&repo, "new", nested, "same", 8);
+    let answer = delete(&ours, &home.dirs, &[]);
+    assert!(
+        answer
+            .as_ref()
+            .is_err_and(|e| e.contains("cannot check the other snapshots")),
+        "{answer:?}"
+    );
+    assert!(exists(&ours));
+    assert!(deep.is_file(), "the deep link still reads its blob");
+}
