@@ -487,12 +487,87 @@ async fn a_valid_command_asks_and_a_no_starts_nothing() {
             timeout_secs: 120,
             cloud: false,
             earlier: None,
+            worker: None,
         }]
     );
     let (_, ask, status, _) = super::tests::pair(&super::tests::events(&mut rx));
     assert!(ask.is_some());
     assert_eq!(status, ToolStatus::Denied);
     assert!(!w.host.exec.gate.is_busy(key()));
+}
+
+/// A run manager of three workers that answers nothing else.
+struct ThreeWorkers;
+
+impl crate::runtime::tools::Orchestra for ThreeWorkers {
+    fn call(&self, _: crate::core::ai::orchestra::tools::OrchCall) -> BoxFuture<'static, Outcome> {
+        async {
+            Outcome {
+                text: String::new(),
+                is_error: false,
+            }
+        }
+        .boxed()
+    }
+
+    fn allows(
+        &self,
+        _: crate::core::ai::orchestra::RunId,
+        _: crate::core::ai::orchestra::WorkerId,
+        _: &crate::core::ai::tools::paths::SecretRoots,
+        _: &Path,
+        _: &str,
+    ) -> Option<PathBuf> {
+        None
+    }
+
+    fn workers(&self, _: crate::core::ai::orchestra::RunId) -> usize {
+        3
+    }
+}
+
+// D19 and scenario "Worker command carries the label": a worker's command
+// ask names the worker's session and its `n/m` label; a chat's names none
+// (the GUARD above: `a_valid_command_asks_and_a_no_starts_nothing`).
+#[tokio::test]
+async fn a_worker_command_asks_with_its_key_and_label() {
+    use crate::core::ai::{
+        chat::approval::worker_label,
+        config::Task,
+        orchestra::{RunId, WorkerId, WorkerKey},
+    };
+    let w = world();
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (tx, _rx) = mpsc::channel(32);
+    let mut scope = TurnScope::new(tx, Locality::Local, w.proj.clone());
+    scope.approver = asks.clone();
+    scope.families = exec_set();
+    scope.stage_key = Some(key());
+    scope.read_scope = Some(crate::runtime::tools::WorkerScope {
+        handle: Arc::new(ThreeWorkers),
+        run: RunId(1),
+        worker: WorkerId(2),
+        label: worker_label(Task::Code, "ollama", "llama3:8b"),
+    });
+    let out = w
+        .host
+        .dispatch(scope)
+        .call(command("cargo", &["test"], None))
+        .await;
+    assert_eq!(out.text, "denied: the user declined");
+    let [ApprovalAsk::Exec { worker, .. }] = &asks.asked()[..] else {
+        panic!("one Exec ask: {:?}", asks.asked());
+    };
+    assert_eq!(
+        worker,
+        &Some((
+            WorkerKey {
+                run: RunId(1),
+                worker: WorkerId(2)
+            },
+            "2/3 code ollama>llama3:8b".to_owned()
+        ))
+    );
 }
 
 // --- an approved command runs through the sandbox helper ---

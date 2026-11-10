@@ -77,6 +77,13 @@ baseline.
   counts while you decide. A CLI still cuts one tool call at 900 s by itself:
   that ends the wait (the model gets a tool error and goes on, and the
   worker's clock resumes), and the run wall clock still bounds the worker.
+- With ORCH on, a worker's command ask is labelled like its read ask: the
+  prompt shows `worker 2/3 code ollama>llama3:8b: run a command in the
+  sandbox` above the program, its arguments, the folder and the network and
+  `.env` notice. It waits in the worker queue behind the ask shown, your
+  answer reaches only the worker that asked, and cancelling that worker
+  withdraws it. A chat's own command ask is unchanged. (Workers are not
+  offered `run_command` yet; that comes in a later release.)
 
 ### Fixed
 

@@ -1488,6 +1488,7 @@ fn exec(program: &str, args: &[&str], cwd: &str) -> ApprovalAsk {
         timeout_secs: 120,
         cloud: false,
         earlier: None,
+        worker: None,
     }
 }
 
@@ -1550,6 +1551,7 @@ fn the_script_a_package_manager_will_run_is_shown_under_the_command() {
         timeout_secs: 120,
         cloud: false,
         earlier: None,
+        worker: None,
     };
     assert_eq!(
         shown(ask).command,
@@ -2254,4 +2256,149 @@ fn a_pending_github_consent_refuses_a_second_ask() {
         pending(&a).map(|(ask, _)| ask),
         Some(ApprovalAsk::GithubRead { .. })
     ));
+}
+
+/// `cargo test` asked by `worker` of run 1, one of three `code` workers on
+/// `ollama>llama3:8b`. The scenario names the `simple` kind, which comes
+/// with W8a: `code` stands in for it until then.
+fn worker_exec(worker: u32) -> ApprovalAsk {
+    let ApprovalAsk::Exec {
+        program,
+        args,
+        cwd,
+        script,
+        timeout_secs,
+        cloud,
+        earlier,
+        ..
+    } = exec("cargo", &["test"], ".")
+    else {
+        unreachable!()
+    };
+    ApprovalAsk::Exec {
+        program,
+        args,
+        cwd,
+        script,
+        timeout_secs,
+        cloud,
+        earlier,
+        worker: Some((
+            crate::core::ai::orchestra::WorkerKey::for_test(1, worker),
+            format!("{worker}/3 code ollama>llama3:8b"),
+        )),
+    }
+}
+
+// GUARD (D19): a chat's own command ask is drawn exactly as before.
+#[test]
+fn a_chat_command_ask_has_no_worker_line() {
+    let prompt = shown(exec("cargo", &["test"], "."));
+    assert_eq!(prompt.target, "run a command in the sandbox");
+    assert_eq!(prompt.command, "cargo test\nin .");
+    assert_eq!(
+        prompt.notice.as_deref(),
+        Some(
+            crate::core::ai::chat::approval::exec_notice(
+                "cargo",
+                &["test".into()],
+                120,
+                false,
+                None
+            )
+            .as_str()
+        )
+    );
+}
+
+// Spec (chat-pane, Ask shows the label; command-runner, Worker command
+// carries the label): the prompt of a worker's command names the worker above
+// the program, the arguments and the folder, and keeps the notice.
+#[test]
+fn a_worker_command_ask_shows_its_label_above_the_command() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let chat = shown(exec("cargo", &["test"], "."));
+    let prompt = shown(worker_exec(2));
+    assert_eq!(
+        prompt.target,
+        "worker 2/3 code ollama>llama3:8b: run a command in the sandbox"
+    );
+    assert_eq!(prompt.command, chat.command);
+    assert_eq!(prompt.notice, chat.notice);
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, worker_exec(2));
+    let theme = crate::ui::theme::LazaroboxTheme::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, &a, &theme))
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let screen = (0..buf.area.height)
+        .map(|y| {
+            let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            row.trim_end().to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        screen.contains("worker 2/3 code ollama>llama3:8b"),
+        "{screen}"
+    );
+    assert!(screen.contains("network is on"), "{screen}");
+    insta::assert_snapshot!("worker_exec_prompt_80x25", screen);
+}
+
+// Spec (chat-pane, Command ask reaches its own worker; command-runner, Worker
+// answer stays with the worker): `y` on worker 1's command and `n` on worker
+// 2's each reach only their own worker's session.
+#[test]
+fn two_workers_command_asks_are_answered_each_in_its_own_session() {
+    let (mut a, turn) = live();
+    assert!(announce(&mut a, turn, 1, worker_exec(1)).is_empty());
+    assert!(announce(&mut a, turn, 2, worker_exec(2)).is_empty());
+    let first = a.approval_prompt(id2()).unwrap();
+    assert!(first.target.contains("worker 1/3 code"), "{first:?}");
+    assert!(first.target.contains("1 waiting"), "{first:?}");
+    assert_eq!(
+        a.update(key('y')),
+        vec![Effect::ToolDecision {
+            pane: id2(),
+            worker: Some(crate::core::ai::orchestra::WorkerKey::for_test(1, 1)),
+            turn,
+            call: CallId(1),
+            decision: Decision::Sent,
+        }]
+    );
+    let second = a.approval_prompt(id2()).unwrap();
+    assert!(second.target.contains("worker 2/3 code"), "{second:?}");
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    assert_eq!(
+        a.update(key('n')),
+        vec![Effect::ToolDecision {
+            pane: id2(),
+            worker: Some(crate::core::ai::orchestra::WorkerKey::for_test(1, 2)),
+            turn,
+            call: CallId(2),
+            decision: Decision::Denied("the user declined"),
+        }]
+    );
+    assert_eq!(pending(&a), None);
+}
+
+// Spec (chat-pane, Worker asks are labelled and queued): cancelling a worker
+// withdraws its queued command ask; the other worker's shown ask stays.
+#[test]
+fn cancelling_a_worker_withdraws_its_queued_command_ask_only() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, worker_exec(1));
+    announce(&mut a, turn, 2, worker_exec(2));
+    let armed = chat(&a, id2()).armed_at();
+    worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 0);
+    let shown = a.approval_prompt(id2()).unwrap();
+    assert!(shown.target.contains("worker 1/3 code"), "{shown:?}");
+    assert_eq!(chat(&a, id2()).armed_at(), armed);
+    worker_over(&mut a, 1, WorkerStatus::Cancelled);
+    assert_eq!(pending(&a), None);
 }

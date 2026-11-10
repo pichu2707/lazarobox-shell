@@ -152,6 +152,10 @@ pub enum ApprovalAsk {
         /// What a run of this chat that was cancelled left changed in the
         /// watched git places, as one sanitized line the host fills in.
         earlier: Option<String>,
+        /// The worker that asks and its label (see [`worker_label`]), as
+        /// for [`ApprovalAsk::WorkerRead`]: the host fills it in from the
+        /// worker's scope; [`ask_for`] and a chat's call leave it `None`.
+        worker: Option<(WorkerKey, String)>,
     },
     /// Show the diff of the repository to the engine: file text leaves the
     /// machine, so a cloud engine asks (`git_status` and `git_log` return
@@ -281,11 +285,12 @@ impl ApprovalAsk {
         }
     }
 
-    /// Whether a worker raised the ask (a read outside its scope, a batch it
-    /// proposed): only those queue behind a pending approval.
+    /// Whether a worker raised the ask (a read outside its scope, a command,
+    /// a batch it proposed): only those queue behind a pending approval.
     pub fn is_worker(&self) -> bool {
         match self {
             Self::WorkerRead { .. } | Self::Consent { .. } => true,
+            Self::Exec { worker, .. } => worker.is_some(),
             Self::Batch(review) => review.label().is_some(),
             _ => false,
         }
@@ -297,6 +302,7 @@ impl ApprovalAsk {
     pub fn worker(&self) -> Option<WorkerKey> {
         match self {
             Self::WorkerRead { worker, .. } | Self::Consent { worker, .. } => Some(*worker),
+            Self::Exec { worker, .. } => worker.as_ref().map(|(key, _)| *key),
             Self::Batch(review) => review.worker(),
             _ => None,
         }
@@ -350,6 +356,7 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
                 timeout_secs: u64::try_from(allow::TIMEOUT_DEFAULT).unwrap_or(120),
                 cloud: locality == Locality::Cloud,
                 earlier: None,
+                worker: None,
             })
         }
         // The diff holds file text, so it goes to a cloud provider only after
@@ -2284,6 +2291,71 @@ mod tests {
         assert_eq!(a.waiting(), MAX_QUEUED);
     }
 
+    fn exec_ask(worker: Option<(crate::core::ai::orchestra::WorkerKey, &str)>) -> ApprovalAsk {
+        ApprovalAsk::Exec {
+            program: "cargo".into(),
+            args: vec!["test".into()],
+            cwd: ".".into(),
+            script: None,
+            timeout_secs: 120,
+            cloud: false,
+            earlier: None,
+            worker: worker.map(|(key, label)| (key, label.to_owned())),
+        }
+    }
+
+    // D19: a worker's command ask names its worker, so it queues and its
+    // answer reaches that session; a chat's own command ask is unchanged.
+    #[test]
+    fn a_worker_exec_ask_is_a_worker_ask_and_a_chat_one_is_not() {
+        let key = crate::core::ai::orchestra::WorkerKey::for_test(1, 2);
+        let worker = exec_ask(Some((key, "2/3 code ollama>llama3:8b")));
+        assert!(worker.is_worker());
+        assert_eq!(worker.worker(), Some(key));
+        let chat = exec_ask(None);
+        assert!(!chat.is_worker());
+        assert_eq!(chat.worker(), None);
+    }
+
+    // A worker's command ask queues behind a pending ask, up to the bound; a
+    // chat's own is still refused beside one.
+    #[test]
+    fn a_worker_exec_ask_queues_and_a_chat_one_is_refused() {
+        let key = crate::core::ai::orchestra::WorkerKey::for_test(1, 2);
+        let mut a = Approvals::default();
+        a.request_call(worker_read("a", "w"), 1, CallId(1), None)
+            .unwrap();
+        let err = a
+            .request_call(exec_ask(None), 1, CallId(2), None)
+            .unwrap_err();
+        assert_eq!(err.reason(), ANOTHER_PENDING);
+        for n in 0..MAX_QUEUED as u64 {
+            a.request_call(exec_ask(Some((key, "w"))), 1, CallId(10 + n), None)
+                .unwrap();
+        }
+        assert_eq!(a.waiting(), MAX_QUEUED);
+        let err = a
+            .request_call(exec_ask(Some((key, "w"))), 1, CallId(999), None)
+            .unwrap_err();
+        assert_eq!(err.reason(), QUEUE_FULL);
+    }
+
+    // GUARD: no mode answers a command ask, a worker's or a chat's.
+    #[test]
+    fn no_mode_answers_an_exec_ask_of_a_worker_or_a_chat() {
+        let key = crate::core::ai::orchestra::WorkerKey::for_test(1, 2);
+        for ask in [exec_ask(None), exec_ask(Some((key, "w")))] {
+            for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+                for blocked in [false, true] {
+                    assert_eq!(answers_itself(&ask, mode, blocked), None, "{mode:?}");
+                }
+                for origin in [Origin::Tool, Origin::Block] {
+                    assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
+                }
+            }
+        }
+    }
+
     #[test]
     fn all_three_asks_can_be_pending() {
         for ask in [
@@ -2439,6 +2511,7 @@ mod tests {
                         timeout_secs: 120,
                         cloud: locality == Locality::Cloud,
                         earlier: None,
+                        worker: None,
                     })
                 );
             }
@@ -2778,6 +2851,7 @@ mod tests {
             timeout_secs: 120,
             cloud: false,
             earlier: None,
+            worker: None,
         };
         for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
             for origin in [Origin::Tool, Origin::Block] {
