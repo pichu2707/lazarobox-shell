@@ -12,6 +12,14 @@ baseline.
 
 ### Added
 
+- claude's model list comes from claude itself (#433): detection runs
+  `claude -p /model --output-format json` once (a slash command: no model
+  turn, no cost), jailed like a chat turn but never bare, with a 5 s timeout,
+  and the picker shows `default (CLI picks)`, then every alias claude lists in
+  its order (`sonnet`, `opus`, ..., `sonnet[1m]`, `opusplan`), then `custom…`.
+  It is cached for 10 minutes like codex's and `r` refreshes it. Without a
+  jail (and on macOS, where claude is never jailed), or when the reply cannot
+  be read, the static claude list is shown with the reason.
 - MCP server values can live in `~/.config/lazarobox/secrets.toml` (or under
   `$XDG_CONFIG_HOME`), one table per server name: a variable an
   `[[ai.mcp.servers]]` entry names in `env` takes its value from that

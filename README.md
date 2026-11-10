@@ -33,6 +33,25 @@ Aunque nace optimizada para flujos de trabajo en **Desarrollo de Software, SEO, 
 
 ---
 
+## 🛡️ Tus datos: qué sale de tu máquina
+
+Pensado para equipos a los que les importa dónde van sus datos. **Hoy es una elección, no un bloqueo:** tú eliges el motor de cada tarea, y lazarobox no impide usar uno en la nube.
+
+- **IA local de primera:** con Ollama, LM Studio, llama.cpp o vLLM, nada de lo que lee el modelo sale de tu máquina. Los motores en la nube (claude, codex, gemini, opencode) solo se usan si los eliges, y lazarobox distingue siempre un tipo del otro. Por defecto no hay ningún motor asignado.
+- **Sin telemetría:** lazarobox no envía datos de uso. La única llamada de red que hace por su cuenta es la comprobación de versión en crates.io, y `[updates] check = false` la apaga (ver «Avisos de actualización»).
+- **Herramientas apagadas hasta que las activas:** el modelo solo lee archivos, paneles o Git si activas esa familia de herramientas. Con un motor en la nube, leer un archivo, un diff o la lista de paneles pide permiso antes; leer la pantalla de un panel o ejecutar un comando lo pide siempre, con cualquier motor. Los secretos conocidos (claves `sk-…`, `Bearer …`) se redactan en lo que devuelven las herramientas.
+- **CLIs en la jaula:** codex y gemini solo se lanzan dentro de la jaula (Landlock en Linux, Seatbelt en macOS). claude la usa cuando está disponible y avisa una vez cuando corre sin ella.
+- **El modelo adecuado para cada tarea:** cada tarea (chat, resúmenes, orquestador) puede tener su propio motor y modelo, locales o comerciales, y se cambian desde el menú.
+
+**Planificado, todavía no disponible:**
+
+- un modo local estricto que impide usar motores en la nube ([#657](https://github.com/pichu2707/lazarobox-shell/issues/657));
+- una política de motor por proyecto, «solo local» o «nube permitida» ([#658](https://github.com/pichu2707/lazarobox-shell/issues/658));
+- ajustes que un administrador puede bloquear para que el usuario no los cambie ([#659](https://github.com/pichu2707/lazarobox-shell/issues/659));
+- sincronización de equipo con la nube de tu empresa ([#570](https://github.com/pichu2707/lazarobox-shell/issues/570)).
+
+---
+
 ## 🎨 Identidad Visual (`lazarobox-theme`)
 
 Inspirado en la paleta de colores de lazarobox (tonos oscuros suavizados con acentos cian/turquesa):
@@ -905,6 +924,8 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 
 **claude.** Usa `--tools ""`, sin servidores MCP, sin comandos con barra y sin guardar sesión (`--no-session-persistence`). El prompt del perfil sustituye al prompt integrado del CLI.
 
+**claude: lista de modelos.** La lista sale del propio claude: al detectar los motores, lazarobox ejecuta una vez `claude -p /model --output-format json` (el comando `/model`, que no hace ningún turno del modelo ni cuesta nada) con las opciones de solo texto del chat (`--tools ""`, `--strict-mcp-config`, `--safe-mode`, `--permission-prompts none`, `--no-session-persistence`), con un límite de 5 s, sin entrada estándar, con el entorno depurado y en la carpeta privada de lazarobox, dentro de la jaula de claude. A diferencia del chat, que sin jaula sigue con solo sus opciones, la lista **nunca** se pide sin jaula; en macOS, donde claude no se enjaula, no se pide. De la respuesta se leen los alias de la línea `Available: sonnet, opus, …, default, or a full model ID.` y el selector muestra `default (CLI picks)`, después cada alias tal cual en el orden de claude (`sonnet`, `opus`, `haiku`, `fable`, `best`, `sonnet[1m]`, …) y al final `custom…`. Se guarda en memoria y se renueva igual que la de codex (10 minutos; `r` en el menú la vuelve a pedir). Si no hay jaula, el comando falla, tarda más de 5 s o responde algo que no se entiende, se muestra la lista fija de siempre (`Opus 5.5`, `Sonnet 5.5`, `Haiku 5.5`, `Fable 5.1`) con la nota `model list unavailable: <motivo>`. Un modelo guardado que no esté en la lista de claude (por ejemplo un identificador completo) se conserva y se marca `not in your account's list`.
+
 **Herramientas con claude (Tools with claude).** **Activas** desde que el usuario pasó la comprobación manual el 2026-10-17: claude figura en `MCP_VERIFIED` (la lista de motores cuya comprobación manual pasó). Con `[ai.tools] enabled` activo, cada turno hace esto.
 
 Comprobado con un claude 2.1.302 real y un servidor MCP de prueba: `--tools ""` no oculta las herramientas MCP, `--allowedTools=mcp__lazarobox` las permite y el `tool_use` llega como `assistant.message.content[]` con `name` `mcp__lazarobox__<herramienta>`. El usuario comprobó a mano el efecto de `MCP_TOOL_TIMEOUT` y la llamada completa dentro de lazarobox el 2026-10-17.
@@ -983,7 +1004,8 @@ Every message below says why a CLI cannot be used. None of them changes what the
 | `available · version unknown` | The CLI was found, but `<cli> --version` failed, timed out or printed nothing readable. It may still work; try running it in a terminal. |
 | `model list unavailable: codex exited <n>: <last stderr line>` | In the model picker. `codex debug models` failed (an old codex without the subcommand, not logged in, ...). Run `codex login` or update codex, then press `r` in the menu. Only `default` and `custom...` are offered meanwhile. The note wraps over up to four rows; on it, Enter or `y` copies the full reason. |
 | `model list unavailable: timed out after 4 s` / `output over 2 MiB` | The listing was too slow or too large and was dropped. Press `r` to try again. |
-| `model list unavailable: unexpected output format` / `the list is empty` | codex answered but not with a model catalog (a newer or older codex), or with no listed model. |
+| `model list unavailable: unexpected output format` / `the list is empty` | codex answered but not with a model catalog (a newer or older codex), or with no listed model. For claude: its `/model` reply had no `Available:` line, was an error, or named no alias; the static claude list is shown meanwhile. |
+| `model list unavailable: claude exited <n>: <last stderr line>` / `timed out after 5 s` | In the model picker. `claude -p /model` failed or was too slow. The static claude list (`Opus 5.5`, ...) is offered meanwhile; press `r` in the menu to try again. |
 | `model list unavailable: jail: <reason>` | The listing runs in the same jail as the chat, so the jail rows above apply. |
 | `claude runs without the jail here: <reason>` | claude is allowed to run with only its text-only flags; the reason is any row above. |
 | `<cli> does not know the option <flag>: this <cli> is older than lazarobox needs; update it ... and try again` / `this <cli> is older than lazarobox needs: it rejected an option; ...` | The installed CLI is too old to know an option lazarobox passes. The flag is named only when it is one lazarobox itself passes, also when the CLI reports it with its value (`--model=<name>` names `--model`, never the value); any other word is not repeated. Update the CLI the way it was installed (`claude update`, `npm i -g @anthropic-ai/claude-code`, `brew upgrade`, ...). lazarobox never drops the option: it is part of what keeps the CLI text-only. |

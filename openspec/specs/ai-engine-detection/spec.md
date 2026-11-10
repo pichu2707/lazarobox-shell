@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Finds which AI engines exist on the machine: four local model servers and four agent CLIs. Detection is read-only and local, with one exception: for codex it also runs `codex debug models` through the jail, which may refresh the catalog from OpenAI and update codex's own cache (see Codex model listing). It never sends a prompt. Tags: [auto] = `cargo test` (fake servers on ephemeral ports, fake PATH directories); [manual] = real machine.
+Finds which AI engines exist on the machine: four local model servers and four agent CLIs. Detection is read-only and local, with two exceptions: for codex it also runs `codex debug models` through the jail, which may refresh the catalog from OpenAI and update codex's own cache (see Codex model listing), and for claude it runs the `/model` slash command through the jail (see Claude model listing). It never sends a prompt to a model. Tags: [auto] = `cargo test` (fake servers on ephemeral ports, fake PATH directories); [manual] = real machine.
 
 ## Requirements
 
@@ -127,7 +127,7 @@ A CLI is `available` when a regular file with an execute permission bit exists u
 - THEN it is `not installed`
 
 ### Requirement: Codex model listing
-When codex is `available`, detection MUST run `<codex> debug models` once and keep the models that the account can use. The command MAY refresh the catalog from OpenAI with the user's own codex login and update codex's own cache (`models_cache.json` under `$CODEX_HOME` or `~/.codex`), exactly as running codex does; that is how the list reflects the account, and `--bundled` (which skips the refresh) is deliberately not used. Because of that it MUST start the way a codex chat turn starts: through the jail helper (`__jail-exec`) with the codex layout (read-execute on its install, read-write on its state folder only, the usual read-only system folders), with the chat's scrubbed environment, stdin closed, the private working folder and temp folder, and its own process group. codex is `JailPolicy::Required`: when the jail is unavailable, or the layout cannot be jailed, no process is started and codex keeps just `default`. The run is bounded by a timeout of 4 s (the group is killed on timeout) and an output cap of 2 MiB (the real catalog printed about 560 KB with codex-cli 0.162.1; more than the cap is dropped, not truncated). A successful listing MUST be kept in memory (no files) with the time it was read and reused by every detection run for 10 minutes, at startup and on every menu open alike, without starting codex again. The menu's `r` refresh MUST bypass the cache and list again. A failed listing MUST NOT be cached as a success: it falls back to the cached listing while that is younger than 10 minutes (the failure does not extend its age), otherwise to just `default`, and the next run tries again. The `--version` probe and the other engines are not cached. The cache reads its time from an injectable clock. The cache is not keyed by the codex binary or `$CODEX_HOME`, so a switch of account or install shows up after at most 10 minutes or at once with `r`. An `r` pressed while a non-forced run is in flight MUST NOT be dropped: exactly one forced run follows that run, and the footer keeps showing `refreshing…` meanwhile. It MUST run concurrently with the `--version` probe of the same CLI, so the time a CLI adds to a detection is the longer of the two, not their sum. No other CLI is probed this way (gemini has no listing command).
+When codex is `available`, detection MUST run `<codex> debug models` once and keep the models that the account can use. The command MAY refresh the catalog from OpenAI with the user's own codex login and update codex's own cache (`models_cache.json` under `$CODEX_HOME` or `~/.codex`), exactly as running codex does; that is how the list reflects the account, and `--bundled` (which skips the refresh) is deliberately not used. Because of that it MUST start the way a codex chat turn starts: through the jail helper (`__jail-exec`) with the codex layout (read-execute on its install, read-write on its state folder only, the usual read-only system folders), with the chat's scrubbed environment, stdin closed, the private working folder and temp folder, and its own process group. codex is `JailPolicy::Required`: when the jail is unavailable, or the layout cannot be jailed, no process is started and codex keeps just `default`. The run is bounded by a timeout of 4 s (the group is killed on timeout) and an output cap of 2 MiB (the real catalog printed about 560 KB with codex-cli 0.162.1; more than the cap is dropped, not truncated). A successful listing MUST be kept in memory (no files) with the time it was read and reused by every detection run for 10 minutes, at startup and on every menu open alike, without starting codex again. The menu's `r` refresh MUST bypass the cache and list again. A failed listing MUST NOT be cached as a success: it falls back to the cached listing while that is younger than 10 minutes (the failure does not extend its age), otherwise to just `default`, and the next run tries again. The `--version` probe and the other engines are not cached. The cache reads its time from an injectable clock. The cache is not keyed by the codex binary or `$CODEX_HOME`, so a switch of account or install shows up after at most 10 minutes or at once with `r`. An `r` pressed while a non-forced run is in flight MUST NOT be dropped: exactly one forced run follows that run, and the footer keeps showing `refreshing…` meanwhile. It MUST run concurrently with the `--version` probe of the same CLI, so the time a CLI adds to a detection is the longer of the two, not their sum. claude has its own listing (see Claude model listing); gemini is not probed this way (it has no listing command).
 
 The pure parser MUST read the JSON object `{"models": [...]}`, keep only entries with `visibility == "list"`, order them by `priority` ascending (stable; a missing priority sorts last), and return `(label, slug)` pairs where the label is the sanitized `display_name` (the slug when empty) and the slug is the value saved and passed to the CLI. A slug MUST be rejected unless it is made only of ASCII letters, digits and `._-:/@+`, is not empty, not `default`, does not start with `-` and is at most 128 characters; this rules out whitespace, control, bidi, zero-width and every other Unicode format or separator character. Duplicates are dropped and at most 64 models are kept. The engine state exposes the pairs as `model_labels`, and `models` is `default` followed by the slugs.
 
@@ -198,10 +198,34 @@ On any failure (no jail, an old codex without the subcommand, a non-zero exit, a
 - WHEN the listing runs
 - THEN the result is dropped
 
-#### Scenario: Only codex is probed [auto]
-- GIVEN fake `codex` and `claude` that both print the fixture
+#### Scenario: Each CLI reads only its own listing [auto]
+- GIVEN fake `codex` and `claude` that both print the codex fixture
 - WHEN both are detected
-- THEN codex has seven labeled models and claude has none
+- THEN codex has seven labeled models and claude has none (the fixture is not a claude reply)
+
+### Requirement: Claude model listing
+When claude is `available`, detection MUST run `<claude> -p /model --output-format json --tools "" --strict-mcp-config --safe-mode --permission-prompts none --no-session-persistence` once: the `/model` slash command, which takes no model turn and costs nothing, with the text-only flags of a chat turn (never `--disable-slash-commands`, which would send `/model` to the model as a prompt). It MUST start the way a claude chat turn starts (the jail helper with the claude layout, the chat's scrubbed environment, stdin closed, the private working and temp folders, its own process group), except that the listing is `JailPolicy::Required`: where a chat turn would go on bare (no jail, a layout the jail refuses), no process is started. On macOS, where claude is never jailed, the listing is not run. The run is bounded by a timeout of 5 s (measured cold at 2.7 s with claude 2.1.322; it runs next to the version probe and the codex listing, so it adds at most 1 s to a detection) and an output cap of 64 KiB. It is cached, refreshed by `r` and falls back on failure exactly like the codex listing, with its own entry in the same cache.
+
+The pure parser MUST accept only the CLI's own successful answer: a JSON object with `type` `result`, `is_error` not `true`, `subtype` absent or `success`, and `num_turns` present and `0` (with a model turn the list would be the model's words; without the field nothing proves there was none). It reads the first `Available:` of the `result` text, wherever it is, up to the end of that line or sentence; a trailing period is dropped, `or` and `and` separate entries like commas, and a piece of more than one word (`a full model ID`) is not an alias. An alias follows the codex slug rules plus `[` and `]` (`sonnet[1m]`); `default` and repeats are dropped, at most 64 are kept, and each is its own label and value, in reply order. A reply that is not that answer, or has no `Available:` line, is `unexpected output format`; a line with no alias is `the list is empty`.
+
+A reply that shows a paid model turn (`num_turns` above `0`, or `total_cost_usd` above `0`) stops the claude listing for the life of the process, `r` included, with the note `claude answered /model with a model turn; the list stays static until lazarobox restarts`, so it is never paid twice.
+
+On any failure the CLI stays `available`, `model_labels` is empty with the reason in the models note, and the picker shows the static claude list (see ai-task-models).
+
+#### Scenario: Real reply parsed [auto]
+- GIVEN the reply of claude 2.1.322 whose `result` ends `Available: sonnet, opus, haiku, fable, best, sonnet[1m], opus[1m], fable[1m], opusplan, default, or a full model ID.`
+- WHEN it is parsed
+- THEN the aliases are `sonnet`, `opus`, `haiku`, `fable`, `best`, `sonnet[1m]`, `opus[1m]`, `fable[1m]`, `opusplan`, in that order
+
+#### Scenario: Not the CLI's answer [auto]
+- GIVEN not JSON, `{}`, a truncated reply, `is_error: true`, another `type` or `subtype`, `num_turns: 1`, no `num_turns`, or a `result` without `Available:`
+- WHEN it is parsed
+- THEN there is no list and the note is `unexpected output format`
+
+#### Scenario: Claude listing runs jailed, never bare [auto]
+- GIVEN a fake `claude` and a recording pass-through helper
+- WHEN the listing runs with the jail available, without it, and with a layout the jail refuses
+- THEN the first is `__jail-exec` with claude and the flags above after `--`, and the other two start nothing and say `jail: <reason>`
 
 ### Requirement: Untrusted text is sanitized and bounded
 Every string taken from an engine (the first line of `--version` output and each model name from a server reply) is untrusted. Detection MUST strip ANSI CSI and OSC sequences (an OSC ends with BEL or ST), control characters, and bidi and format characters before the text is stored or shown. A version MUST be capped at 40 characters (and trimmed again after the cap), a model name at 128 characters, and a model list at 256 models per engine. A model name that is empty after sanitizing MUST be dropped. A duplicate model name MUST be offered only once in the menu.
@@ -331,7 +355,7 @@ Detection MUST start at app startup, each time the config menu opens, on the ref
 - THEN an empty `Detection` is delivered, every engine reads `unknown`, and the next trigger requests a new run (the single-flight flag is cleared)
 
 ### Requirement: Read-only and localhost-only
-Detection MUST send only `GET` requests with no body and no credentials to the 4 server endpoints on `127.0.0.1`, each on its configured port (the catalog port unless `[ai.servers.<id>] port` sets another one), with one exception: for Ollama it MAY also send `POST /api/show` (see Ollama model size and tool capability). That POST carries only the model name as a JSON body, no credentials, goes to the Ollama loopback port only, and is bounded by a timeout, a body cap, a parallel call limit, a total call limit and the digest cache. Detection MUST NOT send any other POST. It MUST NOT connect to any other host or port. It MUST execute only `<id> --version` for the 4 CLI ids, plus, for codex only, `codex debug models` through the jail (Codex model listing). That run may refresh the catalog from OpenAI with the user's own login and update codex's own cache. Detection never executes a server binary, and MUST NOT open any credential, token or config file of any engine.
+Detection MUST send only `GET` requests with no body and no credentials to the 4 server endpoints on `127.0.0.1`, each on its configured port (the catalog port unless `[ai.servers.<id>] port` sets another one), with one exception: for Ollama it MAY also send `POST /api/show` (see Ollama model size and tool capability). That POST carries only the model name as a JSON body, no credentials, goes to the Ollama loopback port only, and is bounded by a timeout, a body cap, a parallel call limit, a total call limit and the digest cache. Detection MUST NOT send any other POST. It MUST NOT connect to any other host or port. It MUST execute only `<id> --version` for the 4 CLI ids, plus `codex debug models` (Codex model listing) and `claude -p /model …` (Claude model listing), each through the jail. That run may refresh the catalog from OpenAI with the user's own login and update codex's own cache. Detection never executes a server binary, and MUST NOT open any credential, token or config file of any engine.
 
 This rule describes detection. Three other uses share the client and never happen as part of a detection run:
 - the chat requests: POST to the same loopback servers, and the text-only CLI runs, specified in chat-engines;
@@ -363,7 +387,7 @@ The client remains bound to `127.0.0.1` for all four uses, and a POST is refused
 #### Scenario: Chat never runs during detection [auto]
 - GIVEN fake CLIs that record their argv
 - WHEN a detection run completes
-- THEN only `<id> --version` was executed for each CLI, except that codex was also run as `codex debug models` through the jail helper, and no other engine received any other argument
+- THEN only `<id> --version` was executed for each CLI, except that codex was also run as `codex debug models` and claude as `claude -p /model …` through the jail helper, and no other engine received any other argument
 
 #### Scenario: The shared client stays loopback-only [auto]
 - GIVEN the client asked to connect to a non-loopback host for a GET, a POST (including `/api/show`) or a DELETE

@@ -26,7 +26,8 @@ pub const OLLAMA_CURATED: &[&str] = &[
 /// The static model list of a CLI engine as `(label, value)` pairs; empty for
 /// any other id. The label is what the picker shows, the value is what is
 /// saved and passed to the CLI. claude uses the CLI aliases, which always
-/// resolve to the newest model of each family. gemini uses explicit ids: its
+/// resolve to the newest model of each family; this list is only its
+/// fallback, shown when claude's own `/model` listing is missing or failed. gemini uses explicit ids: its
 /// own `flash` and `pro` aliases may still point at retired 2.5 models.
 pub fn cli_models(engine: &str) -> &'static [(&'static str, &'static str)] {
     match engine {
