@@ -1528,6 +1528,50 @@ pub(crate) async fn run_version(
     run_codex(env, &["--version"], limit, cap).await
 }
 
+/// The argv of claude's model listing: the `/model` slash command (no model
+/// turn, no cost) with the text-only flags of a chat turn. Not
+/// `--disable-slash-commands`, which would send `/model` to the model as a
+/// prompt.
+const CLAUDE_LISTING_ARGS: &[&str] = &[
+    "-p",
+    "/model",
+    "--output-format",
+    "json",
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--safe-mode",
+    "--permission-prompts",
+    "none",
+    "--no-session-persistence",
+];
+
+/// Runs `claude -p /model --output-format json` the way a claude turn starts
+/// (the jail helper with the claude layout, the private folders and scrubbed
+/// environment, stdin closed), except that the jail is `Required`: where a
+/// turn would run bare, nothing is started.
+pub(crate) async fn run_claude_listing(
+    env: &CliEnv,
+    limit: Duration,
+    cap: usize,
+) -> Result<Vec<u8>, String> {
+    let job = Job {
+        wire: Wire::ClaudeStreamJson,
+        binary: "claude",
+        cli: Cli::Claude,
+        args: CLAUDE_LISTING_ARGS
+            .iter()
+            .map(|a| (*a).to_owned())
+            .collect(),
+        stdin: Vec::new(),
+        jail: JailPolicy::Required,
+        tmp_files: Vec::new(),
+        mcp: None,
+        tools: None,
+    };
+    run_jailed(env, &job, limit, cap).await
+}
+
 async fn run_codex(
     env: &CliEnv,
     args: &[&str],
@@ -1545,11 +1589,21 @@ async fn run_codex(
         mcp: None,
         tools: None,
     };
-    let plan = match plan_for(env, &job, false) {
+    run_jailed(env, &job, limit, cap).await
+}
+
+/// Runs a `Required` job with stdin closed and returns its capped stdout.
+async fn run_jailed(
+    env: &CliEnv,
+    job: &Job,
+    limit: Duration,
+    cap: usize,
+) -> Result<Vec<u8>, String> {
+    let plan = match plan_for(env, job, false) {
         Ok(plan) => plan,
         Err(StreamEvent::Error(ChatError::Jail(why))) => return Err(format!("jail: {why}")),
         Err(StreamEvent::Error(ChatError::Failed(text))) => return Err(text),
-        Err(_) => return Err("could not start codex".to_owned()),
+        Err(_) => return Err(format!("could not start {}", job.binary)),
     };
     // Defence in depth: `Required` never plans a bare run (it refuses
     // instead), so this is unreachable today. If a future policy change let
@@ -1572,7 +1626,7 @@ async fn run_codex(
         cap,
     )
     .await
-    .map_err(|failure| failure.text("codex", limit, cap))
+    .map_err(|failure| failure.text(job.binary, limit, cap))
 }
 
 /// Writes the transcript, then drops the pipe: the CLI sees EOF.

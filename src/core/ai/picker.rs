@@ -295,8 +295,8 @@ fn cli_tool_mark(engine: &Engine, detection: Option<&Detection>) -> Option<ToolM
         .then_some(ToolMark::Capable)
 }
 
-/// The `(label, value)` models the account lists for a CLI engine; empty
-/// when the engine is not detected or has no listing.
+/// The `(label, value)` models a CLI engine lists (codex's account, claude's
+/// aliases); empty when the engine is not detected or has no listing.
 fn account_models<'a>(engine: &str, detection: Option<&'a Detection>) -> &'a [(String, String)] {
     detection
         .and_then(|d| {
@@ -402,12 +402,15 @@ fn listed_models(
         .any(|e| e.id == engine && matches!(e.kind, Kind::Cli));
 
     if is_cli {
-        // The static entries, then the models the account lists (codex).
+        // With a listing (codex, claude): the static `default`, then the
+        // listed models. Without one: the static entries.
+        let account = account_models(engine, detection);
+        let statics = if account.is_empty() { usize::MAX } else { 1 };
         let mut catalog: Vec<(String, String)> = cli_models(engine)
             .iter()
+            .take(statics)
             .map(|(label, value)| ((*label).to_owned(), (*value).to_owned()))
             .collect();
-        let account = account_models(engine, detection);
         for (label, value) in account {
             if !catalog.iter().any(|(_, v)| v == value) {
                 catalog.push((label.clone(), value.clone()));
@@ -1126,6 +1129,8 @@ impl Picker {
 
 #[cfg(test)]
 mod assign_tests;
+#[cfg(test)]
+mod claude_list_tests;
 #[cfg(test)]
 mod custom_tests;
 #[cfg(test)]
