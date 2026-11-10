@@ -33,7 +33,7 @@ use crate::{
                 engine::{ChatRequest, StreamEvent, Tools},
             },
             config::McpServer,
-            mcp_secrets::Loaded,
+            mcp_secrets::{Loaded, UNREADABLE},
         },
         layout::PaneId,
     },
@@ -151,11 +151,12 @@ impl Externals {
         }
         let epoch = self.sets.lock().map_or(0, |state| state.epoch(pane));
         // Read again on every start, off the UI thread, so an edit applies
-        // at the next start. A read that panicked counts as no file.
+        // at the next start. A read that panicked uses no value and says
+        // so, like a file that cannot be read.
         let loaded = match self.secrets.clone() {
             Some(path) => tokio::task::spawn_blocking(move || mcp_secrets::load(&path))
                 .await
-                .unwrap_or_default(),
+                .unwrap_or_else(|_| Loaded::problem(UNREADABLE.to_owned())),
             None => Loaded::default(),
         };
         let refs: Vec<&McpServer> = active.iter().collect();

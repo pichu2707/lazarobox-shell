@@ -199,3 +199,15 @@ fn a_value_reaches_only_its_own_server_and_only_when_named() {
     // A base variable the entry does not name stays the host's.
     assert_eq!(lookup("PATH"), Some("/usr/bin".into()));
 }
+
+// Spec mcp-secrets, Problems without values: a token pasted as a key name
+// is redacted in the problem, like any secret in a tool result.
+#[test]
+fn a_token_pasted_as_a_key_name_is_redacted_in_the_problem() {
+    let loaded = parse("[ga4]\n\"sk-proj-abcdef123456\" = \"x\"\n");
+    assert_eq!(loaded.problems.len(), 1, "{:?}", loaded.problems);
+    let problem = &loaded.problems[0];
+    assert!(problem.starts_with("secrets.toml: ga4."), "{problem}");
+    assert!(problem.ends_with(": expected a variable name"), "{problem}");
+    assert!(!problem.contains("abcdef123456"), "{problem}");
+}

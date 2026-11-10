@@ -24,7 +24,7 @@ use toml::Value;
 
 use super::{
     config::{McpServer, valid_env_name},
-    sanitize::clean,
+    sanitize::{clean, redact_tokens},
 };
 use crate::core::config::config_path;
 
@@ -124,18 +124,19 @@ impl Secrets {
             };
             let mut kept = HashMap::new();
             for (name, value) in values {
-                let problem = if !valid_env_name(&name) {
-                    "expected a variable name"
+                // A rejected name may be a token pasted in the wrong place,
+                // so it is redacted like a secret in a tool result.
+                let (key, problem) = if !valid_env_name(&name) {
+                    (redact_tokens(&shown(&name)), "expected a variable name")
                 } else if let Value::String(value) = value {
                     kept.insert(name, value);
                     continue;
                 } else {
-                    "expected a string"
+                    (shown(&name), "expected a string")
                 };
                 loaded.problems.push(clean(&format!(
-                    "secrets.toml: {}.{}: {problem}",
-                    shown(&server),
-                    shown(&name)
+                    "secrets.toml: {}.{key}: {problem}",
+                    shown(&server)
                 )));
             }
             loaded.secrets.tables.insert(server, kept);

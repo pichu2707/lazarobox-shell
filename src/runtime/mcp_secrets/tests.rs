@@ -187,3 +187,18 @@ fn reading_the_file_and_saving_the_config_never_touch_it() {
     assert_eq!(after.mtime(), before.1.mtime());
     assert!(!fs::read_to_string(&config).unwrap().contains("sk-123"));
 }
+
+// Spec mcp-secrets, Mode 0600: a file that cannot be opened is one problem
+// and no values, so servers start with host values only.
+#[test]
+fn a_file_that_cannot_be_opened_is_one_problem_and_no_values() {
+    // Root opens a 0000 file anyway.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let lab = lab();
+    let path = lab.write(CLARITY, 0o000);
+    let loaded = load(&path);
+    assert_eq!(loaded.problems, [UNREADABLE]);
+    assert_eq!(loaded.secrets.value("clarity", "CLARITY_API_TOKEN"), None);
+}
