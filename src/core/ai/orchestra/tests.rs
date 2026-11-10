@@ -118,7 +118,12 @@ fn the_registry_is_exactly_the_seven_tools_and_only_code_workers_write() {
     let names: Vec<_> = registry_for(Toolset::Orchestrator)
         .into_iter()
         .map(|spec| spec.name)
-        .filter(|name| !matches!(name.as_str(), "find_dir" | "list_dir" | "read_file"))
+        .filter(|name| {
+            !matches!(
+                name.as_str(),
+                "find_dir" | "list_dir" | "read_file" | "list_panes" | "read_pane"
+            )
+        })
         .collect();
     assert_eq!(
         names,
@@ -773,7 +778,11 @@ fn each_toolset_maps_to_its_families() {
     // The reads and the write family (S7), nothing else.
     assert_eq!(Toolset::Code.families(), read.with(Family::Write));
     let orchestrator = Toolset::Orchestrator.families();
-    assert_eq!(orchestrator, read.with(Family::Orchestra));
+    // The pane reads join the coordinator (W11); `run_in_pane` never does.
+    assert_eq!(
+        orchestrator,
+        read.with(Family::PaneRead).with(Family::Orchestra)
+    );
     assert!(!orchestrator.contains(Family::Pane));
     assert!(!read.contains(Family::Orchestra));
 }

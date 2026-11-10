@@ -12,6 +12,12 @@ baseline.
 
 ### Added
 
+- With ORCH on, the coordinator now gets `list_panes` and `read_pane`, with
+  exactly the asks a chat gets: `list_panes` asks on a cloud engine and runs
+  free on a local one, `read_pane` asks on every call and engine, and no
+  approval mode answers either. It still never gets `run_in_pane` (a forged
+  call is refused unasked), and workers get no pane tool. Before, a
+  coordinator asked about the screen could only say it had no tool to see it.
 - claude's model list comes from claude itself (#433): detection runs
   `claude -p /model --output-format json` once (a slash command: no model
   turn, no cost), jailed like a chat turn but never bare, with a 5 s timeout,

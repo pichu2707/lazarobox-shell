@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 use super::{Access, ToolError};
 
 /// The group a tool (or a gated argument) belongs to. A family is offered
-/// only while its toggle is on; `Read` and `Pane` are the 0.18.0 tools.
+/// only while its toggle is on; `Read`, `Pane` and `PaneRead` have no toggle.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Family {
     Read,
@@ -16,7 +16,12 @@ pub enum Family {
     Exec,
     Git,
     GitWrite,
+    /// `run_in_pane`: types into the user's shell, so only a chat gets it.
     Pane,
+    /// `list_panes` and `read_pane`: the pane reads, which the coordinator
+    /// gets beside a chat (W11). Split from `Pane` so one family gate keeps
+    /// `run_in_pane` from the coordinator in both the list and the parse.
+    PaneRead,
     /// The orchestrator's `spawn_agent`, `wait`, `collect` and `cancel`.
     Orchestra,
     /// The three read-only GitHub tools, run through `gh` on the host.
@@ -33,8 +38,12 @@ pub struct FamilySet(u16);
 
 impl FamilySet {
     pub const EMPTY: FamilySet = FamilySet(0);
-    /// The 0.18.0 tools, the only ones offered until a toggle is on.
-    pub const LEGACY: FamilySet = FamilySet::EMPTY.with(Family::Read).with(Family::Pane);
+    /// The tools offered until a toggle is on: the 0.18.0 tools and the
+    /// pane reads.
+    pub const LEGACY: FamilySet = FamilySet::EMPTY
+        .with(Family::Read)
+        .with(Family::Pane)
+        .with(Family::PaneRead);
 
     /// Every family: the menu with all of it on, the default ceiling.
     pub const ALL: FamilySet = FamilySet::LEGACY
@@ -434,7 +443,7 @@ mod tests {
         assert!(without["properties"].get("timeout_secs").is_none());
     }
 
-    const EVERY_FAMILY: [Family; 10] = [
+    const EVERY_FAMILY: [Family; 11] = [
         Family::Read,
         Family::Search,
         Family::Write,
@@ -442,6 +451,7 @@ mod tests {
         Family::Git,
         Family::GitWrite,
         Family::Pane,
+        Family::PaneRead,
         Family::Orchestra,
         Family::Github,
         Family::IssueDraft,
@@ -464,12 +474,13 @@ mod tests {
         }
     }
 
-    // The default set (every toggle off) is exactly Read and Pane. It is no
-    // longer the 0.18.0 tool list: `list_panes` joined the Pane family.
+    // The default set (every toggle off) is exactly Read and the two pane
+    // families. It is no longer the 0.18.0 tool list: `list_panes` and
+    // `read_pane` joined it, in their own family since W11.
     #[test]
     fn legacy_is_read_and_pane_only() {
         for family in EVERY_FAMILY {
-            let want = matches!(family, Family::Read | Family::Pane);
+            let want = matches!(family, Family::Read | Family::Pane | Family::PaneRead);
             assert_eq!(FamilySet::LEGACY.contains(family), want, "{family:?}");
         }
     }

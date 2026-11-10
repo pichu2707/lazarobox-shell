@@ -84,20 +84,22 @@ pub enum Toolset {
     /// `write_file`, `edit_file` and `propose_batch`. Writes are staged in
     /// the worker's own batch and reach the disk only through the user's review.
     Code,
-    /// The four orchestration tools, for the orchestrator turn only.
+    /// The orchestration tools and the pane reads (`list_panes`,
+    /// `read_pane`), for the orchestrator turn only.
     Orchestrator,
 }
 
 impl Toolset {
     /// The tool families this toolset is offered and may call. The single
     /// gate for both the list and the parse. No toolset gets `Pane`: only a
-    /// chat pane may type into the user's session.
+    /// chat pane may type into the user's session. The coordinator gets
+    /// `PaneRead`, asked as in a chat (W11); a worker gets no pane tool.
     pub fn families(self) -> FamilySet {
         let read = FamilySet::EMPTY.with(Family::Read);
         match self {
             Self::ReadOnly => read,
             Self::Code => read.with(Family::Write),
-            Self::Orchestrator => read.with(Family::Orchestra),
+            Self::Orchestrator => read.with(Family::PaneRead).with(Family::Orchestra),
         }
     }
 

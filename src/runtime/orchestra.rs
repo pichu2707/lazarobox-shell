@@ -1797,8 +1797,10 @@ impl RunManager {
         // this exit is not reached; it stays so it is never silent.
         let locality = locality(&request.engine).ok_or(Degrade::NoLocality)?;
         let families = spec.families;
-        // Only a chat pane may type into the user's session.
+        // Only a chat pane may type into the user's session, and only a
+        // chat or the coordinator reads the panes.
         debug_assert!(!families.contains(Family::Pane));
+        debug_assert!(!families.contains(Family::PaneRead));
         let model = spec.model.as_deref().unwrap_or("default");
         let scope = TurnScope {
             events: Route::forward(&route),

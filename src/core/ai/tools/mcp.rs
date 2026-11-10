@@ -635,31 +635,83 @@ mod tests {
         ));
     }
 
-    // A worker or orchestrator shim never lists `read_pane` and refuses a
-    // forged call as an unknown tool: no Call reaches the host, so no ask.
-    #[test]
-    fn a_worker_or_orchestrator_shim_hides_and_refuses_read_pane() {
-        use crate::core::ai::{
-            orchestra::Toolset,
-            tools::{registry::Family, registry_with},
-        };
+    /// An initialized shim serving the built-ins of `toolset`, and its listed
+    /// tool names.
+    fn toolset_shim(toolset: crate::core::ai::orchestra::Toolset) -> (Server, Vec<String>) {
+        use crate::core::ai::tools::registry_with;
         let init = request(
             json!(0),
             "initialize",
             json!({"protocolVersion": "2025-06-18", "capabilities": {}}),
         );
-        for toolset in [Toolset::ReadOnly, Toolset::Code, Toolset::Orchestrator] {
-            let set = toolset.families();
-            assert!(!set.contains(Family::Pane), "{toolset:?}");
-            let mut server = Server::new(registry_with(&[], set)).with_families(set);
-            reply(server.handle(&init));
-            let listed = reply(server.handle(&request(json!(1), "tools/list", json!({}))));
-            assert!(!listed.to_string().contains("read_pane"), "{toolset:?}");
-            let params = json!({"name": "read_pane", "arguments": {"pane": 2}});
-            let out = reply(server.handle(&request(json!(2), "tools/call", params)));
-            assert_eq!(out["result"]["isError"], true, "{toolset:?}");
-            assert_eq!(out["result"]["content"][0]["text"], "unknown tool");
+        let set = toolset.families();
+        let mut server = Server::new(registry_with(&[], set)).with_families(set);
+        reply(server.handle(&init));
+        let listed = reply(server.handle(&request(json!(1), "tools/list", json!({}))));
+        let names = (listed["result"]["tools"].as_array().unwrap().iter())
+            .map(|tool| tool["name"].as_str().unwrap().to_owned())
+            .collect();
+        (server, names)
+    }
+
+    // A worker shim never lists a pane tool and refuses a forged call as an
+    // unknown tool: no Call reaches the host, so no ask (W11: the
+    // coordinator is no longer in this list).
+    #[test]
+    fn a_worker_shim_hides_and_refuses_every_pane_tool() {
+        use crate::core::ai::orchestra::Toolset;
+        for toolset in [Toolset::ReadOnly, Toolset::Code] {
+            let (mut server, names) = toolset_shim(toolset);
+            for (name, args) in [
+                ("read_pane", json!({"pane": 2})),
+                ("list_panes", json!({})),
+                ("run_in_pane", json!({"command": "ls"})),
+            ] {
+                assert!(!names.iter().any(|n| n == name), "{toolset:?} {name}");
+                let params = json!({"name": name, "arguments": args});
+                let out = reply(server.handle(&request(json!(2), "tools/call", params)));
+                assert_eq!(out["result"]["isError"], true, "{toolset:?} {name}");
+                assert_eq!(out["result"]["content"][0]["text"], "unknown tool");
+            }
         }
+    }
+
+    // Spec (lazarobox-mcp-server, "Pane reads served to the coordinator"
+    // [W11]): the coordinator's shim lists and hands on `list_panes` and
+    // `read_pane`, and never serves `run_in_pane`.
+    #[test]
+    fn a_coordinator_shim_serves_the_pane_reads_but_not_run_in_pane() {
+        use crate::core::ai::orchestra::Toolset;
+        let (mut server, names) = toolset_shim(Toolset::Orchestrator);
+        for name in ["list_panes", "read_pane"] {
+            assert!(names.iter().any(|n| n == name), "{name}: {names:?}");
+        }
+        assert!(!names.iter().any(|n| n == "run_in_pane"), "{names:?}");
+        for (name, args, want) in [
+            ("list_panes", json!({}), Call::ListPanes),
+            (
+                "read_pane",
+                json!({"pane": 2}),
+                Call::ReadPane {
+                    pane: 2,
+                    scrollback: None,
+                },
+            ),
+        ] {
+            let params = json!({"name": name, "arguments": args});
+            assert_eq!(
+                server.handle(&request(json!(3), "tools/call", params)),
+                Action::Call {
+                    id: json!(3),
+                    call: want
+                },
+                "{name}"
+            );
+        }
+        let params = json!({"name": "run_in_pane", "arguments": {"command": "ls"}});
+        let out = reply(server.handle(&request(json!(4), "tools/call", params)));
+        assert_eq!(out["result"]["isError"], true);
+        assert_eq!(out["result"]["content"][0]["text"], "unknown tool");
     }
 
     #[test]
