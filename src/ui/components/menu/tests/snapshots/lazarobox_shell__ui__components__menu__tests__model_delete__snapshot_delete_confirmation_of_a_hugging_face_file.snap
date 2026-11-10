@@ -1,0 +1,22 @@
+---
+source: src/ui/components/menu/tests/model_delete.rs
+expression: "text(&draw(80, POPUP_H, &confirming_a_file()))"
+---
+         ┌ Menu ──────────────────────────────────────────────────────┐         
+         │ Settings │ Models │ Tools │ Chat                           │         
+         │ Delete a model                                             │         
+         │ delete tiny-q4.gguf?                                       │         
+         │ folder:                                                    │         
+         │ /home/u/.cache/huggingface/hub/models--org--tiny/snapshots │         
+         │ /c0ffee                                                    │         
+         │ size: 4.9 GB in 2 parts                                    │         
+         │ in the shared Hugging Face cache: other tools that use it  │         
+         │ will need to download it again                             │         
+         │ This cannot be undone.                                     │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
+         │ y delete · any other key back                              │         
+         └────────────────────────────────────────────────────────────┘

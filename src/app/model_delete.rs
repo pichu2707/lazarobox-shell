@@ -5,7 +5,7 @@
 
 use super::{App, Effect};
 use crate::core::ai::chat::Phase;
-use crate::core::ai::picker::DeleteAsk;
+use crate::core::ai::picker::{DeleteAsk, DeleteTarget};
 
 impl App {
     /// Who has a chat turn running now, `(engine, model)`: the delete check
@@ -24,9 +24,13 @@ impl App {
             .collect()
     }
 
-    /// `y` on the Delete screen. Without an Ollama port it fails at once, so
-    /// the picker does not wait for a reply that never comes.
+    /// `y` on the Delete screen. A file goes through the runtime's own
+    /// checks; without an Ollama port an Ollama model fails at once, so the
+    /// picker does not wait for a reply that never comes.
     pub(super) fn start_delete(&mut self, ask: DeleteAsk) -> Vec<Effect> {
+        if matches!(ask.target, DeleteTarget::Gguf(_)) {
+            return vec![Effect::DeleteFiles(ask)];
+        }
         let Some(port) = self.ai.servers().port("ollama") else {
             return self.on_delete_reply(ask, Err("no Ollama port".to_owned()));
         };
@@ -52,5 +56,19 @@ impl App {
         let effects = self.request_forced_detection();
         self.sync_checking();
         effects
+    }
+
+    /// The runtime's measure of a file for the Delete screen. Nothing was
+    /// removed, so nothing is detected again.
+    pub(super) fn on_delete_measured(
+        &mut self,
+        ask: DeleteAsk,
+        answer: Result<(), String>,
+    ) -> Vec<Effect> {
+        if let Some(menu) = self.menu.as_mut() {
+            menu.delete_measured(ask, answer);
+        }
+        self.dirty = true;
+        Vec::new()
     }
 }

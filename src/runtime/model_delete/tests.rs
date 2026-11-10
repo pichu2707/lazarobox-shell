@@ -6,6 +6,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 
 use super::*;
 use crate::core::ai::gguf::{DirsEnv, model_dirs};
+use crate::core::ai::picker::GgufFile;
 
 /// A temporary home and the folders the scan reads in it.
 struct Home {
@@ -381,6 +382,70 @@ fn a_failure_before_anything_went_just_says_why() {
     }
 }
 
+fn ask(path: &Path) -> DeleteAsk {
+    DeleteAsk {
+        id: 7,
+        target: DeleteTarget::Gguf(GgufFile {
+            path: path.to_str().unwrap().to_owned(),
+            size: None,
+            parts: 1,
+            in_use: Vec::new(),
+        }),
+    }
+}
+
+fn file_of(ask: &DeleteAsk) -> &GgufFile {
+    match &ask.target {
+        DeleteTarget::Gguf(file) => file,
+        other => panic!("{other:?}"),
+    }
+}
+
+// Spec: the confirmation shows the size; the reply what was freed (D4).
+#[test]
+fn measure_fills_the_size_and_parts_and_carry_out_the_freed_bytes() {
+    let home = Home::new();
+    let first = home.models().join("p-00001-of-00002.gguf");
+    write(&first, 4);
+    write(&home.models().join("p-00002-of-00002.gguf"), 6);
+    let (measured, answer) = measure(ask(&first), &home.dirs);
+    assert_eq!(answer, Ok(()));
+    assert_eq!(
+        (file_of(&measured).size, file_of(&measured).parts),
+        (Some(10), 2)
+    );
+    assert!(exists(&first), "measuring removes nothing");
+    let (done, answer) = carry_out(measured, &home.dirs);
+    assert_eq!(answer, Ok(()));
+    assert_eq!(file_of(&done).size, Some(10));
+    assert_eq!(done.id, 7);
+    assert!(!exists(&first));
+}
+
+#[test]
+fn carry_out_refuses_an_ollama_target_and_a_file_in_use() {
+    let home = Home::new();
+    let ollama = DeleteAsk {
+        id: 1,
+        target: DeleteTarget::Ollama {
+            name: "qwen3:4b".to_owned(),
+            size: None,
+        },
+    };
+    assert!(carry_out(ollama.clone(), &home.dirs).1.is_err());
+    assert!(measure(ollama, &home.dirs).1.is_err());
+    let file = home.models().join("used.gguf");
+    write(&file, 2);
+    let mut used = ask(&file);
+    if let DeleteTarget::Gguf(f) = &mut used.target {
+        f.in_use = vec![file.clone()];
+    }
+    assert!(carry_out(used, &home.dirs).1.is_err());
+    assert!(file.is_file());
+}
+
+// Safety: tidying a repository never follows a link out of it. The model
+// itself may go; nothing outside does, and the repository folder stays.
 #[test]
 fn a_no_exist_folder_that_links_out_is_left_alone() {
     let home = Home::new();

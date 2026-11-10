@@ -2203,6 +2203,36 @@ impl Panes {
                         });
                     }
                 }
+                // The disk work runs off the UI thread; the folders are the
+                // ones the model scan reads, from this process's environment.
+                Effect::MeasureModel(ask) => {
+                    if let Some(events) = self.deletes.clone() {
+                        let dirs = model_dirs();
+                        tokio::spawn(async move {
+                            let id = ask.clone();
+                            let (ask, answer) = tokio::task::spawn_blocking(move || {
+                                model_delete::measure(ask, &dirs)
+                            })
+                            .await
+                            .unwrap_or_else(|_| (id, Err("the check stopped".to_owned())));
+                            let _ = events.send(AppEvent::DeleteMeasured { ask, answer }).await;
+                        });
+                    }
+                }
+                Effect::DeleteFiles(ask) => {
+                    if let Some(events) = self.deletes.clone() {
+                        let dirs = model_dirs();
+                        tokio::spawn(async move {
+                            let id = ask.clone();
+                            let (ask, answer) = tokio::task::spawn_blocking(move || {
+                                model_delete::carry_out(ask, &dirs)
+                            })
+                            .await
+                            .unwrap_or_else(|_| (id, Err("the delete stopped".to_owned())));
+                            let _ = events.send(AppEvent::DeleteReply { ask, answer }).await;
+                        });
+                    }
+                }
                 // Returns at once: the step runs on its own task.
                 Effect::Install(ask) => {
                     if let Some(installer) = self.installer.as_mut() {

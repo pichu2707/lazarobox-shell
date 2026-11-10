@@ -10,7 +10,10 @@ use super::{
     config::{AiConfig, Assignment, ManagedServer, Task},
     hf::{Answer, Ask},
     ollama_lib,
-    picker::{InUse, InstallReply, Outcome, PickRow, Picker, Running, Target, Wizard, task_label},
+    picker::{
+        DeleteAsk, InUse, InstallReply, Outcome, PickRow, Picker, Running, Target, Wizard,
+        task_label,
+    },
 };
 
 /// The AI draft, edited in the menu and written only on save.
@@ -283,6 +286,21 @@ impl AiMenu {
         })
     }
 
+    /// The measure of the file of the Delete screen, for the open picker.
+    pub fn delete_measured(&mut self, ask: DeleteAsk) {
+        if let Some(picker) = &mut self.picker {
+            picker.delete_measured(ask);
+        }
+    }
+
+    /// Whether the open Delete screen waits for the measure `id`.
+    pub fn measures(&self, id: u64) -> bool {
+        self.picker
+            .as_ref()
+            .and_then(Picker::delete)
+            .is_some_and(|d| d.measuring() == Some(id))
+    }
+
     /// The reply of delete `id`, for the open picker.
     pub fn delete_reply(&mut self, id: u64) {
         if let Some(picker) = &mut self.picker {
@@ -368,6 +386,7 @@ impl AiMenu {
             | Outcome::Busy
             | Outcome::Install(_)
             | Outcome::Delete(_)
+            | Outcome::Measure(_)
             | Outcome::Refused(_) => {}
         }
         outcome
