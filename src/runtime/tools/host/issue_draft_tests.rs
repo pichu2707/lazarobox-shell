@@ -260,3 +260,48 @@ async fn the_users_no_and_an_ended_wait_are_the_turns_decline() {
         assert_eq!(approver.asked.lock().unwrap().len(), 1, "{reason}");
     }
 }
+
+// A timeout: the turn's timer ends the turn while the prompt is up, so the
+// real approver ends the wait (`Waits::end_turn`, what `EndTurn` does when the
+// 15-minute total runs out). That is the turn's decline: a later draft call of
+// the same turn is denied at once and no second prompt is announced.
+#[tokio::test]
+async fn a_timed_out_prompt_is_the_turns_decline() {
+    use crate::{
+        core::layout::PaneId,
+        runtime::tools::{Pending, Waits, approver::ENDED},
+    };
+    const PANE: PaneId = PaneId::FIRST;
+    const TURN: u64 = 4;
+    let (_dir, home, host) = fixture();
+    let waits = Waits::new();
+    let (tools, mut rx) = tools(&host, &home, waits.approver(PANE, TURN, Pending::new()));
+    let first = tokio::spawn({
+        let tools = tools.clone();
+        async move { tools.call(Call::IssueDraft(draft("one"))).await }
+    });
+    let announced = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("no event")
+        .expect("channel closed");
+    let StreamEvent::ToolCall { id, approval, .. } = announced else {
+        panic!("not a ToolCall: {announced:?}")
+    };
+    assert!(approval.is_some(), "the first call asks");
+    waits.end_turn(PANE, TURN);
+    assert_eq!(first.await.unwrap().text, format!("denied: {ENDED}"));
+    let later = tools.call(Call::IssueDraft(draft("two"))).await;
+    assert_eq!(later.text, format!("denied: {DRAFT_DECLINED}"));
+    let asks: Vec<_> = events(&mut rx)
+        .into_iter()
+        .filter_map(|event| match event {
+            StreamEvent::ToolCall { approval, .. } => Some(approval.is_some()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asks, vec![false], "the later call is announced unasked");
+    assert!(
+        !waits.decide(PANE, TURN, id, Decision::Sent),
+        "nothing waits"
+    );
+}

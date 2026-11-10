@@ -14,7 +14,7 @@ use crate::core::menu::Footer;
 const GB: u64 = 1_000_000_000;
 
 /// Ollama answers detection and lists two models; llama-server is stopped.
-fn machine() -> Detection {
+pub(super) fn machine() -> Detection {
     Detection {
         engines: CATALOG
             .iter()
@@ -51,7 +51,7 @@ fn at_ollama(ai: AiConfig, model: &str) -> App {
     a
 }
 
-fn open_picker(a: &mut App, model: &str) {
+pub(super) fn open_picker(a: &mut App, model: &str) {
     goto_row(a, "chat");
     a.update(enter());
     let_go();
@@ -64,7 +64,7 @@ fn open_picker(a: &mut App, model: &str) {
 }
 
 /// `d`, then a frame, so the confirmation accepts `y`.
-fn confirming(a: &mut App) {
+pub(super) fn confirming(a: &mut App) {
     assert_eq!(a.update(key('d')), vec![]);
     let_go();
     a.frame_drawn();
