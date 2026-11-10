@@ -9059,6 +9059,8 @@ mod app_tests {
     mod orchestra_notice;
     /// The run-scoped override picked from a failure alert.
     mod orchestra_override;
+    /// The coordinator's `list_panes` and `read_pane` in the app (W11).
+    mod orchestra_panes;
     /// Resuming or discarding an interrupted run (S9 9.1c).
     mod orchestra_resume;
     /// The failure alert of a run, its keys and the run's events.

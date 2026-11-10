@@ -13,7 +13,7 @@ use crate::core::ai::chat::engine::Availability;
 use crate::core::ai::config::Task;
 use crate::core::ai::tools::registry::{Family, FamilySet};
 
-const EVERY_FAMILY: [Family; 9] = [
+const EVERY_FAMILY: [Family; 10] = [
     Family::Read,
     Family::Search,
     Family::Write,
@@ -21,6 +21,7 @@ const EVERY_FAMILY: [Family; 9] = [
     Family::Git,
     Family::GitWrite,
     Family::Pane,
+    Family::PaneRead,
     Family::Orchestra,
     Family::Github,
 ];

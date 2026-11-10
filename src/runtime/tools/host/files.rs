@@ -132,7 +132,7 @@ pub(super) fn gate(scope: &TurnScope, call: &Call) -> Result<(), &'static str> {
         || (call.is_github() && !scope.families.contains(Family::Github))
         || (matches!(call, Call::IssueDraft(_)) && !scope.families.contains(Family::IssueDraft))
         || (matches!(call, Call::ListPanes | Call::ReadPane { .. })
-            && !scope.families.contains(Family::Pane))
+            && !scope.families.contains(Family::PaneRead))
     {
         return Err(refusal_text(ToolError::UnknownTool));
     }

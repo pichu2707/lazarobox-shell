@@ -8,7 +8,7 @@ use super::{
 };
 use crate::core::ai::tools::registry::Family;
 
-fn lines() -> Vec<String> {
+pub(super) fn lines() -> Vec<String> {
     vec![
         "pane 1 (focused) cwd: /tmp program: nvim prueba.rs".to_owned(),
         "pane 2 cwd: /tmp program: zsh".to_owned(),
@@ -112,7 +112,7 @@ fn read_pane(pane: u32) -> Call {
 }
 
 /// Answers every ask with the screen text the user approved.
-struct Shown(&'static str);
+pub(super) struct Shown(pub(super) &'static str);
 
 impl Approver for Shown {
     fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
@@ -207,16 +207,22 @@ async fn read_pane_is_refused_without_the_pane_family() {
     assert!(asks.asked.lock().unwrap().is_empty());
 }
 
-// The second check refuses a screen read for every toolset of a worker or the
-// orchestrator, which never get the pane family.
+// The second check refuses both pane reads for every toolset of a worker,
+// which never gets a pane tool, and lets the coordinator's through (W11).
 #[test]
-fn the_gate_refuses_read_pane_in_a_worker_or_orchestrator_scope() {
+fn the_gate_refuses_the_pane_reads_of_a_worker_but_not_of_the_coordinator() {
     use crate::core::ai::orchestra::Toolset;
     use crate::core::ai::tools::mcp::refusal_text;
     let off = refusal_text(ToolError::UnknownTool);
-    for toolset in [Toolset::ReadOnly, Toolset::Code, Toolset::Orchestrator] {
+    for (toolset, want) in [
+        (Toolset::ReadOnly, Err(off)),
+        (Toolset::Code, Err(off)),
+        (Toolset::Orchestrator, Ok(())),
+    ] {
         let (mut turn, _rx) = scope(Locality::Cloud, std::path::Path::new("/"));
         turn.families = toolset.families();
-        assert_eq!(files::gate(&turn, &read_pane(2)), Err(off), "{toolset:?}");
+        for call in [read_pane(2), Call::ListPanes] {
+            assert_eq!(files::gate(&turn, &call), want, "{toolset:?} {call:?}");
+        }
     }
 }

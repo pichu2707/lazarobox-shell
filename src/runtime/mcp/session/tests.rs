@@ -1113,6 +1113,8 @@ async fn an_orchestrator_session_lists_and_dispatches_the_orchestration_tools() 
             "find_dir",
             "list_dir",
             "read_file",
+            "list_panes",
+            "read_pane",
             "spawn_agent",
             "wait",
             "collect",
@@ -1131,6 +1133,56 @@ async fn an_orchestrator_session_lists_and_dispatches_the_orchestration_tools() 
     assert_eq!(
         *fake.0.lock().unwrap(),
         [Call::Orchestra(OrchCall::Cancel { id: WorkerId(2) })]
+    );
+}
+
+// Spec (lazarobox-mcp-server, "Pane reads served to the coordinator" [W11]):
+// a CLI coordinator's `list_panes` and `read_pane` reach the turn's dispatch,
+// where the host asks as for a chat; a forged `run_in_pane` never does.
+#[tokio::test]
+async fn an_orchestrator_session_hands_on_the_pane_reads_and_refuses_run_in_pane() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    let fake = Arc::new(Fake::default());
+    let s = hub
+        .open(
+            pane(1),
+            fake.clone(),
+            Slot::default(),
+            Toolset::Orchestrator.families(),
+        )
+        .unwrap();
+    let mut c = ready(&s).await;
+    for (id, params) in [
+        (5, r#"{"name":"list_panes","arguments":{}}"#),
+        (6, r#"{"name":"read_pane","arguments":{"pane":2}}"#),
+    ] {
+        let line =
+            format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{params}}}"#);
+        send(&mut c, &line).await;
+        assert_eq!(
+            recv(&mut c).await.unwrap()["result"]["isError"],
+            false,
+            "{params}"
+        );
+    }
+    send(
+        &mut c,
+        r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"run_in_pane","arguments":{"command":"ls"}}}"#,
+    )
+    .await;
+    let refused = recv(&mut c).await.unwrap();
+    assert_eq!(refused["result"]["isError"], true);
+    assert_eq!(refused["result"]["content"][0]["text"], "unknown tool");
+    assert_eq!(
+        *fake.0.lock().unwrap(),
+        [
+            Call::ListPanes,
+            Call::ReadPane {
+                pane: 2,
+                scrollback: None
+            }
+        ]
     );
 }
 

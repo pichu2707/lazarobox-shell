@@ -118,7 +118,16 @@ fn orchestrator(
     home: &Path,
     handle: Option<Arc<dyn Orchestra>>,
 ) -> (TurnScope, mpsc::Receiver<StreamEvent>) {
-    let (mut scope, rx) = scope(Locality::Cloud, home);
+    orchestrator_on(Locality::Cloud, home, handle)
+}
+
+/// [`orchestrator`] on an engine of `locality`.
+fn orchestrator_on(
+    locality: Locality,
+    home: &Path,
+    handle: Option<Arc<dyn Orchestra>>,
+) -> (TurnScope, mpsc::Receiver<StreamEvent>) {
+    let (mut scope, rx) = scope(locality, home);
     scope.families = Toolset::Orchestrator.families();
     scope.orchestra = handle;
     (scope, rx)
@@ -217,6 +226,77 @@ async fn an_orchestrator_server_tool_asks_and_runs_only_after_y() {
             assert_eq!(received, "", "nothing reached the server");
         }
         assert!(fake.calls().is_empty(), "never routed to the run");
+    }
+}
+
+// Spec (agent-tools, Toolsets by session role [W11]): the coordinator's
+// `list_panes` asks as a chat's does, with the exact text, on a cloud engine
+// and runs free on a local one; nothing reaches the run manager.
+#[tokio::test]
+async fn the_coordinator_lists_the_panes_as_a_chat_does() {
+    use super::panes_tests::lines;
+    for locality in [Locality::Local, Locality::Cloud] {
+        let (_dir, home, host) = fixture();
+        host.roster().set(lines());
+        let fake = Fake::new("spawned 1");
+        let (mut scope, _rx) = orchestrator_on(locality, &home, Some(fake.clone()));
+        let asks = Scripted::new(Decision::Sent);
+        scope.approver = asks.clone();
+        let out = host.dispatch(scope).call(Call::ListPanes).await;
+        let text = lines().join("\n");
+        assert!(
+            !out.is_error && out.text.contains(&text),
+            "{locality:?}: {out:?}"
+        );
+        let asked = asks.asked.lock().unwrap().clone();
+        let want = match locality {
+            Locality::Local => vec![],
+            Locality::Cloud => vec![ApprovalAsk::Panes { text }],
+        };
+        assert_eq!(asked, want, "{locality:?}");
+        assert!(fake.calls().is_empty(), "{locality:?}");
+    }
+}
+
+// Spec (agent-tools, read_pane, "The coordinator reads a pane" [W11]): the
+// coordinator's `read_pane` asks on every engine as a chat's does, and only
+// the frozen screen the user approved answers it, wrapped as data.
+#[tokio::test]
+async fn the_coordinator_reads_a_pane_only_with_the_approved_screen() {
+    use super::panes_tests::Shown;
+    let read = Call::ReadPane {
+        pane: 2,
+        scrollback: None,
+    };
+    for locality in [Locality::Local, Locality::Cloud] {
+        let (_dir, home, host) = fixture();
+        let fake = Fake::new("spawned 1");
+        let (mut scope, _rx) = orchestrator_on(locality, &home, Some(fake.clone()));
+        let asks = Scripted::new(Decision::Sent);
+        scope.approver = asks.clone();
+        let out = host.dispatch(scope).call(read.clone()).await;
+        assert!(
+            out.is_error && out.text.contains(super::NOT_APPROVED),
+            "{out:?}"
+        );
+        let screen = ApprovalAsk::Screen {
+            pane: 2,
+            scrollback: None,
+            review: None,
+        };
+        assert_eq!(
+            asks.asked.lock().unwrap().as_slice(),
+            [screen],
+            "{locality:?}"
+        );
+
+        let (mut scope, _rx) = orchestrator_on(locality, &home, Some(fake.clone()));
+        scope.approver = Arc::new(Shown("nvim prueba.rs"));
+        let out = host.dispatch(scope).call(read.clone()).await;
+        assert!(!out.is_error, "{locality:?}: {out:?}");
+        assert!(out.text.contains("<untrusted-tool-output"), "{out:?}");
+        assert!(out.text.contains("nvim prueba.rs"), "{out:?}");
+        assert!(fake.calls().is_empty(), "{locality:?}");
     }
 }
 

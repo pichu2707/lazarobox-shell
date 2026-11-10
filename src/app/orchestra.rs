@@ -1233,8 +1233,8 @@ impl App {
                 request,
             };
         }
-        // The orchestrator session: the read tools and the four orchestration
-        // tools, never `run_in_pane`.
+        // The orchestrator session: the read tools, the pane reads and the
+        // orchestration tools, never `run_in_pane`.
         request.families = Toolset::Orchestrator.families();
         // A turn sent while a resumed run waits is the user's reply.
         self.reply_started(id);
