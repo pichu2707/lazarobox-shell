@@ -1010,6 +1010,9 @@ pub enum MenuCommand {
     /// Delete this model; the runtime answers through
     /// [`MenuState::delete_reply`].
     DeleteModel(DeleteAsk),
+    /// Measure this llama.cpp file for the Delete screen; the runtime
+    /// answers through [`MenuState::delete_measured`].
+    MeasureModel(DeleteAsk),
     /// Start this Hugging Face download (`y` on the Confirm screen).
     Download(Box<Job>),
     /// Stop the download that runs (Hugging Face or Ollama).
@@ -1751,6 +1754,25 @@ impl MenuState {
         }
     }
 
+    /// The runtime's measure of the file the Delete screen names: the size
+    /// shows, or the screen closes and says why the file cannot go. A
+    /// measure the screen no longer waits for changes nothing.
+    pub fn delete_measured(&mut self, ask: DeleteAsk, answer: Result<(), String>) {
+        let Some(ai) = &mut self.ai else {
+            return;
+        };
+        if !ai.measures(ask.id) {
+            return;
+        }
+        match answer {
+            Ok(()) => ai.delete_measured(ask),
+            Err(why) => {
+                ai.delete_reply(ask.id);
+                self.notice = Some(ask.target.failed(&why));
+            }
+        }
+    }
+
     /// A frame drew the wizard: its prompts now accept `y`/`n`.
     pub fn install_arm(&mut self) {
         if let Some(ai) = &mut self.ai {
@@ -2471,6 +2493,7 @@ impl MenuState {
     fn delete_outcome(&mut self, outcome: Outcome) -> MenuCommand {
         match outcome {
             Outcome::Delete(ask) => return MenuCommand::DeleteModel(ask),
+            Outcome::Measure(ask) => return MenuCommand::MeasureModel(ask),
             Outcome::Refused(why) => self.notice = Some(why),
             Outcome::Busy => self.error = Some(BUSY.to_owned()),
             _ => {}

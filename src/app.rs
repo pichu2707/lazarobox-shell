@@ -296,8 +296,15 @@ pub enum AppEvent {
     /// The result of the install step the wizard asked for; it names the
     /// request it answers.
     InstallReply(u64, Result<InstallReply, String>),
-    /// The result of `Effect::DeleteModel`.
+    /// The result of `Effect::DeleteModel` or `Effect::DeleteFiles`. For a
+    /// file, the target's size is what the delete freed.
     DeleteReply {
+        ask: DeleteAsk,
+        answer: Result<(), String>,
+    },
+    /// The result of `Effect::MeasureModel`: the target carries the size and
+    /// the parts, or the reason the file cannot be deleted.
+    DeleteMeasured {
         ask: DeleteAsk,
         answer: Result<(), String>,
     },
@@ -640,6 +647,13 @@ pub enum Effect {
         ask: DeleteAsk,
         port: u16,
     },
+    /// Check and measure this llama.cpp file, with all its parts, in the
+    /// scanned model folders; the runtime answers with one
+    /// `AppEvent::DeleteMeasured`. Nothing is removed.
+    MeasureModel(DeleteAsk),
+    /// Check this llama.cpp file again and delete it with all its parts;
+    /// the runtime answers with one `AppEvent::DeleteReply`.
+    DeleteFiles(DeleteAsk),
     /// Run one step of the llama-server install wizard, or the newer build
     /// check; the runtime answers
     /// with `AppEvent::InstallReply` (and `InstallProgress` while it
@@ -2228,6 +2242,7 @@ impl App {
             AppEvent::InstallProgress { id, done, .. } => self.on_install_progress(id, done),
             AppEvent::InstallReply(id, answer) => self.on_install_reply(id, answer),
             AppEvent::DeleteReply { ask, answer } => self.on_delete_reply(ask, answer),
+            AppEvent::DeleteMeasured { ask, answer } => self.on_delete_measured(ask, answer),
             AppEvent::InstallWarning(warning) => self.on_install_warning(warning),
             AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
@@ -2516,6 +2531,7 @@ impl App {
             MenuCommand::Pull(pull) => self.start_pull(pull),
             MenuCommand::Install(ask) => self.install_effects(ask),
             MenuCommand::DeleteModel(ask) => self.start_delete(ask),
+            MenuCommand::MeasureModel(ask) => vec![Effect::MeasureModel(ask)],
             MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
             MenuCommand::Open(url) if !crate::core::opener::is_web_url(&url) => {
                 self.on_open_failed(&url)

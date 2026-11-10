@@ -342,3 +342,126 @@ fn a_reply_with_another_id_leaves_the_screen_open() {
     });
     assert!(footer(&a).contains("deleting"), "{}", footer(&a));
 }
+
+const FILE: &str = "/h/.local/share/llama.cpp/models/qwen.gguf";
+
+/// llama-server is stopped and the model scan found one file.
+fn with_a_file() -> Detection {
+    let mut d = machine();
+    d.local_models = vec![std::path::PathBuf::from(FILE)];
+    d
+}
+
+/// The menu open on `chat`'s picker, at llamacpp's model level, on the file.
+fn at_file(ai: AiConfig) -> App {
+    let mut a = app();
+    a.engines = Some(with_a_file());
+    a.menu = Some(MenuState::open(&a.config).with_ai(ai, a.engines.clone()));
+    a.input = InputMode::Menu;
+    goto_row(&mut a, "chat");
+    a.update(enter());
+    let_go();
+    goto_pick(&mut a, "llamacpp");
+    let_go();
+    a.update(enter());
+    let_go();
+    goto_pick(&mut a, "qwen.gguf");
+    let_go();
+    a
+}
+
+fn file_ask(effects: &[Effect], measure: bool) -> DeleteAsk {
+    match effects {
+        [Effect::MeasureModel(ask)] if measure => ask.clone(),
+        [Effect::DeleteFiles(ask)] if !measure => ask.clone(),
+        other => panic!("expected one file effect: {other:?}"),
+    }
+}
+
+/// `ask` as the runtime answers a measure: `size` bytes in one part.
+fn sized(mut ask: DeleteAsk, size: u64) -> DeleteAsk {
+    if let DeleteTarget::Gguf(file) = &mut ask.target {
+        file.size = Some(size);
+    }
+    ask
+}
+
+// Spec: `d` on a file measures it, `y` deletes it through the runtime's
+// checks, and the reply detects again and says what was freed (D4).
+#[test]
+fn a_file_is_measured_on_d_deleted_on_y_and_the_notice_says_what_was_freed() {
+    let mut a = at_file(AiConfig::default());
+    assert!(footer(&a).contains("d delete"), "{}", footer(&a));
+    let ask = file_ask(&a.update(key('d')), true);
+    let_go();
+    a.frame_drawn();
+    assert!(footer(&a).contains("measuring"), "{}", footer(&a));
+    assert_eq!(a.update(key('y')), vec![], "y waits for the size");
+    let_go();
+    a.update(AppEvent::DeleteMeasured {
+        ask: sized(ask, 5 * GB),
+        answer: Ok(()),
+    });
+    assert!(footer(&a).contains("y delete"), "{}", footer(&a));
+    let asked = file_ask(&a.update(key('y')), false);
+    let after = a.update(AppEvent::DeleteReply {
+        ask: sized(asked, 4 * GB),
+        answer: Ok(()),
+    });
+    assert!(after.contains(&Effect::RedetectEngines), "{after:?}");
+    assert_eq!(notice(&a), "deleted qwen.gguf · freed 4.0 GB");
+    assert_eq!(cursor_label(&a), "qwen.gguf");
+}
+
+#[test]
+fn a_file_that_fails_its_check_closes_the_screen_and_says_why() {
+    let mut a = at_file(AiConfig::default());
+    let ask = file_ask(&a.update(key('d')), true);
+    let_go();
+    let after = a.update(AppEvent::DeleteMeasured {
+        ask,
+        answer: Err("it is outside the model folders".to_owned()),
+    });
+    assert_eq!(after, vec![]);
+    assert_eq!(
+        footer(&a),
+        "could not delete qwen.gguf: it is outside the model folders"
+    );
+    assert_eq!(cursor_label(&a), "qwen.gguf");
+    assert_eq!(a.update(key('y')), vec![], "no screen left to answer");
+}
+
+// Spec: a partial failure says what was removed and what was not.
+#[test]
+fn a_partial_failure_is_noticed_and_detects_again() {
+    let mut a = at_file(AiConfig::default());
+    let ask = file_ask(&a.update(key('d')), true);
+    let_go();
+    a.frame_drawn();
+    a.update(AppEvent::DeleteMeasured {
+        ask: sized(ask, 3),
+        answer: Ok(()),
+    });
+    let asked = file_ask(&a.update(key('y')), false);
+    let why = "removed qwen.gguf (freed 0 B); not removed the blob of qwen.gguf: denied";
+    let after = a.update(AppEvent::DeleteReply {
+        ask: asked,
+        answer: Err(why.to_owned()),
+    });
+    assert!(after.contains(&Effect::RedetectEngines), "{after:?}");
+    assert_eq!(notice(&a), format!("could not delete qwen.gguf: {why}"));
+}
+
+// Spec (D3): the saved managed model is refused, named, and nothing is asked.
+#[test]
+fn the_managed_model_refuses_d_and_emits_nothing() {
+    let mut saved = AiConfig::default();
+    saved.manage(std::path::PathBuf::from(FILE));
+    let mut a = at_file(saved);
+    assert_eq!(a.update(key('d')), vec![]);
+    assert!(
+        footer(&a).contains("qwen.gguf is the model of the managed llama-server"),
+        "{}",
+        footer(&a)
+    );
+}
