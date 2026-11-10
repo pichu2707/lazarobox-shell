@@ -485,6 +485,18 @@ Enter on an AI task row MUST replace the task list with the picker, inside the s
 ### Requirement: Delete a model
 `d` on a downloaded model of the Ollama engine at level 2 MUST open a confirmation screen inside the picker that names the model and its size (`size: unknown` when Ollama listed none) and says `This cannot be undone.` On any other row, level or engine `d` MUST do nothing. The screen accepts an answer only once it was drawn: a key pressed before that does nothing. Only an unmodified, new `y` deletes; every other key returns to the model rows with the cursor on the row, and a held or repeated key does nothing. While the delete runs the screen shows `deleting <name>…` and ignores keys. A reply that is not for the delete in flight MUST NOT change the screen. When the reply arrives the picker returns to the model rows, the cursor stays on the row or near it, the engines are detected again, and a notice says the result (see ollama-download). A refused delete leaves the model rows as they were (see ai-task-models, Deleting a model in use). A download that runs refuses it with `a download is already running`, checked on `d` and on `y`.
 
+On llamacpp's level 2, `d` on a row of a model file the model scan found (marked `lazarobox starts it`) MUST open the same screen for that file. A row whose path the scan did not find (the managed model listed from the config) and a model that a running llama-server lists have no file behind them: `d` does nothing there. `d` asks the runtime to measure the file (see model-download, Delete a model file); until the answer the screen shows `size: measuring…`, the footer is `measuring… · any other key back`, and `y` does nothing. The screen names the file, `folder: <its folder>`, the size of all its parts (`size: 4.9 GB in 2 parts` for a split model) and, for a file in the Hugging Face cache layout, `in the shared Hugging Face cache: other tools that use it will need to download it again`. A measure that fails closes the screen with the notice `could not delete <file>: <reason>`, and nothing is deleted.
+
+#### Scenario: Confirmation of a file [auto, TestBackend + insta]
+- GIVEN level 2 of llamacpp with the cursor on a file of the Hugging Face cache, measured at 4.9 GB in 2 parts
+- WHEN the screen is drawn at 80 columns
+- THEN it shows the file, its folder, `size: 4.9 GB in 2 parts`, the shared-cache line, `This cannot be undone.` and `y delete · any other key back`
+
+#### Scenario: y waits for the size [auto]
+- GIVEN the screen of a file not measured yet
+- WHEN `y` is pressed
+- THEN nothing is asked and the screen stays
+
 #### Scenario: Confirmation [auto, TestBackend + insta]
 - GIVEN level 2 of ollama with the cursor on a downloaded model of 2.4 GB
 - WHEN `d` is pressed and the screen is drawn

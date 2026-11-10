@@ -26,7 +26,7 @@ mod hub;
 mod install;
 mod manage;
 mod ollama;
-pub use delete::{Delete, DeleteAsk, DeleteTarget, InUse};
+pub use delete::{Delete, DeleteAsk, DeleteTarget, GgufFile, InUse};
 pub use hub::{
     Confirm, HF_ROW, HINT_ASKING, HINT_CANCEL, Hub, QUERY_HINT, Running, Screen, Source, shown,
 };
@@ -795,6 +795,9 @@ pub enum Outcome {
     Install(InstallAsk),
     /// Ask the runtime to delete this model (`y` on the Delete screen).
     Delete(DeleteAsk),
+    /// Ask the runtime to measure this llama.cpp file (`d` on its row); the
+    /// Delete screen waits for the size.
+    Measure(DeleteAsk),
     /// A delete was refused: this text says what uses the model.
     Refused(String),
 }
@@ -1125,6 +1128,8 @@ impl Picker {
 mod assign_tests;
 #[cfg(test)]
 mod custom_tests;
+#[cfg(test)]
+mod delete_gguf_tests;
 #[cfg(test)]
 mod delete_tests;
 #[cfg(test)]

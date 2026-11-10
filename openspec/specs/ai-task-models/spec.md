@@ -197,7 +197,12 @@ Choosing an engine entry then a selectable model assigns that engine and model t
 - THEN code is cleared and reads `(default)`
 
 ### Requirement: Deleting a model in use
-A model that is in use MUST NOT be deleted from the menu, and the refusal MUST say who uses it. The check runs when `d` is pressed and again when the delete is confirmed. A model is in use when a task assignment names it, in the menu's draft or in the saved config, with the Ollama tag-less equals `:latest` rule (`<name> is used by task <task> · assign another model first`, or `tasks <a>, <b>`), or when a running chat turn uses it (`<name> is in use by a running chat turn`). Assignments are never changed by the refusal: the user reassigns first.
+A model that is in use MUST NOT be deleted from the menu, and the refusal MUST say who uses it. The check runs when `d` is pressed and again when the delete is confirmed. A model is in use when a task assignment names it, in the menu's draft or in the saved config, with the Ollama tag-less equals `:latest` rule (`<name> is used by task <task> · assign another model first`, or `tasks <a>, <b>`), or when a running chat turn uses it (`<name> is in use by a running chat turn`). A llama.cpp model file is also in use when it is the managed llama-server's model, in the draft or in the saved config (`<file> is the model of the managed llama-server · choose another one for it first`), or when a running llama-server lists it (`<file> is loaded by the running llama-server`). The runtime refuses again any file that a task assignment or the managed model names under another spelling (a link, `..`), comparing the files with links followed. Assignments are never changed by the refusal: the user reassigns first.
+
+#### Scenario: The managed model [auto]
+- GIVEN the managed llama-server's model, in the draft or the saved config
+- WHEN `d` or the confirming `y` is pressed on its row
+- THEN the delete is refused, the notice names the managed llama-server, and nothing is sent
 
 #### Scenario: The draft and the saved config both count [auto]
 - GIVEN a model assigned to `chat` in the saved config but not in the draft, or the other way round

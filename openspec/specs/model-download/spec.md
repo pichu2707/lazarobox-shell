@@ -148,3 +148,33 @@ From the menu (config-menu), a user MAY connect a Hugging Face account by pastin
 - GIVEN a real Hugging Face account
 - WHEN a token is pasted in the menu
 - THEN `hf auth whoami` shows the same account, and a gated repo the account may use downloads
+
+### Requirement: Delete a model file
+A llama.cpp model file the model scan lists MUST be deleted only by the runtime, after checks it runs when the screen asks for the size and again on `y`, and once more right before each removal:
+- the path is absolute with no `..`, and its folder, with links followed, lies inside one of the scanned model folders, also with links followed; a path from the config gets no shortcut;
+- the file is a regular `.gguf` the scan lists (not `mmproj`, not a later part of a split model), or, in the Hugging Face cache layout (`models--<org>--<repo>/snapshots/<commit>/…`), a link to a regular file directly in that same repository's `blobs/`; a link anywhere else is refused, and so is a link to a `.incomplete` blob;
+- a split model (`-00001-of-0000N.gguf`) goes with every part that exists, each checked the same way; its size is the sum of the parts, one `stat` each;
+- no file that a task assignment or the managed model names, with links followed, is removed;
+- a file whose identity, kind, folder or link target changed since it was checked is not removed.
+
+Only files are removed, one by one, and then folders left empty; nothing is removed recursively. In the Hugging Face layout the snapshot link and its blob go together, a blob that another snapshot link still points to stays, empty folders from the file's folder up to `snapshots/` go, and when `snapshots/` and `blobs/` are both gone the repository folder goes too, with its `refs/` files (each one a 40-character commit id) and its empty `.no_exist/<commit>/` markers, but only when nothing else is in it. `.incomplete` and `mmproj` files are never touched. The work runs off the UI thread. A failure removes nothing more and says why; part way, it says `removed <files> (freed <size>); not removed <files or the blob of a file>: <reason>`. Every reply requests one forced detection; a success shows `deleted <file> · freed <size>` (`deleted <file> (N parts) · freed <size>` for a split model), where the size is what was actually removed: a blob another snapshot keeps frees nothing.
+
+#### Scenario: A split model [auto]
+- GIVEN the three parts of a split model of 10, 20 and 30 bytes and an `.incomplete` part beside them
+- WHEN part 1 is deleted
+- THEN all three parts are gone, 60 bytes are freed, and the `.incomplete` file stays
+
+#### Scenario: A shared blob [auto]
+- GIVEN two snapshots of one repository linking to the same blob
+- WHEN the file of one snapshot is deleted
+- THEN its link and its empty snapshot folder go, and the blob and the other link stay
+
+#### Scenario: A link out of the folders [auto]
+- GIVEN a `.gguf` link in a scanned folder that points outside every scanned folder, or a Hugging Face link to another repository's blob
+- WHEN it is deleted
+- THEN the delete is refused and nothing is removed
+
+#### Scenario: A failure part way [auto]
+- GIVEN a snapshot link whose blob cannot be removed
+- WHEN it is deleted
+- THEN the link is gone, the notice says it was removed and that the blob was not, and the repository folder stays

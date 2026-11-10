@@ -7,21 +7,30 @@
 //! [`Picker::delete_reply`].
 //!
 //! The screen knows only a [`DeleteTarget`], so another kind of model joins
-//! by adding one.
+//! by adding one. A llama.cpp file is measured first: `d` asks the runtime
+//! for its size ([`Outcome::Measure`]), and `y` waits for it.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::super::catalog::same_model;
 use super::super::config::{AiConfig, Task};
-use super::super::{Detection, hf};
+use super::super::{Detection, Status, hf};
 use super::hub::{info, shown};
-use super::{Level, Mark, Outcome, PickKey, PickRow, Picker, wrap_note};
+use super::{Level, MANAGED_MARK, Mark, Outcome, PickKey, PickRow, Picker, wrap_note};
 
 /// The footer of the confirmation: the screen's keys.
 pub const HINT_DELETE: &str = "y delete · any other key back";
 
 /// The footer while the delete runs.
 pub const HINT_DELETING: &str = "deleting…";
+
+/// The footer while the runtime measures a llama.cpp file: `y` waits.
+pub const HINT_MEASURING: &str = "measuring… · any other key back";
+
+/// The line of a file in the Hugging Face cache, which other tools share.
+pub const SHARED_CACHE: &str =
+    "in the shared Hugging Face cache: other tools that use it will need to download it again";
 
 /// The id of the last delete: a reply carries it, so one left behind by a
 /// closed menu never answers a later delete.
@@ -33,19 +42,63 @@ pub enum DeleteTarget {
     /// A model of the local Ollama server, by the name it lists. `size` is
     /// what it lists, `None` when it listed none.
     Ollama { name: String, size: Option<u64> },
+    /// A llama.cpp model file the scan listed.
+    Gguf(GgufFile),
+}
+
+/// A llama.cpp model file to delete, with every part of a split model.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GgufFile {
+    /// The path the scan listed: the row's key.
+    pub path: String,
+    /// The sum of its parts, `None` until the runtime measured them. In a
+    /// delete's reply, what the delete freed.
+    pub size: Option<u64>,
+    /// How many files it has: more than one for a split model.
+    pub parts: usize,
+    /// The model paths the config uses: the runtime refuses to delete any
+    /// of them, however it is spelled.
+    pub in_use: Vec<PathBuf>,
+}
+
+impl GgufFile {
+    /// Whether the file sits in the Hugging Face cache layout
+    /// (`models--<org>--<repo>/snapshots/<commit>/`).
+    pub fn in_hub_cache(&self) -> bool {
+        let names: Vec<&str> = self.path.split('/').collect();
+        names
+            .windows(3)
+            .any(|w| w[0].starts_with("models--") && w[1] == "snapshots")
+    }
+
+    fn folder(&self) -> String {
+        Path::new(&self.path)
+            .parent()
+            .map_or_else(String::new, |p| p.display().to_string())
+    }
 }
 
 impl DeleteTarget {
-    /// The name the row shows.
+    /// The name the row shows: a file's name, without its folder.
     pub fn name(&self) -> &str {
         match self {
             Self::Ollama { name, .. } => name,
+            Self::Gguf(file) => file.path.rsplit('/').next().unwrap_or(&file.path),
+        }
+    }
+
+    /// The row's key: the name of an Ollama model, the path of a file.
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Ollama { name, .. } => name,
+            Self::Gguf(file) => &file.path,
         }
     }
 
     fn engine(&self) -> &'static str {
         match self {
             Self::Ollama { .. } => "ollama",
+            Self::Gguf(_) => "llamacpp",
         }
     }
 
@@ -59,6 +112,15 @@ impl DeleteTarget {
                 hf::size_label(*size)
             ),
             Self::Ollama { size: None, .. } => "size: unknown".to_owned(),
+            Self::Gguf(GgufFile { size: None, .. }) => "size: measuring…".to_owned(),
+            Self::Gguf(GgufFile {
+                size: Some(size),
+                parts,
+                ..
+            }) => match parts {
+                0 | 1 => format!("size: {}", hf::size_label(*size)),
+                n => format!("size: {} in {n} parts", hf::size_label(*size)),
+            },
         }
     }
 
@@ -74,6 +136,17 @@ impl DeleteTarget {
                 hf::size_label(*size)
             ),
             Self::Ollama { name, size: None } => format!("deleted {}", shown(name)),
+            Self::Gguf(file) => {
+                let parts = match file.parts {
+                    0 | 1 => String::new(),
+                    n => format!(" ({n} parts)"),
+                };
+                let freed = file
+                    .size
+                    .map(|size| format!(" · freed {}", hf::size_label(size)))
+                    .unwrap_or_default();
+                format!("deleted {}{parts}{freed}", shown(self.name()))
+            }
         }
     }
 
@@ -113,6 +186,8 @@ pub struct Delete {
     armed: bool,
     /// The id of the delete that runs; any other reply is stale.
     in_flight: Option<u64>,
+    /// The id of the measure of a llama.cpp file not answered yet.
+    measuring: Option<u64>,
 }
 
 impl Delete {
@@ -123,6 +198,8 @@ impl Delete {
     pub fn hint(&self) -> &'static str {
         if self.in_flight.is_some() {
             HINT_DELETING
+        } else if self.measuring.is_some() {
+            HINT_MEASURING
         } else {
             HINT_DELETE
         }
@@ -131,6 +208,11 @@ impl Delete {
     /// The id of the delete that runs, if any.
     pub fn in_flight(&self) -> Option<u64> {
         self.in_flight
+    }
+
+    /// The id of the measure the screen waits for, if any.
+    pub fn measuring(&self) -> Option<u64> {
+        self.measuring
     }
 
     /// The screen was drawn: its answers count.
@@ -142,11 +224,16 @@ impl Delete {
         let lines = if self.in_flight.is_some() {
             vec![format!("deleting {}…", self.target.name())]
         } else {
-            vec![
-                format!("delete {}?", self.target.name()),
-                self.target.size_line(),
-                "This cannot be undone.".to_owned(),
-            ]
+            let mut lines = vec![format!("delete {}?", self.target.name())];
+            if let DeleteTarget::Gguf(file) = &self.target {
+                lines.push(format!("folder: {}", file.folder()));
+            }
+            lines.push(self.target.size_line());
+            if matches!(&self.target, DeleteTarget::Gguf(file) if file.in_hub_cache()) {
+                lines.push(SHARED_CACHE.to_owned());
+            }
+            lines.push("This cannot be undone.".to_owned());
+            lines
         };
         lines
             .iter()
@@ -164,39 +251,90 @@ impl Picker {
         }
     }
 
-    /// What `d` would delete on the row under the cursor: only a downloaded
-    /// model of the Ollama server.
+    /// What `d` would delete on the row under the cursor: a downloaded
+    /// model of the Ollama server, or a llama.cpp file the model scan found.
+    /// A model a running llama-server lists has no file behind it, and the
+    /// managed model is listed even when the scan did not find it: neither
+    /// goes.
     pub fn delete_target(
         &self,
         draft: &AiConfig,
         detection: Option<&Detection>,
     ) -> Option<DeleteTarget> {
-        if !matches!(&self.level, Level::Models { engine } if engine == "ollama") {
+        let Level::Models { engine } = &self.level else {
+            return None;
+        };
+        if engine != "ollama" && engine != "llamacpp" {
             return None;
         }
         let rows = self.rows(draft, detection);
         let row = rows.get(self.cursor)?;
-        match &row.key {
-            PickKey::Model(name) if row.mark == Mark::Downloaded => Some(DeleteTarget::Ollama {
+        let PickKey::Model(name) = &row.key else {
+            return None;
+        };
+        if engine == "ollama" {
+            return (row.mark == Mark::Downloaded).then(|| DeleteTarget::Ollama {
                 name: name.clone(),
                 size: detection.and_then(|d| d.ollama_size(name)),
-            }),
-            _ => None,
+            });
         }
+        let scanned = detection.is_some_and(|d| {
+            d.local_models
+                .iter()
+                .any(|m| m.as_os_str() == name.as_str())
+        });
+        (scanned && row.mark == Mark::Status(MANAGED_MARK.to_owned())).then(|| {
+            DeleteTarget::Gguf(GgufFile {
+                path: name.clone(),
+                size: None,
+                parts: 1,
+                in_use: Vec::new(),
+            })
+        })
     }
 
     /// Why `target` cannot go now, as the outcome that says so.
-    fn refusal(&self, target: &DeleteTarget, uses: InUse<'_>) -> Option<Outcome> {
+    fn refusal(
+        &self,
+        target: &DeleteTarget,
+        uses: InUse<'_>,
+        detection: Option<&Detection>,
+    ) -> Option<Outcome> {
         if self.download.is_some() {
             return Some(Outcome::Busy);
         }
-        let (engine, name) = (target.engine(), target.name());
-        let runs_on = |e: &str, m: &str| e == engine && same_model(engine, m, name);
+        let (engine, key, name) = (target.engine(), target.key(), target.name());
+        let runs_on = |e: &str, m: &str| e == engine && same_model(engine, m, key);
         if uses.turns.iter().any(|(e, m)| runs_on(e, m)) {
             return Some(Outcome::Refused(format!(
                 "{} is in use by a running chat turn",
                 shown(name)
             )));
+        }
+        if let DeleteTarget::Gguf(file) = target {
+            let path = Path::new(&file.path);
+            let managed = [uses.draft, uses.saved]
+                .iter()
+                .any(|config| config.managed().is_some_and(|m| m.model == path));
+            if managed {
+                return Some(Outcome::Refused(format!(
+                    "{} is the model of the managed llama-server · choose another one for it first",
+                    shown(name)
+                )));
+            }
+            let served = detection.is_some_and(|d| {
+                d.engines.iter().any(|s| {
+                    s.id == "llamacpp"
+                        && s.status == Status::Available
+                        && s.models.iter().any(|m| m == key)
+                })
+            });
+            if served {
+                return Some(Outcome::Refused(format!(
+                    "{} is loaded by the running llama-server",
+                    shown(name)
+                )));
+            }
         }
         // The saved config counts too: until a save, it is what runs.
         let tasks: Vec<&str> = Task::ALL
@@ -224,27 +362,50 @@ impl Picker {
     }
 
     /// `d`: open the confirmation of the row under the cursor, or say why
-    /// the model cannot go.
+    /// the model cannot go. A llama.cpp file is measured first.
     pub fn open_delete(&mut self, uses: InUse<'_>, detection: Option<&Detection>) -> Outcome {
-        let Some(target) = self.delete_target(uses.draft, detection) else {
+        let Some(mut target) = self.delete_target(uses.draft, detection) else {
             return Outcome::Stay;
         };
-        if let Some(refused) = self.refusal(&target, uses) {
+        if let Some(refused) = self.refusal(&target, uses, detection) {
             return refused;
         }
         let Level::Models { engine } = &self.level else {
             return Outcome::Stay;
         };
+        let measuring = match &mut target {
+            DeleteTarget::Gguf(file) => {
+                file.in_use = in_use_paths(uses);
+                Some(LAST_ID.fetch_add(1, Ordering::Relaxed) + 1)
+            }
+            DeleteTarget::Ollama { .. } => None,
+        };
         self.level = Level::Delete(Delete {
             engine: engine.clone(),
-            target,
+            target: target.clone(),
             row: self.cursor,
             armed: false,
             in_flight: None,
+            measuring,
         });
         self.cursor = 0;
         self.offset = 0;
-        Outcome::Stay
+        match measuring {
+            Some(id) => Outcome::Measure(DeleteAsk { id, target }),
+            None => Outcome::Stay,
+        }
+    }
+
+    /// The runtime measured the file of the screen: its target now carries
+    /// the size and the parts. Any other answer changes nothing.
+    pub fn delete_measured(&mut self, ask: DeleteAsk) {
+        if let Level::Delete(delete) = &mut self.level
+            && delete.measuring == Some(ask.id)
+            && delete.target.key() == ask.target.key()
+        {
+            delete.target = ask.target;
+            delete.measuring = None;
+        }
     }
 
     /// A key on the confirmation: `yes` is an unmodified `y`. A key pressed
@@ -266,10 +427,17 @@ impl Picker {
             self.close_delete(uses.draft, detection);
             return Outcome::Stay;
         }
-        let target = delete.target.clone();
-        if let Some(refused) = self.refusal(&target, uses) {
+        // The size is shown before a file can go (D4).
+        if delete.measuring.is_some() {
+            return Outcome::Stay;
+        }
+        let mut target = delete.target.clone();
+        if let Some(refused) = self.refusal(&target, uses, detection) {
             self.close_delete(uses.draft, detection);
             return refused;
+        }
+        if let DeleteTarget::Gguf(file) = &mut target {
+            file.in_use = in_use_paths(uses);
         }
         let id = LAST_ID.fetch_add(1, Ordering::Relaxed) + 1;
         if let Level::Delete(delete) = &mut self.level {
@@ -278,10 +446,14 @@ impl Picker {
         Outcome::Delete(DeleteAsk { id, target })
     }
 
-    /// The reply of delete `id`: back on the model rows, near the row. A
-    /// reply that is not the delete in flight changes nothing.
+    /// The reply of delete `id`, or a measure that failed: back on the model
+    /// rows, near the row. A reply that is not the delete in flight, or the
+    /// measure not answered yet, changes nothing.
     pub fn delete_reply(&mut self, id: u64, draft: &AiConfig, detection: Option<&Detection>) {
-        if self.delete().is_some_and(|d| d.in_flight == Some(id)) {
+        if self
+            .delete()
+            .is_some_and(|d| d.in_flight == Some(id) || d.measuring == Some(id))
+        {
             self.close_delete(draft, detection);
         }
     }
@@ -292,11 +464,32 @@ impl Picker {
         let Level::Delete(delete) = &self.level else {
             return;
         };
-        let key = PickKey::Model(delete.target.name().to_owned());
+        let key = PickKey::Model(delete.target.key().to_owned());
         self.cursor = delete.row;
         self.level = Level::Models {
             engine: delete.engine.clone(),
         };
         self.reanchor(Some(key), draft, detection);
     }
+}
+
+/// The model files the config uses: the managed llama-server's, draft and
+/// saved, and every llama.cpp task assignment.
+fn in_use_paths(uses: InUse<'_>) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for config in [uses.draft, uses.saved] {
+        let assigned = Task::ALL.into_iter().filter_map(|task| {
+            let slot = config.get(task);
+            (slot.engine.as_deref() == Some("llamacpp"))
+                .then(|| slot.model.as_deref().map(PathBuf::from))
+                .flatten()
+        });
+        let managed = config.managed().map(|m| m.model.clone());
+        for path in managed.into_iter().chain(assigned) {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
 }

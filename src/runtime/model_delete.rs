@@ -20,6 +20,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::core::ai::gguf::{is_model_file, label, split_part};
 use crate::core::ai::hf::size_label;
+use crate::core::ai::picker::{DeleteAsk, DeleteTarget};
 
 /// How deep and how many entries of a repository's snapshots are read to
 /// find the other links to a blob, as the model scan reads.
@@ -387,6 +388,31 @@ fn is_ref(path: &Path) -> bool {
             let id = text.trim();
             id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit())
         })
+}
+
+/// The `d` of a llama.cpp file: `ask` with its size and parts, or why it
+/// cannot be deleted. Removes nothing.
+pub fn measure(mut ask: DeleteAsk, dirs: &[PathBuf]) -> (DeleteAsk, Result<(), String>) {
+    let DeleteTarget::Gguf(file) = &mut ask.target else {
+        return (ask, Err("not a model file".to_owned()));
+    };
+    let answer = plan(Path::new(&file.path), dirs, &file.in_use).map(|plan| {
+        file.size = Some(plan.size());
+        file.parts = plan.parts();
+    });
+    (ask, answer)
+}
+
+/// The `y` of a llama.cpp file: everything is checked again, then it is
+/// deleted. On success `ask`'s size is what was freed.
+pub fn carry_out(mut ask: DeleteAsk, dirs: &[PathBuf]) -> (DeleteAsk, Result<(), String>) {
+    let DeleteTarget::Gguf(file) = &mut ask.target else {
+        return (ask, Err("not a model file".to_owned()));
+    };
+    let answer = delete(Path::new(&file.path), dirs, &file.in_use).map(|freed| {
+        file.size = Some(freed);
+    });
+    (ask, answer)
 }
 
 #[cfg(test)]

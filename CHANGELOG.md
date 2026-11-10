@@ -24,6 +24,15 @@ baseline.
   refused and the notice says who uses it, and so is any delete while a
   download runs. The notice says what was freed, as an upper bound, since
   Ollama models share layers.
+- The model picker deletes a llama.cpp model file the same way: `d` on its row
+  measures it, and the confirmation names the file, its folder and its size
+  (all parts of a split model), and warns when the file is in the shared
+  Hugging Face cache. In that cache the snapshot link and its blob go
+  together, a blob another snapshot still uses stays, and a repository left
+  empty goes. lazarobox checks the file again before removing anything: it
+  must lie inside the scanned model folders with links followed, and it
+  removes only files and folders left empty. The managed llama-server's model
+  and a model a task uses are refused.
 
 ## [1.16.0] - 2026-11-09
 
