@@ -44,6 +44,14 @@ The `orchestrate` prompt family MUST include playbooks for the ODD steps authori
 
 ## ADDED Requirements
 
+### Requirement: Orchestrate prompt size [K1, W6]
+The built-in `orchestrate` prompt of each profile (`orchestrate.md` with `orchestrate_odd.md`) MUST be at most 6 KiB, so the brief, clarification and split rules fit (owner, 2026-11-10: "si, sube el tope a 6 KiB"). Every other built-in prompt MUST stay at most 4 KiB.
+
+#### Scenario: Caps per task [auto]
+- GIVEN every built-in prompt of both profiles
+- WHEN each is measured
+- THEN each `orchestrate` prompt is non-empty and at most 6 KiB, and every other one is non-empty and at most 4 KiB
+
 ### Requirement: Worker prompts require tools and forbid fragments as a result [W2]
 The `code` worker prompt and the `simple` prompt MUST tell the worker to make its changes through the write tools and to end with `propose_batch`, and that a code fragment in its final text is not a result. The `code` prompt shared with chat turns MUST NOT change what a chat turn sees: the worker-specific instruction MUST be applied to worker turns only. A worker prompt MUST NOT contradict the tools block appended to it.
 
