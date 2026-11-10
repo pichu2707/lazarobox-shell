@@ -514,6 +514,27 @@ No file listed in the design is missing.
 
 ---
 
+## Slice W11: the coordinator reads panes (one PR, delivered first)
+
+Owner, 2026-11-10, after a coordinator on sonnet answered "no tengo ninguna herramienta para leer los paneles": "si, añádelo al hito 3". Today `Toolset::Orchestrator` is `Read` plus `Orchestra` (`src/core/ai/orchestra/mod.rs:100`), so with ORCH on the chat loses `list_panes` and `read_pane` (family `Pane`, `src/core/ai/tools/mod.rs:603-617`), and agent-tools says `read_pane` MUST NOT be offered to an orchestrator session (`openspec/specs/agent-tools/spec.md:730`). The coordinator gets both read tools, with the same approval as a chat; it never gets `run_in_pane`, and workers stay without any `Pane` tool.
+
+### PR23: `list_panes` and `read_pane` for the coordinator
+
+Files: `src/core/ai/tools/mod.rs` (`Family`, `Call::family` 431, the `Pane` registry entries 603-617), `src/core/ai/orchestra/mod.rs` (`Toolset::families` 95-102, `capped` 107), `src/core/ai/tools/mcp.rs` (the served list per toolset, test at 657), the coordinator's tool host and approval path, README "Paneles: `list_panes`" and "`read_pane`".
+
+- [ ] 23.1 RED (pure, `tools/mod.rs`): the coordinator's tool set offers `list_panes` and `read_pane` and never `run_in_pane`; `parse_call_in` for the coordinator accepts the two reads and refuses `run_in_pane` as not offered. GREEN: either a read-only pane family (for example `PaneRead` with `list_panes` and `read_pane`, `Pane` keeping `run_in_pane`) or a per-call rule; whichever is chosen is the single gate for the list and the parse, as `Toolset::families` documents.
+- [ ] 23.2 GUARD: `Toolset::Code` and `Toolset::ReadOnly` workers are offered no pane tool, and a plain chat keeps all three (`list_panes`, `read_pane`, `run_in_pane`) exactly as today; the existing `Family::Pane` tests (`tools/mod.rs:1620, 1656, 1661, 2654-2671`) pass, changed only where the family split renames a family.
+- [ ] 23.3 RED (MCP, `tools/mcp.rs`): a coordinator session's `tools/list` contains `list_panes` and `read_pane` and not `run_in_pane`; a worker session's contains none of the three (replaces the scenario "read_pane not served to a worker", which today also covers the orchestrator session).
+- [ ] 23.4 RED (app or host): a coordinator on a cloud engine calling `list_panes` gets the same ask as a chat, with the exact text, and no approval mode answers it; `read_pane` asks on every engine as today, and cannot target the chat's own pane.
+- [ ] 23.5 GUARD (menu ceiling): `capped` still removes only `Write` and `Exec`; the pane reads have no toggle, as for a chat (README: "no tiene interruptor propio").
+- [ ] 23.6 Prompt: if a coordinator rule is needed so it calls `list_panes` before saying it cannot see the panes, it waits on K1 (prompt cap); otherwise none. Say which in the PR.
+- [ ] 23.7 Docs: README `list_panes` and `read_pane` sections say the coordinator has them and workers do not; the ORCH notice text (what the chat loses when ORCH turns on, #596) no longer lists them; CHANGELOG `Unreleased`.
+- Done when: `cargo test --locked` green; manual M23: with ORCH on and the coordinator on a cloud CLI, "¿qué tengo en pantalla?" with `nvim` open in another pane leads to a `read_pane` ask, and after `y` the answer names the file shown in nvim's status line.
+- Production forecast: see the table. Cut point: none expected.
+- Depends on: none (delivered before PR15).
+
+---
+
 ## Slice W5: the worker clock and the labelled command ask (one PR)
 
 Spec references: agent-orchestrator "Waiting on the user stops the worker clock" ("A long review does not time out the worker", "Work time still counts", "The run wall clock still counts"); "Worker toolsets" scenario "Review time does not count against the deadline"; command-runner "Approval on every command [W5]" ("Worker command carries the label", "Worker answer stays with the worker"); chat-pane "Worker asks are labelled and queued" ("Command ask reaches its own worker", "Ask shows the label"). Design: D5, D19, owner items 3 and 4. Workers cannot call `run_command` until W6, so the Exec half is proven through the host and app with a fake caller.
@@ -719,6 +740,7 @@ Basis: the design's File Changes figures for each slice multiplied by 2.4 (low) 
 
 | PR | Slice | Scope | Design estimate | Re-forecast x2.4-x3 (production) | Milestone-2 ratio (+30%) | 400-line risk |
 |---|---|---|---|---|---|---|
+| PR23 | W11 | `list_panes` and `read_pane` for the coordinator, never `run_in_pane` | 60-120 | 145-360 | 80-155 | Low |
 | PR15 | W5 | pausing deadline and total, labelled `Exec` | 170-290 | 410-870 | 220-380 | High: over 400 even at x2.4 low; split at the commit boundary (clock / `Exec`) |
 | PR16 | W6 | `run_command` for workers, command results, prompts; `/exec` | 110-200 plus about 60-100 for `/exec` (not in the design's row) | 410-900 | 220-390 | High: split (worker commands / `/exec`) |
 | PR17 | W7 | mandatory review, D6 pause, internal reviewers, three notices | 180-300 | 430-900 | 235-390 | High: split (mandatory review / internal reviewers and notices) |
@@ -736,7 +758,7 @@ Chained PRs recommended: Yes
 Chain strategy: stacked-to-main
 Decision needed before apply: Yes
 
-Proposed PR boundaries (stacked-to-main, merge in this order): PR15 -> PR16 -> PR17 -> PR18 -> PR19 -> PR20 -> PR21 -> PR22, one PR per slice, each split into its named a/b halves (two PRs) only when its production count passes 400 at apply time, as milestone 2 did. PR21 has no dependency on PR19/PR20 and may be built any time after PR18, but merges in this order. Suggested branches: `feat/orch-worker-clock` (PR15), `feat/orch-worker-commands` (PR16), `feat/orch-cheap-review` (PR17), `feat/orch-simple-task` (PR18), `feat/orch-simple-brief` (PR19), `feat/orch-clarify` (PR20), `feat/orch-line-limit` (PR21), `feat/orch-limit-ask` (PR22).
+Proposed PR boundaries (stacked-to-main, merge in this order): PR23 -> PR15 -> PR16 -> PR17 -> PR18 -> PR19 -> PR20 -> PR21 -> PR22, one PR per slice, each split into its named a/b halves (two PRs) only when its production count passes 400 at apply time, as milestone 2 did. PR21 has no dependency on PR19/PR20 and may be built any time after PR18, but merges in this order. Suggested branches: `feat/orch-worker-clock` (PR15), `feat/orch-worker-commands` (PR16), `feat/orch-cheap-review` (PR17), `feat/orch-simple-task` (PR18), `feat/orch-simple-brief` (PR19), `feat/orch-clarify` (PR20), `feat/orch-line-limit` (PR21), `feat/orch-limit-ask` (PR22).
 
 Dependencies that matter: PR16 needs PR15 (a worker's command ask must reach the worker); PR17's D6 pause reuses PR15's count; PR18 needs PR16 (Exec in the `simple` role); PR19 replaces PR18's interim read-only rule; PR20 needs PR19 (`answers`); PR22 needs PR17 (the ask precedes the mandatory review), PR20 (`Closing::Split` is not a round) and PR21 (the counter).
 

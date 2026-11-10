@@ -71,6 +71,7 @@ Lines are production only and [inferred]. Each slice ships independently, and OR
 | W7 | Mandatory review for cheap authors; same-model warning | 120-200 | W4 | Review returns to high-risk or on request |
 | W8 | `simple` task: menu row, role prompt, brief check, clarification rounds | 200-300 | W2 | Row gone; older builds ignore the table; stored runs per design |
 | W9 | Per-file limit ask; writes outside the brief ask | 210-320 | W8 | `simple` writes with no limit; brief check remains |
+| W11 | The coordinator gets `list_panes` and `read_pane` (same asks as a chat), never `run_in_pane`; added by the owner on 2026-11-10, delivered first | 60-120 | - | Coordinator back to Read+Orchestra |
 | W10 | One batch per write-capable worker; parallel writers; several batch reviews in a run | 150-300, not yet explored | W2 | Workers return to one batch per pane |
 
 Total: 1,420-2,270. Design decides where W10 falls in the order, since parallel `simple` workers depend on it.
