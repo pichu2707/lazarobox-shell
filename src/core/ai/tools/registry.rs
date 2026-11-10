@@ -21,6 +21,9 @@ pub enum Family {
     Orchestra,
     /// The three read-only GitHub tools, run through `gh` on the host.
     Github,
+    /// `gh_issue_draft`: opens the Feedback form with the model's draft. It
+    /// runs no `gh`: only the user's Ctrl+S in the form sends anything.
+    IssueDraft,
 }
 
 /// Which families are on: a bitset, one bit per [`Family`]. The single gate
@@ -41,7 +44,8 @@ impl FamilySet {
         .with(Family::Git)
         .with(Family::GitWrite)
         .with(Family::Orchestra)
-        .with(Family::Github);
+        .with(Family::Github)
+        .with(Family::IssueDraft);
 
     /// This set minus `family`.
     pub const fn without(self, family: Family) -> FamilySet {
@@ -430,7 +434,7 @@ mod tests {
         assert!(without["properties"].get("timeout_secs").is_none());
     }
 
-    const EVERY_FAMILY: [Family; 9] = [
+    const EVERY_FAMILY: [Family; 10] = [
         Family::Read,
         Family::Search,
         Family::Write,
@@ -440,6 +444,7 @@ mod tests {
         Family::Pane,
         Family::Orchestra,
         Family::Github,
+        Family::IssueDraft,
     ];
 
     // Spec (agent-tools, tool families): one bit per family, so the two git

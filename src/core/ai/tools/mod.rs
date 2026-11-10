@@ -13,6 +13,7 @@ pub mod github;
 pub mod glob;
 #[cfg(test)]
 mod golden;
+pub mod issue_draft;
 pub mod label;
 pub mod mcp;
 pub mod panes;
@@ -183,6 +184,9 @@ pub enum Call {
     Orchestra(OrchCall),
     /// A GitHub read: only numbers and a closed set, never model text.
     Github(github::GhCall),
+    /// A draft for the Feedback form; the user reviews it and only their
+    /// Ctrl+S sends it. Runs nothing on GitHub.
+    IssueDraft(issue_draft::IssueDraft),
 }
 
 impl std::fmt::Debug for Call {
@@ -224,6 +228,12 @@ impl std::fmt::Debug for Call {
             Call::ProposeBatch => f.write_str("ProposeBatch"),
             Call::Orchestra(call) => f.debug_tuple("Orchestra").field(call).finish(),
             Call::Github(call) => f.debug_tuple("Github").field(call).finish(),
+            Call::IssueDraft(draft) => f
+                .debug_struct("IssueDraft")
+                .field("kind", &draft.kind)
+                .field("title_len", &draft.title.len())
+                .field("description_len", &draft.description.len())
+                .finish(),
             Call::RunCommand { args } => f.debug_struct("RunCommand").field("args", args).finish(),
             Call::ListPanes => f.write_str("ListPanes"),
             Call::ReadPane { pane, scrollback } => f
@@ -301,6 +311,7 @@ impl Call {
             Call::External { name, .. } => name,
             Call::Orchestra(call) => call.name(),
             Call::Github(call) => call.name(),
+            Call::IssueDraft(_) => "gh_issue_draft",
             Call::FindDir { .. } => "find_dir",
             Call::ListDir { .. } => "list_dir",
             Call::ReadFile { .. } => "read_file",
@@ -411,6 +422,7 @@ impl Call {
             }
             Call::Orchestra(call) => call.argument(),
             Call::Github(call) => Cow::Owned(call.argument()),
+            Call::IssueDraft(draft) => Cow::Owned(draft.argument()),
         }
     }
 
@@ -440,6 +452,17 @@ pub enum ToolError {
     PaneRange,
     /// `read_pane`: `scrollback` is not a whole number from 1 to 200.
     ScrollbackRange,
+    /// `gh_issue_draft`: `kind` is neither `idea` nor `bug`.
+    DraftKind,
+    /// `gh_issue_draft`: an empty title or description.
+    DraftEmpty,
+    /// `gh_issue_draft`: a title over the form's cap.
+    DraftTitleLong,
+    /// `gh_issue_draft`: a title with a line break, which the form's field
+    /// has no room for.
+    DraftTitleLines,
+    /// `gh_issue_draft`: a description over the form's cap.
+    DraftBodyLong,
 }
 
 /// The one required string argument of the 0.18.0 tools.
@@ -487,7 +510,7 @@ const fn id(name: &'static str, required: bool) -> ArgDef {
 
 /// The built-ins in offer order. `Access::Read` is only a classification,
 /// not an approval rule: see [`Access`].
-const BUILT_INS: [ToolDef; 28] = [
+const BUILT_INS: [ToolDef; 29] = [
     ToolDef {
         name: "find_dir",
         description: "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
@@ -743,6 +766,13 @@ const BUILT_INS: [ToolDef; 28] = [
         family: Family::Github,
         args: github::PR_ARGS,
     },
+    ToolDef {
+        name: "gh_issue_draft",
+        description: "Draft a GitHub issue for lazarobox itself from this conversation: an idea or goal (kind idea) or a bug report (kind bug), with a title of at most 120 characters and a description of at most 2000. Write the title and the description in English. The user must accept with y; then the Feedback form opens with the draft at the end of this turn for the user to review and send. You never send it, and this does not touch GitHub.",
+        access: Access::Read,
+        family: Family::IssueDraft,
+        args: issue_draft::ARGS,
+    },
     // The orchestration tools. `Access::Read` is only a classification: they
     // touch no file, the host routes them to the run manager.
     ToolDef {
@@ -982,6 +1012,9 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
     let parsed = parse_args(def.args, args, set)?;
     if def.family == Family::Github {
         return Ok(Call::Github(github::parse(name, args, &parsed)?));
+    }
+    if def.family == Family::IssueDraft {
+        return Ok(Call::IssueDraft(issue_draft::parse(&parsed)?));
     }
     if def.family == Family::Orchestra {
         // The table checked the shape and the limits; the orchestra parse

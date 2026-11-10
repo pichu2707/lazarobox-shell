@@ -218,7 +218,13 @@ Tools MUST only return or open paths inside `$HOME` (absolute, or `~`-relative a
 - WHEN `read_file` returns its text
 - THEN the key is replaced by the redaction marker
 
+#### Scenario: IssueDraft family is separate [auto]
+- GIVEN only the `issue_draft` toggle on, and in another run the master switch off
+- WHEN the registry is filtered for a chat
+- THEN in the first run only `gh_issue_draft` is added to the default list; in the second it is absent
+
 ### Requirement: Approval model
+`gh_issue_draft` needs its own `y` on every call, like `run_command`, `git_add` and `git_commit`, and no approval mode answers it (see issue-draft).
 `find_dir` and `list_dir` MUST run without approval, and `read_file` and `grep` MUST run without approval only on a local engine (see Read tools and their approval, code-search). `glob` MUST run without approval. Every other tool call MUST need an explicit user `y`, every time, and the approval of the file write tools is the batch review (see code-write): `create_dir`, `write_file` and `edit_file` stage and ask nothing by themselves, and nothing reaches the disk until the user approves the proposed batch as a whole. `run_command`, `git_add` and `git_commit` MUST each need their own `y` (see command-runner, git-tools). The only exception is a `run_in_pane` call in a chat whose approval mode is `auto` (see Chat approval mode): it is typed without a prompt and never executed. The fixed program allow-list of `run_command` bounds the program and is not an approval. There MUST be no "always allow", no per-session or per-tool trust, no configuration that approves automatically, and nothing MUST ever execute a command for the user without a `y`. Tools from a user MCP server MUST always be write tools. Waiting for an answer MUST NEVER end in an approval: a timeout, a cancel, a closed chat, a closed target pane, a lost connection and an app quit all end as `denied`. A chat MUST have at most one pending approval; another write request while one is pending MUST be denied at once with the reason `another approval is pending`.
 
 #### Scenario: No auto approval [auto]
@@ -526,7 +532,8 @@ Tool arguments, tool results, file contents, paths returned and commands MUST NO
 
 ### Requirement: Tool families
 Every registry entry MUST carry exactly one `Family`: `Read`, `Search`, `Write`, `Exec`, `Git`, `GitWrite`, `Pane` or `Github`. `Git` holds the read verbs (status, diff, log), and `GitWrite` holds add and commit. `Github` holds the three GitHub read tools (see github-tools). The set of tools a session sees MUST be a filter over families. `Toolset::Code` MUST include `Read`, `Search`, `Write`, `Exec`, `Git` and `GitWrite`, and MUST NOT include `Pane`, `Github` or any external tool. A worker session and an orchestrator session MUST NOT see `Github`. The per-family toggles MUST apply as a second filter: a family whose toggle is off is not registered, offered or executed, even when a toolset includes it. `Github` is the one family that a chat can also switch on for itself, through a grant the user gives with `/github` (see github-tools, The chat grant); that grant is part of the filter and never changes the saved toggle.
-(Previously: seven families, with no `Github` and no chat grant.)
+`IssueDraft` holds `gh_issue_draft` (see issue-draft). It is on by default (`[ai.tools] issue_draft`), offered only with `[ai.tools] enabled` on, and never given to a worker or the orchestrator turn: `Toolset::families` does not add it.
+(Previously: eight families, with no `IssueDraft`; before that, seven, with no `Github` and no chat grant.)
 
 #### Scenario: Code toolset [auto]
 - GIVEN every toggle on
@@ -562,7 +569,7 @@ Each registry entry MUST declare its arguments (name, kind string, integer, bool
 - THEN both reject it
 
 ### Requirement: Off equals 0.18.0
-With every coding-tools toggle off, the tool list, the schemas, the requests and the behaviour MUST be identical to those of release 0.18.0, except that the default tool list also holds `list_panes` and `read_pane` (see their requirements; the pinned bytes are no longer the 0.18.0 ones, on purpose). A characterization test MUST pin this.
+With every coding-tools toggle off, `issue_draft` included, the tool list, the schemas, the requests and the behaviour MUST be identical to those of release 0.18.0, except that the default tool list also holds `list_panes` and `read_pane` (see their requirements; the pinned bytes are no longer the 0.18.0 ones, on purpose). A characterization test MUST pin this.
 
 #### Scenario: Characterization [auto]
 - GIVEN all family toggles off

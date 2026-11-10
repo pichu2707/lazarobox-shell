@@ -193,7 +193,8 @@ impl CompactionMode {
 }
 
 /// A coding-tools family switch: one boolean under `[ai.tools]`, off by
-/// default. `Read` and `Pane` have none: they are the 0.18.0 tools.
+/// default except where [`ToolToggle::default_on`] says. `Read` and `Pane`
+/// have none: they are the 0.18.0 tools.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ToolToggle {
     Search,
@@ -202,17 +203,26 @@ pub enum ToolToggle {
     Git,
     GitWrite,
     Github,
+    IssueDraft,
 }
 
 impl ToolToggle {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Search,
         Self::Write,
         Self::Exec,
         Self::Git,
         Self::GitWrite,
         Self::Github,
+        Self::IssueDraft,
     ];
+
+    /// The value of the switch when the config says nothing: off, but for
+    /// the draft of an issue, which reaches nothing without a `y` and a
+    /// Ctrl+S (D1).
+    pub fn default_on(self) -> bool {
+        matches!(self, Self::IssueDraft)
+    }
 
     /// The key under `[ai.tools]`.
     pub fn key(self) -> &'static str {
@@ -223,6 +233,7 @@ impl ToolToggle {
             Self::Git => "git",
             Self::GitWrite => "git_write",
             Self::Github => "github",
+            Self::IssueDraft => "issue_draft",
         }
     }
 
@@ -235,6 +246,7 @@ impl ToolToggle {
             Self::Git => Family::Git,
             Self::GitWrite => Family::GitWrite,
             Self::Github => Family::Github,
+            Self::IssueDraft => Family::IssueDraft,
         }
     }
 }
@@ -415,7 +427,7 @@ pub struct AiConfig {
     tools: bool,
     approval: ApprovalMode,
     compaction: CompactionMode,
-    toggles: [bool; 6],
+    toggles: [bool; 7],
     mcp_servers: Vec<McpServer>,
     servers: ServerPorts,
     managed: Option<ManagedServer>,
@@ -533,7 +545,7 @@ impl Default for AiConfig {
             tools: true,
             approval: ApprovalMode::Ask,
             compaction: CompactionMode::Auto,
-            toggles: [false; 6],
+            toggles: ToolToggle::ALL.map(ToolToggle::default_on),
             mcp_servers: Vec::new(),
             servers: ServerPorts::default(),
             managed: None,
@@ -1098,18 +1110,18 @@ fn read_compaction(table: &Table, problems: &mut Vec<String>) -> CompactionMode 
 /// Reads the six `[ai.tools]` family switches. A missing key is off; a
 /// value of the wrong type is off with a problem for that key only. A
 /// non-table `ai.tools` was already reported by `read_tools`.
-fn read_toggles(table: &Table, problems: &mut Vec<String>) -> [bool; 6] {
+fn read_toggles(table: &Table, problems: &mut Vec<String>) -> [bool; 7] {
     let section = table
         .get("ai")
         .and_then(Value::as_table)
         .and_then(|ai| ai.get("tools"))
         .and_then(Value::as_table);
     ToolToggle::ALL.map(|toggle| match section.and_then(|s| s.get(toggle.key())) {
-        None => false,
+        None => toggle.default_on(),
         Some(Value::Boolean(on)) => *on,
         Some(_) => {
             problems.push(format!("ai.tools.{}: expected a boolean", toggle.key()));
-            false
+            toggle.default_on()
         }
     })
 }
@@ -3046,16 +3058,48 @@ mod tests {
         );
     }
 
-    // Spec (configuration): the six family toggles, default and parse.
+    // Spec (configuration): the family toggles, default and parse: off, but
+    // for the draft of an issue (D1).
     #[test]
     fn family_toggles_default_to_off_without_a_notice() {
         for text in ["", "[ai]\n", "[ai.tools]\n", "[ai.tools]\nother = 1\n"] {
             let (config, problems) = read_text(text);
             for toggle in ToolToggle::ALL {
-                assert!(!config.toggle(toggle), "{text:?} {toggle:?}");
+                let on = toggle == ToolToggle::IssueDraft;
+                assert_eq!(config.toggle(toggle), on, "{text:?} {toggle:?}");
             }
             assert!(problems.is_empty(), "{text:?}");
         }
+    }
+
+    // Spec (configuration, issue_draft): on by default; the key turns it off;
+    // a wrong type falls back to the default with the usual notice.
+    #[test]
+    fn the_issue_draft_toggle_is_on_until_the_file_says_off() {
+        assert!(AiConfig::default().toggle(ToolToggle::IssueDraft));
+        let (config, problems) = read_text("[ai.tools]\nissue_draft = false\n");
+        assert!(problems.is_empty());
+        assert!(!config.toggle(ToolToggle::IssueDraft));
+        assert_eq!(config.families(), FamilySet::LEGACY, "off is the old list");
+        let (config, problems) = read_text("[ai.tools]\nissue_draft = \"no\"\n");
+        assert!(config.toggle(ToolToggle::IssueDraft));
+        assert_eq!(
+            problems,
+            vec!["ai.tools.issue_draft: expected a boolean".to_owned()]
+        );
+    }
+
+    // Spec (configuration, D1): the master switch off offers no draft tool.
+    #[test]
+    fn the_master_switch_off_offers_no_issue_draft() {
+        let (mut config, _) = read_text("[ai.tools]\nenabled = false\n");
+        assert!(config.toggle(ToolToggle::IssueDraft), "the key is kept");
+        assert_eq!(config.families(), FamilySet::LEGACY);
+        config.set_tools_enabled(true);
+        assert_eq!(
+            config.families(),
+            FamilySet::LEGACY.with(Family::IssueDraft)
+        );
     }
 
     #[test]
@@ -3065,12 +3109,23 @@ mod tests {
             .into_iter()
             .filter(|t| config.toggle(*t))
             .collect();
-        assert_eq!(on, vec![ToolToggle::Write, ToolToggle::Exec]);
+        assert_eq!(
+            on,
+            vec![ToolToggle::Write, ToolToggle::Exec, ToolToggle::IssueDraft]
+        );
         assert!(problems.is_empty());
         let keys: Vec<_> = ToolToggle::ALL.into_iter().map(ToolToggle::key).collect();
         assert_eq!(
             keys,
-            ["search", "write", "exec", "git", "git_write", "github"]
+            [
+                "search",
+                "write",
+                "exec",
+                "git",
+                "git_write",
+                "github",
+                "issue_draft"
+            ]
         );
     }
 
@@ -3083,11 +3138,13 @@ mod tests {
             .into_iter()
             .filter(|t| config.toggle(*t))
             .collect();
-        assert_eq!(on, vec![ToolToggle::Github]);
+        assert_eq!(on, vec![ToolToggle::Github, ToolToggle::IssueDraft]);
         assert!(problems.is_empty());
         assert_eq!(
             config.families(),
-            FamilySet::LEGACY.with(Family::Github),
+            FamilySet::LEGACY
+                .with(Family::Github)
+                .with(Family::IssueDraft),
             "only the GitHub family is added"
         );
         let (config, problems) = read_text("[ai.tools]\ngithub = \"yes\"\nwrite = true\n");
@@ -3124,7 +3181,12 @@ mod tests {
         assert!(config.toggle(ToolToggle::Github), "the key is kept");
         assert_eq!(config.families(), FamilySet::LEGACY);
         config.set_tools_enabled(true);
-        assert_eq!(config.families(), FamilySet::LEGACY.with(Family::Github));
+        assert_eq!(
+            config.families(),
+            FamilySet::LEGACY
+                .with(Family::Github)
+                .with(Family::IssueDraft)
+        );
     }
 
     #[test]
@@ -3174,14 +3236,25 @@ mod tests {
     }
 
     #[test]
+    fn the_default_family_set_is_the_legacy_one_plus_the_issue_draft() {
+        assert_eq!(
+            AiConfig::default().families(),
+            FamilySet::LEGACY.with(Family::IssueDraft)
+        );
+    }
+
+    #[test]
     fn no_toggle_on_is_the_legacy_family_set() {
-        assert_eq!(AiConfig::default().families(), FamilySet::LEGACY);
+        let mut config = AiConfig::default();
+        config.set_toggle(ToolToggle::IssueDraft, false);
+        assert_eq!(config.families(), FamilySet::LEGACY);
     }
 
     #[test]
     fn each_toggle_adds_exactly_its_family_to_the_legacy_set() {
         for toggle in ToolToggle::ALL {
             let mut config = AiConfig::default();
+            config.set_toggle(ToolToggle::IssueDraft, false);
             config.set_toggle(toggle, true);
             let set = config.families();
             assert_eq!(set, FamilySet::LEGACY.with(toggle.family()), "{toggle:?}");

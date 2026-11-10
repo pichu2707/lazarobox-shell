@@ -203,7 +203,8 @@ pub(super) fn decide(choice: UserChoice) -> Effect {
         pane: chat_id(),
         run: RUN,
         choice,
-        ceiling: crate::core::ai::tools::registry::FamilySet::LEGACY,
+        ceiling: crate::core::ai::tools::registry::FamilySet::LEGACY
+            .with(crate::core::ai::tools::registry::Family::IssueDraft),
     }
 }
 
@@ -491,7 +492,8 @@ fn the_answer_names_the_run_of_its_alert() {
             pane: chat_id(),
             run: RunId(9),
             choice: UserChoice::Retry,
-            ceiling: crate::core::ai::tools::registry::FamilySet::LEGACY,
+            ceiling: crate::core::ai::tools::registry::FamilySet::LEGACY
+                .with(crate::core::ai::tools::registry::Family::IssueDraft),
         }]
     );
 }

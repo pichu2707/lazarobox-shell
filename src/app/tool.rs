@@ -20,12 +20,13 @@ use crate::core::ai::chat::{
 };
 use crate::core::ai::{
     config::ApprovalMode,
+    sanitize::clean,
     tools::{exec::Fallback, registry::FamilySet},
 };
 
 /// Why a call is denied without the user being asked, or when a refusal has no
 /// other reason to give. Short, and it goes back to the model.
-pub(super) const DECLINED: &str = "the user declined";
+pub const DECLINED: &str = "the user declined";
 pub const CANCELLED: &str = "cancelled";
 const TOOLS_OFF: &str = "tools are off";
 const WORKER_OVER: &str = "the worker already ended";
@@ -35,6 +36,10 @@ const APPROVAL_TOOLS_OFF: &str = "Tools are off: there is no approval mode to ch
 const TURN_OVER: &str = "the turn is over";
 const NO_SHELL: &str = "there is no shell pane in this tab";
 const CHAT_GONE: &str = "the chat is gone";
+/// Why a draft is refused while a Feedback form holds the user's own text.
+const FORM_OPEN: &str = "a feedback form is already open";
+/// The chat line of a draft the user did not accept.
+pub(super) const NO_DRAFT: &str = "no draft issue was opened";
 
 /// What a tool event says about a call that may wait for the user.
 pub(super) enum ToolEvent {
@@ -105,6 +110,18 @@ impl App {
         // The turn is over: the runtime denies what still waits, so the prompt
         // has nothing left to answer.
         if finished {
+            // A prompt the end of the turn takes away (a timeout, an engine
+            // failure) said nothing to the user otherwise.
+            if let Some(ask) = (self.panes.get(&id).and_then(PaneState::chat_state))
+                .and_then(|chat| chat.approvals().pending())
+                .filter(|approval| {
+                    matches!(approval.ask(), ApprovalAsk::IssueDraft(_))
+                        && approval.call().is_some_and(|(t, _)| t == turn)
+                })
+                .map(|approval| approval.ask().clone())
+            {
+                self.note_ask_denied(id, &ask);
+            }
             self.withdraw_tool_approval(id, |(t, _)| t == turn);
             self.drop_run_slots(|slot| slot.chat == id && slot.turn == turn);
         }
@@ -117,7 +134,14 @@ impl App {
                     .filter(|approval| approval.call() == Some((turn, call)))
                     .map(|approval| approval.ask().clone());
                 if let Some(ask) = waiting.filter(|_| status != ToolStatus::Ok) {
-                    self.note_screen_denied(id, &ask);
+                    self.note_ask_denied(id, &ask);
+                }
+                // The host denied a call the user had accepted: nothing opens.
+                if status != ToolStatus::Ok
+                    && let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+                    && chat.drop_issue_draft(turn, call)
+                {
+                    chat.push_system_line(NO_DRAFT.to_owned());
                 }
                 self.withdraw_tool_approval(id, |key| key == (turn, call));
                 let ran = self
@@ -167,6 +191,13 @@ impl App {
         }
         if !self.ai.tools_enabled() {
             return Self::deny_for(id, worker, turn, call, TOOLS_OFF);
+        }
+        // A form with the user's own text is never replaced, not even asked
+        // about: the model is told and the user keeps typing.
+        if matches!(ask, ApprovalAsk::IssueDraft(_))
+            && self.menu.as_ref().is_some_and(MenuState::feedback_open)
+        {
+            return Self::deny_for(id, worker, turn, call, FORM_OPEN);
         }
         // The screen is read now and frozen: the mode never answers it.
         if let ApprovalAsk::Screen {
@@ -228,6 +259,7 @@ impl App {
             | ApprovalAsk::Batch(_)
             | ApprovalAsk::Screen { .. }
             | ApprovalAsk::Consent { .. }
+            | ApprovalAsk::IssueDraft(_)
             | ApprovalAsk::Folder { .. } => None,
         };
         let mut why = blocked_read_reason(&ask, blocked).map(str::to_owned);
@@ -241,6 +273,53 @@ impl App {
             }
         }
         self.open_prompt(id, (turn, call), target, ask, why)
+    }
+
+    /// The user's `y` on a drafted issue: the draft waits for the turn's end.
+    pub(super) fn hold_issue_draft(&mut self, id: PaneId, approval: &Approval) {
+        if let (ApprovalAsk::IssueDraft(draft), Some((turn, call)), Some(chat)) = (
+            approval.ask(),
+            approval.call(),
+            self.panes.get_mut(&id).and_then(PaneState::chat_mut),
+        ) {
+            chat.hold_issue_draft(turn, call, draft.clone());
+        }
+    }
+
+    /// Turn `turn` of chat `id` ended, however it ended: the draft the user
+    /// accepted in it opens in the Feedback form (D3). A form with the user's
+    /// text is never replaced (nor is a mode the user is in): the chat says
+    /// so, the draft goes, and the model's `ok` stands.
+    pub(super) fn open_issue_draft(&mut self, id: PaneId, turn: u64) -> Vec<Effect> {
+        let Some(draft) = self
+            .panes
+            .get_mut(&id)
+            .and_then(PaneState::chat_mut)
+            .and_then(|chat| chat.take_issue_draft(turn))
+        else {
+            return Vec::new();
+        };
+        let mut effects = Vec::new();
+        if self.menu.is_none() && self.input == InputMode::Terminal {
+            effects = self.open_menu();
+        }
+        // The warning's answer reads the selected row: the form would move it.
+        let free = |menu: &&mut MenuState| !menu.feedback_open() && !menu.in_warning();
+        match self.menu.as_mut().filter(free) {
+            Some(menu) => {
+                menu.open_feedback_draft(draft.kind, &draft.title, &draft.description);
+                self.dirty = true;
+            }
+            None => {
+                if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                    chat.push_system_line(format!(
+                        "draft issue not opened (a form or another view is open): {}",
+                        clean(&draft.title)
+                    ));
+                }
+            }
+        }
+        effects
     }
 
     /// Opens the approval overlay of the call for `ask`, aimed at `target`.

@@ -76,6 +76,12 @@ use crate::{
 /// What the model is told when a call needs the user and no approver is
 /// wired.
 pub const NOT_APPROVED: &str = "the user did not approve it";
+/// What the model is told on the user's `y`: the form is theirs (D2).
+pub(super) const READY: &str = "The user accepted: the Feedback form will open with this draft at the end of this turn for the user to review and send. You do not send it.";
+/// What a later `gh_issue_draft` of the turn answers after a denial.
+pub(super) const DRAFT_DECLINED: &str = "a draft issue was already denied in this turn";
+/// The key of a denied draft in the turn's `allowed` set.
+const DRAFT_DENIED_KEY: &str = "issue-draft-denied";
 
 /// Where a call that needs the user's answer waits for it. The future is
 /// dropped when the call is cancelled or its chat closes; a timer never
@@ -637,11 +643,12 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     // How an answer of the approval mode is taken: only as the facts this
     // ask carried allow.
     let mut unprompted = Unprompted::Never;
-    // A GitHub read: what the checks before the prompt found, the keys the
-    // answer is remembered under, and a decline made earlier in this turn.
+    // A GitHub read: what the checks before the prompt found and the keys
+    // the answer is remembered under. A GitHub read or a draft: the reason
+    // of a decline made earlier in this turn.
     let mut github_plan = None;
     let mut github_keys = None;
-    let mut declined = false;
+    let mut declined = None;
     // A write over a template that is on disk tells what it holds, so it asks
     // like an edit of it. Whether the file exists is read before the match.
     let overwrites = match &checked {
@@ -815,7 +822,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 Ok(planned) => {
                     match github::consent(&scope, gh, &planned.slug) {
                         github::Consent::Free => {}
-                        github::Consent::Declined => declined = true,
+                        github::Consent::Declined => declined = Some(github::DECLINED),
                         github::Consent::Ask(question, yes, no) => {
                             ask = Some(question);
                             github_keys = Some((yes, no));
@@ -825,6 +832,15 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
                 Err(why) => checked = Err(why.into()),
             },
+            // One decline per turn, as the GitHub consent has it; every
+            // other call asks.
+            (Call::IssueDraft(_), locality, _) => {
+                if files::lock_set(&scope.allowed).contains(DRAFT_DENIED_KEY) {
+                    declined = Some(DRAFT_DECLINED);
+                } else {
+                    ask = ask_for(valid, locality);
+                }
+            }
             (valid, locality, _) => ask = ask_for(valid, locality),
         }
     }
@@ -885,11 +901,10 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
 
     let (outcome, status, summary) = match checked {
         Err(reason) => ended(ToolStatus::Error, reason.to_string(), &reason),
-        Ok(_) if declined => ended(
-            ToolStatus::Denied,
-            format!("denied: {}", github::DECLINED),
-            github::DECLINED,
-        ),
+        Ok(_) if declined.is_some() => {
+            let reason = declined.unwrap_or_default();
+            ended(ToolStatus::Denied, format!("denied: {reason}"), reason)
+        }
         Ok(call) => {
             let answer = match pending {
                 Some(pending) => pending.await,
@@ -923,6 +938,13 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                             }
                             _ => {}
                         }
+                    }
+                    // Unlike the GitHub keys, a `y` already given is never
+                    // taken back, and only the user's no counts.
+                    if matches!(call, Call::IssueDraft(_))
+                        && matches!(decision, Decision::Denied(why) if ends_draft_asks(why))
+                    {
+                        files::lock_set(&scope.allowed).insert(DRAFT_DENIED_KEY.to_owned());
                     }
                     decision
                 }
@@ -1020,6 +1042,11 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     Some(planned) => github::run(&host, &scope, &gh, planned).await,
                     None => ended(ToolStatus::Error, CANCELLED.to_owned(), CANCELLED),
                 },
+                // The `y` was the user's; the app holds the draft and opens
+                // the form when the turn ends. No `gh` runs for it.
+                (Decision::Sent, Call::IssueDraft(_)) => {
+                    ended(ToolStatus::Ok, READY.to_owned(), "draft accepted")
+                }
                 // Read-only metadata of the panes: it never asked.
                 (Decision::Sent, Call::ListPanes) => list_panes(listed.take().unwrap_or_default()),
                 // Only after `y`: the sandbox starts here and nowhere else.
@@ -1088,6 +1115,16 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     outcome
 }
 
+/// Whether a denied draft is the turn's decline: the user said no, or the
+/// wait ended (a cancel, a closed chat, a quit, a timeout). The app's own
+/// refusals (another approval pending, an open form) asked the user nothing.
+fn ends_draft_asks(reason: &str) -> bool {
+    matches!(
+        reason,
+        crate::app::DECLINED | CANCELLED | super::approver::ENDED
+    )
+}
+
 mod exec;
 mod files;
 mod gate;
@@ -1111,6 +1148,8 @@ mod git_tests;
 mod github_run_tests;
 #[cfg(test)]
 mod github_tests;
+#[cfg(test)]
+mod issue_draft_tests;
 #[cfg(test)]
 mod orchestra_tests;
 #[cfg(test)]

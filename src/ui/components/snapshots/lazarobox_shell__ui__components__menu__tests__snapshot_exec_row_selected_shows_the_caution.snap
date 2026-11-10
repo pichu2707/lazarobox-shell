@@ -11,9 +11,9 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │ Git                                                    off │
 │ Git write                                              off │
 │ GitHub                                                 off │
+│ Issue draft                                             on │
 │ Approval                                               ask │
 │ Orchestrator                                           off │
-│                                                            │
 │                                                            │
 │                                                            │
 │ Can change files or run code                               │

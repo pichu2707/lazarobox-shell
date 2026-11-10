@@ -12,6 +12,12 @@ baseline.
 
 ### Added
 
+- The chat can draft an issue: the new `gh_issue_draft` tool (kind `idea` or
+  `bug`, title, description) asks a `y` at the composer and, at the end of the
+  turn, opens the Feedback form on the draft's kind with the title and the
+  description in their own fields. You review it and send it with Ctrl+S; the
+  model never writes to GitHub. New `[ai.tools] issue_draft` toggle, on by
+  default, with its own `Issue draft` row on the Tools tab.
 - The model picker deletes a downloaded Ollama model: `d` on its row opens a
   confirmation with the name and the size, and only a plain `y` deletes it,
   through the local server. A model that a task or a running chat turn uses is

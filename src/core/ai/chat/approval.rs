@@ -28,6 +28,7 @@ use crate::core::ai::{
         Call, Locality, allow,
         command::Refusal,
         exec::{self, Fallback, SafeCommand},
+        issue_draft::IssueDraft,
     },
 };
 
@@ -200,6 +201,10 @@ pub enum ApprovalAsk {
     /// chose the folder, never by a tool call. Only the user's unmodified `y`
     /// answers it; no mode, timer or model output does.
     DriveGrant { folder: PathBuf },
+    /// The model drafted an issue: on `y` the Feedback form opens with it at
+    /// the end of the turn, and only the form's Ctrl+S sends it. Asked on every
+    /// call, and no mode answers it. Only the user's unmodified `y` accepts.
+    IssueDraft(IssueDraft),
     /// Stage `paths` in the index (one clean line, as the user will read it).
     /// `files` is how many files a dry run says would be staged; the host
     /// fills it in, [`ask_for`] leaves it `None`. Never routed by the
@@ -374,6 +379,8 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             what: format!("{} {}", gh.name(), gh.argument()),
             ollama_cloud: false,
         }),
+        // Nothing leaves without the user: every call, every mode, asks.
+        Call::IssueDraft(draft) => Some(ApprovalAsk::IssueDraft(draft.clone())),
         // An add changes the index: it always asks, on any engine and mode.
         Call::GitAdd { paths } => Some(ApprovalAsk::GitAdd {
             paths: flat(&joined_paths(paths), GIT_ADD_SHOWN).0,
@@ -987,6 +994,8 @@ pub const RUN_NOW_KEYS: &str = "y run it · n cancel · p next pane";
 pub const READ_KEYS: &str = "y read it · n deny";
 /// The keys of the prompt that sends what the panes run.
 pub const PANES_KEYS: &str = "y send it · n deny";
+/// The keys of a drafted issue: `y` opens a form, it sends nothing.
+pub const ISSUE_DRAFT_KEYS: &str = "y open the form · n deny";
 /// The keys of a search prompt.
 pub const SEARCH_KEYS: &str = "y search · n deny";
 /// The keys of the folder prompt: nothing but `y` changes it.
