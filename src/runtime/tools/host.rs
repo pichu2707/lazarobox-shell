@@ -52,6 +52,7 @@ use crate::{
         },
         orchestra::{
             WorkerKey,
+            commands::{Ran, RanEnd},
             tools::{OrchCall, WAIT_MAX_SECS},
         },
         tools::{
@@ -770,7 +771,18 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         }
                         pinned = plan.pin;
                     }
-                    Err(why) => checked = Err(why.into()),
+                    // A worker's refusal is also told in the pane, naming
+                    // the worker (W6): its row is in the worker's view.
+                    Err(why) => {
+                        if let Some(worker) = read_scope {
+                            let line = format!(
+                                "worker {}: run_command refused: {why}",
+                                worker.ask_label()
+                            );
+                            let _ = scope.events.send(StreamEvent::Notice(line)).await;
+                        }
+                        checked = Err(why.into());
+                    }
                 }
             }
             // A git verb is judged before it asks: a refusal opens no prompt. An
@@ -904,6 +916,12 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
         slot: Some(slot),
     };
 
+    // A worker's command the user did not approve is recorded for the
+    // coordinator (W6); one that ran is recorded by `exec::run`.
+    let denied_command = match (&checked, &scope.read_scope) {
+        (Ok(call @ Call::RunCommand { .. }), Some(worker)) => Some((worker, exec::shown(call))),
+        _ => None,
+    };
     let (outcome, status, summary) = match checked {
         Err(reason) => ended(ToolStatus::Error, reason.to_string(), &reason),
         Ok(_) if declined.is_some() => {
@@ -1116,6 +1134,14 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             }
         }
     };
+    if let (Some((worker, (program, command))), ToolStatus::Denied) = (denied_command, status) {
+        let ran = Ran {
+            program,
+            command,
+            end: RanEnd::Denied,
+        };
+        (worker.handle).ran(worker.run, worker.worker, ran);
+    }
     owed.answer(status, &summary);
     outcome
 }
@@ -1141,6 +1167,8 @@ mod review;
 
 #[cfg(test)]
 mod exec_tests;
+#[cfg(test)]
+pub(crate) use exec_tests::fake_toolchain;
 #[cfg(test)]
 mod external_tests;
 #[cfg(test)]

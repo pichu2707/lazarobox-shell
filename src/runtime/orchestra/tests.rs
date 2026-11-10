@@ -2676,12 +2676,32 @@ impl Lab {
     }
 
     fn start_writing_run(&self, waits: &Arc<Waits>, deadline: Duration) -> (RunId, OrchHandle) {
+        self.start_writing_run_with(waits, deadline, FamilySet::ALL)
+    }
+
+    /// [`Lab::start_writing`] under the menu ceiling `ceiling`.
+    fn start_writing_with(
+        &self,
+        waits: &Arc<Waits>,
+        deadline: Duration,
+        ceiling: FamilySet,
+    ) -> OrchHandle {
+        self.start_writing_run_with(waits, deadline, ceiling).1
+    }
+
+    fn start_writing_run_with(
+        &self,
+        waits: &Arc<Waits>,
+        deadline: Duration,
+        ceiling: FamilySet,
+    ) -> (RunId, OrchHandle) {
         let pending = Pending::new();
         let scope = OrchScope {
             origin: self.app(),
             approver: waits.approver(pane(), 7, pending.clone()),
             pending,
             deadline,
+            ceiling,
             ..self.scope(codex_code(), &["~/dev/app"])
         };
         let (run, handle) = self.manager.start(pane(), scope).unwrap();
@@ -2720,10 +2740,11 @@ fn reply_text(reply: &Value) -> &str {
 
 const TEN_MINUTES: Duration = Duration::from_secs(600);
 
-// Spec (agent-orchestrator, Worker toolsets [S7]; Read-only subset): a
-// `code` worker is offered the read tools and the coding-tools write tools,
-// never `run_in_pane`, an orchestration tool or a user server tool; every
-// other kind keeps exactly the three read tools.
+// Spec (agent-orchestrator, Worker toolsets [S7]; Read-only subset; "A code
+// worker with run_command [W6]"): a `code` worker is offered the read tools,
+// the coding-tools write tools and, with Exec on, `run_command`; never
+// `run_in_pane`, an orchestration tool or a user server tool; every other
+// kind keeps exactly the three read tools.
 #[tokio::test]
 async fn a_code_worker_is_offered_the_write_tools_and_no_more() {
     let lab = writing_lab(Script::Hang);
@@ -2753,9 +2774,11 @@ async fn a_code_worker_is_offered_the_write_tools_and_no_more() {
             "create_dir",
             "write_file",
             "edit_file",
-            "propose_batch"
+            "propose_batch",
+            "run_command"
         ]
     );
+    assert!(!names.iter().any(|name| name == "run_in_pane"));
     for task in Task::SET_ALL {
         let want = if task == Task::Code {
             Toolset::Code
@@ -5811,6 +5834,10 @@ fn write_off() -> FamilySet {
     FamilySet::ALL.without(Family::Write)
 }
 
+fn exec_off() -> FamilySet {
+    FamilySet::ALL.without(Family::Exec)
+}
+
 // Spec (agent-orchestrator, "Code worker refused with Write off"): a `code`
 // spawn with Write off makes no worker and starts no process, the coordinator
 // gets the refusal, the pane is told the same line, and the run goes on.
@@ -5926,13 +5953,42 @@ async fn a_ceiling_update_applies_from_the_next_spawn_only() {
     assert_eq!(requests[0].families, Toolset::Code.families());
 }
 
-// Spec ("Exec off means no run_command"): a forged `run_command` from a
-// `code` worker is refused as a result, and nothing is asked.
+// Spec ("Exec off means no run_command"): with Exec off a `code` worker is
+// offered no `run_command`, and a forged one is refused as a result with
+// nothing asked.
 #[tokio::test]
 async fn a_forged_run_command_from_a_code_worker_is_refused_without_an_ask() {
     let mut lab = writing_lab(Script::Hang);
     let waits = Waits::new();
-    let handle = lab.start_writing(&waits, TEN_MINUTES);
+    let handle = lab.start_writing_with(&waits, TEN_MINUTES, exec_off());
+    handle.call(spawn(Task::Code, "write it")).await;
+    let request = lab.seen.first().await;
+    assert!(!request.families.contains(Family::Exec));
+    let mut client = worker_client(&lab.seen).await;
+    let listed = exchange(
+        &mut client,
+        json!({"jsonrpc": "2.0", "id": 9, "method": "tools/list"}),
+    )
+    .await;
+    let names = listed["result"]["tools"].to_string();
+    assert!(!names.contains("run_command"), "{names}");
+    assert!(names.contains("write_file"), "{names}");
+    let call = tool_call(
+        1,
+        "run_command",
+        json!({"program": "cargo", "args": ["test"]}),
+    );
+    let reply = exchange(&mut client, call).await;
+    assert_eq!(reply["result"]["isError"], json!(true), "{reply}");
+    assert!(lab.turn.1.try_recv().is_err(), "no ask reached the turn");
+}
+
+// The same forged call with the old, malformed arguments: still refused.
+#[tokio::test]
+async fn a_malformed_run_command_from_a_code_worker_is_refused_without_an_ask() {
+    let mut lab = writing_lab(Script::Hang);
+    let waits = Waits::new();
+    let handle = lab.start_writing_with(&waits, TEN_MINUTES, exec_off());
     handle.call(spawn(Task::Code, "write it")).await;
     let mut client = worker_client(&lab.seen).await;
     let call = tool_call(1, "run_command", json!({"command": "ls"}));
@@ -6127,6 +6183,8 @@ async fn a_degraded_code_worker_with_call_text_gives_the_coordinator_no_line() {
 
 mod claims;
 mod clock;
+#[cfg(target_os = "linux")]
+mod commands;
 mod gate_wait;
 mod gates;
 mod parallel;

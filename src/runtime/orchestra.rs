@@ -70,6 +70,7 @@ use crate::core::{
         orchestra::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
+            commands::Ran,
             errors::classify,
             event::{Degrade, shared_engine_notice},
             feature::FeatureError,
@@ -1804,8 +1805,9 @@ impl RunManager {
             // A writer stages in a batch of its own (W10, D7); the batch
             // review, its badge and its orphan are the pane's. A review
             // worker reads the batch of the worker it reviews, and the
-            // correction stages into it (S7b): both name their proposer.
-            stage_key: (families.contains(Family::Write) || proposer.is_some())
+            // correction stages into it (S7b): both name their proposer. A
+            // worker with Exec has one too: its command is judged by it (D19).
+            stage_key: (spec.keys_a_batch() || proposer.is_some())
                 .then(|| review::batch_of(pane, key.run, proposer.unwrap_or(key.worker))),
             // A worker never writes on a Windows drive: the grant is the
             // chat's, for its own turns (openspec `wsl-drive-access`).
@@ -2028,6 +2030,12 @@ impl Orchestra for Bound {
     fn staged(&self, run: RunId, worker: WorkerId, change: Change) {
         if let Some(manager) = self.manager.upgrade() {
             manager.on_run(self.pane, run, |live| live.run.staged(worker, change));
+        }
+    }
+
+    fn ran(&self, run: RunId, worker: WorkerId, ran: Ran) {
+        if let Some(manager) = self.manager.upgrade() {
+            manager.on_run(self.pane, run, |live| live.run.ran(worker, ran));
         }
     }
 

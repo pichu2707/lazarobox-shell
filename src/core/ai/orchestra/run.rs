@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use super::changes::{Change, ChangeLedger, Disclosure};
 use super::claims::Audit;
+use super::commands::{Commands, Ran};
 use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
 use super::receipt::{self, Evidence};
@@ -188,6 +189,9 @@ struct Slot {
     /// What the worker staged (S7). Kept across a retry: the staged files
     /// stay in the writer's own batch whatever the attempt.
     ledger: ChangeLedger,
+    /// The commands it called that reached the user's ask (W6), kept
+    /// across a retry like the ledger.
+    commands: Commands,
     /// What the worker's engine reported so far, over every attempt: a failed
     /// attempt spent its tokens too.
     usage: Option<Usage>,
@@ -491,6 +495,14 @@ impl Run {
         }
     }
 
+    /// Worker `id` called a command that reached the user's ask, and it
+    /// ended as `ran` says (W6).
+    pub fn ran(&mut self, id: WorkerId, ran: Ran) {
+        if let Some(slot) = self.slots.get_mut(index(id)) {
+            slot.commands.ran(ran);
+        }
+    }
+
     /// The user's batch review applied a batch holding `paths` that worker
     /// `id` proposed.
     pub fn applied(&mut self, id: WorkerId, paths: &[String]) {
@@ -576,6 +588,7 @@ impl Run {
             started: None,
             result: None,
             ledger: ChangeLedger::default(),
+            commands: Commands::default(),
             usage: None,
             reported: false,
             gap: false,
@@ -758,11 +771,21 @@ impl Run {
     ) -> Result<String, CollectError> {
         let nonce = label::nonce_from(nonce_bytes);
         let text = self.collect(id)?;
-        // The ledger comes first, so the cap on a long answer never hides it.
+        // The ledger comes first, so the cap on a long answer never hides
+        // it, then the commands the worker ran (W6), then its text.
         let ledger = self.ledger(id).and_then(ChangeLedger::render);
-        let wrapped = match ledger {
-            Some(ledger) => label::wrap(&nonce, &format!("{ledger}\n\n{text}")),
-            None => label::wrap(&nonce, text),
+        let commands = self.slot(id).and_then(|slot| slot.commands.render());
+        let body: Vec<&str> = [ledger.as_deref(), commands.as_deref(), Some(text)]
+            .into_iter()
+            .flatten()
+            .collect();
+        let wrapped = label::wrap(&nonce, &body.join("\n\n"));
+        // How its commands ended is lazarobox's own word, outside the
+        // wrapper, so the worker's text cannot pass for it (W6).
+        let record = self.slot(id).and_then(|slot| slot.commands.attested());
+        let wrapped = match record {
+            Some(record) => format!("{record}\n\n{wrapped}"),
+            None => wrapped,
         };
         // lazarobox's own word, outside the worker's wrapper: the worker
         // cannot forge it, and the coordinator must not claim files exist.

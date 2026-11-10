@@ -19,6 +19,7 @@ use crate::{
         orchestra::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
+            commands::Ran,
             review::{self, Assessment},
             tools::OrchCall,
         },
@@ -85,6 +86,10 @@ pub trait Orchestra: Send + Sync {
     /// The host staged `change` for `worker` of `run`: its change ledger
     /// records it (S7). Nothing is written by it.
     fn staged(&self, _run: RunId, _worker: WorkerId, _change: Change) {}
+
+    /// `worker` of `run` called a command that reached the user's ask, and
+    /// it ended as `ran` says (W6): `collect` shows it to the coordinator.
+    fn ran(&self, _run: RunId, _worker: WorkerId, _ran: Ran) {}
 
     /// The risk of the change set `worker` of `run` is about to propose,
     /// with whatever the orchestrator raised for the run (S7b, D16). The

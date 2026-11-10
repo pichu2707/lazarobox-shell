@@ -651,6 +651,25 @@ impl World {
     }
 }
 
+/// Makes `host` run commands as the tests here do (no Landlock): the fake
+/// helper, a jail probe that says yes, and `cargo` the script `cargo` under
+/// `base/cargo/bin`. For the run manager's tests of a worker's command.
+pub(crate) fn fake_toolchain(host: &mut ToolHost, base: &Path, home: &Path, cargo: &str) {
+    script(&base.join("helper"), HELPER);
+    script(&base.join("cargo/bin/cargo"), cargo);
+    let (home, cargo, run) = (home.to_path_buf(), base.join("cargo"), base.join("run"));
+    let path = format!("{}:/usr/bin:/bin", cargo.join("bin").display());
+    host.exec.jail = Box::new(|| LANDLOCK);
+    host.exec.helper = Some(base.join("helper"));
+    host.exec.read = Arc::new(move |name| match name {
+        "PATH" => Some(OsString::from(&path)),
+        "HOME" => Some(home.clone().into()),
+        "CARGO_HOME" => Some(cargo.clone().into()),
+        "XDG_RUNTIME_DIR" => Some(run.clone().into()),
+        _ => None,
+    });
+}
+
 fn gate() -> RunGate {
     RunGate::new(2, Duration::from_millis(50))
 }
@@ -1372,4 +1391,290 @@ async fn a_broad_drive_folder_stays_broad_with_a_grant() {
         "path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>"
     );
     assert!(asks.asked().is_empty());
+}
+
+// --- W6: a worker's commands ---
+
+/// A run manager of three workers that records what the host tells it ran.
+#[derive(Default)]
+struct Recorder {
+    ran: Mutex<Vec<(crate::core::ai::orchestra::WorkerId, Ran)>>,
+}
+
+use crate::core::ai::orchestra::commands::{Ran, RanEnd};
+
+impl crate::runtime::tools::Orchestra for Recorder {
+    fn call(&self, _: crate::core::ai::orchestra::tools::OrchCall) -> BoxFuture<'static, Outcome> {
+        async {
+            Outcome {
+                text: String::new(),
+                is_error: false,
+            }
+        }
+        .boxed()
+    }
+
+    fn allows(
+        &self,
+        _: crate::core::ai::orchestra::RunId,
+        _: crate::core::ai::orchestra::WorkerId,
+        _: &crate::core::ai::tools::paths::SecretRoots,
+        _: &Path,
+        _: &str,
+    ) -> Option<PathBuf> {
+        None
+    }
+
+    fn workers(&self, _: crate::core::ai::orchestra::RunId) -> usize {
+        3
+    }
+
+    fn allows_write(
+        &self,
+        _: crate::core::ai::orchestra::RunId,
+        _: crate::core::ai::orchestra::WorkerId,
+        _: &Path,
+    ) -> bool {
+        true
+    }
+
+    fn ran(
+        &self,
+        _: crate::core::ai::orchestra::RunId,
+        worker: crate::core::ai::orchestra::WorkerId,
+        ran: Ran,
+    ) {
+        self.ran.lock().unwrap().push((worker, ran));
+    }
+}
+
+impl World {
+    /// The turn of worker 2 of 3 of run 1 in pane 1, a `code` worker on
+    /// `ollama>llama3:8b` with Exec, its batch keyed by its own session.
+    fn worker_turn(
+        &self,
+        approver: Arc<dyn Approver>,
+        handle: Arc<Recorder>,
+    ) -> (Arc<dyn Dispatch>, mpsc::Receiver<StreamEvent>) {
+        use crate::core::ai::{
+            chat::approval::worker_label,
+            config::Task,
+            orchestra::{RunId, WorkerId},
+        };
+        let (tx, rx) = mpsc::channel(32);
+        let mut scope = TurnScope::new(tx, Locality::Local, self.proj.clone());
+        scope.approver = approver;
+        scope.families = exec_set();
+        scope.stage_key = Some(worker_key());
+        scope.read_scope = Some(crate::runtime::tools::WorkerScope {
+            handle,
+            run: RunId(1),
+            worker: WorkerId(2),
+            label: worker_label(Task::Code, "ollama", "llama3:8b"),
+        });
+        (self.host.dispatch(scope), rx)
+    }
+}
+
+fn worker_key() -> StageKey {
+    use crate::core::ai::orchestra::WorkerKey;
+    StageKey::Worker(PaneId::for_test(1), WorkerKey::for_test(1, 2))
+}
+
+/// The notices among `events`.
+fn notices(events: &[StreamEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::Notice(line) => Some(line.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+// Task 16.3 (command-runner, "Refused while the batch is staged [W6]"): a
+// worker whose own batch is staged gets `propose them first`, no prompt
+// opens, and a notice naming the worker shows the refusal in the pane.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_worker_with_a_staged_batch_is_refused_and_the_pane_is_told() {
+    let w = world();
+    let asks = Asks::new(Decision::Sent);
+    let recorder = Arc::new(Recorder::default());
+    let (d, mut rx) = w.worker_turn(asks.clone(), recorder.clone());
+    let staged = d
+        .call(Call::WriteFile {
+            path: "a.txt".into(),
+            content: "x".into(),
+        })
+        .await;
+    assert!(!staged.is_error, "{staged:?}");
+    super::tests::events(&mut rx);
+    let out = d.call(command("cargo", &["test"], None)).await;
+    assert!(out.text.contains("propose them first"), "{out:?}");
+    assert!(asks.asked().is_empty(), "no prompt opened");
+    let told = notices(&super::tests::events(&mut rx));
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(
+        told[0].contains("worker 2/3 code ollama>llama3:8b"),
+        "{told:?}"
+    );
+    assert!(told[0].contains("propose them first"), "{told:?}");
+    assert!(recorder.ran.lock().unwrap().is_empty(), "nothing ran");
+}
+
+// Task 16.3 (D8, "Busy gate is disclosed [W6]"): a sibling's running command
+// refuses the worker with `CHAT_BUSY` before any prompt, and the pane is told.
+#[tokio::test]
+async fn a_worker_is_refused_while_a_sibling_runs_and_the_pane_is_told() {
+    let w = world();
+    let held = w.host.exec.gate.acquire(key()).await.unwrap();
+    let asks = Asks::new(Decision::Sent);
+    let (d, mut rx) = w.worker_turn(asks.clone(), Arc::default());
+    let out = d.call(command("cargo", &["test"], None)).await;
+    assert_eq!(out.text, "a command is already running in this chat");
+    assert!(asks.asked().is_empty());
+    let told = notices(&super::tests::events(&mut rx));
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("worker 2/3"), "{told:?}");
+    assert!(told[0].contains("already running"), "{told:?}");
+    drop(held);
+}
+
+// GUARD: a chat's refusal adds no notice: its own row says it.
+#[tokio::test]
+async fn a_chats_refused_command_adds_no_notice() {
+    let w = world();
+    let held = w.host.exec.gate.acquire(key()).await.unwrap();
+    let asks = Asks::new(Decision::Sent);
+    let (d, mut rx) = w.turn(&w.proj, asks, exec_set());
+    let out = d.call(command("cargo", &["test"], None)).await;
+    assert!(out.is_error);
+    assert!(notices(&super::tests::events(&mut rx)).is_empty());
+    drop(held);
+}
+
+// Task 16.5 ("Output reaches the coordinator"): a denied command of a worker
+// is recorded as denied, with no output.
+#[tokio::test]
+async fn a_workers_denied_command_is_recorded_as_denied() {
+    let w = world();
+    let recorder = Arc::new(Recorder::default());
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.worker_turn(asks, recorder.clone());
+    let out = d.call(command("cargo", &["test"], None)).await;
+    assert_eq!(out.text, "denied: the user declined");
+    let ran = recorder.ran.lock().unwrap().clone();
+    assert_eq!(
+        ran,
+        [(
+            crate::core::ai::orchestra::WorkerId(2),
+            Ran {
+                program: "cargo".into(),
+                command: "cargo test".into(),
+                end: RanEnd::Denied
+            }
+        )]
+    );
+}
+
+// Task 16.5: an approved command of a worker is recorded with lazarobox's
+// facts line and the cleaned end of its output; a failing exit is a result.
+#[tokio::test]
+async fn a_workers_approved_command_is_recorded_with_its_exit_and_tail() {
+    let w = runnable(HELPER, gate());
+    let recorder = Arc::new(Recorder::default());
+    let (d, _rx) = w.worker_turn(Asks::new(Decision::Sent), recorder.clone());
+    let out = d.call(after_dashes("fail")).await;
+    assert!(out.text.starts_with("exit code 101 after "), "{out:?}");
+    let ran = recorder.ran.lock().unwrap().clone();
+    let [
+        (
+            _,
+            Ran {
+                program,
+                command,
+                end,
+            },
+        ),
+    ] = &ran[..]
+    else {
+        panic!("{ran:?}");
+    };
+    assert_eq!(
+        (program.as_str(), command.as_str()),
+        ("cargo", "cargo test -- fail")
+    );
+    let RanEnd::Ended { facts, tail } = end else {
+        panic!("{end:?}");
+    };
+    assert!(facts.starts_with("exit code 101 after "), "{facts}");
+    assert!(tail.contains("error: boom"), "{tail}");
+    assert!(!tail.contains("untrusted-tool-output"), "{tail}");
+}
+
+/// Holds a batch review open for ever and records every other ask, which it
+/// declines.
+#[derive(Default)]
+struct HoldsTheBatch {
+    asked: Mutex<Vec<ApprovalAsk>>,
+}
+
+impl Approver for HoldsTheBatch {
+    fn ask(&self, _: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer> {
+        if matches!(ask, ApprovalAsk::Batch(_)) {
+            return futures::future::pending().boxed();
+        }
+        self.asked.lock().unwrap().push(ask.clone());
+        async { Decision::Denied("the user declined").into() }.boxed()
+    }
+}
+
+// GUARD (task 16.3, "Refused while the batch is staged" for a batch in
+// review): a worker whose proposed batch waits for the user keeps the existing
+// in-review refusal (not `propose them first`), no prompt opens, and the pane
+// is told.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_worker_with_a_batch_in_review_keeps_its_refusal_and_the_pane_is_told() {
+    use crate::core::ai::tools::stage::State;
+    let w = world();
+    let approver = Arc::new(HoldsTheBatch::default());
+    let (d, mut rx) = w.worker_turn(approver.clone(), Arc::default());
+    let staged = d
+        .call(Call::WriteFile {
+            path: "a.txt".into(),
+            content: "x".into(),
+        })
+        .await;
+    assert!(!staged.is_error, "{staged:?}");
+    let proposer = d.clone();
+    let _review = tokio::spawn(async move { proposer.call(Call::ProposeBatch).await });
+    let proposed = async {
+        loop {
+            let state = super::files::lock(&w.host.stages)
+                .batch(worker_key())
+                .map(|b| b.state());
+            if state == Some(State::Proposed) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), proposed)
+        .await
+        .expect("the batch is proposed");
+    super::tests::events(&mut rx);
+    let out = d.call(command("cargo", &["test"], None)).await;
+    assert_eq!(out.text, "a batch is waiting for the user's review");
+    assert!(
+        approver.asked.lock().unwrap().is_empty(),
+        "no prompt opened"
+    );
+    let told = notices(&super::tests::events(&mut rx));
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(
+        told[0].contains("worker 2/3") && told[0].contains("review"),
+        "{told:?}"
+    );
 }

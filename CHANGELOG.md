@@ -14,6 +14,19 @@ baseline.
 
 ### Added
 
+- With ORCH on, a `code` worker gets `run_command` when Exec is on in the AI
+  menu (the menu stays a ceiling: no other worker kind and never the
+  coordinator gets it). Its command runs only after its batch was approved
+  and applied, against the disk; before that it is refused with `propose
+  them first`, and the pane now says so (`worker 2/3 code ollama>llama3:8b:
+  run_command refused: ...`), as it does for a busy pane. Every command asks
+  you, labelled with the worker, in every mode. What each one gave reaches
+  the coordinator through `collect`: how it ended (its exit line, or denied)
+  as lazarobox's own record by program name, which the worker's text cannot
+  pass for, and its arguments and the cleaned, capped end of its output as
+  untrusted data, after the files changed. The coordinator prompt now says a
+  test counts as run or passed only when such a result shows it; otherwise it
+  says the test was not run and asks you to run it.
 - With ORCH on, the coordinator now gets `list_panes` and `read_pane`, with
   exactly the asks a chat gets: `list_panes` asks on a cloud engine and runs
   free on a local one, `read_pane` asks on every call and engine, and no
@@ -84,8 +97,7 @@ baseline.
   sandbox` above the program, its arguments, the folder and the network and
   `.env` notice. It waits in the worker queue behind the ask shown, your
   answer reaches only the worker that asked, and cancelling that worker
-  withdraws it. A chat's own command ask is unchanged. (Workers are not
-  offered `run_command` yet; that comes in a later release.)
+  withdraws it. A chat's own command ask is unchanged.
 
 ### Fixed
 
