@@ -65,6 +65,7 @@ use crate::{
         jail::resolve,
         loopback::{Stop, TOO_LONG, Timeouts, Wait},
         proc::GroupKill,
+        tools::pending,
     },
 };
 
@@ -1772,7 +1773,8 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     let mut stderr_task = std::pin::pin!(read_stderr(stderr).fuse());
     let mut stderr_tail = None;
     let relayed = {
-        let mut relaying = std::pin::pin!(timeout(
+        // A worker turn's total pauses while it waits for the user.
+        let mut relaying = std::pin::pin!(pending::total_limit(
             env.timeouts.total,
             relay(&mut stdout, &env.timeouts, &mut *decoder, tx)
         ));

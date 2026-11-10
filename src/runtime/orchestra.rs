@@ -44,7 +44,7 @@ use super::{
     prompts::load_prompt,
     tools::{
         Answered, Approver, Late, OrchHandle, Orchestra, Pending, ToolHost, TurnScope, WorkerScope,
-        fs::load_roots,
+        fs::load_roots, pending,
     },
 };
 use crate::core::ai::chat::prompts::worker_system;
@@ -127,8 +127,9 @@ const CONTINUE_HEAD: &str = "Your previous turn ended while the run is still ope
 struct Route {
     key: WorkerKey,
     trace: Tracer,
-    /// The count the worker's own turn watches for its timers: the one it was
-    /// started with, whatever turn it has outlived since.
+    /// The worker's own count of asks that wait for the user, whatever turn
+    /// it has outlived: its turn's timers and its deadline pause on it (D5).
+    /// Its own, never the turn's: a sibling's ask must not stop its clock.
     own: Pending,
     state: Mutex<Current>,
 }
@@ -155,7 +156,7 @@ impl Route {
         Arc::new(Self {
             key,
             trace,
-            own: pending.clone(),
+            own: Pending::new(),
             state: Mutex::new(Current {
                 events,
                 approver,
@@ -258,11 +259,11 @@ struct Rerouted(Arc<Route>);
 impl Approver for Rerouted {
     fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer> {
         // The turn's approver counts the ask for the turn's timers; the
-        // worker's own timers, if they watch another count, hear it too.
+        // worker's own count hears it at once, before the app may queue it,
+        // so the worker's clock stops while it waits (D5).
         let (current, also) = {
             let state = lock(&self.0.state);
-            let also = (!state.pending.same(&self.0.own)).then(|| self.0.own.enter());
-            (state.approver.clone(), also)
+            (state.approver.clone(), self.0.own.enter())
         };
         let wait = current.ask(id, ask);
         async move {
@@ -1712,12 +1713,13 @@ impl RunManager {
             approver.unwrap_or_else(|| live.approver.clone()),
             live.pending.clone(),
         );
+        let own = route.own.clone();
         live.routes.insert(id, route.clone());
         let proposer = live.review.proposer(id);
         trace.send(TraceItem::Begin);
         // A turn without tools still runs, as text, and the pane is told why.
         let session = match self.open_session(pane, key, &spec, proposer, &mut request, route) {
-            Ok(dispatch) => Some((live.pending.clone(), dispatch)),
+            Ok(dispatch) => Some((own.clone(), dispatch)),
             Err(why) => {
                 live.run.ran_without_tools(id);
                 self.send(
@@ -1762,6 +1764,7 @@ impl RunManager {
             runner: self.runner.clone(),
             request,
             session,
+            own,
             deadline: spec.deadline,
             trace,
         };
@@ -2054,11 +2057,14 @@ impl Orchestra for Bound {
 }
 
 /// One worker turn: the adapter inside its session's task-locals, read
-/// through a fresh pipe and cut at the deadline.
+/// through a fresh pipe and cut at the deadline, which stops while the worker
+/// waits for the user (`own`, D5).
 struct Turn {
     runner: Runner,
     request: ChatRequest,
     session: Option<(Pending, Option<Arc<dyn Dispatch>>)>,
+    /// The worker's own count of asks (`Route.own`).
+    own: Pending,
     deadline: Duration,
     trace: Tracer,
 }
@@ -2072,6 +2078,7 @@ impl Turn {
             runner,
             request,
             session,
+            own,
             deadline,
             trace,
         } = self;
@@ -2082,8 +2089,11 @@ impl Turn {
         // The call sits inside the guarded future, as in a chat turn.
         let adapter = Box::pin(async move { runner(request, tx).await });
         let adapter = chat::in_session(adapter, pending, dispatch);
-        let ended = tokio::time::timeout(
+        // Its total limits pause too, at the three sites a chat's never do.
+        let adapter = Box::pin(pending::worker_turn(adapter));
+        let ended = pending::pausing_timeout(
             deadline,
+            &own,
             drive(adapter, rx, (&engine, model.as_deref()), &trace),
         )
         .await

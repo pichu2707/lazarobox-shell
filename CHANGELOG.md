@@ -65,6 +65,18 @@ baseline.
   removes only files and folders left empty. The managed llama-server's model
   and a model a task uses are refused.
 
+### Changed
+
+- With ORCH on, the time a worker waits for your answer (its batch review or
+  a read ask, even one queued behind another worker's) no longer counts
+  against its deadline (`worker_timeout_secs`): its clock stops while you
+  decide and goes on when you answer, and its work time still counts. Only
+  its own asks stop it, never a sibling's. Its turn's total limit stops the
+  same way on the server, Ollama and CLI paths; a chat turn keeps its
+  15-minute total as before. The run wall clock (`run_timeout_mins`) still
+  counts while you decide. A CLI still cuts one tool call at 900 s by itself:
+  the worker then fails and its staged batch stays as an orphan.
+
 ### Fixed
 
 - A draft issue no longer opens over a menu screen that waits for you: the

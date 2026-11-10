@@ -94,6 +94,11 @@ enum Script {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     // only the Linux-only write tests use it
     Held(&'static str),
+    /// Waits until the test releases it, then fails with the message, as a
+    /// CLI whose tool call was cut at its per-call cap gives up.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    // only the Linux-only clock tests use it
+    HeldThenFail(&'static str),
     /// Streams a thousand small pieces, then ends.
     Many,
     /// Streams the text, then hangs like a process that never ends.
@@ -267,6 +272,10 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                 Script::Held(text) => {
                     mine.release.notified().await;
                     (text, StreamEvent::Done(Finish::Stop))
+                }
+                Script::HeldThenFail(error) => {
+                    mine.release.notified().await;
+                    ("", StreamEvent::Error(ChatError::Failed(error.into())))
                 }
                 Script::Many => {
                     for _ in 0..1000 {
@@ -2887,39 +2896,6 @@ async fn a_write_is_staged_when_home_is_reached_through_a_link() {
     assert!(!lab.home.path().join("dev/app/a.txt").exists());
 }
 
-// Spec (agent-orchestrator, Worker toolsets [S7]): the review time counts
-// against the worker's deadline. A worker that times out while its batch
-// waits for the user leaves the batch as an orphan the user can still
-// review; nothing is written.
-// Needs the write primitives (`openat2`, `renameat2`): Linux only; elsewhere a
-// write is refused as `path not available` by design.
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn a_worker_timed_out_in_review_leaves_its_batch_as_an_orphan() {
-    let lab = writing_lab(Script::Hang);
-    let handle = lab.start_writing(&Waits::new(), Duration::from_millis(1500));
-    handle.call(spawn(Task::Code, "write a")).await;
-    let mut client = worker_client(&lab.seen).await;
-    let call = tool_call(
-        1,
-        "write_file",
-        json!({"path": "a.txt", "content": "one\n"}),
-    );
-    exchange(&mut client, call).await;
-    let propose = format!("{}\n", tool_call(2, "propose_batch", json!({})));
-    client.1.write_all(propose.as_bytes()).await.unwrap();
-    // A timeout halts the run like any failure.
-    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    let status = lock(&lab.manager.runs)[&pane()].run.status(WorkerId(1));
-    assert_eq!(status, Some(WorkerStatus::TimedOut));
-    let host = lab.host();
-    let (_, review) = host
-        .review_batch(pane(), false)
-        .expect("an orphan to review");
-    assert_eq!(review.counts(), "1 file, +1 -0");
-    assert!(!lab.app().join("a.txt").exists());
-}
-
 /// The next disclosure the lab's pane received.
 #[cfg(target_os = "linux")]
 async fn disclosed(lab: &mut Lab) -> OrchestraEvent {
@@ -4025,15 +4001,19 @@ async fn attach_does_not_revive_a_worker_that_ended() {
 
 // Re-review fix (4.1b): an ask of a surviving worker pauses the timers of the
 // NEW orchestrator turn and of the worker's own turn (which watches the
-// pending count it was started with) while the user answers it.
+// worker's own count, `Route.own`, D5) while the user answers it.
 #[tokio::test]
 async fn a_surviving_workers_ask_counts_for_both_turns_timers() {
-    let (lab, waits, run, mut client, _old, worker_side) = surviving_worker().await;
+    let (lab, waits, run, mut client, _old, _) = surviving_worker().await;
     let (scope, mut next, turn_side) = turn_scope(&lab, &waits, 8);
     lab.manager.attach(pane(), run, scope).unwrap();
     let id = raised(&mut client, &mut next, 1).await;
     assert_eq!(turn_side.count(), 1, "the new orchestrator turn");
-    assert_eq!(worker_side.count(), 1, "the worker's own timers");
+    let worker_side = lab
+        .manager
+        .on_run(pane(), run, |live| live.routes[&WorkerId(1)].own.count())
+        .unwrap();
+    assert_eq!(worker_side, 1, "the worker's own timers");
     assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
 }
 
@@ -6140,6 +6120,7 @@ async fn a_degraded_code_worker_with_call_text_gives_the_coordinator_no_line() {
 }
 
 mod claims;
+mod clock;
 mod gate_wait;
 mod gates;
 mod parallel;

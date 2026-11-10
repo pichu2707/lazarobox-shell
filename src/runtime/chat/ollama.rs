@@ -10,7 +10,7 @@
 use std::{panic::AssertUnwindSafe, sync::Arc};
 
 use futures::FutureExt;
-use tokio::{sync::mpsc, time::timeout};
+use tokio::sync::mpsc;
 
 use super::TURN_CHANNEL;
 
@@ -40,6 +40,7 @@ use crate::{
     runtime::{
         loopback::{TOO_LONG, Timeouts, post_stream_with},
         mcp::Dispatch,
+        tools::pending,
     },
 };
 
@@ -152,7 +153,7 @@ pub fn current() -> Option<Arc<dyn Dispatch>> {
 /// One turn with tools: rounds of request, reply and tool calls until the
 /// model answers in text, the cap is hit or the turn fails. Ends with exactly
 /// one `Done` or `Error` unless the receiver is gone. The total limit covers
-/// every round together.
+/// every round together; a worker turn's pauses while it waits for the user.
 pub async fn tool_turn(
     request: &ChatRequest,
     port: u16,
@@ -173,7 +174,7 @@ pub async fn tool_turn_with(
     tx: &mpsc::Sender<StreamEvent>,
 ) {
     let looped = rounds(profile, request, port, dispatch, timeouts, tx);
-    if timeout(timeouts.total, looped).await.is_err() {
+    if pending::total_limit(timeouts.total, looped).await.is_err() {
         let _ = tx
             .send(StreamEvent::Error(ChatError::Failed(TOO_LONG.into())))
             .await;

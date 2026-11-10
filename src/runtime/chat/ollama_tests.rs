@@ -898,6 +898,70 @@ async fn the_total_limit_covers_all_rounds() {
     assert!(fake.bodies().len() >= 2, "{} rounds", fake.bodies().len());
 }
 
+/// The last event of a tool turn whose server answers after 900 ms under a
+/// 300 ms total, while a call of the turn waits for the user all along;
+/// `worker` runs it as a worker turn.
+async fn last_while_the_user_decides(worker: bool) -> Option<StreamEvent> {
+    use crate::runtime::tools::{Pending, pending};
+    let fake = fake(vec![Step::Delay(900, {
+        let Step::Reply(body) = text("done") else {
+            unreachable!()
+        };
+        body
+    })])
+    .await;
+    let lab = lab(fake.port);
+    let (tx, mut rx, dispatch) = direct(&lab);
+    let timeouts = Timeouts {
+        total: Duration::from_millis(300),
+        ..Timeouts::SERVER
+    };
+    let pending = Pending::new();
+    let _wait = pending.enter();
+    let request = ask(&lab, true);
+    let port = fake.port;
+    let turn = async move {
+        let turn = ollama::tool_turn(&request, port, dispatch, &timeouts, &tx);
+        if worker {
+            pending::TURN
+                .scope(pending, pending::worker_turn(turn))
+                .await;
+        } else {
+            pending::TURN.scope(pending, turn).await;
+        }
+        drop(tx);
+    };
+    let collect = async {
+        let mut last = None;
+        while let Some(event) = rx.recv().await {
+            last = Some(event);
+        }
+        last
+    };
+    let both = async { tokio::join!(turn, collect).1 };
+    tokio::time::timeout(Duration::from_secs(10), both)
+        .await
+        .expect("the turn ends within 10 s")
+}
+
+// Spec (agent-orchestrator, Waiting on the user stops the worker clock, D5):
+// a worker turn on the Ollama tool loop does not fail `TOO_LONG` for the time
+// it waited for the user.
+#[tokio::test]
+async fn a_worker_turns_total_limit_stops_while_the_user_decides() {
+    let last = last_while_the_user_decides(true).await;
+    assert!(matches!(last, Some(StreamEvent::Done(_))), "{last:?}");
+}
+
+// GUARD: a chat turn keeps today's total limit, wait or no wait.
+#[tokio::test]
+async fn a_chat_turns_total_limit_runs_while_the_user_decides() {
+    assert_eq!(
+        last_while_the_user_decides(false).await,
+        Some(StreamEvent::Error(ChatError::Failed(TOO_LONG.into())))
+    );
+}
+
 // Cancel while the user decides: the call is denied and nothing else is sent.
 #[tokio::test]
 async fn cancel_while_an_approval_waits_denies_it_and_sends_nothing() {
