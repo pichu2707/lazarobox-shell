@@ -21,7 +21,10 @@ use crate::core::ai::chat::{
 use crate::core::ai::{
     config::ApprovalMode,
     sanitize::clean,
-    tools::{exec::Fallback, registry::FamilySet},
+    tools::{
+        exec::Fallback,
+        registry::{Family, FamilySet},
+    },
 };
 
 /// Why a call is denied without the user being asked, or when a refusal has no
@@ -40,6 +43,11 @@ const CHAT_GONE: &str = "the chat is gone";
 const FORM_OPEN: &str = "a feedback form is already open";
 /// The chat line of a draft the user did not accept.
 pub(super) const NO_DRAFT: &str = "no draft issue was opened";
+
+/// The chat line that suggests `/feedback` when the turn's draft tool is not
+/// offered: after a failed turn or a tool `Error`, once per turn (D6).
+pub(super) const FEEDBACK_HINT: &str =
+    "If this looks like a lazarobox problem, type /feedback to report it";
 
 /// What a tool event says about a call that may wait for the user.
 pub(super) enum ToolEvent {
@@ -286,6 +294,30 @@ impl App {
         }
     }
 
+    /// Turn `turn` of chat `id` was just sent as `effect`: a plain chat turn
+    /// that does not offer the draft tool (no tools for its engine, the
+    /// master switch or the toggle off) may suggest `/feedback` (D6). An
+    /// orchestrated turn is out of the feature's scope and never does.
+    pub(super) fn arm_feedback_hint(&mut self, id: PaneId, turn: u64, effect: &Effect) {
+        let armed = matches!(effect, Effect::ChatSend { request, .. }
+            if request.tools == Tools::Off || !request.families.contains(Family::IssueDraft));
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.arm_feedback_hint(turn, armed);
+        }
+    }
+
+    /// Turn `turn` of chat `id` failed, or a tool of it ended in `Error`: a
+    /// turn armed for it suggests `/feedback`, once. A denied call is a
+    /// choice, not a failure, and never gets here.
+    pub(super) fn suggest_feedback(&mut self, id: PaneId, turn: u64) {
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+            && chat.take_feedback_hint(turn)
+        {
+            chat.push_system_line(FEEDBACK_HINT.to_owned());
+            self.dirty = true;
+        }
+    }
+
     /// Turn `turn` of chat `id` ended, however it ended: the draft the user
     /// accepted in it opens in the Feedback form (D3). A form with the user's
     /// text is never replaced (nor is a mode the user is in): the chat says
@@ -303,9 +335,10 @@ impl App {
         if self.menu.is_none() && self.input == InputMode::Terminal {
             effects = self.open_menu();
         }
-        // The warning's answer reads the selected row: the form would move it.
-        let free = |menu: &&mut MenuState| !menu.feedback_open() && !menu.in_warning();
-        match self.menu.as_mut().filter(free) {
+        // A view the user is in (the warning, whose answer reads the selected
+        // row, a picker, a field, the form) keeps the menu: the form would
+        // move the selection under it.
+        match self.menu.as_mut().filter(|menu| !menu.holds_a_view()) {
             Some(menu) => {
                 menu.open_feedback_draft(draft.kind, &draft.title, &draft.description);
                 self.dirty = true;

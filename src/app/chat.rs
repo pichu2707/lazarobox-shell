@@ -675,7 +675,9 @@ impl App {
                 self.hide_server_offer(id);
                 // The conversation is saved before the engine starts.
                 let mut effects = self.store_effects(id);
-                effects.push(self.turn_effect(id, turn, *request, attach));
+                let effect = self.turn_effect(id, turn, *request, attach);
+                self.arm_feedback_hint(id, turn, &effect);
+                effects.push(effect);
                 effects
             }
             SendOutcome::Refused => Vec::new(),

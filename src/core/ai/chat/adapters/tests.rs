@@ -2105,3 +2105,34 @@ fn the_external_tools_weigh_their_entries_of_the_tools_array() {
     let two = [tool("fs__search"), tool("fs__read")];
     assert!(external_tools_tokens(&two) > external_tools_tokens(&one) + 100);
 }
+
+// Spec (issue-draft, D5): an engine without tools never hears of the draft
+// tool, even with its family on; a wired one hears of it in its tools text.
+#[test]
+fn the_draft_sentence_reaches_only_an_engine_with_tools() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let families = FamilySet::LEGACY.with(Family::IssueDraft);
+    for engine in ["claude", "codex", "gemini"] {
+        let mut on = wired_request(engine);
+        on.families = families;
+        let mut off = on.clone();
+        off.tools = Tools::Off;
+        let adapter = adapter_for(engine).unwrap();
+        assert_eq!(
+            adapter.build_with(&on, &[]),
+            adapter.build(&off),
+            "{engine}"
+        );
+        let bare = process(adapter.build_with(&on, &[]));
+        assert!(bare.tools.is_none(), "{engine}");
+        let text = format!("{:?}{}", bare.args, bare.stdin);
+        assert!(!text.contains(prompts::DRAFT_OFFER), "{engine}");
+        let tools = process(adapter.build_with(&on, &[engine])).tools.unwrap();
+        let text = format!(
+            "{}{}",
+            tools.args.join("\n"),
+            String::from_utf8_lossy(&tools.stdin)
+        );
+        assert!(text.contains(prompts::DRAFT_OFFER), "{engine}");
+    }
+}

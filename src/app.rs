@@ -3149,6 +3149,15 @@ impl App {
         // The usage line follows the settings at the moment the turn ends.
         chat.set_usage_config(self.ai.usage().clone());
         let failure = turn_failure(&event);
+        // D6: what may suggest `/feedback` (a failed turn, a tool `Error`).
+        let failed = failure.is_some()
+            || matches!(
+                tool,
+                Some(ToolEvent::Over(
+                    _,
+                    crate::core::ai::chat::engine::ToolStatus::Error
+                ))
+            );
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
         if finished {
@@ -3180,6 +3189,9 @@ impl App {
             effects.extend(self.cancel_chat(id));
         }
         effects.extend(self.on_tool_event(id, turn, (live, finished), tool));
+        if live && failed {
+            self.suggest_feedback(id, turn);
+        }
         if finished {
             effects.extend(self.open_issue_draft(id, turn));
         }

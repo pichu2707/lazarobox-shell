@@ -481,6 +481,9 @@ pub struct ChatState {
     /// The draft the user accepted in the turn in flight, with its turn and
     /// call: the Feedback form opens with it when that turn ends (D3).
     issue_draft: Option<(u64, CallId, IssueDraft)>,
+    /// The turn that did not offer the draft tool and has not yet suggested
+    /// `/feedback`: its first failure or tool `Error` says it, once (D6).
+    feedback_hint: Option<u64>,
     /// What the model has yet to hear about a user-side answer to a batch it
     /// left behind: sent once with the next request, never stored.
     told: Vec<String>,
@@ -618,6 +621,7 @@ impl ChatState {
             write_granted: false,
             drive_grant: None,
             issue_draft: None,
+            feedback_hint: None,
             told: Vec::new(),
             told_sent: Vec::new(),
             batch_badge: None,
@@ -881,6 +885,22 @@ impl ChatState {
             self.issue_draft = None;
         }
         held
+    }
+
+    /// Whether `turn`, just sent, may suggest `/feedback`: it does not offer
+    /// the draft tool.
+    pub fn arm_feedback_hint(&mut self, turn: u64, armed: bool) {
+        self.feedback_hint = armed.then_some(turn);
+    }
+
+    /// Whether `turn` is armed for the `/feedback` hint, once: a second
+    /// failure of the same turn says nothing more.
+    pub fn take_feedback_hint(&mut self, turn: u64) -> bool {
+        let armed = self.feedback_hint == Some(turn);
+        if armed {
+            self.feedback_hint = None;
+        }
+        armed
     }
 
     /// The draft held for `turn`, once. A draft of another turn is stale and

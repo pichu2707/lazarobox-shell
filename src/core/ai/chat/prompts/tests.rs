@@ -655,3 +655,79 @@ fn the_worker_prompt_lets_a_rejected_batch_be_proposed_again() {
     assert!(!WORKER.contains("once"), "{WORKER}");
     assert!(WORKER.contains("If the user rejects the batch"), "{WORKER}");
 }
+
+// Spec (issue-draft, D5): a turn that offers `gh_issue_draft` is told when to
+// offer a draft, once, after the rest of the tools block; any other turn is
+// told nothing about it.
+#[test]
+fn the_draft_sentence_comes_only_with_the_draft_family() {
+    let chat = builtin(Profile::Programmer, Task::Chat);
+    let draft = FamilySet::LEGACY.with(Family::IssueDraft);
+    for families in [
+        draft,
+        draft.with(Family::Write).with(Family::Exec),
+        FamilySet::ALL.without(Family::Orchestra),
+    ] {
+        let got = with_tools(chat, families);
+        assert_eq!(got.matches(DRAFT_OFFER).count(), 1, "{families:?}");
+        assert!(got.contains(REPLY_IN_USER_LANGUAGE), "{families:?}");
+        let own = with_tools("My own prompt.\n", families);
+        assert!(own.ends_with(DRAFT_OFFER), "{own}");
+    }
+    for families in [
+        FamilySet::LEGACY,
+        FamilySet::ALL.without(Family::IssueDraft),
+        FamilySet::LEGACY.with(Family::Github),
+    ] {
+        let got = with_tools(chat, families);
+        assert!(!got.contains(DRAFT_OFFER), "{families:?}");
+        assert!(!got.contains("issue draft"), "{families:?}");
+    }
+}
+
+// D5: the three cases, the permission, and what is not a reason.
+#[test]
+fn the_draft_sentence_names_the_three_cases_and_the_permission() {
+    for needle in [
+        "issue draft tool",
+        "only when the user asks for one",
+        "when you cannot do what was asked because lazarobox lacks it",
+        "when a lazarobox tool or this chat fails",
+        "never for errors in the user's own code or commands",
+        "is the user's permission, so do not ask first",
+    ] {
+        assert!(DRAFT_OFFER.contains(needle), "{needle}");
+    }
+    // One sentence, one line, ASCII.
+    assert_eq!(DRAFT_OFFER.matches(". ").count(), 0, "{DRAFT_OFFER}");
+    assert!(DRAFT_OFFER.ends_with('.'));
+    assert!(DRAFT_OFFER.chars().all(|c| (' '..='~').contains(&c)));
+}
+
+// The master switch off, or the toggle off: the saved families have no draft
+// family, so the turn's block has no sentence.
+#[test]
+fn the_switch_or_the_toggle_off_leaves_the_sentence_out() {
+    use crate::core::ai::config::{AiConfig, ToolToggle};
+    let chat = builtin(Profile::Programmer, Task::Chat);
+    let mut config = AiConfig::default();
+    assert!(with_tools(chat, config.families()).contains(DRAFT_OFFER));
+    config.set_toggle(ToolToggle::IssueDraft, false);
+    assert!(!with_tools(chat, config.families()).contains(DRAFT_OFFER));
+    config.set_toggle(ToolToggle::IssueDraft, true);
+    config.set_tools_enabled(false);
+    assert!(!with_tools(chat, config.families()).contains(DRAFT_OFFER));
+}
+
+// Workers and the orchestrator get no draft tool, so no sentence either.
+#[test]
+fn no_worker_and_no_orchestrator_turn_gets_the_sentence() {
+    use crate::core::ai::orchestra::Toolset;
+    for toolset in [Toolset::ReadOnly, Toolset::Code, Toolset::Orchestrator] {
+        for profile in Profile::ALL {
+            let system = worker_system(builtin(profile, Task::Code));
+            let got = with_tools(&system, toolset.families());
+            assert!(!got.contains(DRAFT_OFFER), "{toolset:?} {profile:?}");
+        }
+    }
+}
