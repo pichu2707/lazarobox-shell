@@ -39,7 +39,7 @@ The tool registry MUST offer by role: chat session = chat tools as before; orche
 - THEN the call returns an error result naming the cause, no ask opens and nothing starts
 
 ### Requirement: read_pane tool [W11]
-A read-only tool `read_pane` of the `Pane` family MUST let a chat or the orchestrator (coordinator) session read the text of one pane. It MUST be part of the default tool list and MUST NOT be offered to a `Toolset::Code` worker or a worker session. The coordinator's call asks exactly as a chat's. Arguments: `pane` (integer, required) and `scrollback` (integer, optional, a number of lines). The target MUST be a pane that `list_panes` lists, EXCLUDING the chat's own pane; any other number returns an error result and reads nothing.
+A read-only tool `read_pane` of the `PaneRead` family (with `list_panes`; `Pane` keeps only `run_in_pane`) MUST let a chat or the orchestrator (coordinator) session read the text of one pane. It MUST be part of the default tool list and MUST NOT be offered to a `Toolset::Code` worker or a worker session. The coordinator's call asks exactly as a chat's. Arguments: `pane` (integer, required) and `scrollback` (integer, optional, a number of lines). The target MUST be a pane that `list_panes` lists, EXCLUDING the chat's own pane; any other number returns an error result and reads nothing.
 
 By default the text is the visible screen. With `scrollback` it also holds scrollback lines, at most 200 lines and 8 KiB. The cap MUST also bound a large visible screen. When the text is over a cap the TAIL is kept and the text MUST say it was cut. There is no paging and nothing is stored.
 

@@ -78,8 +78,8 @@ const HINT_OFF: &str = "Ctrl+O: stop orchestrating";
 pub(super) const HINT_RUN: &str =
     "A run is active: cancel the run first (Ctrl+C), then Ctrl+O changes the mode";
 
-/// Said in the pane when ORCH turns on. The coordinator is offered the read
-/// and orchestration tools only, whatever the saved Write, Exec and GitHub
+/// Said in the pane when ORCH turns on. The coordinator is offered the read,
+/// pane-read and orchestration tools only, whatever the saved Write, Exec and GitHub
 /// toggles say, so without these lines the model's "I have no tools" has no
 /// visible cause. The head is short on purpose: the ORCH badge covers the end
 /// of the first row of an empty chat, and the body must not lose its key name.
