@@ -7,7 +7,9 @@
 //!   shell ever parses them, so `;` or `$(..)` in an argument is just text.
 //! - The server is trusted by the user but NOT jailed (design D8). What it
 //!   gets is minimal on purpose: the environment is cleared, then a small base
-//!   ([`BASE_ENV`]), then ONLY the variables the config names. The session
+//!   ([`BASE_ENV`]), then ONLY the variables the config names (their values
+//!   from the caller's lookup: the server's `secrets.toml` table, else the
+//!   host, see `Secrets::lookup_for`). The session
 //!   token ([`TOKEN_ENV`]) is never passed, even if the config names it, and
 //!   neither is anything else the user did not list.
 //! - A config entry must not be able to inject code into the server's dynamic

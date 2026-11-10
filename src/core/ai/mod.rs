@@ -14,6 +14,7 @@ pub mod http;
 pub mod install;
 pub mod jail;
 pub mod marks;
+pub mod mcp_secrets;
 pub mod memory;
 pub mod menu;
 pub mod ollama_lib;

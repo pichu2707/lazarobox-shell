@@ -70,6 +70,25 @@ impl Lab {
     }
 }
 
+impl Lab {
+    /// Like [`Lab::server`], naming `env`, and first writing its whole
+    /// environment to [`Lab::env_of`] (a recorder).
+    pub fn recorder(&self, name: &str, env: &[&str]) -> McpServer {
+        let mut server = self.server(name, "ping", "pong");
+        let out = self.home.join(format!("{name}.env"));
+        server.args[1] = format!("env > '{}'; {SCRIPT}", out.display());
+        server.env = env.iter().map(|n| (*n).to_owned()).collect();
+        server
+    }
+
+    /// The environment the recorder `name` was started with, one `K=V` a line.
+    pub fn env_of(&self, name: &str) -> Vec<String> {
+        let text =
+            std::fs::read_to_string(self.home.join(format!("{name}.env"))).unwrap_or_default();
+        text.lines().map(str::to_owned).collect()
+    }
+}
+
 pub(crate) fn host_env(name: &str) -> Option<OsString> {
     (name == "PATH").then(|| OsString::from("/usr/bin:/bin"))
 }

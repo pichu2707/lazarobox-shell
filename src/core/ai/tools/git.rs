@@ -194,21 +194,20 @@ pub fn env(read: bool) -> Vec<(&'static str, &'static str)> {
 }
 
 /// The `:(exclude,glob,icase)` pathspecs for the secret names: every
-/// [`SECRET_FILES`] entry, `.env`, `.env.*` and the temp files, plus the
-/// contents of every secret folder, at any depth. `icase` follows
-/// the case-insensitive rule of the path guard.
+/// [`SECRET_FILES`] entry, `.env`, `.env.*` and the temp files, plus every
+/// secret root itself (some are files, such as `.clasprc.json`) and its
+/// contents, at any depth. `icase` follows the case-insensitive rule of the
+/// path guard.
 pub fn excludes() -> Vec<String> {
     let mut specs: Vec<String> = [".env", ".env.*", ".lbx-*.tmp"]
         .iter()
         .chain(SECRET_FILES)
         .map(|name| format!(":(exclude,glob,icase)**/{name}"))
         .collect();
-    specs.extend(
-        SECRET_DIRS
-            .iter()
-            .chain(CREDENTIAL_DIRS)
-            .map(|dir| format!(":(exclude,glob,icase)**/{dir}/**")),
-    );
+    for dir in SECRET_DIRS.iter().chain(CREDENTIAL_DIRS) {
+        specs.push(format!(":(exclude,glob,icase)**/{dir}"));
+        specs.push(format!(":(exclude,glob,icase)**/{dir}/**"));
+    }
     specs.sort();
     specs
 }
@@ -999,6 +998,10 @@ u UU N... 1 2 3 4 aaa bbb ccc conflict.rs\0\
             "y/.config/gh/hosts.yml",
             "z/.npmrc",
             "src/keep.rs",
+            ".clasprc.json",
+            "w/.google_workspace_mcp/credentials/u.json",
+            "v/.config/mcp-gsc/token.json",
+            "u/.config/lazarobox/secrets.toml",
         ] {
             let path = dir.path().join(file);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1094,6 +1097,22 @@ u UU N... 1 2 3 4 aaa bbb ccc conflict.rs\0\
             assert_eq!(add_argv(&gd(), &[bad]), Err(GitError::Path), "{bad}");
         }
         assert!(add_argv(&gd(), &[".config/other/x", "gh/x"]).is_ok());
+        // Connector token locations (openspec mcp-connectors C6, C8).
+        for bad in [
+            ".clasprc.json",
+            "a/.CLASPRC.json",
+            ".google_workspace_mcp/credentials/u.json",
+            ".config/mcp-gsc/token.json",
+            ".config/lazarobox/secrets.toml",
+        ] {
+            assert_eq!(add_argv(&gd(), &[bad]), Err(GitError::Path), "{bad}");
+        }
+        assert!(add_argv(&gd(), &[".clasp.json", ".config/mcp-gsc-x/a"]).is_ok());
+        // A secret root that is a file is excluded itself, not only its
+        // contents.
+        assert!(specs.contains(&":(exclude,glob,icase)**/.clasprc.json".to_owned()));
+        let (notice, secret) = drift_notice("ok.rs\0.clasprc.json\0");
+        assert!(secret && !notice.contains(".clasprc"), "{notice}");
     }
 
     #[test]

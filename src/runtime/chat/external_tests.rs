@@ -546,3 +546,143 @@ async fn a_turn_tells_the_app_what_its_external_tools_weigh() {
     assert_eq!(weights(&mut rx).await, [0]);
     chats.shutdown(Duration::from_secs(3)).await;
 }
+
+/// Chats over `servers` that read `secrets.toml` in a config folder of the
+/// lab (never the user's own), and the path of that file.
+fn open_chats_with_secrets(
+    lab: &Lab,
+    seen: &Arc<Mutex<Vec<Tools>>>,
+    servers: Vec<McpServer>,
+) -> (Chats, mpsc::Receiver<Tagged>, std::path::PathBuf) {
+    let dir = lab.dir.path().join("config/lazarobox");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("secrets.toml");
+    let (chats, rx) = open_chats(lab, recording(seen), servers);
+    (chats.with_secrets(Some(path.clone())), rx, path)
+}
+
+fn write_secrets(path: &std::path::Path, text: &str, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, text).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+// Spec mcp-secrets, Location and ownership: missing file.
+#[tokio::test]
+async fn with_no_secrets_file_the_servers_start_and_nothing_mentions_it() {
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let servers = vec![lab.fake.recorder("fs", &["PATH"])];
+    let (mut chats, mut rx, path) = open_chats_with_secrets(&lab, &seen, servers);
+    chats.send(pane(1), 1, turn_on("ollama"));
+    assert_eq!(notices(&mut rx).await, ["mcp: started fs"]);
+    assert!(!path.exists(), "nothing creates it");
+    chats.shutdown(Duration::from_secs(5)).await;
+    assert!(!path.exists(), "nothing creates it");
+}
+
+// Spec mcp-secrets, Read on each start (an edit applies on the next start),
+// Problems without values (a problem does not stop the start, shown once)
+// and Location and ownership (never written).
+#[tokio::test]
+async fn the_file_is_read_at_each_start_its_problems_shown_once_and_it_is_never_written() {
+    use std::os::unix::fs::MetadataExt;
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let servers = vec![lab.fake.recorder("clarity", &["CLARITY_API_TOKEN"])];
+    let (mut chats, mut rx, path) = open_chats_with_secrets(&lab, &seen, servers);
+    write_secrets(
+        &path,
+        "[clarity]\nCLARITY_API_TOKEN = \"sk-first\"\nBAD = 5\n",
+        0o600,
+    );
+    chats.send(pane(1), 1, turn_on("ollama"));
+    let lines = notices(&mut rx).await;
+    assert_eq!(
+        lines,
+        [
+            "mcp: secrets.toml: clarity.BAD: expected a string",
+            "mcp: started clarity"
+        ]
+    );
+    let env = lab.fake.env_of("clarity");
+    assert!(
+        env.iter().any(|l| l == "CLARITY_API_TOKEN=sk-first"),
+        "{env:?}"
+    );
+    // The running set is reused: no second read, no second notice.
+    chats.send(pane(1), 2, turn_on("ollama"));
+    assert!(notices(&mut rx).await.is_empty());
+    // A turn without tools stops it; the next start reads the edit.
+    chats.send(pane(1), 3, request(""));
+    notices(&mut rx).await;
+    let text = "[clarity]\nCLARITY_API_TOKEN = \"sk-second\"\n";
+    write_secrets(&path, text, 0o600);
+    let before = std::fs::metadata(&path).unwrap();
+    chats.send(pane(1), 4, turn_on("ollama"));
+    let lines = notices(&mut rx).await;
+    assert_eq!(lines, ["mcp: started clarity"]);
+    let env = lab.fake.env_of("clarity");
+    assert!(
+        env.iter().any(|l| l == "CLARITY_API_TOKEN=sk-second"),
+        "{env:?}"
+    );
+    chats.shutdown(Duration::from_secs(5)).await;
+    let after = std::fs::metadata(&path).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    assert_eq!(
+        (after.mode(), after.ino(), after.mtime()),
+        (before.mode(), before.ino(), before.mtime())
+    );
+}
+
+// Spec mcp-secrets, Mode 0600: readable by others is not used.
+#[tokio::test]
+async fn a_file_others_may_read_is_not_used_and_says_how_to_fix_it() {
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let servers = vec![lab.fake.recorder("clarity", &["CLARITY_API_TOKEN"])];
+    let (mut chats, mut rx, path) = open_chats_with_secrets(&lab, &seen, servers);
+    write_secrets(&path, "[clarity]\nCLARITY_API_TOKEN = \"tok\"\n", 0o644);
+    chats.send(pane(1), 1, turn_on("ollama"));
+    let lines = notices(&mut rx).await;
+    let mode = format!(
+        "mcp: secrets.toml: mode must be 0600 (chmod 600 {})",
+        path.display()
+    );
+    assert_eq!(lines, [mode.as_str(), "mcp: started clarity"]);
+    let env = lab.fake.env_of("clarity");
+    assert!(
+        !env.iter().any(|l| l.starts_with("CLARITY_API_TOKEN=")),
+        "{env:?}"
+    );
+    chats.shutdown(Duration::from_secs(5)).await;
+}
+
+// Spec mcp-secrets, Problems without values: syntax error hides the line;
+// spec mcp-servers, Secrets and privacy: file values appear nowhere else.
+#[tokio::test]
+async fn a_syntax_error_is_shown_by_line_and_its_value_appears_in_no_notice() {
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let servers = vec![lab.fake.recorder("clarity", &["CLARITY_API_TOKEN"])];
+    let (mut chats, mut rx, path) = open_chats_with_secrets(&lab, &seen, servers);
+    write_secrets(
+        &path,
+        "# values\n[clarity]\nCLARITY_API_TOKEN = \"sk-123\n",
+        0o600,
+    );
+    chats.send(pane(1), 1, turn_on("ollama"));
+    let lines = notices(&mut rx).await;
+    assert_eq!(
+        lines,
+        [
+            "mcp: secrets.toml: not valid TOML (line 3)",
+            "mcp: started clarity"
+        ]
+    );
+    assert!(lines.iter().all(|l| !l.contains("sk-123")));
+    let env = lab.fake.env_of("clarity");
+    assert!(!env.iter().any(|l| l.contains("sk-123")), "{env:?}");
+    chats.shutdown(Duration::from_secs(5)).await;
+}

@@ -41,6 +41,7 @@ pub mod llama_install;
 pub mod login_path;
 pub mod loopback;
 pub mod mcp;
+pub mod mcp_secrets;
 pub mod model_delete;
 pub mod notify;
 pub mod ollama_lib;
@@ -671,7 +672,12 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
                         .map_or_else(Vec::new, |_| app.ai().mcp_servers().to_vec()),
                     servers_home.clone().unwrap_or_default(),
                     chat::wires_for(cli_env.clone()),
-                ),
+                )
+                // Their values, next to `config.toml`; read at each start.
+                .with_secrets(crate::core::ai::mcp_secrets::secrets_path(
+                    env::var_os("XDG_CONFIG_HOME"),
+                    env::var_os("HOME"),
+                )),
         )
         .with_store(chat_store::spawn_at(store_path, store_tx))
         // The picker's Hugging Face screens: curl from the same PATH as the

@@ -30,6 +30,7 @@ use super::{
 };
 use crate::core::ai::{
     config::McpServer,
+    mcp_secrets::Secrets,
     sanitize::clean,
     tools::{
         ExternalTool,
@@ -84,20 +85,38 @@ async fn start_one(
     server: &McpServer,
     home: &Path,
     lookup: &impl Fn(&str) -> Option<OsString>,
+    secrets: &Secrets,
     timeouts: Timeouts,
 ) -> (String, Result<(McpClient, Vec<ExternalTool>), String>) {
+    // This server's own values only: a value never reaches another server.
+    let own = secrets.lookup_for(server, lookup);
     (
         clean(&server.name),
-        connect(server, home, lookup, timeouts).await,
+        connect(server, home, &own, timeouts).await,
     )
 }
 
 impl ExternalSet {
-    /// Starts every server at once. Must be called inside a tokio runtime.
+    /// Starts every server at once, each with lazarobox's environment only
+    /// (no `secrets.toml`). Must be called inside a tokio runtime.
     pub async fn start(
         servers: &[&McpServer],
         home: &Path,
         lookup: impl Fn(&str) -> Option<OsString>,
+        timeouts: Timeouts,
+    ) -> Self {
+        Self::start_with(servers, home, lookup, &Secrets::default(), timeouts).await
+    }
+
+    /// Starts every server at once. A variable an entry names takes its value
+    /// from that server's own table of `secrets`, else from `lookup` (the
+    /// host); see [`Secrets::lookup_for`]. Must be called inside a tokio
+    /// runtime.
+    pub async fn start_with(
+        servers: &[&McpServer],
+        home: &Path,
+        lookup: impl Fn(&str) -> Option<OsString>,
+        secrets: &Secrets,
         timeouts: Timeouts,
     ) -> Self {
         // In order, at most `START_AT_ONCE` at a time.
@@ -105,7 +124,7 @@ impl ExternalSet {
         // makes the future fail the `Send` check of a spawned turn.
         let starts: Vec<_> = servers
             .iter()
-            .map(|server| start_one(server, home, &lookup, timeouts))
+            .map(|server| start_one(server, home, &lookup, secrets, timeouts))
             .collect();
         let started: Vec<_> = stream::iter(starts).buffered(START_AT_ONCE).collect().await;
         let mut clients = Vec::new();
