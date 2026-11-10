@@ -1,5 +1,7 @@
 # Proposal: Links in Panes and the Chat
 
+Status: links shipped in #642 (detection), #643 (click) and #644 (LINKS list). Mouse text selection (S2) was deferred by the owner as a later improvement with no priority: deferred, not done.
+
 ## Intent
 
 Links printed in a shell pane or written by a model in the chat cannot be opened. With mouse capture on (the default), the host terminal's own link handling no longer gets plain clicks, and lazarobox handles no click outside the menu. The user copies the link by hand: a modifier-drag selection, or COPY mode. This change lets the user open a visible `https://` or `http://` link with one click or with a few keys, and keeps the wheel as it is. Refs #597.
