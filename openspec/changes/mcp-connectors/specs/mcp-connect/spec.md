@@ -22,7 +22,7 @@ No action in the area MUST add, change, reorder or remove any byte of `config.to
 - THEN no cell holds `sk-123` and the token shows as `set`
 
 ### Requirement: Entry list [S4]
-The area MUST list the catalog entries grouped as `Analytics` (`clarity`, `ga4`, `gsc`) then `Workspace` (`google`, `apps-script`), in catalog order (C8). Each row shows the service name and its state, read from `config.toml`, `secrets.toml` and this session's probes: `not declared` (no server of that name), `disabled` (declared with `enabled = false`), `values missing: <NAMES>` (a name the catalog puts in `secrets.toml` has no non-empty value), `declared` (otherwise), and, once probed in this session, the last probe result. Enter opens the entry screen; Esc goes back to the AI tab.
+The area MUST list the catalog entries grouped as `Analytics` (`clarity`, `ga4`, `gsc`) then `Workspace` (`google`, `apps-script`), in catalog order (C8). Each row shows the service name and its state, read from `config.toml`, `secrets.toml` and this session's probes: `not declared` (no server of that name), `disabled` (declared with `enabled = false`), `values missing: <NAMES>` (a name the catalog puts in `secrets.toml` has no non-empty value), `declared` (otherwise), and, once probed in this session, the last probe result. Enter opens the entry screen; Esc goes back to the `Connectors` row of the `Connectors` menu tab (see config-menu, Connectors row).
 
 #### Scenario: Groups and order [auto, TestBackend + insta]
 - GIVEN no declared server
@@ -35,7 +35,7 @@ The area MUST list the catalog entries grouped as `Analytics` (`clarity`, `ga4`,
 - THEN the `ga4` row reads `values missing: GOOGLE_CLOUD_PROJECT`
 
 ### Requirement: Entry screen [S4]
-The entry screen MUST show, in order: the guide steps and links of the catalog entry (with its warnings: the Clarity limits, the 7-day "Testing" note of C7, the drafts note of C9 and C12); the exact `[[ai.mcp.servers]]` entry to paste into `config.toml`; the `secrets.toml` table to fill, with each name and an empty value (no table when the entry has no secrets); the paths of `config.toml` and `secrets.toml`; and the actions available for that entry: install, log in (only when the entry has a login command), probe (only when the server is declared), open link, and copy (assumption: copying the snippet and the template to the clipboard makes pasting easy). The snippet and the template are built from the catalog and are valid TOML that parses back to the catalog's command, args and `env`.
+The entry screen MUST show, in order: the guide steps and links of the catalog entry (with its warnings: the Clarity limits, the 7-day "Testing" note of C7, the drafts note of C9 and C12); the exact `[[ai.mcp.servers]]` entry to paste into `config.toml`; the `secrets.toml` table to fill, with each name and an empty value (no table when the entry has no secrets); the paths of `config.toml` and `secrets.toml`; and the actions available for that entry: install, log in (only when the entry has a login command), probe (only when the server is declared), open link, and copy (assumption: copying the snippet and the template to the clipboard makes pasting easy). The snippet and the template are built from the catalog and are valid TOML that parses back to the catalog's command, args and `env`. The screen is drawn inside the fixed popup body and scrolls when it is longer (assumption; see config-menu, Connectors row).
 
 #### Scenario: Snippet parses back [auto]
 - GIVEN each catalog entry
@@ -66,7 +66,7 @@ The install command and the login command of an entry MUST run only after the us
 - THEN the consent page opens in the Windows browser, or its URL is shown in the pane for the user to open
 
 ### Requirement: Browser opener [S3]
-Guide links MUST open through the existing opener (src/core/opener.rs): `open` on macOS; `wslview`, then `rundll32.exe`, then `xdg-open` on WSL; `xdg-open` elsewhere; and only a one-line `https://` link is handed to it. When no opener is found, or the opener fails (it exits with an error within 5 seconds of its start), the link MUST be copied and shown as text, and the footer says so, as for the Hugging Face row.
+Guide links MUST open through the existing opener (src/core/opener.rs, run by src/runtime/opener.rs, reached from the menu by `MenuCommand::Open`, src/app.rs:2536-2543): `open` on macOS; `wslview`, then `rundll32.exe url.dll,FileProtocolHandler`, then `xdg-open` on WSL; `xdg-open` elsewhere; and only a one-line `https://` link is handed to it. When no opener is found, or the opener fails (it exits with an error within 5 seconds of its start), the link MUST be copied and shown as text, and the footer says so, as for the Hugging Face row.
 
 #### Scenario: Opener chosen [auto]
 - GIVEN WSL with `wslview` on PATH

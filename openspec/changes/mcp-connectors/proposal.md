@@ -6,7 +6,7 @@ The user asked (2026-10-28, verbatim):
 
 > "las conexiones de MCP por ejemplo Goole para leer correos y poder escribir y dejar en borrador, google docs para subir código en apps script, sheets, gsc, analytics, clarity, y de alguna manera podamos hacer esas conexiones fáciles al usuario y así vamos también dando ya algo de cuerpo a la parte de analítica de la shell"
 
-lazarobox can already run the user's own MCP servers (`[[ai.mcp.servers]]`, README.md:697-734). But today a user must:
+lazarobox can already run the user's own MCP servers (`[[ai.mcp.servers]]`, README.md:1244-1281). But today a user must:
 
 - find a server,
 - install it,
@@ -46,11 +46,13 @@ The analytics block is the first real content of the shell's analytics area (C3)
 - **C12 Gmail is common to both profiles (2026-10-29).** User: "también dentro de los mcp que podemos usar común para programadores y analistas el mcp o api para el correo empezamos con gmail para poder conectar y trabajar con sistemas de agentes locales para lectura y redacción de correos de respuesta subiendo a borrador a no ser que se de algún permiso, pero puede ser mejora o bien apuntarlo ya". Mail starts with Gmail and is a default entry for both the `programmer` and the `analyst` profile (not analyst-only). Purpose: read mail and draft replies with local agent systems (local engines included). Replies go to Drafts by default. Sending only with an explicit user permission is a LATER improvement, not in this change's first slices: C9 (drafts only, never send) stays for the shipped slices, and the send permission is a future slice whose mechanism (which permission, how it is granted, whether each send still asks `y`) is undecided (see open question 9).
 - **C13 Per-server approval level (2026-10-29).** User: "lo que tenemos que dar la opción de los MCP que se conectan poder dar permisos unitarios a cada uno, es decir, si al de gmail le puedo no dar permiso pero si a GSC"; to the levels question the user chose "Preguntar / Solo lecturas / Todo". Each connected server gets its own level: **ask** (default; `y` on every call, as C11), **reads** (tools the catalog classes as read run unasked, write tools ask), **all** (every tool runs unasked). Example: `gsc` on reads, `google` (Gmail) on ask. C13 refines C11: the default stays `y` on every call, and relaxing is now per server instead of a later global rule. Proposal, not decided: an optional `approval = "ask" | "reads" | "all"` key per `[[ai.mcp.servers]]` entry (additive, so the frozen format still reads old files); a tool the catalog does not list counts as write; a server's own `readOnlyHint` stays ignored; the level applies in chat and orchestrator turns alike, never to workers (they get no user server tools); the C9 Gmail drafts-only limit is a tool filter and holds at every level.
 
+Code line references inside C1-C13 are kept verbatim as written on 2026-10-29 (`origin/main` 191dc1c). Current locations: `paths.rs:32` in C6 is now `src/core/ai/tools/paths.rs:33` (`.config/lazarobox` in `SECRET_DIRS`).
+
 The C8 sentence "The slice table below predates C4 and is rewritten when the spec is written" is done: the table in "Slices and Size Forecast" follows C4-C12. All seven original open questions are resolved; two later-slice questions are listed at the end.
 
 ## Facts this proposal rests on
 
-V = verified against the linked source on 2026-10-28 (2026-10-29 for the items marked so). U = unverified. Code references are on `origin/main` 191dc1c.
+V = verified against the linked source on 2026-10-28 (2026-10-29 for the items marked so). U = unverified. Code references were first taken on `origin/main` 191dc1c and re-verified on 2026-11-10 against f7d6b6f4 (`docs/mcp-connectors` merged with main); the line numbers below are the current ones.
 
 ### lazarobox today
 
@@ -59,24 +61,29 @@ V = verified against the linked source on 2026-10-28 (2026-10-29 for the items m
   - The env is cleared. The server then gets `PATH, USER, LANG, LC_ALL, TMPDIR`, then only the variable NAMES listed in `env` (spawn.rs:44, 72-90).
   - `HOME` is forced to the real home. `LD_*` and `DYLD_*` names and the session token are dropped (spawn.rs:65, 84).
   - The cwd is `$HOME` (spawn.rs:116).
-  - The config accepts names only, never values (src/core/ai/config.rs:295-308, 970-978). This stays: values come from `secrets.toml` (C6), never from `config.toml`.
+  - The config accepts names only, never values (`McpServer`, src/core/ai/config.rs:386-393; `valid_env_name`, config.rs:1256-1265). This stays: values come from `secrets.toml` (C6), never from `config.toml`.
+  - The value lookup is ONE closure for every server of a chat, `|name| std::env::var_os(name)` (src/runtime/chat/external.rs:146), passed through `ExternalSet::start` (src/runtime/mcp/external.rs:97-133) to `McpClient::spawn` (spawn.rs:106-110). It does not know which server it serves, so a per-server `secrets.toml` value needs the server's name to reach the lookup. (V 2026-11-10)
+  - A chat's running set is reused across turns while its active list is unchanged (src/runtime/chat/external.rs:127-135), so an edit to `secrets.toml` reaches a running server only after that set restarts. (V 2026-11-10)
   - No `DISPLAY`, `BROWSER`, `WAYLAND_DISPLAY` or `XDG_*` reaches the server, so a server that opens a browser itself fails. Logins therefore run in a pane (see Login helper).
 - **Not jailed.** The server is trusted and runs outside the jail (spawn.rs:8-12), so it can write its token dirs under `$HOME`.
-- **Engines.** With claude, codex and gemini, user servers are started and offered only when the CLI turn runs jailed. Ollama and llama.cpp always get them (src/runtime/chat.rs:633; README.md:734). So the local agent use of C12 (local engines reading mail and drafting replies) already has the tools.
-- **Timeouts.** The handshake (`initialize` plus `tools/list`) has 20 s; one call has 15 min (src/runtime/mcp/client.rs:73-79).
+- **Engines.** With claude, codex and gemini, user servers are started and offered only when the CLI turn runs jailed. Ollama and llama.cpp always get them (`wires_tools`, src/runtime/chat.rs:662-671; README.md:1281). `MCP_VERIFIED` is `claude`, `codex`, `gemini`, `ollama`, `llamacpp` (src/core/ai/chat/engine.rs:134), so `opencode` gets no tools at all. So the local agent use of C12 (local engines reading mail and drafting replies) already has the tools.
+- **Timeouts.** The handshake (`initialize` plus `tools/list`) has 20 s; one call has 15 min (src/runtime/mcp/client.rs:73-80). A timeout's reason reads `timed out` today (client.rs:99); `timed out after 20 s` in the probe spec is a new text.
 - **Caps.**
   - At most 64 tools per server; the first 64 are kept (client.rs:51, 191).
   - Tool descriptions 1 KiB and schemas 16 KiB (client.rs:53-55).
-  - Call arguments 4 KiB (src/core/ai/tools/mod.rs:584).
-  - Results 32 KiB, sanitized and nonce-wrapped as untrusted (src/core/ai/tools/label.rs:4, 21-31).
+  - Call arguments 4 KiB (`MAX_EXTERNAL_ARGS`, src/core/ai/tools/mod.rs:1152).
+  - Results 32 KiB, sanitized and nonce-wrapped as untrusted (src/core/ai/tools/label.rs:4, 19-31).
 - **Names.** Each part of `<server>__<tool>` is lowercased, characters outside `[a-z0-9_-]` become `_`, and the part is cut at 24 characters (src/core/ai/tools/servers.rs:45-62). A collision keeps the first tool and drops the later one with a notice (servers.rs:134-160).
-- **Approval.** Every call to a user server tool needs `y`, also in `auto`, and `readOnlyHint` is ignored (README.md:730; src/runtime/mcp/external.rs:6-8; spec `agent-tools/specs/mcp-servers/spec.md:100-101`; `coding-tools/specs/agent-tools/spec.md:94`: "Tools from a user MCP server MUST always be write tools"). C11 keeps it.
+- **Approval.** Every call to a user server tool needs `y`, also in `auto`, and `readOnlyHint` is ignored (README.md:1277; src/runtime/mcp/external.rs:6-8; openspec/specs/mcp-servers/spec.md:100-101; openspec/specs/agent-tools/spec.md:228: "Tools from a user MCP server MUST always be write tools"). The chat approval mode is `ask`, `auto` or `run` (`[ai.tools] approval`); `auto` and `run` never cover a user MCP tool (openspec/specs/agent-tools/spec.md:309), and the router prompts for every external call (`route`, src/core/ai/chat/approval.rs:773-786; `answers_itself` never answers a user tool, approval.rs:841-843; `ApprovalAsk::External`, approval.rs:130). C11 keeps it. (V 2026-11-10)
 - **Stdout.** A stdout line that is not JSON is skipped silently (client.rs:299-300). A login URL printed to stdout never reaches the user, and the call waits until its timeout.
-- **Menu.** The menu never writes `ai.mcp.*`, and every save preserves those bytes exactly (src/core/config.rs:85; `agent-tools/specs/config-persistence/spec.md:73-74`; tests at src/core/config_edit.rs:1356, 1505, 1528). C4 keeps it.
-- **Read-deny list.** The read tools refuse `~/.config/gcloud` and `~/.config/lazarobox` (src/core/ai/tools/paths.rs:23-33), and the runtime also passes lazarobox's real config folder (honouring `XDG_CONFIG_HOME`) as an extra root (`agent-tools/specs/agent-tools/spec.md:96`). So `secrets.toml` in the config folder is already refused. They do NOT refuse `~/.google_workspace_mcp`, `~/.clasprc.json` or `~/.config/mcp-gsc` (`git grep` on main finds none of them).
+- **Menu.** The menu never writes `ai.mcp.*`, and every save preserves those bytes exactly (src/core/config.rs:91; openspec/specs/config-persistence/spec.md:494; tests at src/core/config_edit.rs:1395, 1543, 1567, 1661). C4 keeps it.
+- **Unknown keys.** Since config-unknown-keys (archived 2026-11-07), a key of a `[[ai.mcp.servers]]` entry other than `name`, `command`, `args`, `env`, `enabled` and `project` is reported at start as `config: unknown key: ai.mcp.servers[N].<key>` (src/core/ai/config.rs:1584-1594; openspec/specs/configuration/spec.md:481). An added key is therefore not silent on a build that does not know it. (V 2026-11-10)
+- **Read-deny list.** The read tools refuse `~/.config/gcloud` and `~/.config/lazarobox` (`SECRET_DIRS`, src/core/ai/tools/paths.rs:24-34), and the runtime also passes lazarobox's real config folder (honouring `XDG_CONFIG_HOME`) as an extra root (openspec/specs/agent-tools/spec.md:116). So `secrets.toml` in the config folder is already refused. They do NOT refuse `~/.google_workspace_mcp`, `~/.clasprc.json` or `~/.config/mcp-gsc` (`grep` on f7d6b6f4 finds none of them in `src/`). `SECRET_DIRS` is shared: the secret roots of every tool call are built from it (paths.rs:346), so the write check (`judge_write`, paths.rs:424) and the git tools (src/core/ai/tools/git.rs:207, 240) refuse the same paths; an addition reaches them too. The read tools are now `find_dir`, `list_dir`, `read_file`, `grep` and `glob` (openspec/specs/code-search/spec.md:5). (V 2026-11-10)
 - **Config folder.** `config.toml` is read from `$XDG_CONFIG_HOME/lazarobox/`, else `$HOME/.config/lazarobox/` (openspec/specs/configuration/spec.md:10). (V 2026-10-29)
-- **Browser opener.** A pure opener module already exists: `open` on macOS; `wslview`, then `rundll32.exe`, then `xdg-open` on WSL; `xdg-open` elsewhere; only one-line `https://` links are handed to it (src/core/opener.rs:5-14, 26-30). The Hugging Face row uses it and copies the link when no opener works (`hf-download/specs/config-menu/spec.md:69-70`). (V 2026-10-29)
-- **AI tab.** Its last row today is `Hugging Face` (`hf-download/specs/config-menu/spec.md:69-70`; src/core/menu.rs:264). (V 2026-10-29)
+- **Browser opener.** A pure opener module already exists: `open` on macOS; `wslview`, then `rundll32.exe url.dll,FileProtocolHandler`, then `xdg-open` on WSL; `xdg-open` elsewhere; only one-line `https://` links are handed to it (`candidates`, src/core/opener.rs:8-14; `leading_args`, 20-25; `is_web_url`, 30-34). The runtime side runs the first one found on PATH and treats an error exit within 5 s as a failure (src/runtime/opener.rs:18). The menu already sends any link through `MenuCommand::Open`, which refuses a non-`https://` link and footers `Opened in your browser` (src/app.rs:2536-2543). The Hugging Face row uses it and copies the link when no opener works (openspec/specs/config-menu/spec.md:1271-1278). (V 2026-11-10)
+- **Menu tabs.** The old `AI` tab was split (ai-menu-tabs, archived 2026-11-02). The menu now has the tabs `Settings`, `Models`, `Tools`, `Connectors`, `Chat` (`TABS`, src/core/menu.rs:750-785; openspec/specs/config-menu/spec.md:5, 759-806). `Connectors` is reserved for MCP ("as soon as a row is declared for it (MCP, agent-tools 4a)", config-menu spec:760): it has no rows today (`sections: &[]`, menu.rs:772-778), so it is hidden, Tab skips it and `4` shows a notice. `Hugging Face` is the last row of the Models tab (menu.rs:589; config-menu spec:400, 1272). The popup body is fixed at 12 view rows (`VIEW_BODY`, menu.rs:859; config-menu spec:894). (V 2026-11-10)
+- **New tabs from the menu.** The update action opens a new tab that runs `cargo install` as a direct argv job, not typed into a shell, and closes the menu (`NewPane::Update`, src/app.rs:1965-1978). (V 2026-11-10)
+- **Names in use.** `src/core/ai/catalog.rs` holds the model catalogs and `CATALOG` in src/core/ai/mod.rs:90 is the engine table, so the MCP catalog needs another module name (assumption: `src/core/ai/mcp_catalog.rs`). (V 2026-11-10)
 - **Profiles.** There are exactly two profiles, `analyst` and `programmer`, and "A profile changes ONLY the prompts: no engine, model, key, layout or behaviour changes with it" (openspec/specs/prompt-profiles/spec.md:5). Default entries per profile (C4, C12) therefore need a change to that rule. (V 2026-10-29)
 
 ### The services
@@ -135,7 +142,7 @@ V = verified against the linked source on 2026-10-28 (2026-10-29 for the items m
 5. **Login helper.** Login commands run in a real lazarobox pane with a TTY, started from the Connectors area after `y`: `gcloud auth application-default login ...`, `clasp login`, and (once verified) the pre-auth for workspace-mcp. Guide links open with the existing opener (src/core/opener.rs); with no working opener the link is copied or shown as text. Logins never run inside a tool call, where lazarobox cannot show them (client.rs:299-300).
 6. **Pre-install and the 20 s handshake.** Entries run a pre-installed binary (`uv tool install`, `pipx install`, `npm i -g`), never a first-run `uvx`, `npx` or `pipx run` download, which could exceed the 20 s handshake (client.rs:76). The install command runs in a visible pane after `y`. How long a first download takes is U.
 7. **Probe.** From the Connectors area, after `y`, lazarobox starts one declared server outside any chat turn with the normal spawn rules, waits for `initialize` and `tools/list` within the 20 s handshake, reports the result, checks that the server lists at most 64 tools (client.rs:51) and that no two tools collide after the 24-character cut (servers.rs:45-62), and stops it.
-8. **Connectors area (C1, C2, C4).** A `Connectors` row at the end of the AI tab opens a list grouped as Analytics then Workspace. Each entry screen shows the guide, the `[[ai.mcp.servers]]` entry to paste into `config.toml`, the `secrets.toml` table to fill, the state (declared or not, secrets present or not, last probe), and the actions install, log in and probe. It writes neither `config.toml` nor `secrets.toml`.
+8. **Connectors area (C1, C2, C4).** A `Connectors` row, the first row of the `Connectors` menu tab (assumption: the tab the menu reserved for MCP, which then becomes visible; see Facts, Menu tabs), opens a list grouped as Analytics then Workspace. Each entry screen shows the guide, the `[[ai.mcp.servers]]` entry to paste into `config.toml`, the `secrets.toml` table to fill, the state (declared or not, secrets present or not, last probe), and the actions install, log in and probe. It writes neither `config.toml` nor `secrets.toml`.
 9. **Entries, in C8 order.** Clarity and GA4; then GSC with a service account (C10); then Workspace: `google` (Gmail drafts only, Docs, Sheets; C9) and `apps-script` (clasp).
 10. **Docs.** The README section "Tus propios servidores MCP" gets a "Conectar un servicio" part per entry (guide, values, what is sent where, how to disconnect). The specs and the privacy note are updated.
 11. **Later slices (listed, not specced here).** Profile default entries (C4, C12) and a Gmail send permission (C12). See "Later slices".
@@ -166,7 +173,7 @@ The `env` column lists the names the entry declares; every value lives in that s
 | 4 | `google` | workspace-mcp | `uv tool install workspace-mcp` → `workspace-mcp --single-user --permissions gmail:readonly+drafts docs:full sheets:full` (V for the flags, U for the binary name) | User's own Desktop OAuth client (C7): `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`. Scopes `gmail.readonly`, `gmail.compose` (restricted), `documents`, `spreadsheets`, `drive.file`, `drive.readonly` | `--permissions` as shown, plus the lazarobox Gmail tool filter (C9). Whether this stays under 64 tools is U; the probe checks it | R: `search_gmail_messages`, `get_gmail_message_content`, `get_gmail_thread_content`, `get_doc_content`, Sheets reads. W: `draft_gmail_message`, `modify_doc_text`, `batch_update_doc`, Sheets writes, label edits | Works once tokens exist. Pre-auth outside a chat is needed (end-to-end behaviour U) |
 | 5 | `apps-script` | clasp | `npm i -g @google/clasp` → `clasp mcp` (V) | clasp's built-in OAuth client; `clasp login` in the login pane (V); the user switches on the Apps Script API (U). No `env` | none (5 tools) | R: `list_projects`, `pull_files` (writes local files), `clone_project`. W: `push_files`, `create_project` | Fits: pushes from disk, needs no secret value |
 
-**One Workspace server or one per service.** One workspace-mcp entry for Gmail, Docs and Sheets means one OAuth client, one login and one token store, and its permission levels give "drafts, never send" at the tool layer. Apps Script goes to clasp instead of workspace-mcp's `manage_script_content`, because code passed in arguments hits the 4 KiB cap (tools/mod.rs:584) and clasp needs no user-created OAuth client.
+**One Workspace server or one per service.** One workspace-mcp entry for Gmail, Docs and Sheets means one OAuth client, one login and one token store, and its permission levels give "drafts, never send" at the tool layer. Apps Script goes to clasp instead of workspace-mcp's `manage_script_content`, because code passed in arguments hits the 4 KiB cap (`MAX_EXTERNAL_ARGS`, tools/mod.rs:1152) and clasp needs no user-created OAuth client.
 
 **Assumptions in the catalog (not user decisions).**
 
@@ -177,12 +184,12 @@ The `env` column lists the names the entry declares; every value lives in that s
 
 ## Interaction with `chat-auto-permissions`
 
-The in-flight feature `chat-auto-permissions` (odd/tasks/chat-auto-permissions.md, branch `feat/chat-auto-permissions`) changes approvals in `approval = "run"`:
+The feature `chat-auto-permissions` (tracked in the owner's `odd/tasks/chat-auto-permissions.md`, not in git) changes approvals in `approval = "run"`:
 
-- **S2:** reads inside the chat root run unasked.
-- **S4:** writes ask, and a full grant lasts for the current conversation only.
+- **S2 (landed):** in `run`, a cloud read or search inside the chat root runs unasked (src/core/ai/chat/approval.rs:871, 877-881). User MCP tools still prompt in every mode (approval.rs:770-771, 784; openspec/specs/agent-tools/spec.md:309).
+- **S4:** writes ask, and a full grant lasts for the current conversation only. Not in the owning specs on f7d6b6f4 (assumption: still pending). The `/write` chat command that exists now grants the Write family for one chat (src/core/ai/chat/folder.rs:71); it is not the S4 grant.
 
-Per C11 this change ships with `y` on every connector call, as today, and the spec keeps "Tools from a user MCP server MUST always be write tools" (`coding-tools/specs/agent-tools/spec.md:94`). The catalog records each tool's class so a later change can decide how classes meet `run` mode once S4 lands. A server's own `readOnlyHint` stays ignored.
+Per C11 this change ships with `y` on every connector call, as today, and the spec keeps "Tools from a user MCP server MUST always be write tools" (openspec/specs/agent-tools/spec.md:228). The catalog records each tool's class so a later change can decide how classes meet `run` mode once S4 lands. A server's own `readOnlyHint` stays ignored.
 
 ## Capabilities
 
@@ -194,37 +201,38 @@ Per C11 this change ships with `y` on every connector call, as today, and the sp
 
 ### Modified Capabilities
 
-All deltas apply on top of the unarchived `agent-tools` change specs, where these capabilities live; `agent-tools` MUST be archived first.
+`agent-tools`, `coding-tools`, `hf-download` and `ai-menu-tabs` were archived on 2026-11-02 (openspec/changes/archive/), so every delta applies to the owning spec under `openspec/specs/`.
 
 - `mcp-servers`: "Lifecycle" and "Secrets and privacy" take values from `secrets.toml` as well as from lazarobox's own environment. The `LD_`/`DYLD_`, `HOME` and token rules (spawn.rs:65-90) stay.
 - `agent-tools`: "Path policy" gains `.google_workspace_mcp`, `.clasprc.json` and `.config/mcp-gsc`.
-- `config-menu`: the AI tab gains the `Connectors` row after `Hugging Face`.
+- `config-menu`: the `Connectors` menu tab gains its first row, `Connectors` (ADDED "Connectors row"); "Sections and items are data", "Menu tabs" and "Jump keys" are MODIFIED because the tab stops being hidden.
 
 Not modified: `config-persistence` ("MCP server lists are never written" stays, C4) and `configuration` (the `[[ai.mcp.servers]]` schema stays, C5).
 
 ## Approach
 
-1. **Secrets first (C8).** `secrets.toml` is read when a server starts, parsed into per-server tables, and merged in `child_env` only for the names the entry lists in `env`, after the same filters (`LD_*`, `DYLD_*`, `HOME`, the session token). Values are never logged, drawn or sent to a model. lazarobox never writes the file; the README and the Connectors area show the table to fill.
-2. **Read-deny.** Add the three token locations to `SECRET_DIRS` (paths.rs:23-33), with tests.
+1. **Secrets first (C8).** `secrets.toml` is read when a server starts, parsed into per-server tables, and merged in `child_env` only for the names the entry lists in `env`, after the same filters (`LD_*`, `DYLD_*`, `HOME`, the session token). The lookup gets the server's name (today it is one closure for every server, src/runtime/chat/external.rs:146). Values are never logged, drawn or sent to a model. lazarobox never writes the file; the README and the Connectors area show the table to fill.
+2. **Read-deny.** Add the three token locations to `SECRET_DIRS` (paths.rs:24-34), with tests. The write check and the git tools share the list (paths.rs:346; git.rs:207, 240).
 3. **Catalog.** Pure data plus pure checks in `src/core/ai/`, tested without processes: entry fields, tool classes, the Gmail filter, the 64-tool and 24-character collision checks.
-4. **Probe.** It reuses `ExternalSet::start`/`shutdown` (external.rs:97-132, 199-209) on one server, outside any chat turn, and reports the `mcp: started` line or the `unavailable` notice plus the catalog checks.
-5. **Login and install.** Run as visible commands in a new pane after `y`. Nothing installs or logs in hidden. Links open through `src/core/opener.rs`.
-6. **Connectors area.** It lives in the menu (`src/core/menu.rs`, `src/ui/`). It reads `config.toml`, `secrets.toml` (only which names have a value, never the values) and the catalog, and writes nothing.
-7. **Docs.** The README and specs say that with claude, codex and gemini the connected tools appear only on jailed turns, and that local engines always get them (chat.rs:633).
+4. **Probe.** It reuses `ExternalSet::start`/`shutdown` (external.rs:97-133, 199-209) on one server, outside any chat turn, and reports the `mcp: started` line or the `unavailable` notice plus the catalog checks.
+5. **Login and install.** Run as visible commands in a new pane after `y`. Nothing installs or logs in hidden. Links open through `src/core/opener.rs` and the existing `MenuCommand::Open` (src/app.rs:2536-2543). The update tab (`NewPane::Update`, src/app.rs:1965-1978) is the nearest precedent, but it runs a direct argv job, while mcp-connect types the command into a shell.
+6. **Connectors area.** It lives in the menu (`src/core/menu.rs`, `src/ui/`), opened from the row of the `Connectors` tab (menu.rs:772-778), and draws inside the fixed 12-row body (menu.rs:859). It reads `config.toml`, `secrets.toml` (only which names have a value, never the values) and the catalog, and writes nothing.
+7. **Docs.** The README and specs say that with claude, codex and gemini the connected tools appear only on jailed turns, and that local engines always get them (chat.rs:662-671).
 
 ## Affected Areas
 
 | Area | Impact |
 |---|---|
-| `src/runtime/mcp/client/spawn.rs` (`child_env`) | Modified (merge `secrets.toml` values, same filters) |
+| `src/runtime/mcp/client/spawn.rs` (`child_env`, `McpClient::spawn`) | Modified (merge `secrets.toml` values, same filters) |
+| `src/runtime/mcp/external.rs` (`ExternalSet::start`), `src/runtime/chat/external.rs:146` | Modified (the value lookup knows the server's name) |
 | `src/core/ai/` new secrets parser and catalog modules | New |
-| `src/core/ai/tools/servers.rs` (registration) | Modified (Gmail tool filter for the `google` entry) |
-| `src/core/ai/tools/paths.rs:23-33` | Modified (token locations) |
+| `src/core/ai/tools/servers.rs` (registration), `src/runtime/mcp/client.rs:191` (the 64-tool cap is applied in `list_tools`) | Modified (Gmail tool filter for the `google` entry, before the cap) |
+| `src/core/ai/tools/paths.rs:24-34` | Modified (token locations; shared with the write check and the git tools) |
 | `src/runtime/` probe, login pane and install pane | New |
-| `src/core/menu.rs`, `src/ui/components/` | Modified / New (Connectors row and screens) |
+| `src/core/menu.rs` (`TABS`, the `Connectors` tab at 772-778), `src/ui/components/` | Modified / New (Connectors row and screens) |
 | `src/core/opener.rs` | Reused, unchanged |
-| `src/core/config.rs:85`, `src/core/config_edit.rs` | Unchanged (C4) |
-| README.md:697-734, privacy note, specs | Modified |
+| `src/core/config.rs:91`, `src/core/config_edit.rs` | Unchanged (C4) |
+| README.md:1244-1281, README.md:753 (read-deny list), privacy note, specs | Modified |
 
 ## Risks
 
@@ -252,9 +260,9 @@ Not modified: `config-persistence` ("MCP server lists are never written" stays, 
 
 ## Dependencies
 
-- `agent-tools` archived before this change (the deltas target its specs).
-- `chat-auto-permissions` (in flight). Not a blocker for shipping; a blocker for any relaxation of `y` based on catalog classes (C11).
-- Main 191dc1c or later (`[[ai.mcp.servers]]`, the external client and `src/core/opener.rs` are merged).
+- Done: `agent-tools` (with `coding-tools`, `hf-download` and `ai-menu-tabs`) was archived on 2026-11-02; the deltas target `openspec/specs/`.
+- `chat-auto-permissions` (S2 landed, S4 assumed pending). Not a blocker for shipping; a blocker for any relaxation of `y` based on catalog classes (C11).
+- Main 191dc1c or later (`[[ai.mcp.servers]]`, the external client and `src/core/opener.rs` are merged); the references here are checked on f7d6b6f4.
 
 ## Success Criteria
 
@@ -273,17 +281,17 @@ Not modified: `config-persistence` ("MCP server lists are never written" stays, 
 
 | Slice | Content | Decisions | Size |
 |---|---|---|---|
-| S1 | `secrets.toml` parser, mode check, `child_env` merge; read-deny additions | C6, C8 | 200–280 |
+| S1 | `secrets.toml` parser, mode check, `child_env` merge; read-deny additions | C6, C8 | 230–310 (was 200–280: the lookup must become per server through `ExternalSet::start` and `McpClient::spawn`, external.rs:97-133, spawn.rs:106-110) |
 | S2 | Catalog core (fields, classes, pure checks, name match) with the `clarity` and `ga4` entries | C2, C8, C11 | 220–300 |
-| S3 | Probe, install pane and login pane (opener reuse) | C2, C7 | 250–350 |
-| S4 | Menu `Connectors` row and screens; README for Clarity and GA4 | C1, C4, C6, C7 | 300–380 |
+| S3 | Probe, install pane and login pane (opener reuse) | C2, C7 | 230–330 (was 250–350: `MenuCommand::Open` already carries a link from the menu to the opener, app.rs:2536-2543) |
+| S4 | Menu `Connectors` row and screens; README for Clarity and GA4 | C1, C4, C6, C7 | 300–380 (unchanged: the tab already exists in the table, menu.rs:772-778, but the entry screen must scroll inside the fixed 12-row body, menu.rs:859, which pushes it to the top of the range) |
 | S5 | `gsc` entry with a service account, its guide and README | C10 | 80–150 |
-| S6 | Workspace: `google` entry and Gmail tool filter, `apps-script` entry, guides and README | C9, C12 | 150–250 |
+| S6 | Workspace: `google` entry and Gmail tool filter, `apps-script` entry, guides and README | C9, C12 | 170–270 (was 150–250: the filter must run before the cap in `list_tools`, client.rs:191, not only in the registry) |
 | S7 (later) | Profile default entries: `analyst` gets `clarity`, `ga4`, `gsc`; both profiles get `google` for Gmail | C4, C12 | 150–250 (U) |
 | S8 (later, undecided) | Gmail send with an explicit user permission | C12 | U |
-| S9 | Per-server approval level (`ask` / `reads` / `all`), read/write class from the catalog, menu shows the level per entry | C11, C13 | 120–200 (U) |
+| S9 | Per-server approval level (`ask` / `reads` / `all`), read/write class from the catalog, menu shows the level per entry | C11, C13 | 150–250 (U; was 120–200: a new entry key must join the known-key list, config.rs:1587, and the router, approval.rs:843; see open question 10) |
 
-The total for S1-S6 is about 1,200–1,710 lines. S1-S6 are specced in `specs/`; S7 and S8 are specced when their open questions are answered.
+The total for S1-S6 is about 1,230–1,740 lines (was 1,200–1,710). S1-S6 are specced in `specs/`; S7 and S8 are specced when their open questions are answered.
 
 ## Later slices
 
@@ -314,3 +322,7 @@ C12 lists sending as a later improvement: replies go to Drafts unless a permissi
 7. ~~**Approvals:**~~ Resolved by C11. keep `y` on every connector call until a later change decides how catalog read/write classes relate to `chat-auto-permissions` S2/S4?
 8. **OPEN (blocks S7 only) — How profile defaults reach a user.** Is the proposed mechanism right: defaults added in memory by the active profile, overridden or disabled by a same-named `[[ai.mcp.servers]]` entry, silent until connected, and a change to "A profile changes ONLY the prompts"?
 9. **OPEN (blocks S8 only) — Gmail send permission (C12).** Which permission allows a send, how the user grants it, and whether each send still asks `y`.
+10. **OPEN (blocks S9 only) — C13 against the current specs and config (evidence of 2026-11-10).** C13 stays as decided; the current code and specs make its proposed mechanism need three changes the owner has not approved yet:
+    - The Approval model says "There MUST be no "always allow", no per-session or per-tool trust, no configuration that approves automatically" (openspec/specs/agent-tools/spec.md:228), and mcp-servers says "Every call to a user server tool MUST need the user's `y`" (openspec/specs/mcp-servers/spec.md:101). The levels `reads` and `all` are a configuration that approves automatically, so both requirements must change.
+    - The proposed `approval` key per `[[ai.mcp.servers]]` entry contradicts Out of Scope "new keys in `[[ai.mcp.servers]]` (C5)", and, since config-unknown-keys (2026-11-07), a build that does not know it reports `config: unknown key: ai.mcp.servers[N].approval` at start (src/core/ai/config.rs:1584-1594). Where the level is stored (that key, `secrets.toml`, or another file) is undecided.
+    - The router has one place that answers asks by itself, `answers_itself`, which today never answers a user tool (src/core/ai/chat/approval.rs:841-843); a `reads` level would be the first user-tool answer there.

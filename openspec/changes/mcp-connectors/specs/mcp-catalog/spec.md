@@ -30,10 +30,10 @@ A user server MUST be treated as a catalog entry when its `name` equals the entr
 - THEN no catalog rule applies and the server's command is unchanged
 
 ### Requirement: Read/write class is recorded only [S2]
-Each known tool of an entry MUST have a class, `read` or `write` (C11). A tool the server lists that the catalog does not know MUST get class `write` (assumption: the safe default). The class MUST NOT change approval: every call to a tool of a declared entry MUST need the user's `y`, in `ask` and in `auto`, whatever its class and whatever the server's `readOnlyHint` says (C11; see mcp-servers, Every call needs approval, and agent-tools, Approval model). A later change decides how classes meet the `run` mode of chat-auto-permissions.
+Each known tool of an entry MUST have a class, `read` or `write` (C11). A tool the server lists that the catalog does not know MUST get class `write` (assumption: the safe default). The class MUST NOT change approval: every call to a tool of a declared entry MUST need the user's `y`, in `ask`, `auto` and `run`, whatever its class and whatever the server's `readOnlyHint` says (C11; see mcp-servers, Every call needs approval, and agent-tools, Approval model). A later change decides how classes meet the `run` mode of chat-auto-permissions.
 
 #### Scenario: Read tool still asks [auto]
-- GIVEN declared `ga4` and its `run_report` of class `read`, annotated `readOnlyHint` by the server, in a chat with approval `auto`
+- GIVEN declared `ga4` and its `run_report` of class `read`, annotated `readOnlyHint` by the server, in a chat with approval `auto`, and in another run `run`
 - WHEN the model calls it
 - THEN a confirm is shown and the server is not contacted before `y`
 
