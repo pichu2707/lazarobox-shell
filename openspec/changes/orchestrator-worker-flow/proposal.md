@@ -35,7 +35,7 @@ From exploration:
 - **B.** The 400 measures lines the worker writes per file per brief, so a small fix in a big file does not trigger it.
 - **C.** Writing outside the brief's listed files also asks rather than refuses.
 - **D.** The limit and the brief format apply to `simple` workers only, not `code`.
-- **E.** Tests are recognised by path (`tests/`, `*_test.*`, `*.spec.*`, `*.test.*`); inline tests such as `#[cfg(test)]` count as code.
+- **E.** Tests are recognised by path (`tests/`, `*_test.*`, `*_tests.*`, `tests.*`, `*.spec.*`, `*.test.*`); inline tests such as `#[cfg(test)]` count as code. (`*_tests.*` and `tests.*` added by the owner on 2026-11-10: this repository names its test files that way.)
 
 Added by this proposal:
 

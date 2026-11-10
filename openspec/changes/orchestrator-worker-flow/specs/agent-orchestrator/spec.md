@@ -139,7 +139,7 @@ The run MUST gate worker spawn and `finish` on the ODD step state. Every gate re
 The wait covers the spawn gate only. A refused `finish` settles as before (a text reply with nothing pending ends the run).
 
 ### Requirement: Waiting on the user stops the worker clock [W6]
-Time a worker spends waiting for the user's answer (a batch review it proposed, a command ask, a read ask, a limit ask) MUST NOT count against its deadline (`worker_timeout_secs`). The clock MUST resume when the answer arrives. Time spent on the worker's own work still counts. Whether the same pause applies to the run wall clock (`run_timeout_mins`) is open.
+Time a worker spends waiting for the user's answer (a batch review it proposed, a command ask, a read ask, a limit ask) MUST NOT count against its deadline (`worker_timeout_secs`). The clock MUST resume when the answer arrives. Time spent on the worker's own work still counts. The model review of the worker's own batch (the Receipt-driven review it waits for inside `propose_batch`, consent included) MUST NOT count either (owner, 2026-11-10, design D6). The run wall clock (`run_timeout_mins`) MUST keep counting while the user decides: it is the last bound (owner, 2026-11-10, design D5).
 
 #### Scenario: A long review does not time out the worker [W6, auto]
 - GIVEN a worker with a 600 s deadline whose batch waits 20 minutes for the user
@@ -150,6 +150,16 @@ Time a worker spends waiting for the user's answer (a batch review it proposed, 
 - GIVEN a worker that runs for the whole deadline without waiting on the user
 - WHEN the deadline passes
 - THEN it ends `timed_out`
+
+#### Scenario: A model review does not time out its author [W7, auto]
+- GIVEN a worker with a 600 s deadline whose batch is under a model review for longer than that
+- WHEN the review ends and the user approves the batch
+- THEN the worker is not `timed_out` because of the review
+
+#### Scenario: The run wall clock still counts [W5, auto]
+- GIVEN a run whose wall clock ends while a worker waits for the user
+- WHEN the wall clock passes
+- THEN the run ends as expired, as it does today, and the wait did not stop it
 
 ### Requirement: Worker commands [W6]
 A worker whose role includes `run_command` MUST be offered it only when Exec is on. Its command MUST run only after the worker's own batch was approved and applied (no staged overlay; tests run against the disk), and a call made before that MUST be refused with the existing `propose them first` text, visible to the worker. Every command MUST ask the user, labelled with the worker, in every approval mode; the allow-list, jail, refusals and output rules of command-runner apply unchanged. The command output MUST reach the coordinator as untrusted data through the worker's result. The coordinator MUST NOT be offered `run_command`.
@@ -272,42 +282,42 @@ A `simple` worker that does not understand its brief MUST end with the marker "n
 - THEN neither starts with a round count taken from the split
 
 ### Requirement: Per-file line limit for `simple` [W9]
-A `simple` worker MUST NOT write more than 400 counted lines of code to one file in one brief without asking the user. Counted lines are the lines the worker writes in that file for that brief (a small fix in a large file does not trigger the limit). Comments, doc comments and blank lines do not count; for a language the app cannot parse, every line counts and the ask says so. A file is a test file by path (`tests/`, `*_test.*`, `*.spec.*`, `*.test.*`) and a test file has no cap; an inline test (such as `#[cfg(test)]`) counts as code. Exceeding the limit MUST ask the user before the batch is proposed, offering: split into two parts, or keep one file with the extra lines. The ask MUST be answered only by the user's key, in every approval mode including `run`, and no timer or mode MUST answer it. A declined, timed-out or cancelled ask ends as denied and the extra lines are not written. Split ends the worker, the coordinator issues two new briefs, and the split is not a clarification round. The limit applies to `simple` only, not to `code`. The ask carries the worker label and joins the same queue as the worker's other asks.
+A `simple` worker MUST NOT write more than 400 counted lines of code to one file in one brief without asking the user. Counted lines are the lines the worker writes in that file for that brief (a small fix in a large file does not trigger the limit). Comments, doc comments and blank lines do not count; for a language the app cannot parse, every line counts and the ask says so. A file is a test file by path (`tests/`, `*_test.*`, `*_tests.*`, `tests.*`, `*.spec.*`, `*.test.*`; assumption E as amended by the owner on 2026-11-10) and a test file has no cap; an inline test (such as `#[cfg(test)]`) counts as code. Exceeding the limit MUST ask the user when the worker calls `propose_batch`, before any review and before the batch is sealed, offering: split into two parts, or keep one file with the extra lines (owner, 2026-11-10, design D14). The ask MUST be answered only by the user's key, in every approval mode including `run`, and no timer or mode MUST answer it. A declined, timed-out or cancelled ask ends as denied and the extra lines are not written. Split ends the worker and discards its staged batch, and the result and a notice show how many staged files were discarded; the coordinator issues two new briefs, and the split is not a clarification round (owner, 2026-11-10). The limit applies to `simple` only, not to `code`. The ask carries the worker label and joins the same queue as the worker's other asks.
 
 #### Scenario: 401 counted lines asks [W9, auto]
 - GIVEN a `simple` worker writing 401 counted lines to `src/a.rs`, in approval mode `run`
-- WHEN it stages the file
+- WHEN it calls `propose_batch`
 - THEN an ask offers `split` and `keep`, labelled with the worker, and nothing is proposed before the user answers
 
 #### Scenario: 400 lines does not ask [W9, auto]
 - GIVEN 400 counted lines
-- WHEN the file is staged
+- WHEN the worker calls `propose_batch`
 - THEN no ask appears
 
 #### Scenario: Comments and blanks do not count [W9, auto]
 - GIVEN 300 code lines, 150 comment lines and 50 blank lines
-- WHEN the file is staged
+- WHEN the worker calls `propose_batch`
 - THEN no ask appears
 
 #### Scenario: Unknown language counts every line, and says so [W9, auto]
 - GIVEN a file in an unparsed language with 401 lines
-- WHEN the file is staged
+- WHEN the worker calls `propose_batch`
 - THEN the ask appears and states that every line was counted
 
 #### Scenario: Tests have no cap [W9, auto]
-- GIVEN 900 lines written to `tests/flow.rs`
-- WHEN the file is staged
+- GIVEN 900 lines written to `tests/flow.rs`, and 900 lines written to `src/orchestra/run_tests.rs`
+- WHEN the worker calls `propose_batch`
 - THEN no ask appears
 
 #### Scenario: Small edit in a large file [W9, auto]
 - GIVEN a file of 2,000 lines and an edit that writes 12 lines
-- WHEN the edit is staged
+- WHEN the worker calls `propose_batch`
 - THEN no ask appears
 
 #### Scenario: Split ends the worker [W9, auto]
 - GIVEN the ask answered `split`
 - WHEN the answer is applied
-- THEN the worker ends, its result says a split was chosen, and the coordinator may spawn two new briefs
+- THEN the worker ends, its staged batch is discarded, its result and a notice say a split was chosen and how many staged files were discarded, and the coordinator may spawn two new briefs
 
 #### Scenario: No mode and no timer answers [W9, auto]
 - GIVEN the ask pending in approval mode `run`
@@ -315,12 +325,12 @@ A `simple` worker MUST NOT write more than 400 counted lines of code to one file
 - THEN it stays pending, and a timeout ends it as denied with the extra lines not written
 
 ### Requirement: Writes outside the brief's files ask [W9]
-A `simple` worker that stages a write to a path its brief does not list MUST ask the user, labelled with the worker, only when the path is inside the run's read scope; a write outside the read scope, to a guarded secret path or outside the chat's root stays refused and never asked (Worker toolsets). The ask is answered only by the user's key in every approval mode. This applies to `simple` only.
+A `simple` worker that stages a write to a path its brief does not list MUST be asked about it when it calls `propose_batch`, in the same ask as the line limit (design D14), labelled with the worker, only when the path is inside the run's read scope; a write outside the read scope, to a guarded secret path or outside the chat's root stays refused and never asked (Worker toolsets). The ask is answered only by the user's key in every approval mode. This applies to `simple` only.
 
 #### Scenario: Unlisted file inside the scope asks [W9, auto]
 - GIVEN a brief listing `src/a.rs` and a staged write to `src/b.rs`, both inside the scope
-- WHEN the write is staged
-- THEN an ask names `src/b.rs` and nothing is staged before `y`
+- WHEN the worker calls `propose_batch`
+- THEN one ask names `src/b.rs` and nothing is proposed before the user answers
 
 #### Scenario: Outside the scope is refused, not asked [W9, auto]
 - GIVEN a staged write to `.env` or `../other/x.rs`
@@ -526,11 +536,11 @@ The README MUST be updated once, in the final slice, with: how to enable and use
 
 - Which step-state transitions the W3 spawn and finish gates cover, the turn-cap interaction with clarification rounds, and the override key.
 - The brief's form (structured arguments of `spawn_agent` or marked free text), how "needs specification" is recognised, the line counter, and the delegate key.
-- The mechanism by which the user turns Write on from the chat (per-chat grant like `/github`, or another form), and whether Exec gets the same path.
+- The mechanism by which the user turns Write on from the chat (per-chat grant like `/github`, or another form), and whether Exec gets the same path. Resolved: `/write` (owner, 2026-11-06) and `/exec` on the same path (owner, 2026-11-10).
 - "When the machine can take it": assumed `max_parallel` stays the ceiling with no hardware measuring.
 - Order and presentation of several batch reviews in one run; whether the brief overlap of two writers is checked before apply.
 - Whether one command at a time per pane stays when workers run in parallel, and whether a worker's command refusal `propose them first` is scoped to its own batch (W10).
-- Whether waiting on the user also pauses the run wall clock (`run_timeout_mins`).
-- Outcome of a split for content already staged (kept, or discarded).
+- Whether waiting on the user also pauses the run wall clock (`run_timeout_mins`). Resolved by the owner on 2026-11-10: it keeps counting (Waiting on the user stops the worker clock).
+- Outcome of a split for content already staged (kept, or discarded). Resolved by the owner on 2026-11-10: discarded, with the count shown (Per-file line limit for `simple`).
 - Resume of a stored run whose worker kind is `simple`, brief or round counters, and a downgrade build: it MUST stay visible and never be dropped; the form is for design after reading `persist`.
 - Stale statements outside the changed requirements, to be reworded at apply/archive: the S10 scenario "Small task from the chat" (tests not run in 1.1.0) and "Missing dependency" (workers never have `run_command`, and the test `the_orchestrate_prompts_say_no_worker_can_run_commands_or_tests`) are 1.1.0 history; W6 changes them.

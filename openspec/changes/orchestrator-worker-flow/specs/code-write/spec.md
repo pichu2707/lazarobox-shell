@@ -33,6 +33,11 @@ For a `simple` worker, the line-limit ask and the outside-brief ask (see agent-o
 - WHEN the batch is proposed
 - THEN the batch holds no file over the limit
 
+#### Scenario: Split discards the staged batch [W9, auto]
+- GIVEN the limit ask answered `split`
+- WHEN the answer is applied
+- THEN the worker's staged batch is discarded, nothing is proposed or written, and the worker's result and a notice show how many staged files were discarded
+
 ## Open points
-- Whether staged content of an over-limit file is kept or discarded after `split`.
-- Where the line count is taken (at each write tool call or at `propose_batch`); the visible result is the same: no batch reaches review with an unanswered ask.
+- Whether staged content of an over-limit file is kept or discarded after `split`. Resolved by the owner on 2026-11-10: the whole staged batch of that worker is discarded, with the count shown.
+- Where the line count is taken (at each write tool call or at `propose_batch`); the visible result is the same: no batch reaches review with an unanswered ask. Resolved by the owner on 2026-11-10 (design D14): at `propose_batch`, before the review and the seal.
