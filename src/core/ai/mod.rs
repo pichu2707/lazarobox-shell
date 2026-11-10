@@ -1275,7 +1275,7 @@ mod tests {
             (Ok(failed.as_bytes()), BAD_LISTING),
             (Ok(&[0xff, 0xfe, 0x00]), BAD_LISTING),
             (
-                Ok(br#"{"type":"result","is_error":false,"result":"Available: default, or a full model ID."}"#),
+                Ok(br#"{"type":"result","is_error":false,"num_turns":0,"result":"Available: default, or a full model ID."}"#),
                 EMPTY_LISTING,
             ),
         ];

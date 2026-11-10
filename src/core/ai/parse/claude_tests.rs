@@ -1,7 +1,7 @@
 //! `claude -p /model --output-format json`: the aliases of its `Available:`
 //! line.
 
-use super::claude_models;
+use super::{claude_models, claude_paid_turn};
 
 /// The reply of claude 2.1.322 (odd/tasks/cli-model-lists.md, L4): exit 0,
 /// `num_turns` 0, `total_cost_usd` 0, and this `result` verbatim.
@@ -142,4 +142,22 @@ fn the_list_is_capped() {
     let many: Vec<String> = (0..100).map(|i| format!("m{i}")).collect();
     let text = format!("Available: {}.", many.join(", "));
     assert_eq!(claude_models(&reply(&text)).map(|l| l.len()), Some(64));
+}
+
+// Review: a reply without `num_turns` cannot prove no model turn was taken.
+#[test]
+fn a_reply_without_num_turns_is_none() {
+    let bare = REAL_REPLY.replace(r#""num_turns":0,"#, "");
+    assert!(!bare.contains("num_turns"));
+    assert_eq!(claude_models(&bare), None);
+}
+
+#[test]
+fn a_reply_that_took_a_turn_or_cost_money_is_a_paid_turn() {
+    let a_turn = REAL_REPLY.replace(r#""num_turns":0"#, r#""num_turns":1"#);
+    let a_cost = REAL_REPLY.replace(r#""total_cost_usd":0"#, r#""total_cost_usd":0.004"#);
+    assert!(claude_paid_turn(&a_turn));
+    assert!(claude_paid_turn(&a_cost));
+    assert!(!claude_paid_turn(REAL_REPLY));
+    assert!(!claude_paid_turn("not json"));
 }

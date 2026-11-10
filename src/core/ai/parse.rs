@@ -168,6 +168,21 @@ pub fn codex_catalog(raw: &str) -> Option<Vec<(String, String)>> {
     )
 }
 
+/// Whether a `claude -p /model` reply shows a paid model turn: the model
+/// took a turn, or the reply has a cost. The CLI answers `/model` itself,
+/// with neither.
+pub fn claude_paid_turn(raw: &str) -> bool {
+    let Ok(reply) = serde_json::from_str::<Value>(raw) else {
+        return false;
+    };
+    let turns = reply.get("num_turns").and_then(Value::as_u64).unwrap_or(0);
+    let cost = reply
+        .get("total_cost_usd")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    turns > 0 || cost > 0.0
+}
+
 /// The aliases of a `claude -p /model --output-format json` reply as
 /// `(label, value)`, both the alias, in reply order. They are read from the
 /// `Available: sonnet, opus, …, default, or a full model ID.` line of the
@@ -188,7 +203,7 @@ pub fn claude_models(raw: &str) -> Option<Vec<(String, String)>> {
             .is_none_or(|s| s.as_str() == Some("success"))
         // A slash command takes no model turn; with one, the list would be
         // the model's words.
-        && reply.get("num_turns").is_none_or(|n| n.as_u64() == Some(0));
+        && reply.get("num_turns").and_then(Value::as_u64) == Some(0);
     if !ok {
         return None;
     }

@@ -491,13 +491,21 @@ pub const CLAUDE_LISTING_CAP: usize = 64 * 1024;
 pub struct ListingCache {
     clock: Clock,
     last: Mutex<Vec<(Cli, Instant, Vec<u8>)>>,
+    /// Set once claude answered `/model` with a paid model turn: its listing
+    /// never runs again in this process, `r` included.
+    claude_stopped: std::sync::atomic::AtomicBool,
 }
+
+/// The note when claude answered `/model` with a paid model turn.
+pub const CLAUDE_PAID_TURN: &str =
+    "claude answered /model with a model turn; the list stays static until lazarobox restarts";
 
 impl ListingCache {
     pub fn new(clock: Clock) -> Self {
         Self {
             clock,
             last: Mutex::new(Vec::new()),
+            claude_stopped: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -512,6 +520,10 @@ impl ListingCache {
     /// the cached listing while it is still under the TTL, else the failure's
     /// reason (codex then offers just `default`, claude its static list).
     pub async fn listing_of(&self, env: &CliEnv, cli: Cli, force: bool) -> Listing {
+        use std::sync::atomic::Ordering;
+        if cli == Cli::Claude && self.claude_stopped.load(Ordering::Relaxed) {
+            return Err(CLAUDE_PAID_TURN.to_owned());
+        }
         let now = (self.clock)();
         let cached = || {
             let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
@@ -527,6 +539,14 @@ impl ListingCache {
             _ => (LISTING_TIMEOUT, LISTING_CAP),
         };
         match listing_of(env, cli, limit, cap).await {
+            // Never paid twice: a model turn stops the claude listing.
+            Ok(raw)
+                if cli == Cli::Claude
+                    && std::str::from_utf8(&raw).is_ok_and(parse::claude_paid_turn) =>
+            {
+                self.claude_stopped.store(true, Ordering::Relaxed);
+                Err(CLAUDE_PAID_TURN.to_owned())
+            }
             Ok(raw) => {
                 let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
                 last.retain(|(of, ..)| *of != cli);

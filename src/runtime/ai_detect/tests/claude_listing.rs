@@ -322,3 +322,34 @@ async fn detection_reuses_the_claude_list_and_only_r_forces() {
         );
     }
 }
+
+// Review: should a claude ever answer `/model` with a model turn, that turn
+// is paid. The listing then stops for the life of the process, `r`
+// included, so it is never paid twice.
+#[tokio::test]
+async fn a_listing_that_took_a_model_turn_is_never_run_again() {
+    let lab = lab();
+    let data = lab.rec.join("reply.json");
+    fs::write(
+        &data,
+        REAL_REPLY.replace(r#""num_turns":0"#, r#""num_turns":1"#),
+    )
+    .unwrap();
+    fake_claude(
+        &lab,
+        &format!(
+            "echo run >> '{}/runs'\ncat '{}'",
+            lab.rec.display(),
+            data.display()
+        ),
+    );
+    let env = env_of(&lab, true);
+    let (clock, now) = fake_clock();
+    let cache = ListingCache::new(clock);
+    let first = cache.listing_of(&env, Cli::Claude, false).await;
+    assert_eq!(first, Err(CLAUDE_PAID_TURN.to_owned()));
+    advance(&now, Duration::from_secs(11 * 60));
+    assert_eq!(cache.listing_of(&env, Cli::Claude, false).await, first);
+    assert_eq!(cache.listing_of(&env, Cli::Claude, true).await, first);
+    assert_eq!(runs(&lab), 1);
+}
