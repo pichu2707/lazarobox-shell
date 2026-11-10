@@ -107,6 +107,7 @@ fn a_row_sits_before_the_answer_it_belongs_to() {
     state.apply(turn, call(2, "list_dir", "~"));
     state.apply(turn, delta(" it."));
     state.apply(turn, result(2, ToolStatus::Ok, "ok"));
+    state.set_usage_config(crate::core::ai::config::UsageConfig::without_line());
     state.apply(turn, StreamEvent::Done(Finish::Stop));
     let kinds: Vec<&str> = state
         .entries()
@@ -279,6 +280,8 @@ fn the_locality_of_an_engine_comes_from_its_adapter_kind() {
     // The model name is not an input: a request for ollama with a cloud-like
     // model, or a CLI with a local-like one, keeps its engine's locality.
     let request = |engine: &str, model: &str| ChatRequest {
+        drive_grant: None,
+        cache: Default::default(),
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: engine.into(),
         model: Some(model.into()),
@@ -286,6 +289,8 @@ fn the_locality_of_an_engine_comes_from_its_adapter_kind() {
         memory: None,
         tools: Tools::Off,
         messages: Vec::new(),
+        ollama: Default::default(),
+        github_read: false,
     };
     for (req, want) in [
         (request("ollama", "claude-sonnet"), Locality::Local),

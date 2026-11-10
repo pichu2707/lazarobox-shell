@@ -1,0 +1,14 @@
+---
+source: src/app/app_tests/chat_folder.rs
+expression: shot
+---
+› q
+
+hello
+
+• folder changed: /launch -> /w/a
+
+
+Change folder?
+/w/a -> /w/b
+y change folder · any other key cancels

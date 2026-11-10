@@ -36,7 +36,12 @@ impl App {
             return Vec::new();
         };
         chat.start_resolving_at(false, now);
-        vec![Effect::Memory(MemCmd::Resolve { pane: id, cwd })]
+        let epoch = chat.memory_epoch();
+        vec![Effect::Memory(MemCmd::Resolve {
+            pane: id,
+            cwd,
+            epoch,
+        })]
     }
 
     /// The project of chat `id` is known or is not usable. Returns the context
@@ -53,6 +58,7 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        let epoch = chat.memory_epoch();
         match result {
             Ok(project) => chat
                 .start_context_at(now)
@@ -60,6 +66,7 @@ impl App {
                     Effect::Memory(MemCmd::Context {
                         pane: id,
                         project: project.clone(),
+                        epoch,
                     })
                 })
                 .into_iter()
@@ -156,10 +163,12 @@ impl App {
     /// Whether any chat awaits a memory reply. The runtime keeps the timer of
     /// `MemoryTick` armed exactly while this holds.
     pub fn memory_waiting(&self) -> bool {
-        self.panes
-            .values()
-            .filter_map(PaneState::chat_state)
-            .any(ChatState::memory_waiting)
+        self.run_store_waiting()
+            || self
+                .panes
+                .values()
+                .filter_map(PaneState::chat_state)
+                .any(ChatState::memory_waiting)
     }
 
     /// Time passed: every wait older than `MEMORY_WAIT` is given up, so no
@@ -171,6 +180,7 @@ impl App {
         let now = (self.clock)();
         let mut ids: Vec<PaneId> = self.panes.keys().copied().collect();
         ids.sort();
+        let mut lost = Vec::new();
         for id in ids {
             let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
                 continue;
@@ -188,9 +198,15 @@ impl App {
             }
             for save in &expired.saves {
                 super::notes::save_not_done(chat, Some(save), &text);
+                lost.push((id, save.id));
                 self.dirty = true;
             }
         }
-        Vec::new()
+        // A run's save that got no answer switches the run to memory only.
+        let mut effects = self.expire_stores(now);
+        for (id, token) in lost {
+            effects.extend(self.run_save_lost(id, token));
+        }
+        effects
     }
 }

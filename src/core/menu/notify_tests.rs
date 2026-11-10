@@ -45,7 +45,8 @@ fn notify_edit(value: &'static str) -> ConfigEdit {
     }
 }
 
-// Spec (Notify row): the rows sit in Settings, after Mouse, found by kind.
+// Spec (Notify row): the rows sit in Settings, after Mouse (and the Build
+// jobs row that now follows it), found by kind.
 #[test]
 fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
     let items = SECTIONS[0].items;
@@ -56,27 +57,36 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
             "Statusline position",
             "Tab bar position",
             "Mouse",
+            "Build jobs",
             "Notify",
             "Sound",
             "llama-server idle",
+            "Usage (alpha)",
             "Updates",
             "Feedback"
         ]
     );
-    assert!(matches!(items[3].kind, ItemKind::Notify));
-    assert!(matches!(items[4].kind, ItemKind::NotifySound));
+    assert!(matches!(&items[4].kind, ItemKind::Draft(c) if c.key() == "notify"));
+    assert!(matches!(&items[5].kind, ItemKind::Draft(c) if c.test));
     assert!(
-        AI_SECTION
-            .items
+        [&MODELS_SECTION, &TOOLS_SECTION, &CHAT_SECTION]
             .iter()
-            .all(|i| !matches!(i.kind, ItemKind::Notify | ItemKind::NotifySound))
+            .flat_map(|s| s.items.iter())
+            .all(
+                |i| !matches!(&i.kind, ItemKind::Draft(c) if c.key() == "notify")
+                    && !matches!(&i.kind, ItemKind::Draft(c) if c.test)
+            )
     );
 }
 
 #[test]
-fn the_tabs_hold_eight_settings_rows_and_seventeen_ai_rows() {
-    assert_eq!(AI_SECTION.items.len(), 17);
-    assert_eq!(SECTIONS[0].items.len(), 8);
+fn the_tabs_hold_ten_settings_rows_and_twenty_ai_rows() {
+    let ai: usize = [&MODELS_SECTION, &TOOLS_SECTION, &CHAT_SECTION]
+        .iter()
+        .map(|s| s.items.len())
+        .sum();
+    assert_eq!(ai, 21);
+    assert_eq!(SECTIONS[0].items.len(), 10);
 }
 
 #[test]

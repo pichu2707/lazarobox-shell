@@ -5,14 +5,15 @@
 use serde_json::{Value, json};
 
 use super::{
+    budget::estimate_tokens,
     engine::{ChatMessage, ChatRequest, MCP_VERIFIED, Role, Tools},
     prompts,
 };
 use crate::core::ai::{
-    CATALOG, Kind,
+    CATALOG, DEFAULT_KEEP_ALIVE, Kind,
     jail::{Cli, JailPolicy, Os, jail_policy},
     parse,
-    tools::{registry_with, wiring::McpWire},
+    tools::{ExternalTool, registry::FamilySet, registry_with, wiring::McpWire},
 };
 
 /// The wire format of a local server's reply.
@@ -116,6 +117,15 @@ pub fn adapter_for(id: &str) -> Option<Adapter> {
     }
 }
 
+/// Whether engine `id` is a CLI run in a private cwd (Claude, Codex or
+/// Gemini). Servers and unknown engines are not.
+pub fn is_cli_engine(id: &str) -> bool {
+    matches!(
+        adapter_for(id),
+        Some(Adapter::Claude | Adapter::Codex | Adapter::Gemini)
+    )
+}
+
 /// The catalog port of a server engine.
 fn catalog_port(id: &str) -> u16 {
     CATALOG
@@ -171,7 +181,7 @@ impl Adapter {
             // The same job once more with the tools prompt, to keep what
             // each engine does with its system prompt in one place.
             let mut with_tools = request.clone();
-            with_tools.system = prompts::with_tools(&request.system);
+            with_tools.system = prompts::with_tools(&request.system, request.families);
             if let Invocation::Process(other) = self.build_text(&with_tools, verified) {
                 job.tools = Some(Box::new(ToolsText {
                     args: other.args,
@@ -247,6 +257,10 @@ pub struct ToolRound {
     pub thinking: Option<String>,
     pub text: String,
     pub exchanges: Vec<ToolExchange>,
+    /// A user message sent after the round: the reminder to a model that
+    /// wrote a tool call as text (local-model-writes D3). Such a round has
+    /// no exchanges.
+    pub nudge: Option<String>,
 }
 
 /// The request `Adapter::build` returns: never with tools, whatever
@@ -280,7 +294,16 @@ fn offered_tools(request: &ChatRequest) -> Vec<Value> {
         Tools::On { external, .. } => external.external(),
         Tools::Off => Vec::new(),
     };
-    registry_with(&external, request.families)
+    tools_json(&external, request.families)
+}
+
+/// The built-in tools of `families` as the `tools` array lists them.
+fn offered_tools_of(families: FamilySet) -> Vec<Value> {
+    tools_json(&[], families)
+}
+
+fn tools_json(external: &[ExternalTool], families: FamilySet) -> Vec<Value> {
+    registry_with(external, families)
         .into_iter()
         .map(|t| {
             json!({"type": "function", "function": {
@@ -288,6 +311,29 @@ fn offered_tools(request: &ChatRequest) -> Vec<Value> {
             }})
         })
         .collect()
+}
+
+/// What a turn that offers the built-in tools of `families` adds to the
+/// prompt, in estimated tokens: the tools block of the system prompt plus the
+/// `tools` array. The budget pays it before any history is counted. External
+/// MCP tools are resolved in the runtime: their weight
+/// ([`external_tools_tokens`]) comes back with the turn and is reserved from
+/// the next one (#556).
+pub fn tools_reserve_tokens(families: FamilySet) -> usize {
+    let schemas = serde_json::to_string(&offered_tools_of(families)).unwrap_or_default();
+    estimate_tokens(&schemas) + estimate_tokens(&prompts::with_tools("", families))
+}
+
+/// What `external` tools add to a turn, in estimated tokens: their entries of
+/// the `tools` array, estimated as [`tools_reserve_tokens`] estimates the
+/// built-ins. They add no text to the system prompt. 0 when there are none.
+pub fn external_tools_tokens(external: &[ExternalTool]) -> usize {
+    if external.is_empty() {
+        return 0;
+    }
+    let schemas =
+        serde_json::to_string(&tools_json(external, FamilySet::EMPTY)).unwrap_or_default();
+    estimate_tokens(&schemas)
 }
 
 /// The request after `rounds` of tool calls. `tools` says whether to offer the
@@ -312,8 +358,10 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
                 call
             })
             .collect();
-        let mut assistant =
-            json!({"role": "assistant", "content": round.text, "tool_calls": calls});
+        let mut assistant = json!({"role": "assistant", "content": round.text});
+        if !calls.is_empty() {
+            assistant["tool_calls"] = Value::Array(calls);
+        }
         if let Some(thinking) = &round.thinking {
             assistant["thinking"] = json!(thinking);
         }
@@ -325,8 +373,22 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
             }
             message
         }));
+        messages.extend(nudge(round));
     }
     finish_body(request, messages, tools)
+}
+
+/// The user message that follows a reminder round, if any.
+fn nudge(round: &ToolRound) -> Option<Value> {
+    (round.nudge.as_ref()).map(|text| json!({"role": "user", "content": text}))
+}
+
+/// The names of the tools `request` offers, as the `tools` array lists them.
+pub fn offered_names(request: &ChatRequest) -> Vec<String> {
+    offered_tools(request)
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned))
+        .collect()
 }
 
 /// The id of call `n` of round `round` (both from 0) when the server sent
@@ -378,7 +440,11 @@ pub fn openai_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
                 json!({"id": id, "type": "function", "function": function})
             })
             .collect();
-        messages.push(json!({"role": "assistant", "content": round.text, "tool_calls": calls}));
+        let mut assistant = json!({"role": "assistant", "content": round.text});
+        if !calls.is_empty() {
+            assistant["tool_calls"] = Value::Array(calls);
+        }
+        messages.push(assistant);
         messages.extend(
             round
                 .exchanges
@@ -386,18 +452,27 @@ pub fn openai_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
                 .zip(&ids)
                 .map(|(x, id)| json!({"role": "tool", "tool_call_id": id, "content": x.result})),
         );
+        messages.extend(nudge(round));
     }
     finish_body(request, messages, tools)
 }
 
-/// The body both round wires end with: model, messages, stream flag and, when
-/// asked, the registry.
+/// The body both round wires end with: model, messages, stream flag, when
+/// asked the registry, and the options only the server's own API reads: an
+/// Ollama request gets `num_ctx` and `keep_alive`, llama-server the
+/// prompt-cache option when set. The OpenAI-compatible servers share this
+/// builder and never get the Ollama keys.
 fn finish_body(request: &ChatRequest, messages: Vec<Value>, tools: bool) -> Vec<u8> {
     let mut body = json!({
         "model": request.model.as_deref().unwrap_or(""),
         "messages": messages,
         "stream": true,
     });
+    if request.engine == "ollama"
+        && let Some(num_ctx) = request.ollama.num_ctx
+    {
+        body["options"] = json!({"num_ctx": num_ctx});
+    }
     if tools {
         // An empty list would read as "no tools" to some models and as an
         // error to others: with nothing to offer the key is left out.
@@ -405,6 +480,20 @@ fn finish_body(request: &ChatRequest, messages: Vec<Value>, tools: bool) -> Vec<
         if !offered.is_empty() {
             body["tools"] = Value::Array(offered);
         }
+    }
+    // Each prompt-cache option goes only to the server that reads it (#515).
+    let cache = &request.cache;
+    match (request.engine.as_str(), cache.cache_prompt) {
+        // Unset, Ollama still keeps the model for DEFAULT_KEEP_ALIVE: its own
+        // five minutes unload it between two turns of a slow chat.
+        ("ollama", _) => {
+            body["keep_alive"] = cache
+                .keep_alive
+                .as_ref()
+                .map_or_else(|| DEFAULT_KEEP_ALIVE.into(), |keep| keep.json());
+        }
+        ("llamacpp", Some(on)) => body["cache_prompt"] = on.into(),
+        _ => {}
     }
     serde_json::to_vec(&body).expect("a JSON value always serializes")
 }
@@ -536,12 +625,14 @@ const CODEX_DISABLED: [&str; 14] = [
     "shell_snapshot",
 ];
 
-/// The codex run: the pinned argv (text only, nothing from the user's setup,
-/// nothing kept on disk), and on stdin the profile prompt in an `Instructions:`
-/// block, then the memory block and the history. codex has no system-prompt
-/// flag, and argv is visible in `ps`, so nothing but fixed flags and the model
-/// goes there. The child starts in the private empty folder, which is also
-/// codex's working root, so no `-C` is passed.
+/// The codex run: the pinned argv (text only, nothing kept on disk), and on
+/// stdin the profile prompt in an `Instructions:` block, then the memory block
+/// and the history. codex has no system-prompt flag, and argv is visible in
+/// `ps`, so nothing but fixed flags and the model goes there. The child starts in the private empty folder, which is also
+/// codex's working root, so no `-C` is passed. The flags do not isolate the
+/// user's setup: `--ignore-user-config` skips only `config.toml`, and codex has
+/// no option against `~/.codex/AGENTS.md` and skills. The runtime does it by
+/// giving the turn a private `CODEX_HOME` (see `runtime::chat::cli::home`).
 fn codex_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
     let model = match cli_model(request.model.as_deref()) {
         Ok(model) => model,
@@ -570,6 +661,10 @@ fn codex_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
             "include_apply_patch_tool=false",
             "-c",
             "tools.view_image=false",
+            // codex reads an `AGENTS.md` from each folder up to the nearest
+            // `.git`; with no root marker it reads the working folder only.
+            "-c",
+            "project_root_markers=[]",
         ]
         .map(str::to_owned),
     );
@@ -605,9 +700,11 @@ const GEMINI_PROMPT: &str = "Answer the last user message of the conversation gi
 const GEMINI_POLICY: &str = "[[rule]]\ntoolName = \"*\"\ndecision = \"deny\"\npriority = 999\ndenyMessage = \"This chat has no tools.\"\n";
 
 /// The gemini run: the pinned argv (text only, no extension, no MCP server, no
-/// tool), and on stdin the profile prompt in an `Instructions:` block, then the
-/// memory block and the history. gemini has no system-prompt flag, and argv is
-/// visible in `ps`, so nothing but fixed flags and the model goes there. The
+/// tool; the user's `GEMINI.md`, skills and settings are kept out by the
+/// runtime's private `GEMINI_CLI_HOME`, which no flag can do), and on stdin
+/// the profile prompt in an `Instructions:` block, then the memory block and
+/// the history. gemini has no system-prompt flag, and argv is visible in `ps`,
+/// so nothing but fixed flags and the model goes there. The
 /// runtime appends `--policy <file>` after these flags, and for a turn with
 /// tools it adds its own (`--allowed-mcp-server-names=lazarobox`, an admin
 /// policy that allows the server) and runs gemini in a work folder that holds

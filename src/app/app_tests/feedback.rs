@@ -6,7 +6,7 @@
 use super::*;
 use crate::core::ai::{Detection, Diagnostics, EngineState, Status};
 use crate::core::menu::Footer;
-use crate::core::menu::feedback::{Facts, Issue, SendReply};
+use crate::core::menu::feedback::{Facts, Issue, Request, SendReply};
 
 fn host() -> Facts {
     Facts {
@@ -98,18 +98,18 @@ fn ctrl_s_in_the_form_sends_the_issue_with_host_and_engines() {
     let effects = a.update(ctrl('s'));
     assert_eq!(
         effects,
-        vec![Effect::SendIssue(Box::new(Issue {
+        vec![Effect::SendIssue(Box::new(Request::Find(Issue {
             repo: "pichu2707/lazarobox-shell".to_owned(),
             title: "Crash".to_owned(),
             body: "### What happened\n\nIt crashed\n\n### Environment\n\n```text\n\
                    lazarobox 9.9.9 · linux (WSL) · zsh\nengines: ollama available\n```"
                 .to_owned(),
             labels: vec!["bug".to_owned()],
-        }))]
+        })))]
     );
     assert_eq!(
         a.menu().unwrap().footer(),
-        Footer::Hint("Sending to GitHub…".into())
+        Footer::Hint("Looking for similar issues, then sending…".into())
     );
     // One send at a time.
     assert_eq!(a.update(ctrl('s')), vec![]);
@@ -158,6 +158,8 @@ fn a_failed_send_keeps_the_form_and_shows_the_message() {
         a.menu().unwrap().footer(),
         Footer::Error("gh: HTTP 403: forbidden")
     );
+    // A retry is a new press, not the first Ctrl+S still held.
+    let_go();
     assert!(matches!(
         a.update(ctrl('s')).as_slice(),
         [Effect::SendIssue(_)]
@@ -186,7 +188,33 @@ fn without_gh_the_prefilled_page_opens_instead() {
         "{effects:?}"
     );
     assert_eq!(texts(&a)[0], "gh is not installed or not logged in: link");
-    assert!(a.notice().is_some_and(|n| n.starts_with("Copied ")));
+    assert_eq!(
+        a.notice(),
+        Some(crate::core::clipboard::osc52_only(false).as_str())
+    );
+}
+
+// copy-selection: Other callers get the same notice (feedback link).
+#[test]
+fn the_copied_link_goes_through_the_local_tool_and_the_menu_footer_follows() {
+    use crate::core::clipboard::Tool;
+    let mut a = sending(false).with_clipboard(Some(Tool::Xclip), false);
+    let effects = a.update(AppEvent::IssueSent(SendReply::NoGh));
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::SetClipboard(_), Effect::CopyLocal { seq: 1, .. }]
+        ),
+        "{effects:?}"
+    );
+    assert_eq!(a.notice(), Some("Copying (xclip)"));
+    a.update(AppEvent::Clipboard {
+        seq: 1,
+        result: Err("timed out".to_owned()),
+    });
+    let expected = "xclip failed; sent via OSC 52 (timed out)";
+    assert_eq!(a.notice(), Some(expected));
+    assert_eq!(a.menu().unwrap().footer(), Footer::Hint(expected.into()));
 }
 
 // Spec (open-links S7): an answer after the menu closed is dropped.

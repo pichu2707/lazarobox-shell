@@ -2,11 +2,14 @@
 //! sends a safe command to a check that the runtime does off the UI thread,
 //! and the answer is routed again, through the same function, before anything
 //! is done with it. Every case that is not a clean pass ends in the prompt,
-//! where `y` types the command and never presses Enter.
+//! where `y` on a model's command in `run` mode runs it with no check: the
+//! user approved it (`run_approved`). Elsewhere `y` types and never presses
+//! Enter.
 //!
-//! One-write invariant: a run is exactly one `Effect::AutoRun`: the checked
-//! command, framed like a `y` write, plus one `\r`. It is built only here, from
-//! the second route, so `y` and `auto` cannot press Enter.
+//! One-write invariant: a run is exactly one `Effect::AutoRun`: the command,
+//! framed like a `y` write, plus one `\r`. It is built only here, from the
+//! second route or from `y` in `run` mode, so `ask`, `auto` and the confirm
+//! of `Prefix e` cannot press Enter.
 //!
 //! Residual: the cwd is compared at the write, but a symlink swapped between
 //! the check's `canonicalize` and the shell's `chdir` is not seen (it needs a
@@ -14,8 +17,12 @@
 
 use super::*;
 use crate::core::ai::{
-    chat::approval::{ApprovalAsk, NOT_ALLOWED, Route},
+    chat::{
+        approval::{ApprovalAsk, NO_CWD, NOT_ALLOWED, Route},
+        engine::locality,
+    },
     tools::{
+        Locality,
         capture::capture,
         report::{cwd_result, system_line},
         settle::{Anchor, End, Probe, Settle},
@@ -38,6 +45,9 @@ pub(super) struct RunSlot {
     pub(super) call: CallId,
     pub(super) command: String,
     stage: Stage,
+    /// The user approved it with `y`: a write step that refuses it types the
+    /// command instead of asking again.
+    by_user: bool,
 }
 
 /// Where a run is: waiting for its check, or written and being settled.
@@ -68,6 +78,25 @@ impl RunSlot {
         if let Stage::Running(run) = &mut self.stage {
             run.settle.user_key();
         }
+    }
+}
+
+/// What the check of a run judges the paths against: the chat's root (its
+/// origin folder, `/` when unknown, as the tools read it) and whether the
+/// engine is a cloud one. An engine outside the catalog counts as cloud.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RunScope {
+    pub root: PathBuf,
+    pub cloud: bool,
+}
+
+/// The scope of a run for a chat opened from `origin` whose turn runs on
+/// `engine`: the root the tools read against (`/` when the origin is
+/// unknown), and cloud unless the catalog says the engine is local.
+pub(super) fn run_scope(origin: Option<&Path>, engine: &str) -> RunScope {
+    RunScope {
+        root: origin.map_or_else(|| PathBuf::from("/"), Path::to_path_buf),
+        cloud: locality(engine) != Some(Locality::Local),
     }
 }
 
@@ -120,8 +149,15 @@ impl App {
         target: PaneId,
         command: &str,
     ) -> Vec<Effect> {
+        // Without the chat's state, fail closed: a cloud chat rooted at `/`
+        // makes every check ask (BROAD_ROOT).
+        let mut scope = RunScope {
+            root: PathBuf::from("/"),
+            cloud: true,
+        };
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.note_auto_typed();
+            scope = run_scope(chat.origin_cwd(), chat.stream_engine());
         }
         if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
             pty.run = Some(RunSlot {
@@ -130,6 +166,7 @@ impl App {
                 call,
                 command: command.to_owned(),
                 stage: Stage::Checking,
+                by_user: false,
             });
         }
         vec![Effect::CheckRun {
@@ -138,6 +175,7 @@ impl App {
             turn,
             call,
             command: command.to_owned(),
+            scope,
         }]
     }
 
@@ -173,6 +211,17 @@ impl App {
         ) {
             return Self::deny(slot.chat, slot.turn, call, PANE_GONE);
         }
+        // The user already said `y`: typing is what `y` did before `run`.
+        if let (true, RunEvent::NotRun { reason, .. }) = (slot.by_user, &event) {
+            let command = slot.command.clone();
+            return self.type_run(
+                slot.chat,
+                Some((slot.turn, call)),
+                target,
+                &command,
+                Some(reason),
+            );
+        }
         let ask = ApprovalAsk::Run {
             command: slot.command.clone(),
         };
@@ -203,18 +252,69 @@ impl App {
         self.open_prompt(slot.chat, (slot.turn, call), Some(target), ask, why)
     }
 
+    /// `y` on a model's command in `run` mode, which nothing in
+    /// `y_run_blocker` stops: the approval stands for the check, so the run is
+    /// written at once in the directory the app last read for the pane. The
+    /// write step compares it with the shell's real one and refuses a pane that
+    /// moved or runs a program, and the command is then typed. The run takes
+    /// none of the turn's unprompted slots.
+    pub(super) fn run_approved(
+        &mut self,
+        chat: PaneId,
+        (turn, call): (u64, CallId),
+        target: PaneId,
+        command: &str,
+    ) -> Vec<Effect> {
+        let bytes = match self.typed_bytes(target, command) {
+            Ok(bytes) => bytes,
+            Err(refused) => {
+                self.notice = Some(refused.notice);
+                return Self::deny(chat, turn, call, refused.reason);
+            }
+        };
+        let cwd = (self.panes.get(&target))
+            .and_then(PaneState::pty)
+            .and_then(|pty| pty.proc_cwd.clone());
+        let Some(cwd) = cwd else {
+            return self.type_run(chat, Some((turn, call)), target, command, Some(NO_CWD));
+        };
+        let slot = RunSlot {
+            chat,
+            turn,
+            call,
+            command: command.to_owned(),
+            stage: Stage::Checking,
+            by_user: true,
+        };
+        self.auto_run(slot, target, bytes, (cwd, None))
+    }
+
     /// The run is decided: its one write, the command and one `\r`, goes to
     /// the runtime together with the directory it was checked in. The slot
     /// stays (the pane is executing) until the run settles or the call ends;
     /// it starts settling from where the cursor is now. The fallbacks before
     /// it are forgiven only when the run ends.
-    fn auto_run(
+    pub(super) fn auto_run(
         &mut self,
         mut slot: RunSlot,
         target: PaneId,
         mut bytes: Vec<u8>,
         (cwd, cd_target): (PathBuf, Option<PathBuf>),
     ) -> Vec<Effect> {
+        // The block of a conversation that read GitHub text: this door never
+        // presses Enter for it, whatever route led here.
+        let blocked = (self.panes.get(&slot.chat).and_then(PaneState::chat_state))
+            .and_then(ChatState::block_why);
+        if let Some(why) = blocked {
+            let (turn, call, command) = (slot.turn, slot.call, slot.command.clone());
+            return self.type_run(
+                slot.chat,
+                Some((turn, call)),
+                target,
+                &command,
+                Some(why.reason()),
+            );
+        }
         bytes.push(b'\r');
         let effect = Effect::AutoRun {
             chat: slot.chat,
@@ -322,6 +422,7 @@ impl App {
             call,
             command,
             stage: Stage::Running(run),
+            ..
         }) = pty.run.take()
         else {
             return Vec::new();

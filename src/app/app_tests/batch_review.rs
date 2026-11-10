@@ -3,7 +3,7 @@
 //! that rejects the whole batch.
 
 use super::chat_live::{ctrl, plain};
-use super::tool_approval::{announce_now, chat, decision, live, pending, result};
+use super::tool_approval::{announce_now, chat, decision, live, pending, result, worker_decision};
 use super::*;
 use crate::app::tool::DECLINED;
 use crate::core::ai::chat::{
@@ -111,17 +111,78 @@ fn y_does_nothing_while_lines_are_unseen_however_late() {
 }
 
 #[test]
+fn y_on_a_locked_gate_hints_for_two_seconds_and_changes_nothing() {
+    let (mut a, _) = asked(200);
+    let (remaining, top) = (review(&a).remaining(), review(&a).top());
+    assert_eq!(at_drawn(&mut a, 5_000, key('y')), vec![]);
+    assert!(pending(&a).is_some());
+    assert_eq!(review(&a).remaining(), remaining);
+    assert_eq!(review(&a).top(), top);
+    let hint = |a: &App, t: u64| {
+        NOW_MS.with(|n| n.set(t));
+        review(a).locked_hint((a.clock)())
+    };
+    assert_eq!(hint(&a, 6_999), Some(remaining));
+    assert_eq!(hint(&a, 7_000), None);
+}
+
+#[test]
+fn y_during_the_arm_delay_with_every_line_seen_stays_silent() {
+    let (mut a, _) = asked(2);
+    read_all(&mut a, 100);
+    assert_eq!(review(&a).remaining(), 0);
+    assert_eq!(at(&mut a, 200, key('y')), vec![]);
+    NOW_MS.with(|n| n.set(300));
+    assert_eq!(review(&a).locked_hint((a.clock)()), None);
+}
+
+#[test]
+fn a_hint_never_blocks_the_approval_nor_the_ready_wake() {
+    let (mut a, turn) = asked(60);
+    assert_eq!(at_drawn(&mut a, 100, key('y')), vec![], "locked");
+    read_all(&mut a, 900);
+    assert_eq!(review(&a).remaining(), 0);
+    // Still inside the 2 s of the hint, once the delay is over.
+    NOW_MS.with(|n| n.set(1_000));
+    assert!(review(&a).locked_hint((a.clock)()).is_none(), "all seen");
+    a.take_dirty();
+    a.wake_review();
+    assert!(a.take_dirty(), "the frame that shows `y ready`");
+    assert_eq!(
+        at(&mut a, 1_100, key('y')),
+        vec![decision(turn, 1, Decision::Sent)]
+    );
+}
+
+#[test]
+fn y_on_a_batch_that_cannot_be_reviewed_says_so_for_two_seconds() {
+    let (mut a, _) = asked(2100);
+    assert_eq!(at(&mut a, 5_000, key('y')), vec![]);
+    NOW_MS.with(|n| n.set(6_999));
+    assert!(review(&a).refused_hint((a.clock)()));
+    NOW_MS.with(|n| n.set(7_000));
+    assert!(!review(&a).refused_hint((a.clock)()));
+    assert!(pending(&a).is_some(), "nothing was answered");
+}
+
+#[test]
 fn y_arms_at_full_coverage_plus_the_review_delay() {
     let (mut a, turn) = asked(60);
     read_all(&mut a, 100);
     assert_eq!(review(&a).remaining(), 0);
-    assert_eq!(at(&mut a, ms(ARM_DELAY) - 1, key('y')), vec![]);
     assert_eq!(
-        at(&mut a, ms(ARM_DELAY), key('y')),
+        early_held_then_new(&mut a, ms(ARM_DELAY), &key('y')),
         vec![decision(turn, 1, Decision::Sent)]
     );
     assert_eq!(pending(&a), None);
     assert!(chat(&a, id2()).approvals().review().is_none());
+    // A first press at exactly the delay approves.
+    let (mut b, turn) = asked(60);
+    read_all(&mut b, 100);
+    assert_eq!(
+        at(&mut b, ms(ARM_DELAY), key('y')),
+        vec![decision(turn, 1, Decision::Sent)]
+    );
 }
 
 #[test]
@@ -131,6 +192,20 @@ fn a_held_y_never_approves() {
     let held = super::chat_live::repeat(KeyCode::Char('y'), KeyModifiers::NONE);
     assert_eq!(at(&mut a, 5_000, held), vec![]);
     assert!(pending(&a).is_some());
+}
+
+// A held key sent as Presses: the decision is never taken by the hold.
+#[test]
+fn a_held_answer_key_sent_as_presses_never_answers() {
+    for answer in [key('y'), key('n'), plain(KeyCode::Esc)] {
+        let (mut a, _) = asked(2);
+        read_all(&mut a, 100);
+        let end = ms(ARM_DELAY) + 1_000;
+        for t in (100..=end).step_by(100) {
+            assert_eq!(at(&mut a, t, answer.clone()), vec![], "{answer:?} at {t}");
+        }
+        assert!(pending(&a).is_some(), "{answer:?}");
+    }
 }
 
 #[test]
@@ -159,6 +234,40 @@ fn scrolling_keys_mark_rows_seen_and_other_keys_do_nothing() {
     let held = super::chat_live::repeat(KeyCode::Down, KeyModifiers::NONE);
     at(&mut a, 9, held);
     assert_eq!(review(&a).top(), 1);
+}
+
+#[test]
+fn a_key_the_review_swallows_says_to_answer_first() {
+    let (mut a, _) = asked(100);
+    for other in [key('a'), plain(KeyCode::Enter), key(' ')] {
+        assert_eq!(at(&mut a, 8, other.clone()), vec![], "{other:?}");
+        assert_eq!(
+            a.notice(),
+            Some("Answer the pending confirm first"),
+            "{other:?}"
+        );
+    }
+    let modifier = plain(KeyCode::Modifier(
+        ratatui::crossterm::event::ModifierKeyCode::LeftShift,
+    ));
+    at(&mut a, 9, modifier);
+    assert_eq!(a.notice(), None, "a modifier alone is no key");
+    let held = super::chat_live::repeat(KeyCode::Char('a'), KeyModifiers::NONE);
+    at(&mut a, 9, held);
+    assert_eq!(a.notice(), None, "a repeat stays quiet");
+}
+
+#[test]
+fn n_and_esc_inside_the_review_delay_say_the_prompt_just_opened() {
+    for rejecting in [key('n'), plain(KeyCode::Esc)] {
+        let (mut a, _) = asked(5);
+        assert_eq!(at(&mut a, 10, rejecting.clone()), vec![], "{rejecting:?}");
+        assert_eq!(
+            a.notice(),
+            Some("Prompt just opened: answer again in a moment"),
+            "{rejecting:?}"
+        );
+    }
 }
 
 #[test]
@@ -247,10 +356,13 @@ fn n_and_esc_wait_for_the_review_delay_too() {
     for rejecting in [key('n'), plain(KeyCode::Esc)] {
         let (mut a, turn) = asked(5);
         let wait = ms(ARM_DELAY);
-        assert_eq!(at(&mut a, wait - 1, rejecting.clone()), vec![]);
-        assert!(pending(&a).is_some());
         assert_eq!(
-            at(&mut a, wait, rejecting),
+            early_held_then_new(&mut a, wait, &rejecting),
+            vec![decision(turn, 1, Decision::Denied(DECLINED))]
+        );
+        let (mut b, turn) = asked(5);
+        assert_eq!(
+            at(&mut b, wait, rejecting),
             vec![decision(turn, 1, Decision::Denied(DECLINED))]
         );
     }
@@ -263,6 +375,7 @@ fn the_other_asks_answer_after_the_short_delay() {
         ApprovalAsk::Search {
             pattern: "x".into(),
             dir: ".".into(),
+            reach: crate::core::ai::chat::approval::Reach::Other,
         },
         ApprovalAsk::External {
             server: "s".into(),
@@ -271,12 +384,17 @@ fn the_other_asks_answer_after_the_short_delay() {
         },
     ];
     for ask in asks {
-        let (mut a, turn) = live();
-        announce_now(&mut a, turn, 1, ask);
         let wait = ms(ASK_ARM_DELAY);
-        assert_eq!(at(&mut a, wait - 1, key('y')), vec![]);
+        let (mut a, turn) = live();
+        announce_now(&mut a, turn, 1, ask.clone());
         assert_eq!(
-            at(&mut a, wait, key('y')),
+            early_held_then_new(&mut a, wait, &key('y')),
+            vec![decision(turn, 1, Decision::Sent)]
+        );
+        let (mut b, turn) = live();
+        announce_now(&mut b, turn, 1, ask);
+        assert_eq!(
+            at(&mut b, wait, key('y')),
             vec![decision(turn, 1, Decision::Sent)]
         );
     }
@@ -319,14 +437,23 @@ fn a_review_in_a_background_tab_counts_and_arms_only_once_it_is_shown() {
 
 #[test]
 fn the_delay_starts_at_the_first_draw_not_at_the_ask() {
-    let (mut a, turn) = asked_unseen(2);
-    paint_at(&mut a, 500);
-    read_all(&mut a, 500);
-    assert_eq!(review(&a).remaining(), 0);
+    let drawn_late = || {
+        let (mut a, turn) = asked_unseen(2);
+        paint_at(&mut a, 500);
+        read_all(&mut a, 500);
+        assert_eq!(review(&a).remaining(), 0);
+        (a, turn)
+    };
+    let (mut a, _) = drawn_late();
     assert_eq!(at(&mut a, ms(ARM_DELAY), key('y')), vec![], "ask + delay");
-    assert_eq!(at(&mut a, 500 + ms(ARM_DELAY) - 1, key('y')), vec![]);
+    let (mut b, turn) = drawn_late();
     assert_eq!(
-        at(&mut a, 500 + ms(ARM_DELAY), key('y')),
+        early_held_then_new(&mut b, 500 + ms(ARM_DELAY), &key('y')),
+        vec![decision(turn, 1, Decision::Sent)]
+    );
+    let (mut c, turn) = drawn_late();
+    assert_eq!(
+        at(&mut c, 500 + ms(ARM_DELAY), key('y')),
         vec![decision(turn, 1, Decision::Sent)]
     );
 }
@@ -338,11 +465,13 @@ fn n_and_esc_wait_for_the_delay_from_the_first_draw_on_a_reviewable_batch() {
         assert_eq!(at(&mut a, 60_000, rejecting.clone()), vec![], "not drawn");
         paint_at(&mut a, 60_000);
         assert_eq!(
-            at(&mut a, 60_000 + ms(ARM_DELAY) - 1, rejecting.clone()),
-            vec![]
+            early_held_then_new(&mut a, 60_000 + ms(ARM_DELAY), &rejecting),
+            vec![decision(turn, 1, Decision::Denied(DECLINED))]
         );
+        let (mut b, turn) = asked_unseen(5);
+        paint_at(&mut b, 60_000);
         assert_eq!(
-            at(&mut a, 60_000 + ms(ARM_DELAY), rejecting),
+            at(&mut b, 60_000 + ms(ARM_DELAY), rejecting),
             vec![decision(turn, 1, Decision::Denied(DECLINED))]
         );
     }
@@ -564,6 +693,85 @@ fn the_scroll_badge_does_not_cover_the_review_counter() {
 // close and quit"): the badge comes from the runtime's poll, Ctrl+G asks the
 // runtime for the review, and the same view and gate answer with an id.
 
+fn worker_batch(n: usize, label: &str) -> ApprovalAsk {
+    let doc = numbered(n).doc().clone();
+    ApprovalAsk::Batch(std::sync::Arc::new(
+        crate::core::ai::chat::review::BatchReview::labelled(
+            doc,
+            label.to_owned(),
+            crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+        ),
+    ))
+}
+
+fn worker_read(path: &str) -> ApprovalAsk {
+    ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+        path: path.to_owned(),
+        label: "w".to_owned(),
+        reach: crate::core::ai::chat::approval::Reach::Other,
+        cloud: true,
+    }
+}
+
+// A queued ask belongs to nobody yet: it must not shorten the delay of the
+// batch on screen, nor re-aim the chat (S3a review).
+#[test]
+fn a_queued_read_leaves_the_shown_batch_delay_and_target_alone() {
+    let (mut a, turn) = live();
+    announce_now(&mut a, turn, 1, worker_batch(5, "review claude>opus"));
+    let armed = chat(&a, id2()).armed_at();
+    let target = chat(&a, id2()).run_target();
+    NOW_MS.with(|n| n.set(n.get() + 300));
+    announce_now(&mut a, turn, 2, worker_read("/b"));
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 1);
+    assert_eq!(chat(&a, id2()).armed_at(), armed);
+    assert_eq!(chat(&a, id2()).run_target(), target);
+}
+
+// The user answers the batch they are looking at: a second batch queued
+// behind it does not replace the view.
+#[test]
+fn a_queued_batch_does_not_replace_the_shown_review() {
+    let (mut a, turn) = live();
+    announce_now(&mut a, turn, 1, worker_batch(3, "first"));
+    let shown = review(&a).review().clone();
+    announce_now(&mut a, turn, 2, worker_batch(9, "second"));
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 1);
+    assert!(std::sync::Arc::ptr_eq(review(&a).review(), &shown));
+}
+
+// Answering the shown ask promotes the queued batch: its review opens and its
+// own (long) delay applies.
+#[test]
+fn a_promoted_batch_opens_its_review_with_the_batch_delay() {
+    let (mut a, turn) = live();
+    announce_now(&mut a, turn, 1, worker_read("/a"));
+    announce_now(&mut a, turn, 2, worker_batch(4, "second"));
+    assert!(chat(&a, id2()).approvals().review().is_none());
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    let now = (a.clock)();
+    assert_eq!(a.update(key('n')).len(), 1);
+    assert_eq!(review(&a).review().label(), Some("second"));
+    assert_eq!(chat(&a, id2()).armed_at(), Some(now + ARM_DELAY));
+}
+
+// A full queue is said, not swallowed: its own reason and a notice.
+#[test]
+fn a_full_queue_denies_with_its_own_reason_and_a_notice() {
+    use crate::core::ai::chat::approval::{MAX_QUEUED, QUEUE_FULL};
+    let (mut a, turn) = live();
+    for call in 0..=MAX_QUEUED as u64 {
+        assert!(announce_now(&mut a, turn, call, worker_read("/a")).is_empty());
+    }
+    let effects = announce_now(&mut a, turn, 99, worker_read("/z"));
+    assert_eq!(
+        effects,
+        vec![worker_decision(turn, 99, Decision::Denied(QUEUE_FULL))]
+    );
+    assert!(a.notice.is_some());
+}
+
 mod orphan {
     use super::*;
     use crate::core::ai::{
@@ -593,6 +801,30 @@ mod orphan {
         a.update(ctrl('c'));
         a.sync_batches(&badges(Some(Badge::Orphan(n))));
         a
+    }
+
+    // Verifier B1 (wsl-drive-access PR 2): the apply carries the drive grant
+    // the chat holds when the user presses `y`.
+    #[test]
+    fn y_applies_the_orphan_with_the_chats_drive_grant() {
+        let mut a = orphaned(60);
+        let folder = std::path::PathBuf::from("/mnt/c/Users/ana/Documents/app");
+        a.panes
+            .get_mut(&id2())
+            .and_then(PaneState::chat_mut)
+            .unwrap()
+            .set_drive_grant(Some(folder.clone()));
+        a.update(review_event(60));
+        paint_at(&mut a, 0);
+        read_all(&mut a, 100);
+        assert_eq!(
+            at(&mut a, 100 + ms(ARM_DELAY), key('y')),
+            vec![Effect::BatchApply {
+                pane: id2(),
+                id: batch_id(),
+                drive_grant: Some(folder),
+            }]
+        );
     }
 
     fn review_event(n: usize) -> AppEvent {
@@ -626,6 +858,35 @@ mod orphan {
         // A pane that is not a chat is not a place for a badge.
         a.sync_batches(&HashMap::from([(PaneId::FIRST, Badge::Orphan(1))]));
         assert_eq!(badge(&a), None);
+    }
+
+    // A review the user opened is never a worker's ask, even when its batch
+    // carries a worker label: beside a pending ask it is refused and said.
+    #[test]
+    fn a_labelled_orphan_review_is_refused_beside_a_pending_ask() {
+        let mut a = orphaned(2);
+        let pending = chat(&a, id2()).approvals().pending().is_some();
+        assert!(!pending);
+        let mine = super::worker_read("/a");
+        a.focused_state_mut()
+            .chat_mut()
+            .unwrap()
+            .approvals_mut()
+            .request(mine, crate::core::ai::chat::approval::Origin::Block)
+            .unwrap();
+        let labelled = super::worker_batch(2, "review claude>opus");
+        let ApprovalAsk::Batch(review) = labelled else {
+            unreachable!()
+        };
+        a.update(AppEvent::Batch(
+            id2(),
+            BatchEvent::Review(batch_id(), review),
+        ));
+        assert_eq!(chat(&a, id2()).approvals().waiting(), 0);
+        assert_eq!(
+            a.notice.as_deref(),
+            Some(crate::core::ai::chat::approval::ANOTHER_PENDING)
+        );
     }
 
     #[test]
@@ -671,17 +932,40 @@ mod orphan {
         paint_at(&mut a, 0);
         assert_eq!(at(&mut a, 60_000, key('y')), vec![], "rows unseen");
         read_all(&mut a, 100);
-        assert_eq!(at(&mut a, ms(ARM_DELAY) - 1, key('y')), vec![]);
         assert_eq!(
-            at(&mut a, ms(ARM_DELAY), key('y')),
+            early_held_then_new(&mut a, ms(ARM_DELAY), &key('y')),
             vec![Effect::BatchApply {
                 pane: id2(),
-                id: batch_id()
+                id: batch_id(),
+                drive_grant: None,
             }]
         );
         assert_eq!(pending(&a), None);
         assert!(chat(&a, id2()).approvals().review().is_none());
         assert_eq!(chat(&a, id2()).orphan(), None);
+        // A first press at exactly the delay applies it.
+        let mut b = orphaned(60);
+        b.update(review_event(60));
+        paint_at(&mut b, 0);
+        read_all(&mut b, 100);
+        assert_eq!(
+            at(&mut b, ms(ARM_DELAY), key('y')),
+            vec![Effect::BatchApply {
+                pane: id2(),
+                id: batch_id(),
+                drive_grant: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn y_on_an_orphan_review_that_cannot_be_approved_hints() {
+        let mut a = orphaned(2100);
+        a.update(review_event(2100));
+        paint_at(&mut a, 0);
+        assert_eq!(at(&mut a, 5_000, key('y')), vec![]);
+        NOW_MS.with(|n| n.set(6_000));
+        assert!(review(&a).refused_hint((a.clock)()));
     }
 
     #[test]
@@ -691,9 +975,8 @@ mod orphan {
             a.update(review_event(5));
             paint_at(&mut a, 0);
             let wait = ms(ARM_DELAY);
-            assert_eq!(at(&mut a, wait - 1, rejecting.clone()), vec![]);
             assert_eq!(
-                at(&mut a, wait, rejecting),
+                early_held_then_new(&mut a, wait, &rejecting),
                 vec![Effect::BatchDiscard {
                     pane: id2(),
                     id: batch_id()
@@ -701,6 +984,16 @@ mod orphan {
             );
             assert_eq!(pending(&a), None);
             assert_eq!(system_lines(&a), Vec::<String>::new(), "the notice speaks");
+            let mut b = orphaned(5);
+            b.update(review_event(5));
+            paint_at(&mut b, 0);
+            assert_eq!(
+                at(&mut b, wait, rejecting),
+                vec![Effect::BatchDiscard {
+                    pane: id2(),
+                    id: batch_id()
+                }]
+            );
         }
     }
 
@@ -708,7 +1001,8 @@ mod orphan {
     fn ctrl_c_closes_the_view_and_leaves_the_orphan_alone() {
         let mut a = orphaned(5);
         a.update(review_event(5));
-        assert_eq!(a.update(ctrl('c')), vec![]);
+        // A new Ctrl+C, not the one that cancelled the turn still held.
+        assert_eq!(at(&mut a, 1_000, ctrl('c')), vec![]);
         assert_eq!(pending(&a), None);
         assert_eq!(badge(&a), Some(Badge::Orphan(5)));
         let again = at(&mut a, 5_000, ctrl('g'));
@@ -768,6 +1062,7 @@ mod orphan {
         let apply = Effect::BatchApply {
             pane: id2(),
             id: batch_id(),
+            drive_grant: None,
         };
         assert_eq!(at(&mut a, 100 + ms(ARM_DELAY), key('y')), vec![apply]);
         a.update(done("applied 1 paths"));
@@ -775,6 +1070,15 @@ mod orphan {
         a.sync_batches(&badges(None));
         assert_eq!(badge(&a), None);
         assert_eq!(a.update(ctrl('g')), vec![], "nothing left to review");
+    }
+
+    // DIAGNOSIS (investigate/orch-orphans, F2): Ctrl+G with no orphan badge is
+    // not silent at the app level: it sets a notice.
+    #[test]
+    fn ctrl_g_without_an_orphan_badge_says_so() {
+        let (mut a, _) = live();
+        assert_eq!(a.update(ctrl('g')), vec![]);
+        assert_eq!(a.notice(), Some(crate::core::ai::chat::review::NO_ORPHAN));
     }
 
     #[test]

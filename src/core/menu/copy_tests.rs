@@ -65,7 +65,7 @@ fn y_on_a_model_row_does_nothing() {
 }
 
 #[test]
-fn y_on_an_engine_row_copies_its_no_jail_reason_and_enter_still_picks_it() {
+fn y_on_a_refused_engine_row_copies_its_reason_and_enter_does_not_pick_it() {
     let mut m = menu(Some("codex"), None, Some(codex(None, Some(WHY))));
     open(&mut m, "general");
     assert_eq!(send(&mut m, ch('y')), MenuCommand::Copy(WHY.to_owned()));
@@ -73,8 +73,9 @@ fn y_on_an_engine_row_copies_its_no_jail_reason_and_enter_still_picks_it() {
         panic!("not a hint")
     };
     assert!(hint.contains("y copies the reason"), "{hint}");
+    assert!(!hint.contains("Enter"), "{hint}");
     assert_eq!(send(&mut m, key(KeyCode::Enter)), MenuCommand::None);
-    assert!(title(&m).starts_with("Model for"), "{}", title(&m));
+    assert!(!title(&m).starts_with("Model for"), "{}", title(&m));
 }
 
 #[test]

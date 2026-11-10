@@ -73,6 +73,7 @@ async fn turn(env: CliEnv, model: Option<String>, text: &str) -> Vec<StreamEvent
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
     let mut chats = Chats::new(runner_with(None, env, None), tx);
     let request = ChatRequest {
+        cache: Default::default(),
         engine: "codex".into(),
         model,
         system: "Be brief.".into(),
@@ -83,6 +84,9 @@ async fn turn(env: CliEnv, model: Option<String>, text: &str) -> Vec<StreamEvent
             role: Role::User,
             content: text.into(),
         }],
+        ollama: Default::default(),
+        github_read: false,
+        drive_grant: None,
     };
     chats.send(PaneId::FIRST, 1, request);
     let mut events = Vec::new();

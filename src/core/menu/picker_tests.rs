@@ -26,6 +26,29 @@ pub(super) fn pick(label: &str, mark: Mark, selected: bool, current: bool) -> Ro
         selected,
         enabled: true,
         current,
+        tools: None,
+    }
+}
+
+/// `row` with the tool mark of a verified CLI engine.
+fn marked(row: Row) -> Row {
+    match row {
+        Row::Pick {
+            label,
+            mark,
+            selected,
+            enabled,
+            current,
+            ..
+        } => Row::Pick {
+            label,
+            mark,
+            selected,
+            enabled,
+            current,
+            tools: Some(crate::core::ai::marks::ToolMark::Capable),
+        },
+        other => other,
     }
 }
 
@@ -65,8 +88,8 @@ fn enter_on_a_task_row_opens_level_one_on_the_first_entry() {
             Row::Title("Engine for code".into()),
             pick("(default · use general)", Mark::Plain, true, true),
             pick("ollama", status("available · 2 models"), false, false),
-            pick("claude", status("available · 2.1.302"), false, false),
-            pick("codex", status("available · 0.5.0"), false, false),
+            marked(pick("claude", status("available · 2.1.302"), false, false)),
+            marked(pick("codex", status("available · 0.5.0"), false, false)),
             pick("lmstudio", status("not running"), false, false),
             // Not installed, but listed: the install and the download live here.
             pick("llamacpp", status("not installed"), false, false),

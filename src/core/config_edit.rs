@@ -45,6 +45,10 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
         None => DocumentMut::new(),
     };
     for edit in edits {
+        if edit.is_removal() {
+            remove_key(&mut doc, edit);
+            continue;
+        }
         if edit.table.is_empty() {
             set_root_key(&mut doc, edit)?;
             continue;
@@ -107,6 +111,33 @@ fn set_key(table: &mut dyn TableLike, edit: &ConfigEdit) -> Result<(), EditError
     Ok(())
 }
 
+/// Deletes `edit.key` from its table; a table left empty goes too. A missing
+/// table or key is left alone: a removal never creates anything.
+fn remove_key(doc: &mut DocumentMut, edit: &ConfigEdit) {
+    fn table_at<'a>(root: &'a mut dyn TableLike, path: &str) -> Option<&'a mut dyn TableLike> {
+        path.split('.')
+            .try_fold(root, |table, name| table.get_mut(name)?.as_table_like_mut())
+    }
+    if let Some(table) = table_at(doc.as_table_mut(), edit.table) {
+        table.remove(edit.key);
+    }
+    let (parent, leaf) = edit.table.rsplit_once('.').unwrap_or(("", edit.table));
+    let root: &mut dyn TableLike = doc.as_table_mut();
+    let parent = if parent.is_empty() {
+        Some(root)
+    } else {
+        table_at(root, parent)
+    };
+    if let Some(parent) = parent
+        && parent
+            .get(leaf)
+            .and_then(Item::as_table_like)
+            .is_some_and(|table| table.is_empty())
+    {
+        parent.remove(leaf);
+    }
+}
+
 /// Writes a root key (`edit.table == ""`). `toml_edit` prints the root's
 /// key-value pairs before every table header, so a new key lands above the
 /// first table. In a file with no entries the comments are the document's
@@ -131,8 +162,8 @@ fn set_root_key(doc: &mut DocumentMut, edit: &ConfigEdit) -> Result<(), EditErro
 
 /// The TOML value of an edit: a boolean key (see [`ConfigEdit::is_flag`])
 /// is written as a TOML boolean, an integer key (see
-/// [`ConfigEdit::is_integer`]) as a number, every other owned key as a
-/// string.
+/// [`ConfigEdit::is_integer`]) or a float key (see [`ConfigEdit::is_float`])
+/// as a number, every other owned key as a string.
 fn edit_value(edit: &ConfigEdit) -> Value {
     if edit.is_flag() {
         Value::from(edit.value == "true")
@@ -140,6 +171,10 @@ fn edit_value(edit: &ConfigEdit) -> Value {
         && let Ok(n) = edit.value.parse::<i64>()
     {
         Value::from(n)
+    } else if edit.is_float()
+        && let Ok(f) = edit.value.parse::<f64>()
+    {
+        Value::from(f)
     } else {
         Value::from(edit.value.as_ref())
     }
@@ -1080,7 +1115,12 @@ other = 1
             let (_, ai, notice) = Config::load_with_ai(Ok(out.clone()), None);
             assert!(ai.memory.active(), "{out:?}");
             assert_eq!(ai.memory.port, 8123, "{out:?}");
-            assert_eq!(notice, None, "{out:?}");
+            // Spec (config-unknown-keys): the kept unknown key is reported.
+            assert_eq!(
+                notice.as_deref(),
+                Some("config: unknown key: ai.memory.x"),
+                "{out:?}"
+            );
             assert!(!out.contains("\"true\""), "booleans, not strings: {out:?}");
         }
     }
@@ -1566,6 +1606,55 @@ other = 1
         assert!(!out.contains("servers"), "{out:?}");
     }
 
+    // `build.jobs` is a TOML integer, and `auto` a string; both read back.
+    #[test]
+    fn build_jobs_write_a_number_or_auto_and_read_back() {
+        use crate::core::config::{BUILD_TABLE, BuildJobs};
+        let jobs = |value: &'static str| ConfigEdit {
+            table: BUILD_TABLE,
+            key: "jobs",
+            value: value.into(),
+        };
+        let out = apply_edit(Some("mouse = false\n"), &[jobs("6")]).unwrap();
+        assert!(out.contains("[build]\njobs = 6\n"), "{out:?}");
+        let read = Config::parse(&out).unwrap();
+        assert!(read.problems.is_empty(), "{:?}", read.problems);
+        assert_eq!(read.config.build_jobs.id(), "6");
+        let out = apply_edit(Some(&out), &[jobs("auto")]).unwrap();
+        assert!(out.contains("jobs = \"auto\""), "{out:?}");
+        assert_eq!(
+            Config::parse(&out).unwrap().config.build_jobs,
+            BuildJobs::Auto
+        );
+    }
+
+    // The Ollama cap and keep-alive are never edited by the menu: every save,
+    // also one that edits its neighbour llamacpp table, keeps them byte for
+    // byte, and a file without them gains none.
+    #[test]
+    fn every_save_keeps_the_ollama_options_byte_for_byte_and_never_adds_them() {
+        let ollama = "[ai.servers.ollama]\nnum_ctx_cap = 8192 # my GPU\nkeep_alive = \"5m\"\n";
+        let existing = format!(
+            "[ai]\nengine = \"ollama\"\n\n[ai.servers.llamacpp]\nidle_minutes = 15\n\n{ollama}"
+        );
+        let edits = [
+            ConfigEdit::tools_flag(false),
+            ConfigEdit {
+                table: crate::core::config::LLAMACPP_TABLE,
+                key: "idle_minutes",
+                value: "30".into(),
+            },
+        ];
+        let out = apply_edit(Some(&existing), &edits).unwrap();
+        assert!(out.contains(ollama), "{out:?}");
+        assert!(out.contains("idle_minutes = 30"), "{out:?}");
+        let out = apply_edit(Some("[ai]\nnotify = true\n"), &edits).unwrap();
+        assert!(
+            !out.contains("num_ctx_cap") && !out.contains("keep_alive"),
+            "{out:?}"
+        );
+    }
+
     // W2: the saved text re-parses to the same servers and the new keys, and
     // the server block keeps its bytes and its place after the edits.
     #[test]
@@ -1613,5 +1702,86 @@ other = 1
                 );
             }
         }
+    }
+
+    // Spec (config-persistence): the orchestrate slot and the orchestrator keys.
+    fn orchestrate_edits(engine: &'static str, model: &'static str) -> [ConfigEdit; 2] {
+        let table = crate::core::ai::config::Task::Orchestrate.table();
+        let owned = |key, value: &'static str| ConfigEdit {
+            table,
+            key,
+            value: std::borrow::Cow::Borrowed(value),
+        };
+        [owned("engine", engine), owned("model", model)]
+    }
+
+    // Spec: Save the slot.
+    #[test]
+    fn the_orchestrate_slot_is_saved_in_its_own_table_and_reads_back() {
+        use crate::core::ai::config::{Assignment, Task};
+        let existing = "# mine\n[ai]\nengine = \"x\"  # keep\nunknown = 1\n";
+        let out = apply_edit(Some(existing), &orchestrate_edits("claude", "opus")).unwrap();
+        assert_eq!(
+            out,
+            format!("{existing}\n[ai.tasks.orchestrate]\nengine = \"claude\"\nmodel = \"opus\"\n")
+        );
+        let (_, ai, notice) = Config::load_with_ai(Ok(out), None);
+        // Spec (config-unknown-keys): the kept unknown key is reported.
+        assert_eq!(notice.as_deref(), Some("config: unknown key: ai.unknown"));
+        assert_eq!(
+            ai.get(Task::Orchestrate),
+            &Assignment {
+                engine: Some("claude".into()),
+                model: Some("opus".into())
+            }
+        );
+    }
+
+    // Spec: Clearing removes the keys.
+    #[test]
+    fn clearing_the_orchestrate_slot_removes_its_keys_and_leaves_the_rest() {
+        let rest = "# mine\n[ai]\nengine = \"x\"\n\n[ai.tasks.code]\nengine = \"codex\"\n";
+        let with_slot =
+            format!("{rest}\n[ai.tasks.orchestrate]\nengine = \"claude\"\nmodel = \"opus\"\n");
+        let out = apply_edit(Some(&with_slot), &orchestrate_edits("", "")).unwrap();
+        assert_eq!(out.trim_end(), rest.trim_end());
+        // Nothing to remove: no table is created and the text is untouched.
+        let out = apply_edit(Some(rest), &orchestrate_edits("", "")).unwrap();
+        assert_eq!(out, rest);
+        // Another key of the table survives; a half-cleared slot keeps the rest.
+        let kept = "[ai.tasks.orchestrate]\nengine = \"claude\"\nmodel = \"opus\"\nextra = 1\n";
+        let out = apply_edit(Some(kept), &orchestrate_edits("", "")).unwrap();
+        assert_eq!(out, "[ai.tasks.orchestrate]\nextra = 1\n");
+    }
+
+    #[test]
+    fn the_other_tasks_still_write_empty_strings_when_cleared() {
+        let out = apply_edit(None, &code_edits("", "")).unwrap();
+        assert_eq!(out, "[ai.tasks.code]\nengine = \"\"\nmodel = \"\"\n");
+    }
+
+    // Spec: Notice acceptance saved, with no other change pending.
+    #[test]
+    fn the_orchestrator_flags_are_written_as_booleans() {
+        let flags = [
+            ConfigEdit::orchestrator_flag("enabled", true),
+            ConfigEdit::orchestrator_flag("acknowledged", true),
+        ];
+        let out = apply_edit(None, &flags).unwrap();
+        assert_eq!(
+            out,
+            "[ai.orchestrator]\nenabled = true\nacknowledged = true\n"
+        );
+        let (_, ai, notice) = Config::load_with_ai(Ok(out), None);
+        assert_eq!(notice, None);
+        assert!(ai.orchestrator.enabled && ai.orchestrator.acknowledged);
+        // Alone, in place; the hand-edited timeout is never touched.
+        let existing = "[ai.orchestrator]\nworker_timeout_secs = 90  # mine\n";
+        let out = apply_edit(
+            Some(existing),
+            &[ConfigEdit::orchestrator_flag("acknowledged", true)],
+        )
+        .unwrap();
+        assert_eq!(out, format!("{existing}acknowledged = true\n"));
     }
 }

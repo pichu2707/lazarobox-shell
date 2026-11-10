@@ -1,0 +1,16 @@
+{
+ "details": {
+  "parent_model": "",
+  "format": "gguf",
+  "family": "nomic-bert",
+  "families": [
+   "nomic-bert"
+  ],
+  "parameter_size": "137M",
+  "quantization_level": "F16"
+ },
+ "capabilities": [
+  "embedding"
+ ],
+ "modified_at": "2026-08-09T20:45:38.65151069+02:00"
+}

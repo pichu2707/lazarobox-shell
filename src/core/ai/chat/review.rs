@@ -23,7 +23,13 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod commit;
+mod screen;
+pub use commit::CommitReview;
+pub use screen::ScreenReview;
+
 use crate::core::ai::chat::wrap::{clusters, expand_tabs, row_end, text_width};
+use crate::core::ai::orchestra::WorkerKey;
 use crate::core::ai::tools::diff::{self, Diff, Kind, escape};
 use crate::core::ai::tools::stage::{Batch, BatchId, Entry};
 
@@ -205,11 +211,71 @@ impl ReviewDoc {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BatchReview {
     doc: ReviewDoc,
+    /// Who proposed the batch when it is not the chat itself: the worker's
+    /// label (`approval::worker_label`), one sanitized line, shown in the
+    /// review header. `None` for a chat's own batch.
+    label: Option<String>,
+    /// The session of that worker, which the answer is addressed to.
+    worker: Option<WorkerKey>,
+    /// What lazarobox says of the receipt-driven review of the worker's
+    /// change (S7b): one line of its own words and counts, shown in the
+    /// header. It informs and decides nothing: `y` and `n` stay the user's.
+    receipt: Option<String>,
+    /// What [`BatchReview::counts`] says instead of the file counts, for a
+    /// review that is not a batch of files (a pane's screen).
+    summary: Option<String>,
 }
 
 impl BatchReview {
     pub fn new(doc: ReviewDoc) -> Self {
-        Self { doc }
+        Self {
+            doc,
+            label: None,
+            worker: None,
+            receipt: None,
+            summary: None,
+        }
+    }
+
+    /// The review of a batch a worker proposed, headed by its `label`.
+    pub fn labelled(doc: ReviewDoc, label: String, worker: WorkerKey) -> Self {
+        Self {
+            doc,
+            label: Some(label),
+            worker: Some(worker),
+            receipt: None,
+            summary: None,
+        }
+    }
+
+    /// The review with the line of a receipt (S7b) in its header. Only a
+    /// worker's batch shows one; a chat's own batch is left as it was.
+    pub fn with_receipt(mut self, line: Option<String>) -> Self {
+        if self.label.is_some() {
+            self.receipt = line;
+        }
+        self
+    }
+
+    /// The review with `summary` in the place of the file counts.
+    fn with_summary(mut self, summary: String) -> Self {
+        self.summary = Some(summary);
+        self
+    }
+
+    /// The receipt line of the worker's review, when it had one.
+    pub fn receipt(&self) -> Option<&str> {
+        self.receipt.as_deref()
+    }
+
+    /// The session of the worker that proposed the batch.
+    pub fn worker(&self) -> Option<WorkerKey> {
+        self.worker
+    }
+
+    /// The worker that proposed the batch; `None` for a chat's own.
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
     }
 
     pub fn doc(&self) -> &ReviewDoc {
@@ -218,6 +284,9 @@ impl BatchReview {
 
     /// `2 files, +3 -1`: counts only, safe to show and to send.
     pub fn counts(&self) -> String {
+        if let Some(summary) = &self.summary {
+            return summary.clone();
+        }
         let s = if self.doc.files == 1 { "" } else { "s" };
         format!(
             "{} file{s}, +{} -{}",
@@ -289,7 +358,7 @@ const WARN_COARSE: &str = "warning: coarse diff: the whole file is shown as repl
 pub const WARN_TRUNCATED: &str =
     "warning: too large to review: reject it and ask for smaller changes";
 
-/// How long `y` stays disabled after the view opens. Other asks keep 400 ms.
+/// How long `y` stays disabled after the view opens, as for every other ask.
 pub const ARM_DELAY: Duration = Duration::from_millis(800);
 
 /// Marks every row of a logical line after the first, in the sign column of

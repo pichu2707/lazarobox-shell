@@ -18,13 +18,18 @@ use crate::{
     core::ai::{
         chat::{
             ANSWER_CAP, REASONING_CAP,
-            adapters::{ToolExchange, ToolRound, ollama_round_body, openai_round_body},
+            adapters::{
+                ToolExchange, ToolRound, offered_names, ollama_round_body, openai_round_body,
+            },
             engine::{ChatError, ChatRequest, Finish, StreamEvent, Tools},
-            prompts,
+            leaked_thinking::{LeakedThinking, Piece},
+            next_step, prompts,
             stream::{
                 CallError, OllamaToolDecoder, OpenAiToolDecoder, StreamDecoder, ToolCalls,
                 ToolRequest,
             },
+            text_call,
+            usage::{TurnUsage, UsageFold},
         },
         tools::{
             mcp::refusal_text,
@@ -79,6 +84,11 @@ const REJECTED: &str = "HTTP 400";
 pub const NO_TOOLS_NOTICE: &str =
     "llama-server refused tools (start it with --jinja): answering as plain text";
 
+/// The line a pane gets once when Ollama answers 400 to `tools` and the turn
+/// goes on as text. Any 400 matches, so the line does not name a cause.
+pub const OLLAMA_NO_TOOLS_NOTICE: &str =
+    "Ollama answered 400 to a request with tools: retrying without them";
+
 /// The wire a tool loop speaks: Ollama's own (`/api/chat`, NDJSON) or the
 /// OpenAI chat-completions one (`/v1/chat/completions`, SSE) of llama.cpp.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -115,7 +125,7 @@ impl Profile {
     /// The line sent before the retry as text, if this wire says anything.
     pub(super) fn notice(self) -> Option<&'static str> {
         match self {
-            Profile::Ollama => None,
+            Profile::Ollama => Some(OLLAMA_NO_TOOLS_NOTICE),
             Profile::OpenAi => Some(NO_TOOLS_NOTICE),
         }
     }
@@ -185,7 +195,7 @@ async fn rounds(
         Tools::Off => Qualified::default(),
     };
     let mut tooled = request.clone();
-    tooled.system = prompts::with_tools(&plain.system);
+    tooled.system = prompts::with_tools(&plain.system, request.families);
     let mut used = 0;
     // The next text follows earlier text that did not end its line.
     let mut gap = false;
@@ -194,8 +204,17 @@ async fn rounds(
     // every turn (the notice is deduped by the chat); a per-pane memory is a
     // follow-up.
     let mut offer = true;
+    // A tool call written as text gets one reminder a turn (local-model-writes
+    // D3); the text is never run.
+    let offered = offered_names(&tooled);
+    let mut text_call_reminded = false;
+    // So does an answer that stops short: empty, or announcing a next step
+    // without a call (#439).
+    let mut go_on_reminded = false;
     let mut requests = 0;
     let limit = max_rounds(request.families);
+    // The usage of each request, folded into the one the turn reports.
+    let mut usage = UsageFold::default();
     while requests < limit && !tx.is_closed() {
         let body = if offer {
             profile.body(&tooled, &history, true)
@@ -203,16 +222,18 @@ async fn rounds(
             profile.body(plain, &history, false)
         };
         let path = profile.path();
-        let reply = match profile {
+        // A round after tool results may leak reasoning into its text.
+        let hold = !history.is_empty();
+        let mut reply = match profile {
             Profile::Ollama => {
                 let decoder = OllamaToolDecoder::server_with(external.clone())
                     .with_families(request.families);
-                round(timeouts, port, path, &body, gap, decoder, tx).await
+                round(timeouts, port, path, &body, gap, hold, decoder, tx).await
             }
             Profile::OpenAi => {
                 let decoder = OpenAiToolDecoder::server_with(external.clone())
                     .with_families(request.families);
-                round(timeouts, port, path, &body, gap, decoder, tx).await
+                round(timeouts, port, path, &body, gap, hold, decoder, tx).await
             }
         };
         let finish = match reply.end {
@@ -230,6 +251,8 @@ async fn rounds(
                 continue;
             }
             Some(Err(error)) => {
+                usage.add(reply.usage.take());
+                report(tx, usage, true).await;
                 let _ = tx.send(StreamEvent::Error(error)).await;
                 return;
             }
@@ -237,10 +260,43 @@ async fn rounds(
             None => return,
         };
         requests += 1;
+        usage.add(reply.usage.take());
         // Without tools, whatever calls the reply holds are not run.
         if reply.calls.is_empty() || !offer {
-            let _ = tx.send(StreamEvent::Done(finish)).await;
-            return;
+            let room = offer && requests < limit;
+            let written = (room && !text_call_reminded)
+                .then(|| text_call::written_call(&reply.text, &offered))
+                .flatten();
+            let short = (room && !go_on_reminded)
+                .then(|| next_step::go_on(&reply.text))
+                .flatten();
+            let reminder = match (written, short) {
+                (Some(name), _) => {
+                    text_call_reminded = true;
+                    Some((text_call::TEXT_CALL_NOTICE, text_call::reminder(&name)))
+                }
+                (None, Some((notice, reminder))) => {
+                    go_on_reminded = true;
+                    Some((notice, reminder.to_owned()))
+                }
+                (None, None) => None,
+            };
+            let Some((notice, reminder)) = reminder else {
+                report(tx, usage, false).await;
+                let _ = tx.send(StreamEvent::Done(finish)).await;
+                return;
+            };
+            let _ = tx.send(StreamEvent::Notice(notice.into())).await;
+            if !reply.text.is_empty() {
+                gap = !reply.text.ends_with('\n');
+            }
+            history.push(ToolRound {
+                thinking: reply.thinking,
+                text: reply.text,
+                exchanges: Vec::new(),
+                nudge: Some(reminder),
+            });
+            continue;
         }
         if requests == limit {
             break;
@@ -256,11 +312,22 @@ async fn rounds(
             thinking: reply.thinking,
             text: reply.text,
             exchanges,
+            nudge: None,
         });
     }
     if !tx.is_closed() {
+        report(tx, usage, true).await;
         let _ = tx.send(StreamEvent::Notice(CAP_NOTICE.into())).await;
         let _ = tx.send(StreamEvent::Done(Finish::Stop)).await;
+    }
+}
+
+/// Sends the turn's usage, if any request reported some. It goes before the
+/// final event: nothing after `Done` or `Error` is delivered. `cut` is a turn
+/// that ended in an error or at the tool limit.
+async fn report(tx: &mpsc::Sender<StreamEvent>, usage: UsageFold, cut: bool) {
+    if let Some(total) = usage.finish(cut) {
+        let _ = tx.send(StreamEvent::usage(total)).await;
     }
 }
 
@@ -294,6 +361,8 @@ struct Reply {
     text: String,
     thinking: Option<String>,
     calls: Vec<ToolRequest>,
+    /// What the request used, if its engine said.
+    usage: Option<TurnUsage>,
     /// How the stream ended; `None` when the receiver went away first.
     end: Option<Result<Finish, ChatError>>,
 }
@@ -302,12 +371,15 @@ struct Reply {
 /// end of the stream is held back, because a reply with tool calls is not the
 /// end of the turn. `gap` puts a line break before the first text, to part it
 /// from the text of the round before. What is kept to echo back is capped.
+/// `hold` sorts reasoning leaked into the text ([`LeakedThinking`]).
+#[allow(clippy::too_many_arguments)]
 async fn round<D: StreamDecoder + ToolCalls + Send>(
     timeouts: &Timeouts,
     port: u16,
     path: &str,
     body: &[u8],
     gap: bool,
+    hold: bool,
     mut decoder: D,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> Reply {
@@ -329,37 +401,68 @@ async fn round<D: StreamDecoder + ToolCalls + Send>(
     let relay = async {
         let (mut text, mut thinking) = (String::new(), String::new());
         let mut end = None;
+        let mut usage: Option<TurnUsage> = None;
         let mut gap = gap;
+        let mut split = LeakedThinking::new(hold, ANSWER_CAP);
+        let mut sort = |piece: Piece, text: &mut String, thinking: &mut String| match piece {
+            Piece::Answer(t) => {
+                push_capped(text, &t, ANSWER_CAP);
+                let lead = std::mem::take(&mut gap) && !t.is_empty();
+                StreamEvent::Delta(if lead { format!("\n{t}") } else { t })
+            }
+            Piece::Reasoning(t) => {
+                push_capped(thinking, &t, REASONING_CAP);
+                StreamEvent::ThinkingDelta(t)
+            }
+        };
         while let Some(event) = events.recv().await {
-            match event {
-                StreamEvent::Done(finish) => end = Some(Ok(finish)),
-                StreamEvent::Error(error) => end = Some(Err(error)),
-                other => {
-                    let other = match other {
-                        StreamEvent::Delta(t) => {
-                            push_capped(&mut text, &t, ANSWER_CAP);
-                            let lead = std::mem::take(&mut gap) && !t.is_empty();
-                            StreamEvent::Delta(if lead { format!("\n{t}") } else { t })
-                        }
-                        StreamEvent::ThinkingDelta(t) => {
-                            push_capped(&mut thinking, &t, REASONING_CAP);
-                            StreamEvent::ThinkingDelta(t)
-                        }
-                        other => other,
-                    };
-                    if tx.send(other).await.is_err() {
-                        return (text, thinking, None);
+            let out = match event {
+                StreamEvent::Done(finish) => {
+                    end = Some(Ok(finish));
+                    continue;
+                }
+                StreamEvent::Error(error) => {
+                    end = Some(Err(error));
+                    continue;
+                }
+                // Held for the turn's fold, not forwarded: one goes out per turn.
+                StreamEvent::Usage(u) => {
+                    match usage.as_mut() {
+                        Some(sum) => sum.merge(&u),
+                        None => usage = Some(*u),
                     }
+                    continue;
+                }
+                StreamEvent::Delta(t) => split.push(&t),
+                StreamEvent::ThinkingDelta(t) => vec![Piece::Reasoning(t)],
+                other => {
+                    if tx.send(other).await.is_err() {
+                        return (text, thinking, usage, None);
+                    }
+                    continue;
+                }
+            };
+            for piece in out {
+                let event = sort(piece, &mut text, &mut thinking);
+                if tx.send(event).await.is_err() {
+                    return (text, thinking, usage, None);
                 }
             }
         }
-        (text, thinking, end)
+        for piece in split.finish() {
+            let event = sort(piece, &mut text, &mut thinking);
+            if tx.send(event).await.is_err() {
+                return (text, thinking, usage, None);
+            }
+        }
+        (text, thinking, usage, end)
     };
-    let ((), (text, thinking, end)) = tokio::join!(post, relay);
+    let ((), (text, thinking, usage, end)) = tokio::join!(post, relay);
     Reply {
         text,
         thinking: (!thinking.is_empty()).then_some(thinking),
         calls: decoder.take_calls(),
+        usage,
         end,
     }
 }

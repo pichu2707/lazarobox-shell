@@ -1,5 +1,6 @@
 //! Run in pane: the confirm that types a command of a chat into a shell pane.
-//! The confirm only types; Enter is sent only by a run (see `auto_run`).
+//! The confirm types; Enter is sent only by a run (see `auto_run`), which `y`
+//! starts for a model's command in `run` mode.
 
 use super::{
     tool::{CANCELLED, DECLINED},
@@ -8,13 +9,17 @@ use super::{
 use crate::core::ai::{
     chat::{
         approval::{
-            Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, Origin, Press, READ_KEYS,
-            RUN_CANCELLED, RUN_KEYS, Reply, SEARCH_KEYS, exec_notice, run_sent_line,
+            Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
+            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, ISSUE_DRAFT_KEYS, MULTI_LINE, NO_CWD,
+            NON_UTF8, Origin, PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS,
+            RUNNING, Reply, SEARCH_KEYS, drive_grant_prompt, exec_notice, grant_prompt,
+            run_sent_line, tool_grant_prompt,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
         yank,
     },
+    config::ApprovalMode,
     sanitize,
     tools::command::{CONTINUATION, validate},
 };
@@ -27,10 +32,12 @@ const NO_COMMAND: &str = "No runnable command in the last answer";
 const NO_SHELL: &str = "No shell pane in this tab";
 const TARGET_GONE: &str = "That pane is gone: press p to pick another";
 const NO_PASTE_MODE: &str = "The shell cannot take a multi-line command safely";
-const ANSWER_FIRST: &str = "Answer the pending confirm first";
+pub(super) const ANSWER_FIRST: &str = "Answer the pending confirm first";
+/// An answer key that came before the prompt could take it.
+pub(super) const JUST_OPENED: &str = "Prompt just opened: answer again in a moment";
 const ALREADY_OPEN: &str = "A confirm is already open: answer it first";
 const TOOLS_OFF_REASON: &str = "tools are off";
-const PROMPT_TOO_SMALL: &str = "Pane too small to show it all: enlarge it or press n";
+pub(super) const PROMPT_TOO_SMALL: &str = "Pane too small to show it all: enlarge it or press n";
 
 /// The mark of a line typed from a block (`Prefix e`): no tool call made it.
 const BLOCK_LINE: CallId = CallId(u64::MAX);
@@ -38,7 +45,7 @@ const BLOCK_LINE: CallId = CallId(u64::MAX);
 /// A command that was not typed: what the user sees, and why, in the short
 /// words that go back to the model when a tool call asked for it.
 pub(super) struct Refused {
-    notice: String,
+    pub(super) notice: String,
     pub(super) reason: &'static str,
 }
 
@@ -49,14 +56,26 @@ impl App {
     pub(super) fn sync_tools(&mut self) -> Vec<Effect> {
         let on = self.ai.tools_enabled();
         let mut effects = Vec::new();
+        if !on {
+            self.end_all_grants(github::TOOLS_ENDED);
+            effects.extend(self.end_all_write(write::TOOLS_ENDED));
+            // A dialog of `/github` or `/write` goes with them, and says so.
+            let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+            for id in ids {
+                self.withdraw_github_dialog(id, github::R_TOOLS_OFF);
+                self.withdraw_write_dialog(id, github::R_TOOLS_OFF);
+            }
+        }
         for (&id, state) in &mut self.panes {
             let Some(chat) = state.chat_mut() else {
                 continue;
             };
             chat.set_run_hint(on);
-            if !on && let Some(approval) = chat.approvals().pending().cloned() {
+            // Every one waiting: a withdrawal promotes the next queued ask.
+            while !on && let Some(approval) = chat.approvals().pending().cloned() {
                 chat.approvals_mut().withdraw(approval.id());
                 chat.set_run_target(None);
+                chat.approvals_mut().take_promoted();
                 // A tool call that waited for it is told, so it ends now.
                 effects.extend(Self::answer(
                     id,
@@ -74,6 +93,8 @@ impl App {
             // The session ends and answers its calls: no run is left to wait for.
             self.drop_run_slots(|_| true);
         }
+        // A toggle turned off, or tools turned on, may let the hint show.
+        effects.extend(self.probe_hints());
         self.dirty = true;
         effects
     }
@@ -92,7 +113,10 @@ impl App {
     /// view, so a hidden prompt is never answered blind.
     pub(super) fn has_approval(&self, id: PaneId) -> bool {
         self.approval_pending(id)
-            && !(self.list_open(id) || self.memory_view_open(id) || self.tag_editor_open(id))
+            && !(self.list_open(id)
+                || self.cost_open(id)
+                || self.memory_view_open(id)
+                || self.tag_editor_open(id))
     }
 
     /// `Prefix T`, `n` or `s` on a chat whose confirm waits: they would
@@ -118,6 +142,18 @@ impl App {
         if self.batch_pending(id) {
             return self.on_review_key(id, key, repeat);
         }
+        if self.folder_ask_pending(id) {
+            return self.on_folder_key(id, key, repeat);
+        }
+        if self.github_ask_pending(id) {
+            return self.on_github_key(id, key, repeat);
+        }
+        if self.write_ask_pending(id) {
+            return self.on_write_key(id, key, repeat);
+        }
+        if self.drive_ask_pending(id) {
+            return self.on_drive_key(id, key, repeat);
+        }
         if repeat {
             return Vec::new();
         }
@@ -128,6 +164,7 @@ impl App {
             (KeyCode::Char('y' | 'n') | KeyCode::Esc, KeyModifiers::NONE)
         );
         if answers && !self.approval_armed(id) {
+            self.ignored_key(&key, JUST_OPENED);
             return Vec::new();
         }
         match (key.code, key.modifiers) {
@@ -142,7 +179,28 @@ impl App {
                 effects.extend(self.chat_cancel_key(id));
                 effects
             }
-            _ => Vec::new(),
+            _ => {
+                self.ignored_key(&key, ANSWER_FIRST);
+                Vec::new()
+            }
+        }
+    }
+
+    /// A key a prompt swallows says so, so it is never a silent failure. A
+    /// modifier alone is no key, and a reason already on the line stays.
+    pub(super) fn ignored_key(&mut self, key: &KeyEvent, text: &str) {
+        let alone = matches!(
+            key.code,
+            KeyCode::Modifier(_) | KeyCode::CapsLock | KeyCode::ScrollLock | KeyCode::NumLock
+        );
+        self.notify_unless_busy(!alone, text);
+    }
+
+    /// Shows `text` when `wanted` and the footer says nothing else.
+    pub(super) fn notify_unless_busy(&mut self, wanted: bool, text: &str) {
+        if wanted && self.notice.is_none() {
+            self.notice = Some(text.to_owned());
+            self.dirty = true;
         }
     }
 
@@ -157,17 +215,30 @@ impl App {
         chat.set_orphan(None);
         // A tool call has its own result row, and a batch review its notice;
         // only the user's own action leaves a line behind.
-        let batch = matches!(approval.ask(), ApprovalAsk::Batch(_));
+        let batch = matches!(
+            approval.ask(),
+            ApprovalAsk::Batch(_)
+                | ApprovalAsk::Commit(_)
+                | ApprovalAsk::Folder { .. }
+                | ApprovalAsk::GithubGrant { .. }
+                | ApprovalAsk::ToolGrant { .. }
+                | ApprovalAsk::DriveGrant { .. }
+        );
         if reply == Reply::Decline && approval.call().is_none() && !batch {
             chat.push_system_line(RUN_CANCELLED.to_owned());
         }
+        self.arm_promoted(id);
         Some(approval)
     }
 
     /// `n`, Esc and Ctrl+C: ends the approval and, for a tool call, tells it
     /// why nothing was done.
     pub(super) fn decline(&mut self, id: PaneId, reason: &'static str) -> Vec<Effect> {
-        self.close_approval(id, Reply::Decline)
+        let closed = self.close_approval(id, Reply::Decline);
+        if let Some(approval) = &closed {
+            self.note_ask_denied(id, approval.ask());
+        }
+        closed
             .and_then(|approval| Self::answer(id, &approval, Decision::Denied(reason)))
             .into_iter()
             .collect()
@@ -175,7 +246,7 @@ impl App {
 
     /// Whether the prompt of chat `id` shows all of what `y` would approve in
     /// the pane as it is now: the same rows the renderer draws.
-    fn prompt_fits(&self, id: PaneId) -> bool {
+    pub(super) fn prompt_fits(&self, id: PaneId) -> bool {
         let Some(prompt) = self.approval_prompt(id) else {
             return true;
         };
@@ -190,7 +261,12 @@ impl App {
         let is_batch = (self.panes.get(&id))
             .and_then(PaneState::chat_state)
             .and_then(|chat| chat.approvals().pending())
-            .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::Batch(_)));
+            .is_some_and(|approval| {
+                matches!(
+                    approval.ask(),
+                    ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) | ApprovalAsk::Screen { .. }
+                )
+            });
         // Defence in depth: a batch is answered only by its review, behind the
         // coverage gate.
         if is_batch {
@@ -207,18 +283,20 @@ impl App {
         if is_run {
             return self.approve_run(id);
         }
-        self.close_approval(id, Reply::Approve)
+        let approval = self.close_approval(id, Reply::Approve);
+        if let Some(approval) = &approval {
+            self.hold_issue_draft(id, approval);
+        }
+        approval
             .and_then(|approval| Self::answer(id, &approval, Decision::Sent))
             .into_iter()
             .collect()
     }
 
-    /// `y` on a run: types the command into the target pane. The target is
-    /// rechecked now, not when the confirm opened: it must still be a shell
-    /// pane of this tab and not run a full-screen app, and the paste framing
-    /// follows its present state. One accept is one write; nothing ever sends
-    /// Enter. A tool call is answered `Sent` only when the command was written;
-    /// a check that fails answers it `Denied` with the reason.
+    /// `y` on a run. A model's command in a chat in `run` mode (the mode now,
+    /// not when the prompt opened) is run, with one Enter, unless
+    /// [`y_run_blocker`](Self::y_run_blocker) says why not; then, and in every
+    /// other case, it is typed into the target pane.
     fn approve_run(&mut self, id: PaneId) -> Vec<Effect> {
         let Some(target) = self
             .panes
@@ -237,17 +315,71 @@ impl App {
         let ApprovalAsk::Run { command } = approval.ask() else {
             return Vec::new();
         };
+        let call = approval.call();
+        let runs_on_y = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .is_some_and(|chat| chat.approval_mode() == ApprovalMode::Run);
+        let mut not_run = None;
+        if let Some(call) = call
+            && runs_on_y
+        {
+            match self.y_run_blocker(id, target, command) {
+                None => return self.run_approved(id, call, target, command),
+                Some(why) => not_run = Some(why),
+            }
+        }
+        self.type_run(id, call, target, command, not_run)
+    }
+
+    /// Why `y` in `run` mode cannot run `command` in `target` and types it
+    /// instead: what the write step or the settle could not handle, and the
+    /// user's own line, which the Enter would run with it. The turn's limit,
+    /// the focus and the shown tab are for runs nobody approved.
+    fn y_run_blocker(&self, chat: PaneId, target: PaneId, command: &str) -> Option<&'static str> {
+        let pty = self.panes.get(&target).and_then(PaneState::pty);
+        let blocked =
+            (self.panes.get(&chat).and_then(PaneState::chat_state)).and_then(ChatState::block_why);
+        Some(if let Some(why) = blocked {
+            why.reason()
+        } else if command.contains('\n') {
+            MULTI_LINE
+        } else if !self.cwd_readable || pty.is_none_or(|pty| pty.proc_cwd.is_none()) {
+            NO_CWD
+        } else if pty.is_some_and(|pty| pty.run.is_some()) {
+            RUNNING
+        } else if pty.is_some_and(|pty| pty.line_pending.is_some() || pty.user_dirty) {
+            HALF_TYPED
+        } else if !self.utf8_locale && !command.is_ascii() {
+            NON_UTF8
+        } else {
+            return None;
+        })
+    }
+
+    /// Types `command` into `target`. The target is rechecked now, not when
+    /// the confirm opened: it must still be a shell pane of this tab and not
+    /// run a full-screen app, and the paste framing follows its present state.
+    /// One write, with no Enter. A tool `call` is answered `Sent` only when the
+    /// command was written, a check that fails answers it `Denied` with the
+    /// reason; `not_run` says why `y` in `run` mode did not run it.
+    pub(super) fn type_run(
+        &mut self,
+        id: PaneId,
+        call: Option<(u64, CallId)>,
+        target: PaneId,
+        command: &str,
+        not_run: Option<&str>,
+    ) -> Vec<Effect> {
         let mut effects = Vec::new();
         let decision = match self.typed_bytes(target, command) {
             Ok(bytes) => {
                 let number = self.pane_number(target).unwrap_or(0);
                 if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-                    chat.push_system_line(run_sent_line(number));
+                    chat.push_system_line(run_sent_line(number, not_run));
                 }
-                // Enter is never sent: the line stays unsent, and an auto
-                // call must not land on it.
+                // The line stays unsent, and an auto call must not land on it.
                 if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
-                    pty.line_pending = Some(approval.call().map_or(BLOCK_LINE, |(_, call)| call));
+                    pty.line_pending = Some(call.map_or(BLOCK_LINE, |(_, call)| call));
                 }
                 effects.push(Effect::WritePty(target, bytes));
                 // A run being settled in this pane is no longer the only thing
@@ -260,7 +392,15 @@ impl App {
                 Decision::Denied(refused.reason)
             }
         };
-        effects.extend(Self::answer(id, &approval, decision));
+        if let Some((turn, call)) = call {
+            effects.push(Effect::ToolDecision {
+                pane: id,
+                worker: None,
+                turn,
+                call,
+                decision,
+            });
+        }
         effects
     }
 
@@ -353,7 +493,11 @@ impl App {
             self.notice = Some(CHAT_ONLY.to_owned());
             return Vec::new();
         }
-        if self.list_open(id) || self.memory_view_open(id) || self.tag_editor_open(id) {
+        if self.list_open(id)
+            || self.cost_open(id)
+            || self.memory_view_open(id)
+            || self.tag_editor_open(id)
+        {
             self.notice = Some(CONVERSATION_ONLY.to_owned());
             return Vec::new();
         }
@@ -404,7 +548,7 @@ impl App {
         (self.panes.get(&pane).and_then(PaneState::pty)).is_some_and(|pty| pty.update.is_some())
     }
 
-    fn shell_panes_in(&self, tab: &Tab) -> Vec<PaneId> {
+    pub(super) fn shell_panes_in(&self, tab: &Tab) -> Vec<PaneId> {
         tab.tree
             .leaves()
             .into_iter()
@@ -431,36 +575,140 @@ impl App {
     /// What chat `id` shows for its pending run-in-pane confirm: the target
     /// pane by its number in the tab and its cwd, and the exact command.
     pub fn approval_prompt(&self, id: PaneId) -> Option<ApprovalPrompt> {
+        let mut prompt = self.pending_prompt(id)?;
+        let waiting = self.panes.get(&id)?.chat_state()?.approvals().waiting();
+        if waiting > 0 {
+            prompt.target = format!("{} ({waiting} waiting)", prompt.target);
+        }
+        Some(prompt)
+    }
+
+    fn pending_prompt(&self, id: PaneId) -> Option<ApprovalPrompt> {
         let chat = self.panes.get(&id)?.chat_state()?;
         let armed = self.approval_armed(id);
         let approval = chat.approvals().pending()?;
-        let why = approval.why().map(str::to_owned);
+        let mut why = approval.why().map(str::to_owned);
         match approval.ask() {
             ApprovalAsk::Run { command } => {
+                // A prompt opened before the GitHub read follows the block,
+                // which `run` checks before any other reason.
+                if approval.call().is_some()
+                    && chat.approval_mode() == ApprovalMode::Run
+                    && let Some(block) = chat.block_why()
+                {
+                    why = Some(block.reason().to_owned());
+                }
+                // Only a model's command runs on `y`, only in `run` mode, and
+                // only when nothing would make `y` type it instead.
+                let runs = approval.call().is_some()
+                    && chat.approval_mode() == ApprovalMode::Run
+                    && (chat.run_target())
+                        .is_some_and(|pane| self.y_run_blocker(id, pane, command).is_none());
                 let target = chat.run_target().and_then(|pane| self.pane_label(pane));
                 Some(ApprovalPrompt {
                     target: target.unwrap_or_else(|| "target pane is gone".to_owned()),
                     command: command.clone(),
-                    keys: RUN_KEYS,
+                    keys: if runs { RUN_NOW_KEYS } else { RUN_KEYS },
                     armed,
                     why,
                     notice: None,
                 })
             }
             // The path was resolved and made safe to show before it was asked.
-            ApprovalAsk::Read { path } => Some(ApprovalPrompt {
+            ApprovalAsk::Read { path, .. } => Some(ApprovalPrompt {
                 target: "send a file's text to the engine".to_owned(),
                 command: format!("read {path}"),
+                keys: READ_KEYS,
+                armed,
+                why,
+                notice: None,
+            }),
+            // A worker's read outside its scope: the label names the worker,
+            // its kind and `engine>model`, already sanitized.
+            ApprovalAsk::WorkerRead { path, label, .. } => Some(ApprovalPrompt {
+                target: format!("worker {label}: send a file's text to the engine"),
+                command: format!("read {path}"),
+                keys: READ_KEYS,
+                armed,
+                why,
+                notice: None,
+            }),
+            // The pattern and the folder were made one clean line when asked.
+            ApprovalAsk::Search { pattern, dir, .. } => Some(ApprovalPrompt {
+                target: "send matching lines of your files to the engine".to_owned(),
+                command: format!("search {pattern} in {dir}"),
+                keys: SEARCH_KEYS,
+                armed,
+                why,
+                notice: None,
+            }),
+            // The path was made one clean line when asked.
+            ApprovalAsk::GitDiff { staged, path } => Some(ApprovalPrompt {
+                target: "send a diff of your repository to the engine".to_owned(),
+                command: format!("git diff{} {path}", if *staged { " --staged" } else { "" }),
                 keys: READ_KEYS,
                 armed,
                 why: None,
                 notice: None,
             }),
-            // The pattern and the folder were made one clean line when asked.
-            ApprovalAsk::Search { pattern, dir } => Some(ApprovalPrompt {
-                target: "send matching lines of your files to the engine".to_owned(),
-                command: format!("search {pattern} in {dir}"),
-                keys: SEARCH_KEYS,
+            // The text is exactly what is sent, already redacted by the host.
+            ApprovalAsk::Panes { text } => Some(ApprovalPrompt {
+                target: "send what your panes run to the engine".to_owned(),
+                command: text.clone(),
+                keys: PANES_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
+            // The repository was read from `origin` and checked by the host.
+            ApprovalAsk::GithubRead {
+                repo,
+                what,
+                ollama_cloud,
+            } => {
+                debug_assert!(!repo.is_empty(), "the host names the repository");
+                Some(ApprovalPrompt {
+                    target: format!(
+                        "send GitHub text of {repo} to {}",
+                        if *ollama_cloud {
+                            "an Ollama cloud model"
+                        } else {
+                            "the engine"
+                        }
+                    ),
+                    command: what.clone(),
+                    keys: PANES_KEYS,
+                    armed,
+                    why: None,
+                    notice: None,
+                })
+            }
+            // The form holds the draft whole; the title is what is named here.
+            ApprovalAsk::IssueDraft(draft) => Some(ApprovalPrompt {
+                target: format!("draft issue: {}", draft.kind.label()),
+                command: draft.title.clone(),
+                keys: ISSUE_DRAFT_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
+            ApprovalAsk::GithubGrant { repo, .. } => Some(grant_prompt(repo, armed)),
+            ApprovalAsk::ToolGrant { toggle, folder } => {
+                Some(tool_grant_prompt(*toggle, folder, armed))
+            }
+            ApprovalAsk::DriveGrant { folder } => Some(drive_grant_prompt(folder, armed)),
+            // The paths were made one clean line when asked, and the host
+            // refused an add whose paths would not show whole.
+            ApprovalAsk::GitAdd { paths, files } => Some(ApprovalPrompt {
+                target: "stage files in your repository's index".to_owned(),
+                command: match files {
+                    Some(n) => format!(
+                        "git add {paths} ({n} file{})",
+                        if *n == 1 { "" } else { "s" }
+                    ),
+                    None => format!("git add {paths}"),
+                },
+                keys: EXTERNAL_KEYS,
                 armed,
                 why: None,
                 notice: None,
@@ -505,7 +753,37 @@ impl App {
                 })
             }
             // The review view draws a batch; it has no overlay.
-            ApprovalAsk::Batch(_) => None,
+            ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) | ApprovalAsk::Screen { .. } => None,
+            // The label and the change were made one clean line when asked.
+            ApprovalAsk::Consent { label, change, .. } => Some(ApprovalPrompt {
+                target: format!("worker {label}: review this high-risk change first?"),
+                command: change.clone(),
+                keys: CONSENT_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
+            ApprovalAsk::Folder {
+                from,
+                to,
+                note,
+                checking,
+            } => Some(ApprovalPrompt {
+                target: "Change folder?".to_owned(),
+                command: if *checking {
+                    format!("checking {}…", sanitize::clean(&to.to_string_lossy()))
+                } else {
+                    format!("{from} -> {}", sanitize::clean(&to.to_string_lossy()))
+                },
+                keys: if *checking {
+                    FOLDER_CHECKING_KEYS
+                } else {
+                    FOLDER_KEYS
+                },
+                armed,
+                why: None,
+                notice: note.clone(),
+            }),
             // Server, tool and arguments are sanitized and capped when the ask
             // is made; `y` approves exactly this.
             ApprovalAsk::External { server, tool, args } => Some(ApprovalPrompt {

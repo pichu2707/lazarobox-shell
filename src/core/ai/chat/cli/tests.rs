@@ -429,6 +429,8 @@ fn the_known_flags_are_exactly_what_the_argv_builders_pass() {
     };
     for engine in ["claude", "codex", "gemini"] {
         let request = ChatRequest {
+            drive_grant: None,
+            cache: Default::default(),
             families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: engine.into(),
             model: Some("some-model".into()),
@@ -439,6 +441,8 @@ fn the_known_flags_are_exactly_what_the_argv_builders_pass() {
                 role: Role::User,
                 content: "hi".into(),
             }],
+            ollama: Default::default(),
+            github_read: false,
         };
         let Invocation::Process(job) = adapter_for(engine).unwrap().build(&request) else {
             panic!("{engine}: a process was expected");

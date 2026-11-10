@@ -16,6 +16,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::core::ai::chat::engine::ChatError;
 use crate::core::ai::parse::sanitize as one_line;
+use crate::core::ai::tools::windows::too_broad_on_drive;
 
 pub mod rpath;
 pub mod sbpl;
@@ -411,6 +412,45 @@ pub enum JailRefusal {
     NotCanonical(PathBuf),
     /// A program path the CLI could also write (or the other way round).
     Overlap(PathBuf),
+    /// The user's `$GEMINI_CLI_HOME` is not a folder the jail can open, and
+    /// why.
+    BadGeminiHome(String),
+}
+
+/// Who can write a path the trust check refused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WriteCause {
+    /// Its group (and not others).
+    Group,
+    /// Others (and not its group).
+    Others,
+    /// Both its group and others.
+    GroupAndOthers,
+}
+
+impl WriteCause {
+    /// The cause a `mode` shows (group bit `0o020`, others bit `0o002`).
+    pub fn of_mode(mode: u32) -> Self {
+        match (mode & 0o020 != 0, mode & 0o002 != 0) {
+            (true, false) | (false, false) => Self::Group,
+            (false, true) => Self::Others,
+            (true, true) => Self::GroupAndOthers,
+        }
+    }
+
+    /// The cause of several paths together.
+    pub fn union(causes: impl IntoIterator<Item = Self>) -> Self {
+        let (mut group, mut others) = (false, false);
+        for cause in causes {
+            group |= cause != Self::Others;
+            others |= cause != Self::Group;
+        }
+        match (group, others) {
+            (_, false) => Self::Group,
+            (false, true) => Self::Others,
+            (true, true) => Self::GroupAndOthers,
+        }
+    }
 }
 
 /// Why an interpreter is not trusted.
@@ -418,9 +458,20 @@ pub enum JailRefusal {
 pub enum Untrusted {
     /// It lives under a scratch folder (see [`SCRATCH`]).
     Scratch,
-    /// The file or folder at `path` (the real one that failed the check) is
-    /// writable by group or others; `yours` says the user owns it.
-    Writable { path: PathBuf, yours: bool },
+    /// Every real file or folder in `paths` (the folder first) failed the
+    /// check: `cause` says who can write them; `foreign` are those the user does
+    /// not own (a subset of `paths`), which only their owner can fix.
+    Writable {
+        paths: Vec<PathBuf>,
+        foreign: Vec<PathBuf>,
+        cause: WriteCause,
+    },
+    /// The file or folder at `path` could not be inspected (`kind` says why):
+    /// it is not known to be writable, only not known to be safe.
+    Unchecked {
+        path: PathBuf,
+        kind: std::io::ErrorKind,
+    },
     /// Its real path cannot be resolved.
     Unresolvable,
 }
@@ -442,6 +493,20 @@ fn quoted(path: &Path) -> Option<String> {
     let text = path.to_str()?;
     (one_line(text) == text).then(|| format!("'{}'", text.replace('\'', r"'\''")))
 }
+
+/// `path` as one shell word to paste into a command: `~/'rest'` under `home`
+/// (the `~` must stay unquoted to expand), else [`quoted`] whole. `None` when
+/// it cannot be exact.
+fn shell_word(path: &Path, home: Option<&Path>) -> Option<String> {
+    match home.and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => Some("~".to_owned()),
+        Some(rest) => quoted(rest).map(|rest| format!("~/{rest}")),
+        None => quoted(path),
+    }
+}
+
+/// Said before the `chmod` (the command stays last, to paste) when group write is the only cause (issue #526).
+const UMASK_HINT: &str = "(install with umask 022 to keep it)";
 
 /// Longest path a menu row shows whole.
 const BRIEF_CAP: usize = 24;
@@ -472,7 +537,23 @@ impl JailRefusal {
     /// The sentence for the chat: what refused and what to do. Paths are
     /// shown with `~` for `home` and sanitized.
     pub fn hint(&self, home: Option<&Path>) -> String {
+        self.hint_for(home, None)
+    }
+
+    /// [`Self::hint`] naming the CLI and how it is installed, as `(cli,
+    /// layout)`. The layout is text for the person: no rule reads it.
+    pub fn hint_for(&self, home: Option<&Path>, layout: Option<(&str, &str)>) -> String {
         let at = |p: &Path| shown(p, home);
+        if let (Self::Overlap(path), Some((cli, how))) = (self, layout) {
+            return format!(
+                "{cli} ({how}) is installed in a layout the jail cannot isolate: {} would be \
+                 both run and written; reinstall it with the official installer, npm or Homebrew",
+                at(path)
+            );
+        }
+        if let Some((cli, how)) = layout {
+            return format!("{cli} ({how}): {}", self.hint(home));
+        }
         match self {
             Self::Unsupported(off) => off.text(),
             Self::NoHome => {
@@ -516,25 +597,91 @@ impl JailRefusal {
                 at(path)
             ),
             Self::UntrustedInterpreter {
-                path,
-                why: Untrusted::Writable { path: bad, yours },
+                why: Untrusted::Unchecked { path: bad, kind },
+                ..
             } => {
-                let head = if bad == path {
-                    format!("{} is writable by group or others", at(bad))
-                } else {
-                    format!(
-                        "{} is writable by group or others, so {} is not trusted",
-                        at(bad),
-                        at(path)
-                    )
+                let reason = match kind {
+                    std::io::ErrorKind::PermissionDenied => "permission denied",
+                    std::io::ErrorKind::NotFound => "not found",
+                    _ => "input/output error",
                 };
-                if !yours {
-                    format!("{head}; it is not yours, so its owner must fix it (sudo)")
+                format!("cannot check {}: {reason}", at(bad))
+            }
+            Self::UntrustedInterpreter {
+                path,
+                why:
+                    Untrusted::Writable {
+                        paths,
+                        foreign,
+                        cause,
+                    },
+            } => {
+                let who = match cause {
+                    WriteCause::Group => "its group",
+                    WriteCause::Others => "others",
+                    WriteCause::GroupAndOthers => "its group or others",
+                };
+                let names: Vec<String> = paths.iter().map(|p| at(p)).collect();
+                let list = match names.as_slice() {
+                    [one] => format!("{one} is"),
+                    [init @ .., last] => format!("{} and {last} are", init.join(", ")),
+                    [] => String::new(),
+                };
+                let head = if paths.contains(path) {
+                    format!("{list} writable by {who}")
                 } else {
-                    match quoted(bad) {
-                        Some(arg) => format!("{head}; run: chmod go-w -- {arg}"),
-                        None => format!("{head}; remove the group and other write permissions"),
+                    format!("{list} writable by {who}, so {} is not trusted", at(path))
+                };
+                let flags = match cause {
+                    WriteCause::Group => "g-w",
+                    WriteCause::Others => "o-w",
+                    WriteCause::GroupAndOthers => "go-w",
+                };
+                // Not the user's: only the owner can fix them.
+                let theirs = |foreign: &[PathBuf]| {
+                    let names: Vec<String> = foreign.iter().map(|p| at(p)).collect();
+                    match names.as_slice() {
+                        [one] => format!("{one} is not yours, so its owner must fix it (sudo)"),
+                        [init @ .., last] => format!(
+                            "{} and {last} are not yours, so their owner must fix them (sudo)",
+                            init.join(", ")
+                        ),
+                        [] => String::new(),
                     }
+                };
+                let mine: Vec<&PathBuf> = paths.iter().filter(|p| !foreign.contains(p)).collect();
+                if mine.is_empty() {
+                    return match paths.len() {
+                        1 => format!("{head}; it is not yours, so its owner must fix it (sudo)"),
+                        _ => format!(
+                            "{head}; they are not yours, so their owner must fix them (sudo)"
+                        ),
+                    };
+                }
+                let words: Option<Vec<String>> = mine.iter().map(|p| shell_word(p, home)).collect();
+                let fix = match words {
+                    // Group write alone, all fixable by the user: the usual
+                    // `umask 002` that `cargo install` obeys. The `chmod` stays last.
+                    Some(words) if *cause == WriteCause::Group && foreign.is_empty() => {
+                        return format!(
+                            "{head} {UMASK_HINT}; run: chmod {flags} {}",
+                            words.join(" ")
+                        );
+                    }
+                    Some(words) => format!("run: chmod {flags} {}", words.join(" ")),
+                    None => match cause {
+                        WriteCause::Group => "remove the group write permission",
+                        WriteCause::Others => "remove the write permission of others",
+                        WriteCause::GroupAndOthers => {
+                            "remove the group and other write permissions"
+                        }
+                    }
+                    .to_owned(),
+                };
+                if foreign.is_empty() {
+                    format!("{head}; {fix}")
+                } else {
+                    format!("{head}; {fix}; {}", theirs(foreign))
                 }
             }
             Self::RootTooBroad(path) => format!(
@@ -546,6 +693,7 @@ impl JailRefusal {
                 "{} would be both run and written by the jail; keep the CLI and its state in separate folders",
                 at(path)
             ),
+            Self::BadGeminiHome(why) => format!("{}; fix or unset it", one_line(why)),
         }
     }
 
@@ -563,6 +711,7 @@ impl JailRefusal {
             Self::RootTooBroad(path) => format!("{} too broad", brief(path, home)),
             Self::NotCanonical(path) => format!("{} not canonical", brief(path, home)),
             Self::Overlap(path) => format!("{} is run and written", brief(path, home)),
+            Self::BadGeminiHome(_) => "bad $GEMINI_CLI_HOME".to_owned(),
         }
     }
 }
@@ -994,6 +1143,9 @@ pub struct CliLayout {
     pub home: PathBuf,
     /// `$CODEX_HOME`, when set (codex only).
     pub codex_home: Option<PathBuf>,
+    /// `$GEMINI_CLI_HOME`, when set (gemini only): the folder that holds
+    /// `.gemini`.
+    pub gemini_home: Option<PathBuf>,
     /// The canonical CLI path.
     pub binary: PathBuf,
     /// The canonical interpreter file of a script CLI.
@@ -1143,6 +1295,7 @@ pub fn jail_spec_for(
     let given = [&layout.home, &layout.binary, &layout.cwd, &layout.tmp]
         .into_iter()
         .chain(&layout.codex_home)
+        .chain(&layout.gemini_home)
         .chain(&layout.interpreter)
         .chain(&layout.loaders)
         .chain(&layout.lib_dirs)
@@ -1193,7 +1346,14 @@ pub fn jail_spec_for(
                 .unwrap_or_else(|| layout.home.join(".codex")),
             None,
         ),
-        Cli::Gemini => (layout.home.join(".gemini"), None),
+        Cli::Gemini => (
+            layout
+                .gemini_home
+                .as_ref()
+                .unwrap_or(&layout.home)
+                .join(".gemini"),
+            None,
+        ),
     };
     let state = resolved(state);
     // Only a real folder inside the state dir can be carved out: a link, or
@@ -1357,6 +1517,19 @@ impl JailSpec {
     /// an `rwx` root is refused until the Seatbelt renderer grants toolchains.
     /// `homes` holds both spellings of `$HOME`, for the broad-place rule.
     pub fn check_exec(&self, os: Os, homes: &[&Path]) -> Result<(), ExecFault> {
+        self.check_exec_with_drives(os, homes, &[])
+    }
+
+    /// [`check_exec`](Self::check_exec) under WSL: `drives` are the Windows
+    /// drive mounts, and a root on one of them is also refused when it is a
+    /// broad or system drive folder (openspec `wsl-drive-access` D12). Pure:
+    /// the caller reads the mounts.
+    pub fn check_exec_with_drives(
+        &self,
+        os: Os,
+        homes: &[&Path],
+        drives: &[PathBuf],
+    ) -> Result<(), ExecFault> {
         let Some(root) = self.rwx.first() else {
             return Ok(());
         };
@@ -1369,7 +1542,7 @@ impl JailSpec {
         if !is_canonical_form(root) {
             return Err(ExecFault::NotCanonical(root.clone()));
         }
-        if root.parent().is_none() || broad_place(root, homes) {
+        if root.parent().is_none() || broad_place(root, homes) || too_broad_on_drive(root, drives) {
             return Err(ExecFault::TooBroad(root.clone()));
         }
         if let Some((rx, rw)) = writable_executable(self, os) {

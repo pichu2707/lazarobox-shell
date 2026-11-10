@@ -6,14 +6,18 @@ use std::path::{Path, PathBuf};
 
 pub mod catalog;
 pub mod chat;
+pub mod codex_install;
 pub mod config;
 pub mod gguf;
 pub mod hf;
 pub mod http;
 pub mod install;
 pub mod jail;
+pub mod marks;
 pub mod memory;
 pub mod menu;
+pub mod ollama_lib;
+pub mod orchestra;
 pub mod parse;
 pub mod picker;
 pub mod sanitize;
@@ -144,6 +148,46 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
+/// How long Ollama keeps a model loaded after a turn (`keep_alive`), as a
+/// duration text such as `"30m"`: a number of seconds `n` is kept as `"<n>s"`,
+/// which Ollama reads the same. A negative value keeps the model loaded, 0
+/// unloads it at once. A boxed text keeps every chat request small.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct KeepAlive(Box<str>);
+
+impl KeepAlive {
+    /// The duration text Ollama gets.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The value of the request body.
+    pub fn json(&self) -> serde_json::Value {
+        self.as_str().into()
+    }
+}
+
+impl From<&str> for KeepAlive {
+    fn from(text: &str) -> Self {
+        Self(text.into())
+    }
+}
+
+/// What Ollama gets as `keep_alive` when `[ai.servers.ollama] keep_alive` is
+/// unset: its own default of five minutes unloads the model between two turns
+/// of a chat that is read slowly.
+pub const DEFAULT_KEEP_ALIVE: &str = "30m";
+
+/// The prompt-cache options of the local servers (#515), from
+/// `[ai.servers.ollama] keep_alive` and `[ai.servers.llamacpp]
+/// cache_prompt`. Unset, `cache_prompt` sends nothing and llama-server keeps
+/// its default; an unset `keep_alive` sends [`DEFAULT_KEEP_ALIVE`] to Ollama.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct CacheOptions {
+    pub keep_alive: Option<KeepAlive>,
+    pub cache_prompt: Option<bool>,
+}
+
 /// The loopback ports of the server engines: each catalog port, unless
 /// `[ai.servers.<id>] port` replaced it. Detection and chat read the same
 /// value, so an engine is used where it was detected. The host is always
@@ -243,6 +287,10 @@ pub struct Diagnostics {
     /// Why this CLI would run without its jail here (`None`: it is jailed,
     /// or it has no jail).
     pub jail: Option<String>,
+    /// The long form of `jail` (what to do about it), for `y` and the chat.
+    pub jail_full: Option<String>,
+    /// How codex is installed. For messages only: no rule reads it.
+    pub install: Option<codex_install::CodexInstall>,
 }
 
 /// One finished run. An empty `Detection` means the run failed.
@@ -261,9 +309,80 @@ pub struct Detection {
     /// The context window in tokens of the engines that report one (a
     /// running llama-server), by engine id.
     pub windows: Vec<(&'static str, usize)>,
+    /// Size, digest and tool support of the models an engine lists (Ollama
+    /// today), in listing order.
+    pub model_facts: Vec<ModelFacts>,
+    /// The size in bytes Ollama lists for each model, by listed name. Models
+    /// share layers, so it is only an upper bound of what a delete frees.
+    pub ollama_sizes: Vec<(String, u64)>,
+}
+
+/// What detection knows about one listed model.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ModelFacts {
+    pub engine: &'static str,
+    pub name: String,
+    /// Parameters, from the listing's `parameter_size`; `None` when missing
+    /// or unparsable.
+    pub params: Option<u64>,
+    /// The listing's digest: the key of the tool-support cache.
+    pub digest: Option<String>,
+    pub tools: marks::Tools,
+    /// The model's own maximum context window in tokens, from the same
+    /// `POST /api/show` reply as `tools`; `None` when the probe did not say.
+    pub window: Option<usize>,
 }
 
 impl Detection {
+    /// The size Ollama lists for model `name`, with the same `:latest` rule
+    /// as [`catalog::same_model`]; `None` when it listed none.
+    pub fn ollama_size(&self, name: &str) -> Option<u64> {
+        self.ollama_sizes
+            .iter()
+            .find(|(listed, _)| catalog::same_model("ollama", listed, name))
+            .map(|(_, size)| *size)
+    }
+
+    /// The facts of model `name` of engine `engine`.
+    pub fn facts(&self, engine: &str, name: &str) -> Option<&ModelFacts> {
+        self.model_facts
+            .iter()
+            .find(|f| f.engine == engine && f.name == name)
+    }
+
+    /// The maximum context window of model `name` of engine `engine`, with
+    /// the same `:latest` rule as [`catalog::same_model`].
+    pub fn model_window(&self, engine: &str, name: &str) -> Option<usize> {
+        self.model_facts
+            .iter()
+            .find(|f| f.engine == engine && catalog::same_model(engine, &f.name, name))
+            .and_then(|f| f.window)
+    }
+
+    /// The known windows of the Ollama models, by listed name.
+    pub fn ollama_windows(&self) -> Vec<(String, usize)> {
+        self.model_facts
+            .iter()
+            .filter(|f| f.engine == "ollama")
+            .filter_map(|f| Some((f.name.clone(), f.window?)))
+            .collect()
+    }
+
+    /// Gives a listed Ollama model the window it had in `before` when this
+    /// run could not read one (a probe that failed or timed out), so a flaky
+    /// run never turns a known window into an unknown one and `num_ctx` stays
+    /// the same. A new answer wins, and a model no longer listed is not kept.
+    pub fn carry_windows(&mut self, before: &[(String, usize)]) {
+        for facts in self.model_facts.iter_mut().filter(|f| f.engine == "ollama") {
+            if facts.window.is_none() {
+                facts.window = before
+                    .iter()
+                    .find(|(name, _)| catalog::same_model("ollama", name, &facts.name))
+                    .map(|(_, window)| *window);
+            }
+        }
+    }
+
     /// The context window of engine `id` in tokens, when it reported one.
     pub fn window(&self, id: &str) -> Option<usize> {
         self.windows
@@ -291,6 +410,10 @@ pub enum Probe {
         /// A few words on why the CLI cannot be jailed here; `None` when it
         /// can, or when the CLI has no jail.
         jail: Option<String>,
+        /// The long form of `jail`, naming the layout and what to do.
+        jail_full: Option<String>,
+        /// How codex is installed (messages only).
+        install: Option<codex_install::CodexInstall>,
     },
 }
 
@@ -313,16 +436,44 @@ pub fn reduce(probes: &[Probe]) -> Detection {
                         stdout,
                         listing,
                         jail,
+                        jail_full,
+                        install,
                         ..
                     }),
                     Kind::Cli,
-                ) => cli_state(engine.id, stdout.as_deref(), listing.as_ref(), jail.clone()),
+                ) => cli_state(
+                    engine.id,
+                    stdout.as_deref(),
+                    listing.as_ref(),
+                    Diagnostics {
+                        models: None,
+                        jail: jail.clone(),
+                        jail_full: jail_full.clone(),
+                        install: *install,
+                    },
+                ),
                 _ => bare(engine.id, Status::NotInstalled),
             }
         })
         .collect();
+    let tags = probes.iter().find_map(|probe| match probe {
+        Probe::Server {
+            id: "ollama",
+            reply: Some((200, body)),
+            ..
+        } if body.len() <= http::MAX_BODY => Some(body),
+        _ => None,
+    });
+    let model_facts = tags
+        .and_then(|body| parse::ollama_tag_facts(body))
+        .unwrap_or_default();
+    let ollama_sizes = tags
+        .and_then(|body| parse::ollama_tag_sizes(body))
+        .unwrap_or_default();
     Detection {
         engines,
+        model_facts,
+        ollama_sizes,
         ..Default::default()
     }
 }
@@ -340,7 +491,7 @@ fn cli_state(
     id: &'static str,
     stdout: Option<&[u8]>,
     listing: Option<&Result<Vec<u8>, String>>,
-    jail: Option<String>,
+    notes: Diagnostics,
 ) -> EngineState {
     let (labels, note) = match (id, listing) {
         ("codex", Some(Ok(raw))) => {
@@ -360,7 +511,10 @@ fn cli_state(
         models,
         model_labels: labels,
         version: stdout.and_then(parse::parse_version),
-        diagnostics: Diagnostics { models: note, jail },
+        diagnostics: Diagnostics {
+            models: note,
+            ..notes
+        },
         ..bare(id, Status::Available)
     }
 }
@@ -406,6 +560,21 @@ fn server_state(
 /// The row text of a detected engine that has no chat adapter yet.
 const DETECTED_ONLY: &str = "detected · not in chat yet";
 
+/// Start of the row text of a CLI the jail will refuse to start.
+pub const REFUSED: &str = "refused · ";
+
+/// Whether `id` is a CLI that needs its jail and the jail will not hold it
+/// here (its layout, or the system): chat refuses to start it. Such an
+/// engine is never shown as available or offered as a working choice.
+pub fn is_refused(detection: Option<&Detection>, id: &str) -> bool {
+    chat::engine::JAIL_REQUIRED.contains(&id)
+        && detection.is_some_and(|d| {
+            d.engines.iter().any(|s| {
+                s.id == id && s.status == Status::Available && s.diagnostics.jail.is_some()
+            })
+        })
+}
+
 /// Display text of an engine: `detecting…` before the first result,
 /// `not detected` for an id outside the catalog, `unknown` when the run
 /// produced nothing for it.
@@ -442,8 +611,19 @@ pub fn status_text(detection: Option<&Detection>, id: &str) -> String {
                 );
             }
             match &state.diagnostics.jail {
+                // A CLI that does not run without its jail is refused, not
+                // available: the chat would fail to start it.
+                Some(why) if is_refused(Some(detection), id) => format!("{REFUSED}{why}"),
                 Some(why) => format!("available · no jail: {why}"),
-                None => format!("available · {version}"),
+                // The layout is a note for the person; `Other` has no word.
+                None => match state
+                    .diagnostics
+                    .install
+                    .and_then(codex_install::CodexInstall::label)
+                {
+                    Some(how) => format!("available · {version} · {how}"),
+                    None => format!("available · {version}"),
+                },
             }
         }
     }
@@ -580,6 +760,87 @@ mod tests {
     }
 
     const OLLAMA_OK: &str = r#"{"models":[{"name":"llama3:8b"},{"name":"qwen2.5:7b"}]}"#;
+    fn facts_with(name: &str, window: Option<usize>) -> ModelFacts {
+        ModelFacts {
+            engine: "ollama",
+            name: name.into(),
+            params: None,
+            digest: None,
+            tools: marks::Tools::Unknown,
+            window,
+        }
+    }
+
+    #[test]
+    fn carrying_windows_fills_only_the_listed_models_that_lost_theirs() {
+        let mut next = Detection {
+            model_facts: vec![
+                facts_with("a:1b", None),
+                facts_with("b:1b", Some(4_096)),
+                facts_with("c:1b", None),
+                facts_with("d", None),
+            ],
+            ..Default::default()
+        };
+        let before = [
+            ("a:1b".to_owned(), 8_192),
+            ("b:1b".to_owned(), 2_048),
+            ("gone:1b".to_owned(), 1_024),
+            ("d:latest".to_owned(), 512),
+        ];
+        next.carry_windows(&before);
+        let got: Vec<Option<usize>> = next.model_facts.iter().map(|f| f.window).collect();
+        // a keeps its old one, b keeps its new answer, c had none, d matches
+        // `:latest`, and the unlisted model is not added back.
+        assert_eq!(got, [Some(8_192), Some(4_096), None, Some(512)]);
+    }
+
+    #[test]
+    fn reduce_leaves_facts_empty_without_a_probe() {
+        assert!(reduce(&[]).model_facts.is_empty());
+    }
+
+    #[test]
+    fn reduce_fills_the_facts_of_the_ollama_models() {
+        let body = include_str!("../../../tests/fixtures/ollama/api-tags.json");
+        let d = reduce(&[server("ollama", true, Some((200, body)))]);
+        assert_eq!(d.model_facts.len(), 3);
+        let f = d.facts("ollama", "deepseek-r1:70b").unwrap();
+        assert_eq!(f.params, Some(70_600_000_000));
+        assert_eq!(f.tools, marks::Tools::Unknown);
+        assert_eq!(d.facts("ollama", "nope"), None);
+        assert_eq!(d.facts("lmstudio", "deepseek-r1:70b"), None);
+        // The engine state is what it was before facts existed.
+        assert_eq!(
+            get(&d, "ollama").unwrap().models,
+            [
+                "deepseek-r1:70b",
+                "llama3.2:3b-ctx",
+                "nomic-embed-text:latest"
+            ]
+        );
+    }
+
+    // The listing's size reaches the detection, tag-less names included.
+    #[test]
+    fn reduce_keeps_the_ollama_sizes_and_they_are_found_by_model_name() {
+        let body = r#"{"models":[{"name":"qwen3:latest","size":5},{"name":"b:1"}]}"#;
+        let d = reduce(&[server("ollama", true, Some((200, body)))]);
+        assert_eq!(d.ollama_sizes, vec![("qwen3:latest".to_owned(), 5)]);
+        assert_eq!(d.ollama_size("qwen3"), Some(5));
+        assert_eq!(d.ollama_size("qwen3:latest"), Some(5));
+        assert_eq!(d.ollama_size("b:1"), None);
+        assert_eq!(d.model_facts.len(), 2, "the facts are unchanged");
+    }
+
+    #[test]
+    fn reduce_gives_no_facts_for_a_foreign_ollama_reply_or_other_engines() {
+        let d = reduce(&[server("ollama", true, Some((200, "{}")))]);
+        assert!(d.model_facts.is_empty());
+        let d = reduce(&[server("llamacpp", true, Some((200, LLAMA_OK)))]);
+        assert!(d.model_facts.is_empty());
+    }
+
     const LLAMA_OK: &str = r#"{"data":[{"id":"m.gguf","owned_by":"llamacpp"}]}"#;
 
     fn server(id: &'static str, on_path: bool, reply: Option<(u16, &str)>) -> Probe {
@@ -871,6 +1132,8 @@ mod tests {
             stdout: stdout.map(|s| s.as_bytes().to_vec()),
             listing: None,
             jail: None,
+            jail_full: None,
+            install: None,
         }
     }
 
@@ -897,6 +1160,8 @@ mod tests {
             stdout: Some(b"codex-cli 0.162.1\n".to_vec()),
             listing: Some(Ok(raw.as_bytes().to_vec())),
             jail: None,
+            jail_full: None,
+            install: None,
         }]);
         let codex = get(&d, "codex").unwrap();
         assert_eq!(codex.status, Status::Available);
@@ -918,6 +1183,8 @@ mod tests {
             stdout: None,
             listing: listing.map(|l| l.map(<[u8]>::to_vec).map_err(str::to_owned)),
             jail: None,
+            jail_full: None,
+            install: None,
         }]);
         get(&d, "codex").unwrap()
     }
@@ -956,6 +1223,8 @@ mod tests {
                 br#"{"models":[{"slug":"x","visibility":"list"}]}"#.to_vec()
             )),
             jail: None,
+            jail_full: None,
+            install: None,
         }]);
         assert_eq!(
             get(&d, "claude"),
@@ -1035,24 +1304,60 @@ mod tests {
     }
 
     #[test]
-    fn a_cli_without_a_jail_puts_the_reason_where_a_narrow_row_keeps_it() {
-        let mut codex = state_of("codex", Some("codex-cli 0.130.0"));
-        codex.diagnostics.jail = Some("Landlock ABI 2, needs 3+".to_owned());
+    fn a_claude_without_a_jail_runs_bare_and_keeps_the_reason_first() {
+        let mut claude = state_of("claude", Some("2.1.300"));
+        claude.diagnostics.jail = Some("Landlock ABI 2, needs 3+".to_owned());
         let d = Detection {
-            engines: vec![codex],
+            engines: vec![claude],
             ..Default::default()
         };
         assert_eq!(
-            text(&d, "codex"),
+            text(&d, "claude"),
             "available · no jail: Landlock ABI 2, needs 3+"
         );
-        let mut unknown = state_of("gemini", None);
-        unknown.diagnostics.jail = Some("~/.nvm too broad".to_owned());
-        let d = Detection {
-            engines: vec![unknown],
-            ..Default::default()
+        assert!(!is_refused(Some(&d), "claude"));
+    }
+
+    #[test]
+    fn a_cli_that_needs_its_jail_is_refused_not_available() {
+        for (id, why) in [
+            ("codex", "…/bin is run and written"),
+            ("gemini", "~/.nvm too broad"),
+            ("codex", "Landlock ABI 2, needs 3+"),
+        ] {
+            let mut cli = state_of(id, Some("1.0.0"));
+            cli.diagnostics.jail = Some(why.to_owned());
+            let d = Detection {
+                engines: vec![cli],
+                ..Default::default()
+            };
+            assert_eq!(text(&d, id), format!("refused · {why}"));
+            assert!(is_refused(Some(&d), id));
+        }
+        assert!(!is_refused(None, "codex"));
+    }
+
+    #[test]
+    fn the_install_layout_follows_the_version_and_other_says_nothing() {
+        use codex_install::CodexInstall::{Homebrew, Other, Standalone};
+        let with = |install| {
+            let mut codex = state_of("codex", Some("codex-cli 0.153.4"));
+            codex.version = Some("0.153.4".to_owned());
+            codex.diagnostics.install = Some(install);
+            Detection {
+                engines: vec![codex],
+                ..Default::default()
+            }
         };
-        assert_eq!(text(&d, "gemini"), "available · no jail: ~/.nvm too broad");
+        assert_eq!(
+            text(&with(Standalone), "codex"),
+            "available · 0.153.4 · standalone"
+        );
+        assert_eq!(
+            text(&with(Homebrew), "codex"),
+            "available · 0.153.4 · homebrew"
+        );
+        assert_eq!(text(&with(Other), "codex"), "available · 0.153.4");
     }
 
     fn state_of(id: &'static str, version: Option<&str>) -> EngineState {
@@ -1070,6 +1375,8 @@ mod tests {
             stdout: None,
             listing: None,
             jail: jail.map(str::to_owned),
+            jail_full: None,
+            install: None,
         };
         let d = reduce(&[probe("codex", Some("needs Linux")), probe("claude", None)]);
         assert_eq!(

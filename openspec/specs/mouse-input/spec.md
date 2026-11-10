@@ -57,12 +57,24 @@ On shutdown the disable sequence `\x1b[?1006l\x1b[?1000l` MUST be written on eve
 - THEN Kitty native selection works
 
 ### Requirement: Events handled
-Only vertical wheel events (wheel up, wheel down) and a left press in MENU on a link line MUST be handled. In MENU, a left press on the line of the Hugging Face token field that shows `https://huggingface.co/settings/tokens/new?tokenType=read` MUST do what Ctrl+O does there (config-menu, Hugging Face account row); a left press anywhere else in MENU MUST do nothing, and MUST NOT move the selection. The press is found on the row where the popup draws it: the renderer and the hit-test MUST share one layout, and on the one-line fallback nothing is clickable. Every other mouse event (a left press outside MENU, another button, release, drag, motion, horizontal wheel) MUST be ignored: no effect, no state change, nothing forwarded to any PTY. Modifier keys held during a wheel event MUST NOT change the step; they are encoded as modifier bits only when the wheel is forwarded to a child (see Wheel encoding). A wheel event MUST NEVER change the focused pane, the active tab or the input mode. Wheel events MUST be ignored in every input mode except TERMINAL and COPY: in PREFIX, a pending group, RESIZE, MENU and every confirmation nothing happens and the state is unchanged.
+Only vertical wheel events (wheel up, wheel down), a left press in MENU on a link line, and a left click on a link a pane shows MUST be handled. In MENU, a left press on the line of the Hugging Face token field that shows `https://huggingface.co/settings/tokens/new?tokenType=read` MUST do what Ctrl+O does there (config-menu, Hugging Face account row); a left press anywhere else in MENU MUST do nothing, and MUST NOT move the selection. The press is found on the row where the popup draws it: the renderer and the hit-test MUST share one layout, and on the one-line fallback nothing is clickable. Outside MENU, a left press followed by a release on the same cell, on a link a pane shows, MUST open that link (pane-links). Every other mouse event (a left press or release that is not such a click, another button, drag, motion, horizontal wheel) MUST be ignored: no effect, nothing forwarded to any PTY. Modifier keys held during a wheel event MUST NOT change the step; they are encoded as modifier bits only when the wheel is forwarded to a child (see Wheel encoding). A wheel event MUST NEVER change the focused pane, the active tab or the input mode. Wheel events MUST be ignored in every input mode except TERMINAL and COPY: in PREFIX, a pending group, RESIZE, MENU and every confirmation nothing happens and the state is unchanged.
 
 #### Scenario: Non-wheel events ignored
 - GIVEN TERMINAL with a shell pane under the pointer
-- WHEN a left press, a release, a drag and a motion event arrive
+- WHEN a left press, a release, a drag and a motion event arrive away from any link
 - THEN no effect is emitted and no state changes
+
+#### Scenario: A click opens the link under it [auto]
+- GIVEN TERMINAL, COPY or chat COPY, with `mouse` on, and an `http` or `https` link drawn in a pane under the pointer
+- WHEN the left button is pressed and released on the same cell
+- THEN the link is opened in the browser and the notice names it
+- AND a link that wraps opens whole from any of its rows
+- AND with no opener, or when the browser does not open, the link is copied and the notice says `The browser did not open: link copied`
+
+#### Scenario: A press or a drag opens nothing [auto]
+- GIVEN a link drawn in a pane
+- WHEN the left button is pressed, or released on another cell than the press
+- THEN nothing is opened
 
 #### Scenario: A left press on the token link opens it [auto]
 - GIVEN MENU with the Hugging Face token field open, on a host with an opener

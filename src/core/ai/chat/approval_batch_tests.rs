@@ -21,6 +21,7 @@ const FREE: AutoCtx = AutoCtx {
     paused: false,
     dirty: false,
     utf8: true,
+    github_read: None,
 };
 
 fn batch() -> ApprovalAsk {
@@ -134,10 +135,11 @@ fn others() -> Vec<ApprovalAsk> {
         ApprovalAsk::Run {
             command: "ls".into(),
         },
-        ApprovalAsk::Read { path: "~/a".into() },
+        ApprovalAsk::read("~/a"),
         ApprovalAsk::Search {
             pattern: "x".into(),
             dir: ".".into(),
+            reach: crate::core::ai::chat::approval::Reach::Other,
         },
         ApprovalAsk::External {
             server: "s".into(),
@@ -148,16 +150,16 @@ fn others() -> Vec<ApprovalAsk> {
 }
 
 #[test]
-fn every_ask_but_a_batch_keeps_the_short_delay() {
-    assert_eq!(ASK_ARM_DELAY, Duration::from_millis(400));
+fn every_ask_but_a_batch_keeps_the_ask_delay() {
+    assert_eq!(ASK_ARM_DELAY, Duration::from_millis(800));
     for ask in others() {
         assert_eq!(ask.arm_delay(), ASK_ARM_DELAY, "{ask:?}");
     }
 }
 
 #[test]
-fn a_batch_waits_the_longer_review_delay() {
+fn a_batch_waits_the_review_delay() {
     assert_eq!(batch().arm_delay(), Duration::from_millis(800));
     assert_eq!(batch().arm_delay(), review::ARM_DELAY);
-    assert!(batch().arm_delay() > ASK_ARM_DELAY);
+    assert!(batch().arm_delay() >= ASK_ARM_DELAY);
 }

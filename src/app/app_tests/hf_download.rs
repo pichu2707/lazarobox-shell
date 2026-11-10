@@ -77,7 +77,10 @@ pub(super) fn at_llamacpp() -> App {
     goto_row(&mut a, "chat");
     a.update(enter());
     goto_pick(&mut a, "llamacpp");
+    let_go();
     a.update(enter());
+    // Whatever key comes next is a new press, not this Enter still held.
+    let_go();
     a
 }
 
@@ -141,6 +144,7 @@ fn start_download_of(a: &mut App, listing: Listing) -> Vec<Effect> {
         Ask::Files("o/a".to_owned()),
         Ok(Answer::Files(Box::new(listing))),
     )));
+    let_go();
     effects.extend(a.update(enter()));
     effects.extend(a.update(key('y')));
     effects
@@ -270,16 +274,18 @@ fn a_menu_opened_during_a_download_shows_its_progress() {
         done: GB,
         total: 4 * GB,
     });
-    // Close the menu and open it again.
-    a.update(esc());
-    a.update(esc());
-    a.update(esc());
+    // Close the menu and open it again, one deliberate press at a time.
+    for _ in 0..3 {
+        let_go();
+        a.update(esc());
+    }
     assert!(a.menu().is_none());
     a.update(ctrl_space());
     a.update(key('m'));
     goto_row(&mut a, "chat");
     a.update(enter());
     goto_pick(&mut a, "llamacpp");
+    let_go();
     a.update(enter());
     goto_pick(&mut a, "↓ 25% a-Q4_K_M.gguf · apache-2.0");
 }

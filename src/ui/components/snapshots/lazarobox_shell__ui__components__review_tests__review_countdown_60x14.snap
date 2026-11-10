@@ -15,4 +15,4 @@ expression: "flat(&draw(&mut chat, at(400), 60, 14))"
 +row 27
 +row 28
 +row 29
-n reject · y locked · ↑↓ PgUp PgDn scroll
+n reject · y after scrolling · ↑↓ PgUp PgDn scroll

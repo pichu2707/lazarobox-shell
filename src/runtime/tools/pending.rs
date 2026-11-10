@@ -24,6 +24,11 @@ impl Pending {
         Waiting(self.clone())
     }
 
+    /// Whether `other` is this very count (a clone of it).
+    pub fn same(&self, other: &Pending) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// How many calls wait now.
     pub fn count(&self) -> usize {
         *self.0.borrow()

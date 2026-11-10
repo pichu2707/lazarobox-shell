@@ -22,7 +22,7 @@ use tokio::{
     time::timeout,
 };
 
-use super::{tests::done, *};
+use super::{ollama::OLLAMA_NO_TOOLS_NOTICE, tests::done, *};
 use crate::{
     core::ai::{
         chat::{
@@ -238,10 +238,16 @@ pub(super) fn ask(lab: &Lab, tools: bool) -> ChatRequest {
 }
 
 pub(super) async fn next(rx: &mut mpsc::Receiver<Tagged>) -> Tagged {
-    timeout(Duration::from_secs(10), rx.recv())
-        .await
-        .expect("an event within 10 s")
-        .expect("the channel is open")
+    loop {
+        let tagged = timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("an event within 10 s")
+            .expect("the channel is open");
+        // The read reports are timing, not content.
+        if tagged.2 != StreamEvent::Reading {
+            return tagged;
+        }
+    }
 }
 
 /// Events up to and including the final one.
@@ -343,7 +349,10 @@ async fn a_turn_without_tools_is_one_plain_request() {
     let bodies = fake.bodies();
     assert_eq!(bodies.len(), 1);
     assert!(bodies[0].get("tools").is_none());
-    let Invocation::Http { body, .. } = Adapter::Ollama.build(&ask(&lab, false)) else {
+    // The adapter adds the default keep-alive; no window is known to this
+    // lab, so no `num_ctx`.
+    let sent = ask(&lab, false);
+    let Invocation::Http { body, .. } = Adapter::Ollama.build(&sent) else {
         panic!("ollama is an http engine");
     };
     assert_eq!(bodies[0], serde_json::from_slice::<Value>(&body).unwrap());
@@ -497,7 +506,14 @@ async fn a_400_on_a_request_with_tools_retries_once_without_tools() {
     let mut lab = lab(fake.port);
     lab.chats.send(pane(1), 1, ask(&lab, true));
     let events = finish(&mut lab.rx).await;
-    assert_eq!(events, [StreamEvent::Delta("plain answer".into()), done()]);
+    assert_eq!(
+        events,
+        [
+            StreamEvent::Notice(OLLAMA_NO_TOOLS_NOTICE.into()),
+            StreamEvent::Delta("plain answer".into()),
+            done()
+        ]
+    );
     let bodies = fake.bodies();
     assert_eq!(bodies.len(), 2);
     assert!(bodies[0]["tools"].is_array());
@@ -525,7 +541,10 @@ async fn calls_in_the_reply_to_the_retry_are_not_run() {
     let mut lab = lab(fake.port);
     lab.chats.send(pane(1), 1, ask(&lab, true));
     let events = finish(&mut lab.rx).await;
-    assert_eq!(events, [done()]);
+    assert_eq!(
+        events,
+        [StreamEvent::Notice(OLLAMA_NO_TOOLS_NOTICE.into()), done()]
+    );
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(fake.bodies().len(), 2, "no request follows");
 }
@@ -569,10 +588,10 @@ async fn the_retry_is_made_once_and_only_for_a_400() {
     );
 }
 
-// The fallback of Ollama stays a plain 400, with no notice: a 5xx that names
-// tools or jinja is an ordinary error there.
+// The fallback of Ollama stays a plain 400 and says so once: a 5xx that names
+// tools or jinja is an ordinary error there, with no notice.
 #[tokio::test]
-async fn ollama_does_not_retry_a_5xx_that_mentions_tools_and_never_adds_a_notice() {
+async fn ollama_does_not_retry_a_5xx_that_mentions_tools_and_adds_no_notice_for_it() {
     let server_error = fake(vec![status(500, "tools param requires --jinja flag")]).await;
     let mut lab_a = lab(server_error.port);
     lab_a.chats.send(pane(1), 1, ask(&lab_a, true));
@@ -587,7 +606,14 @@ async fn ollama_does_not_retry_a_5xx_that_mentions_tools_and_never_adds_a_notice
     let mut lab_b = lab(rejected.port);
     lab_b.chats.send(pane(1), 1, ask(&lab_b, true));
     let events = finish(&mut lab_b.rx).await;
-    assert_eq!(events, [StreamEvent::Delta("plain".into()), done()]);
+    assert_eq!(
+        events,
+        [
+            StreamEvent::Notice(OLLAMA_NO_TOOLS_NOTICE.into()),
+            StreamEvent::Delta("plain".into()),
+            done()
+        ]
+    );
 }
 
 // Approvals --------------------------------------------------------------------
@@ -693,7 +719,7 @@ async fn tool_messages_are_not_part_of_the_next_turns_history() {
         external: Default::default(),
         mcp: None,
     };
-    lab.chats.send(pane(1), turn, request);
+    lab.chats.send(pane(1), turn, *request);
     for event in finish(&mut lab.rx).await {
         state.apply(turn, event);
     }
@@ -742,6 +768,43 @@ async fn the_sanitizer_cleans_the_text_of_every_round() {
         })
         .collect();
     assert_eq!(answer, "one \ntwo", "rounds are told apart");
+}
+
+// Reasoning leaked into the answer after a tool round (qwen3 on Ollama): the
+// text before a bare `</think>` goes out as reasoning, the rest as the
+// answer, and only the answer is echoed back.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn reasoning_leaked_after_a_tool_round_is_shown_as_reasoning() {
+    let fake = fake(vec![
+        calls("find_dir", json!({"query": "curso"})),
+        text("So the path is curso.\n</think>\n\nFound it"),
+        text("next turn"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let n = events.len();
+    assert_eq!(
+        events[n - 3..],
+        [
+            StreamEvent::ThinkingDelta("So the path is curso.".into()),
+            StreamEvent::Delta("Found it".into()),
+            done(),
+        ],
+        "{events:?}"
+    );
+}
+
+// The first round of a turn still streams its text as it comes.
+#[tokio::test]
+async fn the_first_round_passes_a_close_tag_through_as_text() {
+    let fake = fake(vec![text("a</think>b")]).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(events, [StreamEvent::Delta("a</think>b".into()), done()]);
 }
 
 #[tokio::test]
@@ -975,4 +1038,435 @@ async fn a_panicking_call_gets_an_error_result_and_the_loop_goes_on() {
         .unwrap()
         .clone();
     assert_eq!(tool["content"], ollama::FAILED);
+}
+
+// A tool call written as text (local-model-writes D3) ------------------------
+
+pub(super) fn written(name: &str) -> String {
+    format!("```json\n{{\"name\": \"{name}\", \"arguments\": {{\"query\": \"curso\"}}}}\n```")
+}
+
+pub(super) fn reminders(events: &[StreamEvent]) -> usize {
+    let line = StreamEvent::Notice(crate::core::ai::chat::text_call::TEXT_CALL_NOTICE.into());
+    events.iter().filter(|e| **e == line).count()
+}
+
+// D3: one more request in the same turn, with the answer and the reminder;
+// the text itself is never run.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_tool_call_written_as_text_gets_one_reminder_in_the_same_turn() {
+    let fake = fake(vec![
+        text(&written("find_dir")),
+        calls("find_dir", json!({"query": "curso"})),
+        text("Found it"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(reminders(&events), 1, "{events:?}");
+    assert_eq!(tool_calls(&events), 1, "only the real call runs");
+    assert_eq!(events.last(), Some(&done()));
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 3);
+    let messages = bodies[1]["messages"].as_array().unwrap();
+    let n = messages.len();
+    assert_eq!(messages[n - 2]["role"], "assistant");
+    assert_eq!(messages[n - 2]["content"], written("find_dir"));
+    assert!(messages[n - 2].get("tool_calls").is_none());
+    assert_eq!(messages[n - 1]["role"], "user");
+    assert_eq!(
+        messages[n - 1]["content"],
+        crate::core::ai::chat::text_call::reminder("find_dir")
+    );
+    assert!(
+        bodies[1]["tools"].is_array(),
+        "the reminder still offers tools"
+    );
+}
+
+// D3: at most one reminder a turn: a second text call ends the turn.
+#[tokio::test]
+async fn a_second_tool_call_written_as_text_ends_the_turn() {
+    let fake = fake(vec![text(&written("find_dir"))]).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), 2);
+    assert_eq!(reminders(&events), 1);
+    assert_eq!(tool_calls(&events), 0);
+    assert_eq!(events.last(), Some(&done()));
+}
+
+// D3: an answer that only names a tool, a tool not offered, or a turn
+// without tools ends the turn as before.
+#[tokio::test]
+async fn an_answer_that_is_not_a_call_to_an_offered_tool_ends_the_turn() {
+    for (answer, tools) in [
+        ("Use find_dir to look for it.".to_owned(), true),
+        (r#"{"name": "find_dir"}"#.to_owned(), true),
+        (written("rm_rf"), true),
+        (written("find_dir"), false),
+    ] {
+        let fake = fake(vec![text(&answer)]).await;
+        let mut lab = lab(fake.port);
+        lab.chats.send(pane(1), 1, ask(&lab, tools));
+        let events = finish(&mut lab.rx).await;
+        assert_eq!(fake.bodies().len(), 1, "{answer}");
+        assert_eq!(reminders(&events), 0, "{answer}");
+    }
+}
+
+// D3: the reminder counts toward the turn's request cap: a text call in the
+// last allowed reply ends the turn.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_text_call_in_the_last_allowed_reply_gets_no_reminder() {
+    let mut steps = vec![calls("find_dir", json!({"query": "curso"})); ollama::MAX_ROUNDS - 1];
+    steps.push(text(&written("find_dir")));
+    let fake = fake(steps).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), ollama::MAX_ROUNDS);
+    assert_eq!(reminders(&events), 0);
+    assert_eq!(events.last(), Some(&done()));
+}
+
+// D3: the retry without tools offers nothing to call, so a text call in its
+// answer gets no reminder.
+#[tokio::test]
+async fn a_text_call_in_the_retry_without_tools_gets_no_reminder() {
+    let fake = fake(vec![
+        status(400, "{\"error\":\"this model does not support tools\"}"),
+        text(&written("find_dir")),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), 2);
+    assert_eq!(reminders(&events), 0);
+    assert_eq!(events.last(), Some(&done()));
+}
+
+// A next step announced in prose (#439) --------------------------------------
+
+const ANNOUNCED: &str =
+    "The tests haven't been created yet. I'll need to create a `test_fibonacci.py` file next.";
+
+fn next_step_reminders(events: &[StreamEvent]) -> usize {
+    let line = StreamEvent::Notice(crate::core::ai::chat::next_step::NEXT_STEP_NOTICE.into());
+    events.iter().filter(|e| **e == line).count()
+}
+
+// #439: one more request in the same turn, with the answer and the reminder.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_announced_next_step_gets_one_reminder_in_the_same_turn() {
+    let fake = fake(vec![
+        text(ANNOUNCED),
+        calls("find_dir", json!({"query": "curso"})),
+        text("Found it"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(next_step_reminders(&events), 1, "{events:?}");
+    assert_eq!(tool_calls(&events), 1);
+    assert_eq!(events.last(), Some(&done()));
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 3);
+    let messages = bodies[1]["messages"].as_array().unwrap();
+    let n = messages.len();
+    assert_eq!(messages[n - 2]["role"], "assistant");
+    assert_eq!(messages[n - 2]["content"], ANNOUNCED);
+    assert_eq!(messages[n - 1]["role"], "user");
+    assert_eq!(
+        messages[n - 1]["content"],
+        crate::core::ai::chat::next_step::NEXT_STEP_REMINDER
+    );
+    assert!(bodies[1]["tools"].is_array());
+}
+
+// #439: at most one reminder a turn; a question, an offer or a turn without
+// tools ends the turn as before.
+#[tokio::test]
+async fn a_second_announcement_a_question_or_no_tools_ends_the_turn() {
+    for (answer, tools, requests, reminded) in [
+        (ANNOUNCED, true, 2, 1),
+        ("Shall I commit it?", true, 1, 0),
+        ("If you want, I'll add more tests.", true, 1, 0),
+        (ANNOUNCED, false, 1, 0),
+    ] {
+        let fake = fake(vec![text(answer)]).await;
+        let mut lab = lab(fake.port);
+        lab.chats.send(pane(1), 1, ask(&lab, tools));
+        let events = finish(&mut lab.rx).await;
+        assert_eq!(fake.bodies().len(), requests, "{answer}");
+        assert_eq!(next_step_reminders(&events), reminded, "{answer}");
+        assert_eq!(events.last(), Some(&done()), "{answer}");
+    }
+}
+
+// #439: a turn that offers the write, exec or git write tools tells the model
+// it can change files and must finish every step; any other keeps the
+// "cannot change files" sentence.
+#[tokio::test]
+async fn the_system_prompt_follows_the_families_of_the_turn() {
+    use crate::core::ai::chat::prompts::with_tools;
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    for families in [
+        FamilySet::LEGACY,
+        FamilySet::LEGACY.with(Family::Write),
+        FamilySet::LEGACY.with(Family::Exec),
+        FamilySet::LEGACY.with(Family::GitWrite),
+    ] {
+        let fake = fake(vec![text("ok")]).await;
+        let mut lab = lab(fake.port);
+        let mut request = ask(&lab, true);
+        request.families = families;
+        lab.chats.send(pane(1), 1, request);
+        finish(&mut lab.rx).await;
+        let system = &fake.bodies()[0]["messages"][0];
+        assert_eq!(system["role"], "system");
+        assert_eq!(
+            system["content"],
+            with_tools("be brief", families),
+            "{families:?}"
+        );
+    }
+}
+
+// #439: an empty answer with tools on gets one reminder in the same turn; it
+// shares the turn's one "go on" reminder with an announced step.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_empty_answer_after_a_tool_round_gets_one_reminder() {
+    let fake = fake(vec![
+        calls("find_dir", json!({"query": "curso"})),
+        text(""),
+        calls("find_dir", json!({"query": "curso"})),
+        text("Found it"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let line = StreamEvent::Notice(crate::core::ai::chat::next_step::EMPTY_NOTICE.into());
+    assert_eq!(
+        events.iter().filter(|e| **e == line).count(),
+        1,
+        "{events:?}"
+    );
+    assert_eq!(tool_calls(&events), 2);
+    assert_eq!(events.last(), Some(&done()));
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 4);
+    let messages = bodies[2]["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.last().unwrap()["content"],
+        crate::core::ai::chat::next_step::EMPTY_REMINDER
+    );
+}
+
+#[tokio::test]
+async fn an_announcement_after_an_empty_answer_ends_the_turn() {
+    let fake = fake(vec![text(""), text(ANNOUNCED)]).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), 2);
+    assert_eq!(next_step_reminders(&events), 0);
+    assert_eq!(events.last(), Some(&done()));
+}
+
+// Usage ------------------------------------------------------------------------
+
+fn end_with(extra: Value) -> Value {
+    let mut end = end_line();
+    end.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    end
+}
+
+/// A reply that calls one tool and reports `extra` on its final line.
+fn calls_with(extra: Value) -> Step {
+    lines(&[
+        json!({"message": {"content": "", "tool_calls": [
+            {"function": {"name": "find_dir", "arguments": {"query": "curso"}}}
+        ]}, "done": false}),
+        end_with(extra),
+    ])
+}
+
+fn text_with(content: &str, extra: Value) -> Step {
+    lines(&[
+        json!({"message": {"content": content}, "done": false}),
+        end_with(extra),
+    ])
+}
+
+fn usages(events: &[StreamEvent]) -> Vec<crate::core::ai::chat::usage::TurnUsage> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Usage(u) => Some(crate::core::ai::chat::usage::TurnUsage::clone(u)),
+            _ => None,
+        })
+        .collect()
+}
+
+// Needs the file tools: Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn two_rounds_give_one_summed_usage_before_the_final_event() {
+    let fake = fake(vec![
+        calls_with(json!({"prompt_eval_count": 100, "eval_count": 20})),
+        text_with(
+            "Found it",
+            json!({"prompt_eval_count": 150, "eval_count": 30}),
+        ),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let got = usages(&events);
+    assert_eq!(got.len(), 1, "{events:?}");
+    assert_eq!(
+        (got[0].input, got[0].output, got[0].partial),
+        (Some(250), Some(50), false)
+    );
+    let n = events.len();
+    assert!(matches!(events[n - 2], StreamEvent::Usage(_)), "{events:?}");
+    assert_eq!(events[n - 1], done());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_round_without_usage_makes_the_turn_partial() {
+    let fake = fake(vec![
+        calls_with(json!({"prompt_eval_count": 100, "eval_count": 20})),
+        text("Found it"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let got = usages(&finish(&mut lab.rx).await);
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        (got[0].input, got[0].output, got[0].partial),
+        (Some(100), Some(20), true)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_missing_prompt_count_stays_none_and_marks_partial() {
+    let fake = fake(vec![
+        calls_with(json!({"eval_count": 20})),
+        text_with("Found it", json!({"eval_count": 30})),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let got = usages(&finish(&mut lab.rx).await);
+    assert_eq!((got[0].input, got[0].output), (None, Some(50)));
+    assert!(!got[0].partial);
+}
+
+#[tokio::test]
+async fn a_turn_whose_engine_reports_nothing_has_no_usage_event() {
+    let fake = fake(vec![text("hi")]).await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(usages(&events), []);
+    assert_eq!(events.last(), Some(&done()));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_cap_reports_the_usage_of_every_round_as_partial_before_done() {
+    let fake = fake(vec![calls_with(
+        json!({"prompt_eval_count": 10, "eval_count": 2}),
+    )])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let got = usages(&events);
+    let rounds = ollama::MAX_ROUNDS as u64;
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        (got[0].input, got[0].output),
+        (Some(10 * rounds), Some(2 * rounds))
+    );
+    assert!(got[0].partial);
+    let n = events.len();
+    assert!(matches!(events[n - 3], StreamEvent::Usage(_)), "{events:?}");
+    assert_eq!(events[n - 1], done());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_error_after_a_round_reports_the_usage_before_the_error() {
+    let fake = fake(vec![
+        calls_with(json!({"prompt_eval_count": 100, "eval_count": 20})),
+        status(400, "context too long"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let got = usages(&events);
+    assert_eq!(got.len(), 1, "{events:?}");
+    assert_eq!((got[0].input, got[0].partial), (Some(100), true));
+    let n = events.len();
+    assert!(matches!(events[n - 2], StreamEvent::Usage(_)), "{events:?}");
+    assert!(matches!(events[n - 1], StreamEvent::Error(_)));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_round_that_omits_the_prompt_count_is_a_field_gap_not_a_partial_turn() {
+    // Ollama leaves `prompt_eval_count` out when the prompt was cached.
+    let fake = fake(vec![
+        calls_with(json!({"prompt_eval_count": 100, "eval_count": 20})),
+        text_with("Found it", json!({"eval_count": 30})),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let got = usages(&finish(&mut lab.rx).await);
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        (got[0].input, got[0].output, got[0].partial),
+        (Some(100), Some(50), false)
+    );
+}
+
+#[tokio::test]
+async fn the_request_the_server_rejected_is_not_a_round_of_the_usage() {
+    let fake = fake(vec![
+        status(400, "{\"error\":\"this model does not support tools\"}"),
+        text_with(
+            "plain answer",
+            json!({"prompt_eval_count": 12, "eval_count": 34}),
+        ),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    let got = usages(&events);
+    assert_eq!(got.len(), 1, "{events:?}");
+    assert_eq!(
+        (got[0].input, got[0].output, got[0].partial),
+        (Some(12), Some(34), false)
+    );
 }

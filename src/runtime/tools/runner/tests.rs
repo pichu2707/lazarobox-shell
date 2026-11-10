@@ -263,6 +263,7 @@ impl Fixture {
             cwd: self.root.clone(),
             scratch: Scratch::unique(&self.tmp_parent, "run").unwrap(),
             timeout: Duration::from_secs(30),
+            build_env: Vec::new(),
             unreported: Unreported::default(),
         }
     }
@@ -303,6 +304,20 @@ async fn no_secret_of_the_parent_reaches_the_child() {
     }
     assert!(text.contains("PATH=/usr/bin:/bin"));
     assert!(text.contains("NO_COLOR=1"));
+}
+
+#[tokio::test]
+async fn a_run_gets_the_job_variables_it_was_given() {
+    let fx = fixture();
+    let mut job = fx.job(Program::Cargo, "/usr/bin/env");
+    job.build_env = vec![
+        ("CARGO_BUILD_JOBS".into(), "3".into()),
+        ("CMAKE_BUILD_PARALLEL_LEVEL".into(), "3".into()),
+    ];
+    let done = run_jailed(job, &parent).await.unwrap().done;
+    let text = done.capture.text();
+    assert!(text.contains("CARGO_BUILD_JOBS=3"), "{text}");
+    assert!(text.contains("CMAKE_BUILD_PARALLEL_LEVEL=3"), "{text}");
 }
 
 #[tokio::test]
@@ -700,4 +715,119 @@ async fn a_failed_run_that_changed_nothing_hands_nothing_over() {
     let guard = AfterOnDrop::new(fx.root.clone(), Vec::new(), before, unreported.clone());
     after_failure(guard).await;
     assert_eq!(unreported.drain(), []);
+}
+
+// Spec (github-tools, Fixed read): `spawn_capped` keeps stdout and stderr
+// apart and bounds both, so a flood cannot fill memory and a JSON reply is
+// never cut in the middle without being told so.
+
+fn capped(text: &str, cap: usize) -> impl Future<Output = io::Result<Split>> {
+    spawn_capped(script(text), cap)
+}
+
+#[tokio::test]
+async fn capped_stdout_and_stderr_are_kept_apart() {
+    let split = capped("echo out; echo err >&2; exit 3", 1024)
+        .await
+        .unwrap();
+    assert_eq!(split.stdout, b"out\n");
+    assert_eq!(split.stderr, b"err\n");
+    assert_eq!(split.ended.exit, Some(3));
+    assert!(!split.over && !split.ended.timed_out);
+}
+
+#[tokio::test]
+async fn a_stdout_flood_stops_at_the_cap_and_kills_the_group() {
+    let started = Instant::now();
+    let split = capped(
+        "sleep 300 & echo $! >&2; yes | head -c 400000000; wait",
+        4096,
+    )
+    .await
+    .unwrap();
+    assert!(split.over);
+    assert_eq!(split.stdout.len(), 4096);
+    assert!(started.elapsed() < Duration::from_secs(10));
+    let pid = String::from_utf8_lossy(&split.stderr)
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(wait_gone(pid).await, "the grandchild lives");
+}
+
+// Regression: after the kill, the last bytes of stderr are still in its pipe
+// even when stdout already went over its cap. `a_stdout_flood_...` read an
+// empty stderr (a ParseIntError) whenever the live pump read stdout first.
+#[tokio::test]
+async fn the_final_drain_keeps_stderr_after_stdout_went_over() {
+    use std::io::Write;
+    let receiver = |fd: io::PipeReader| Receiver::from_file(File::from(OwnedFd::from(fd))).unwrap();
+    let ((out_r, mut out_w), (err_r, mut err_w)) = (io::pipe().unwrap(), io::pipe().unwrap());
+    err_w.write_all(b"diagnostic\n").unwrap();
+    out_w.write_all(&[b'x'; 100]).unwrap();
+    drop((out_w, err_w));
+    let (mut out_pipe, mut err_pipe) = (receiver(out_r), receiver(err_r));
+    let (mut out, mut err) = (Lane::new(16), Lane::new(STDERR_CAP));
+    out.over = true;
+    drain_lanes(&mut out, &mut out_pipe, &mut err, &mut err_pipe).await;
+    assert_eq!(err.kept, b"diagnostic\n");
+    assert_eq!(out.kept.len(), 16);
+    assert!(!err.open && !out.open);
+}
+
+#[tokio::test]
+async fn a_reply_exactly_at_the_cap_is_not_over() {
+    let split = capped("head -c 4096 /dev/zero | tr '\\0' x", 4096)
+        .await
+        .unwrap();
+    assert!(!split.over);
+    assert_eq!(split.stdout.len(), 4096);
+}
+
+#[tokio::test]
+async fn stderr_is_capped_at_8_kib_without_blocking_the_program() {
+    let split = capped("head -c 300000 /dev/zero | tr '\\0' e >&2; echo done", 1024)
+        .await
+        .unwrap();
+    assert_eq!(split.stderr.len(), STDERR_CAP);
+    assert_eq!(split.stdout, b"done\n");
+    assert!(!split.over);
+}
+
+#[tokio::test]
+async fn a_hang_is_killed_at_the_bound_with_no_survivor() {
+    let mut run = script("sleep 300 & echo $! >&2; wait");
+    run.timeout = Duration::from_millis(300);
+    let split = spawn_capped(run, 1024).await.unwrap();
+    assert!(split.ended.timed_out);
+    let pid = String::from_utf8_lossy(&split.stderr)
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(wait_gone(pid).await, "the grandchild lives");
+}
+
+#[tokio::test]
+async fn dropping_a_capped_run_kills_the_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let pids = dir.path().join("pids");
+    let text = format!(
+        "sleep 300 & echo $! > '{p}.tmp'; mv '{p}.tmp' '{p}'; wait",
+        p = pids.display()
+    );
+    let ready = async {
+        while !pids.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::select! {
+        _ = capped(&text, 1024) => panic!("the script ends only when killed"),
+        _ = ready => {}
+    }
+    let pid: libc::pid_t = std::fs::read_to_string(&pids)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(wait_gone(pid).await, "{pid} lives");
 }

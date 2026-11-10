@@ -62,6 +62,9 @@ pub struct Job {
     /// The private `TMPDIR`, already in `spec.rw`. Removed when the run ends.
     pub scratch: Scratch,
     pub timeout: Duration,
+    /// How many compile jobs the run may start (`[build] jobs`): set on top
+    /// of the scrubbed environment.
+    pub build_env: Vec<(OsString, OsString)>,
     /// Where the changes of a run that is dropped (cancelled) before it ends
     /// go. Keep a clone and [`Unreported::drain`] it after each call.
     pub unreported: Unreported,
@@ -230,6 +233,7 @@ pub async fn run_jailed(
     let tmp = job.scratch.path().to_path_buf();
     let mut cleanup = Cleanup(vec![job.scratch]);
     let mut env = scrub(read, &job.root, &tmp);
+    env.extend(job.build_env);
     // `go run` and `go test` execute what they build, and the private TMPDIR
     // never executes: they get a folder under the `rwx` root.
     if job.tool == Program::Go {
@@ -411,6 +415,137 @@ async fn spawn_with(run: Run, status: Option<io::PipeWriter>) -> io::Result<Done
         },
         capture,
         duration: started.elapsed(),
+    })
+}
+
+/// What [`spawn_capped`] read. `over` says stdout went past its cap: the group
+/// was killed and `stdout` holds only the first `cap` bytes, which a caller
+/// must not parse.
+#[derive(Debug)]
+pub struct Split {
+    pub ended: Ended,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub over: bool,
+}
+
+/// The most stderr bytes [`spawn_capped`] keeps; the rest is read and dropped.
+pub const STDERR_CAP: usize = 8 * 1024;
+
+/// One pipe of [`spawn_capped`]: the first `cap` bytes read, and whether more
+/// came.
+struct Lane {
+    kept: Vec<u8>,
+    cap: usize,
+    over: bool,
+    open: bool,
+    chunk: Vec<u8>,
+}
+
+impl Lane {
+    fn new(cap: usize) -> Self {
+        Self {
+            kept: Vec::new(),
+            cap,
+            over: false,
+            open: true,
+            chunk: vec![0; CHUNK],
+        }
+    }
+
+    fn feed(&mut self, read: io::Result<usize>) {
+        match read {
+            Ok(n) if n > 0 => {
+                let room = self.cap - self.kept.len();
+                self.kept.extend_from_slice(&self.chunk[..n.min(room)]);
+                self.over |= n > room;
+            }
+            _ => self.open = false,
+        }
+    }
+}
+
+/// Reads both pipes until both end, or until stdout goes past its cap.
+async fn pump(out: &mut Lane, out_pipe: &mut Receiver, err: &mut Lane, err_pipe: &mut Receiver) {
+    while (out.open || err.open) && !out.over {
+        tokio::select! {
+            read = out_pipe.read(&mut out.chunk), if out.open => out.feed(read),
+            read = err_pipe.read(&mut err.chunk), if err.open => err.feed(read),
+        }
+    }
+}
+
+/// Reads both pipes to their end, whether or not stdout already went over its
+/// cap: [`pump`] stops at the cap, but the other pipe may not have been read
+/// yet and what the program wrote last is still in it. The caller bounds it
+/// with [`DRAIN`]; `Lane` keeps only the first `cap` bytes either way.
+async fn drain_lanes(
+    out: &mut Lane,
+    out_pipe: &mut Receiver,
+    err: &mut Lane,
+    err_pipe: &mut Receiver,
+) {
+    while out.open || err.open {
+        tokio::select! {
+            read = out_pipe.read(&mut out.chunk), if out.open => out.feed(read),
+            read = err_pipe.read(&mut err.chunk), if err.open => err.feed(read),
+        }
+    }
+}
+
+/// Starts `run` like [`spawn_core`], but with stdout and stderr on separate
+/// pipes: stdout stops at `stdout_cap` (the group is killed, `over` is set),
+/// stderr keeps its first [`STDERR_CAP`] bytes. Dropping the future kills the
+/// whole process group.
+pub async fn spawn_capped(run: Run, stdout_cap: usize) -> io::Result<Split> {
+    let ((out_r, out_w), (err_r, err_w)) = (io::pipe()?, io::pipe()?);
+    let mut command = Command::new(&run.program);
+    command
+        .args(&run.argv)
+        .current_dir(&run.cwd)
+        .env_clear()
+        .envs(run.env.iter().map(|(name, value)| (name, value)))
+        .stdin(Stdio::null())
+        .stdout(out_w)
+        .stderr(err_w)
+        .kill_on_drop(true)
+        .process_group(0);
+    let mut child = spawn(&mut command).await?;
+    // The command holds the write ends: until it is gone the pipes never end.
+    drop(command);
+    let pid = child.id().and_then(|id| libc::pid_t::try_from(id).ok());
+    let Some(mut group) = pid.and_then(GroupKill::new) else {
+        return Err(io::Error::other("could not own the process group"));
+    };
+    let pid = pid.expect("a group exists only for a known pid");
+    let receiver = |fd: io::PipeReader| Receiver::from_file(File::from(OwnedFd::from(fd)));
+    let (mut out_pipe, mut err_pipe) = (receiver(out_r)?, receiver(err_r)?);
+    let (mut out, mut err) = (Lane::new(stdout_cap), Lane::new(STDERR_CAP));
+    let exit = wait_exit_unreaped(pid);
+    let deadline = tokio::time::sleep(run.timeout);
+    tokio::pin!(exit, deadline);
+    let mut timed_out = false;
+    tokio::select! {
+        () = pump(&mut out, &mut out_pipe, &mut err, &mut err_pipe) => {}
+        _ = &mut exit => {}
+        _ = &mut deadline => timed_out = true,
+    }
+    let status = bounded(group.kill_and_reap(&mut child), REAP).await?;
+    // What was written last is still in the pipes. Both are read to their
+    // end, kept to their caps, for at most DRAIN: a writer that escaped the
+    // group and holds a pipe open is not read on.
+    let rest = drain_lanes(&mut out, &mut out_pipe, &mut err, &mut err_pipe);
+    let _ = tokio::time::timeout(DRAIN, rest).await;
+    Ok(Split {
+        ended: Ended {
+            exit: status.code(),
+            signal: status.signal(),
+            timed_out,
+            cancelled: false,
+        },
+        stdout: out.kept,
+        stderr: err.kept,
+        over: out.over,
     })
 }
 

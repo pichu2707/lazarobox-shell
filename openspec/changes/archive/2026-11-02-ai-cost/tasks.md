@@ -1,0 +1,104 @@
+# Tasks: AI usage and cost visibility (#440)
+
+## Review Workload Forecast
+
+| Field | Value |
+|-------|-------|
+| Estimated production lines | 1a ~310, 1b ~240, 1c ~260, 2a ~280, 2b ~200, 3 ~150, 4 ~180 (~1620 total), 5 ~400 (~2020 total) |
+| 400-line budget risk | Low per slice (1a Medium) |
+| Chained PRs recommended | Yes |
+| Suggested split | 8 PRs: 1a, 1b, 1c, 2a, 2b, 3, 4, 5 |
+| Delivery strategy | ask-on-risk |
+| Chain strategy | feature-branch-chain |
+
+Decision needed before apply: Yes
+Chained PRs recommended: Yes
+Chain strategy: feature-branch-chain
+400-line budget risk: Medium
+
+Decision: the split is already chosen (chained, tracker `feat/ai-cost`); confirm and apply slice 1a. Tests, fixtures and snapshots do not count.
+
+### Suggested Work Units
+
+| Unit | Goal | PR base |
+|------|------|---------|
+| 1a | Capture usage from 5 engines | `feat/ai-cost` |
+| 1b | Persist in chat.db | PR 1a |
+| 1c | `/cost` text view | PR 1b |
+| 2a | Answer line + status segment | PR 1c |
+| 2b | AI menu toggles + billing + README | PR 2a |
+| 3 | Thresholds | PR 2b |
+| 4 | Charts | PR 3 |
+| 5 | Worker usage | PR 4 |
+
+Every task is RED (failing test) then GREEN (code); refactor at slice end.
+
+## Slice 1a: Capture (PR 1a)
+
+No README or CHANGELOG entry: this slice adds nothing the user can see.
+
+- [x] 1a.1 RED: `usage.rs` tests for TurnUsage merge, partial, micros rounding, None-not-0 (ai-usage: summing).
+- [x] 1a.2 GREEN: create `core/ai/chat/usage.rs` (TurnUsage, CostSource, merge); add `StreamEvent::Usage` in `engine.rs`/`mod.rs`.
+- [x] 1a.3 RED+GREEN `claude.rs`: modelUsage sum incl. sub-agent fixture, total_cost_usd, fallback; Usage before Done.
+- [x] 1a.4 RED+GREEN `codex.rs` and `gemini.rs`: cached subtracted saturating; lenient stats (bad stats = None, no Error).
+- [x] 1a.5 RED+GREEN `stream.rs` Pipe pass-through and `ChatState::apply_at` merge; Usage emitted before Error too.
+- [x] 1a.6 RED+GREEN `runtime/chat/ollama.rs` round fold (ollama, llama.cpp finish-chunk timings, missing prompt_eval_count = None, cap/error).
+
+## Slice 1b: Persist (PR 1b)
+
+No README or CHANGELOG entry: this slice adds nothing the user can see (the privacy text lands in 2b.2).
+
+- [x] 1b.1 RED: store tests on a v3 file: ensure_usage, opens under `open_with(..,3)`, SET NULL on delete, 90-day prune, no text.
+- [x] 1b.2 GREEN: `ensure_usage` in `runtime/chat_store.rs`; worker insert, prune, today sum in `chat_store/worker.rs`.
+- [x] 1b.3 RED+GREEN `core/ai/chat/store.rs` RecordUsage/UsageRecorded; `app/history.rs` writes only when history is on (no rows when off).
+- [x] 1b.4 RED+GREEN compaction/summary rows carry their role (`compaction`, `summary`); a no-data turn writes no row (ai-usage: No data, no row).
+- [x] 1b.5 RED+GREEN failed write shows `Usage not saved: <reason>` once per run, never blocks the turn.
+
+## Slice 1c: /cost text (PR 1c)
+
+- [x] 1c.1 RED+GREEN `parse_command`: `/cost`, `//cost` escaped, trailing text gives the notice `/cost takes no arguments`, composer kept.
+- [x] 1c.2 RED+GREEN `core/ai/chat/usage_view.rs` pure fold (today, 7d, per engine/model, this chat, partial).
+- [x] 1c.3 RED+GREEN worker report query (localtime day grouping) and UsageReport reply; `reading usage…` state.
+- [x] 1c.4 RED+GREEN `ui/components/chat/cost.rs` overlay, header `AI usage (alpha)`, Esc closes; an unavailable store shows `usage history is not available`.
+- [x] 1c.5 Docs: README documents `/cost` (and `//cost`), what it shows, `no data` and the unavailable-store line; an "alpha" note in the `/cost` section (figures may be missing or not match the provider's bill depending on engine and account; how to report it via the report skill / GitHub issues); CHANGELOG entry.
+
+## Slice 2a: Display (PR 2a)
+
+- [x] 2a.1 RED+GREEN `core/ai/config.rs` parse `[ai.usage]`, `[ai.usage.billing]`; a local-engine billing key (and any unknown key) is ignored, as the configuration spec says; thresholds of 0 or less are off.
+- [x] 2a.2 RED+GREEN `Entry::Usage` render (not stored, not sent); `usage: no data`, `(partial)`, billing labels.
+- [x] 2a.3 RED+GREEN `statusline.rs` ` · today N tok` from UsageRecorded, first segment dropped.
+- [x] 2a.4 Docs: README documents the per-answer usage line, the status-bar segment (on by default) and the `[ai.usage]` / `[ai.usage.billing]` keys; CHANGELOG entry.
+
+## Slice 2b: Menu (PR 2b)
+
+- [x] 2b.1 RED+GREEN `core/ai/menu.rs`/`core/menu.rs` `Usage (alpha)` row and sub-view (toggles, billing); confirm AI-tab row capacity. (Done in `core/menu.rs`: row in Settings after `llama-server idle`, popup 17 rows, minimum 24x16; limit rows deferred to slice 3.)
+- [x] 2b.2 RED+GREEN owned keys in `core/config.rs`; README privacy and usage section.
+- [x] 2b.3 Docs: CHANGELOG entry for the AI menu usage rows (README is covered by 2b.2).
+
+## Slice 3: Thresholds (PR 3)
+
+- [x] 3.0 RED+GREEN limit rows in the Usage view (`Turn tokens`, `Day tokens`, `Day $`: digit editing, `0` or empty is `off`, `Esc` restores) and `Enter edit` in the view footer; the config-menu delta scenarios marked "slice 3". Needs a float write path for `day_usd` in `config_edit.rs`.
+- [x] 3.1 RED+GREEN checks in `usage.rs`: turn_tokens, day_tokens, day_usd (per-token engines only; list-price never counts).
+- [x] 3.2 RED+GREEN app notes once per day key per run; never block a send.
+- [x] 3.3 Docs: README documents the thresholds (`turn_tokens`, `day_tokens`, `day_usd`; spend-only; passive notes); CHANGELOG entry.
+
+## Slice 4: Charts (PR 4)
+
+- [x] 4.1 RED+GREEN plain-text `chart_lines` in `usage_view.rs` (per the spec, no ratatui widget) with snapshot tests in `cost_tests.rs`; narrow-terminal fallback by wrapping.
+- [x] 4.2 Docs: README documents the charts; CHANGELOG entry.
+
+## Slice 5: Worker usage (PR 5)
+
+- [x] 5.1 RED+GREEN store: `RecordUsage` carries `worker`; the insert writes the `worker` column; the report query folds `role = 'worker'` rows into `UsageRow` worker figures (records, known total, partial); day figures already sum every role (ai-usage: Worker usage).
+- [x] 5.2 RED+GREEN `usage_view`: `of which workers: <T>` after `last 7 days`, only with worker records, `no data` and `partial` rules; `usage_line` coordinator label (ai-usage: The `/cost` view; chat-pane: Per-answer usage line).
+- [x] 5.3 RED+GREEN `runtime/orchestra.rs` `drive`: fold the worker turn's usage into one record, `OrchestraEvent::Usage`, flushed `partial` on failure, cancel or deadline; nothing when the engine reported nothing.
+- [x] 5.4 RED+GREEN app: `OrchestraEvent::Usage` becomes a `worker` pending record of the pane (the session view counts it, the failed-write notice and the day figures and notes follow); no per-turn note for workers; `usage (coordinator):` label in an orchestrated turn.
+- [x] 5.5 Docs: README (es) documents worker usage and the coordinator label and drops the "workers are not recorded" wording; CHANGELOG entry (alpha).
+
+## Final manual check (real engines)
+
+- [ ] M.1 claude: tokens and labelled `$` appear in `/cost`; sub-agent turn sums.
+- [ ] M.2 codex and gemini: tokens appear; no dollars in subscription mode.
+- [ ] M.3 ollama and llama.cpp: tokens only, never `$`.
+- [x] M.4 Delete a chat and usage survives. (The history-off half was dropped: chat history is always on.)
+- [ ] M.5 A real orchestrated run: the workers' tokens appear in `/cost` (`of which workers`), in the charts and in `today: N tok`; the coordinator's line reads `usage (coordinator):`.

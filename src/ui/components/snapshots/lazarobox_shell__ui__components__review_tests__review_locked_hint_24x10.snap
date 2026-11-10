@@ -1,0 +1,14 @@
+---
+source: src/ui/components/review_tests.rs
+expression: flat(&shown)
+---
+scroll ↓ · 26 unseen
+1 file, +30 -0
+create /home/u/proj/a.tx
+¦t
+@@ -0,0 +1,30 @@
++row 0
++row 1
++row 2
++row 3
+n reject · y locked · ↑↓

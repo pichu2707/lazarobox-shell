@@ -1,4 +1,4 @@
-//! Tests of the `Approval` row of the AI tab, at the `MenuState` level.
+//! Tests of the `Approval` row of the Tools tab, at the `MenuState` level.
 
 use super::ai_tests::{machine, press, selected_label};
 use super::footer_tests::hint;
@@ -45,49 +45,73 @@ fn approval_edit(value: &'static str) -> ConfigEdit {
     }
 }
 
-// Spec (agent-tools, config menu): the row follows Tools and the five family
-// rows, right before `Hugging Face` (config-menu, Hugging Face account row),
-// and is found by its kind.
+// Spec (config-menu, Tools tab): the row follows Tools and the six family
+// rows, ahead of the `Orchestrator` gate, and is found by its kind.
 #[test]
-fn the_approval_row_precedes_hugging_face_and_is_found_by_kind() {
-    let items = AI_SECTION.items;
+fn the_approval_row_precedes_the_gate_and_is_found_by_kind() {
+    let items = TOOLS_SECTION.items;
     let approval = &items[items.len() - 2];
     assert_eq!(approval.label, "Approval");
-    assert!(matches!(approval.kind, ItemKind::Approval));
-    assert_eq!(items[items.len() - 1].label, "Hugging Face");
-    assert_eq!(items[items.len() - 3].label, "Git write");
+    assert!(matches!(&approval.kind, ItemKind::Draft(c) if c.key() == "approval"));
+    assert_eq!(items[items.len() - 1].label, "Orchestrator");
+    assert_eq!(items[items.len() - 3].label, "Issue draft");
+    assert_eq!(items[items.len() - 4].label, "GitHub");
+    assert_eq!(items[items.len() - 5].label, "Git write");
     let count = items
         .iter()
-        .filter(|i| matches!(i.kind, ItemKind::Approval))
+        .filter(|i| matches!(&i.kind, ItemKind::Draft(c) if c.key() == "approval"))
         .count();
     assert_eq!(count, 1);
 }
 
 #[test]
-fn the_ai_tab_holds_seventeen_rows() {
-    assert_eq!(AI_SECTION.items.len(), 17);
+fn the_tools_tab_holds_ten_rows() {
+    assert_eq!(TOOLS_SECTION.items.len(), 10);
 }
 
 #[test]
-fn navigation_goes_family_rows_approval_hugging_face_then_wraps_to_the_first_ai_row() {
+fn navigation_goes_family_rows_approval_gate_then_wraps_to_the_first_tools_row() {
     let mut m = on_approval(ApprovalMode::Ask);
     press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Hugging Face");
+    assert_eq!(selected_label(&m), "Orchestrator");
     press(&mut m, 'j');
-    assert_eq!(
-        selected_label(&m),
-        "Set all tasks",
-        "wraps inside the AI tab"
-    );
+    assert_eq!(selected_label(&m), "Tools", "wraps inside the Tools tab");
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Hugging Face");
+    assert_eq!(selected_label(&m), "Orchestrator");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Approval");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Issue draft");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "GitHub");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Git write");
     press(&mut m, 'j');
+    press(&mut m, 'j');
+    press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Approval");
-    assert_eq!(m.active_tab(), 1);
+    assert_eq!(m.active_tab(), 2);
+}
+
+// Spec (config-menu, Tools tab): ten `j` presses from the first row visit
+// every row, GitHub among them, and come back to the first (the tab wraps on
+// its own rows).
+#[test]
+fn ten_j_presses_walk_the_tools_tab_and_wrap() {
+    let mut m = open_with(ApprovalMode::Ask);
+    m.goto("Tools");
+    let mut walked = vec![selected_label(&m)];
+    for _ in 0..10 {
+        press(&mut m, 'j');
+        walked.push(selected_label(&m));
+    }
+    let labels: Vec<_> = TOOLS_SECTION.items.iter().map(|i| i.label).collect();
+    assert_eq!(labels.len(), 10);
+    assert_eq!(walked[..10], labels[..], "every row, in order");
+    assert!(walked[..10].contains(&"GitHub"));
+    assert!(walked[..10].contains(&"Issue draft"));
+    assert_eq!(walked[10], labels[0], "the tenth press wraps");
+    assert_eq!(m.active_tab(), 2, "still in the Tools tab");
 }
 
 #[test]

@@ -1,0 +1,29 @@
+---
+source: src/app/app_tests/orchestra_notice.rs
+expression: shown
+---
+                                       │• ORCH on                          ORCH
+                                       │
+                                       │• This chat cannot write files, run
+                                       │  commands or read GitHub itself. A code
+                                       │  worker writes, through the batch
+                                       │  review. Ctrl+O goes back to a plain
+                                       │  chat.
+                                       │
+                                       │• code workers need Write: type /write,
+                                       │  or turn it on in the AI menu
+                                       │  (Ctrl+Space m)
+                                       │
+                                       │› plan it
+                                       │
+                                       │waiting for the model…
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │Providers recommend API keys for
+                                       │automation; consumer-account logins
+                                       │carry risk. Enter accept · Esc dismiss
+                                       │
+ ◐ CHAT  /launch                      ⠋ thinking opus 1s  ollama › llama3:8b

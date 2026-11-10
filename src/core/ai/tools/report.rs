@@ -3,7 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{label, settle::End};
+use super::{
+    exec::{Verb, parse},
+    label,
+    settle::End,
+};
 use crate::core::ai::{memory::redact::redact, sanitize::clean};
 
 /// Where a reported cwd was read from. OSC 7 is any program's claim, so it is
@@ -211,12 +215,15 @@ pub fn words(command: &str, report: &RunReport, nonce: Option<&str>) -> Words {
 
 /// `pane N: <cmd> → <cwd>`, the transcript line of a `cd` that settled with
 /// its real cwd known: a run that timed out or could not be confirmed has no
-/// new directory to show, and an OSC 7 cwd is any program's claim. The command
-/// goes through the same sanitizer as the paths (it is the model's text). The
-/// app adds the line when the run ends, with no output to clean.
+/// new directory to show, and an OSC 7 cwd is any program's claim. A `cd` the
+/// user approved with `y` skipped the check and has no `cd_target`, so the
+/// command itself says whether it is one. The command goes through the same
+/// sanitizer as the paths (it is the model's text). The app adds the line when
+/// the run ends, with no output to clean.
 pub fn system_line(command: &str, report: &RunReport) -> Option<String> {
-    match (&report.cd_target, &report.cwd) {
-        (Some(_), Some((path, CwdSource::Proc))) if report.end == End::Settled => Some(format!(
+    let cd = report.cd_target.is_some() || parse(command).is_ok_and(|safe| safe.verb() == Verb::Cd);
+    match &report.cwd {
+        Some((path, CwdSource::Proc)) if cd && report.end == End::Settled => Some(format!(
             "pane {}: {} \u{2192} {}",
             report.number,
             shown_text(command),
@@ -518,5 +525,19 @@ mod tests {
         assert!(!line.contains(['\u{1b}', '\n']), "{line:?}");
         r.end = End::TimedOut;
         assert_eq!(system_line("cd x", &r), None, "only a settled cd");
+    }
+
+    // A `cd` the user approved with `y` skips the check, so it has no
+    // `cd_target`: it is still a `cd`, and still gets the line.
+    #[test]
+    fn a_cd_with_no_check_still_adds_the_system_line() {
+        let r = report(End::Settled, Some(""));
+        assert_eq!(r.cd_target, None);
+        assert_eq!(
+            system_line("cd /home/u", &r).as_deref(),
+            Some("pane 2: cd /home/u \u{2192} /home/u")
+        );
+        assert_eq!(system_line("ls", &r), None, "not a cd");
+        assert_eq!(system_line("cd x && ls", &r), None, "not one cd");
     }
 }

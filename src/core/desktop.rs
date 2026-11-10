@@ -29,17 +29,189 @@ pub const KNOWN_TERMINALS: [&str; 9] = [
     "x-terminal-emulator",
 ];
 
+/// The icons the launcher names with `Icon=lazarobox`, embedded so a
+/// `cargo install` user needs no files on disk: paths relative to the data
+/// directory, in the hicolor theme the desktop searches.
+pub const ICONS: [(&str, &[u8]); 6] = [
+    (
+        "icons/hicolor/256x256/apps/lazarobox.png",
+        include_bytes!("../../assets/icon/lazarobox-256.png"),
+    ),
+    (
+        "icons/hicolor/128x128/apps/lazarobox.png",
+        include_bytes!("../../assets/icon/lazarobox-128.png"),
+    ),
+    (
+        "icons/hicolor/48x48/apps/lazarobox.png",
+        include_bytes!("../../assets/icon/lazarobox-48.png"),
+    ),
+    (
+        "icons/hicolor/32x32/apps/lazarobox.png",
+        include_bytes!("../../assets/icon/lazarobox-32.png"),
+    ),
+    (
+        "icons/hicolor/16x16/apps/lazarobox.png",
+        include_bytes!("../../assets/icon/lazarobox-16.png"),
+    ),
+    (
+        "icons/hicolor/scalable/apps/lazarobox.svg",
+        include_bytes!("../../assets/icon/lazarobox.svg"),
+    ),
+];
+
+/// `<data_home>/icons/hicolor`: the theme folder whose cache may need a refresh.
+pub fn icon_theme_dir(data_home: &Path) -> PathBuf {
+    data_home.join("icons/hicolor")
+}
+
 const TEMPLATE: &str = include_str!("desktop/lazarobox.desktop");
 
-pub const USAGE: &str = "usage: lazarobox-shell install-desktop [--terminal <cmd>] [--uninstall]";
+pub const USAGE: &str =
+    "usage: lazarobox-shell install-desktop [--terminal <cmd>] [--dir <folder>] [--uninstall]";
 
-pub const NON_KITTY_NOTICE: &str =
-    "lazarobox is tested in Kitty; in other terminals some keys or OSC 52 clipboard may not work.";
+/// Where the terminal records live; a cargo-installed user has no
+/// `docs/terminals/` folder on disk.
+pub const RECORDS_URL: &str =
+    "https://github.com/pichu2707/lazarobox-shell/tree/main/docs/terminals";
+
+/// Whether this is WSL: `$WSL_DISTRO_NAME` is set, or the kernel release
+/// (`/proc/sys/kernel/osrelease`) names Microsoft.
+pub fn is_wsl(distro: Option<&str>, osrelease: Option<&str>) -> bool {
+    distro.is_some_and(|v| !v.is_empty())
+        || osrelease.is_some_and(|r| r.to_ascii_lowercase().contains("microsoft"))
+}
+
+/// Terminals that have a record under `docs/terminals/<name>/`.
+pub const RECORDED_TERMINALS: [&str; 2] = ["kitty", "zutty"];
+
+/// The Debian alternatives link: the system decides which terminal it runs.
+pub const ALTERNATIVES: &str = "x-terminal-emulator";
+
+/// The recorded terminal an `x-terminal-emulator` entry runs, if any.
+fn recorded_target<'a>(name: &str, runs: Option<&'a str>) -> Option<&'a str> {
+    runs.filter(|target| name == ALTERNATIVES && RECORDED_TERMINALS.contains(target))
+}
+
+/// What the launcher says about the host terminal; `None` is the terminal the
+/// desktop picks (unknown here).
+pub fn terminal_notice(name: Option<&str>) -> String {
+    match name {
+        Some(name) if RECORDED_TERMINALS.contains(&name) => {
+            format!("{name} has a record: {RECORDS_URL}")
+        }
+        _ => format!(
+            "{} has no test record yet; see {RECORDS_URL}. Some keys or the OSC 52 clipboard may not work.",
+            name.unwrap_or("the terminal your desktop picks")
+        ),
+    }
+}
+
+/// Said in WSL after the launcher is written (see `plan_install`). Assumed,
+/// not yet verified on a machine (task 3.8): WSLg lists user entries in the
+/// Start menu, and runs `Exec` as a Linux GUI app, so Windows Terminal is not
+/// used and a Linux GUI terminal is required in the distro.
+const WSL_NOTES: [&str; 2] = [
+    "WSL: this is the Linux launcher; it may not appear in the Windows Start menu.",
+    "WSL: WSLg runs it as a Linux GUI app, so a Linux GUI terminal (kitty, foot, gnome-terminal...) must be installed in this distro; otherwise run `lazarobox-shell` from a WSL shell.",
+];
+
+/// One installed terminal offered by the picker.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Entry {
+    pub name: String,
+    pub path: PathBuf,
+    /// Has a record under `docs/terminals/`.
+    pub tested: bool,
+    /// The terminal the automatic choice picks.
+    pub default: bool,
+}
+
+impl Entry {
+    /// The decision for this entry, as if it had been passed to `--terminal`.
+    pub fn choice(&self) -> Choice {
+        candidate(&self.name, self.path.clone(), Source::Flag)
+    }
+}
+
+/// What the user typed at the picker.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Parsed {
+    Pick(usize),
+    Retry(String),
+    Cancel,
+}
+
+/// The terminals the picker offers: `$TERMINAL`, `xdg-terminal-exec`, then
+/// `KNOWN_TERMINALS`, then the target `x-terminal-emulator` resolves to
+/// (`resolved_alternative`, only when its launch syntax is known). Only
+/// commands `lookup` finds are listed, once each by basename. Nothing is
+/// executed: candidates come from a path lookup alone, because some
+/// terminals open a window even for `--version`.
+pub fn picker_choices(
+    env_terminal: Option<&str>,
+    lookup: &dyn Fn(&str) -> Option<PathBuf>,
+    resolved_alternative: Option<PathBuf>,
+    automatic: &Choice,
+) -> Vec<Entry> {
+    let target = resolved_alternative.as_deref().and_then(target_name);
+    let wanted = env_terminal
+        .filter(|c| !c.is_empty())
+        .into_iter()
+        .chain(["xdg-terminal-exec"])
+        .chain(KNOWN_TERMINALS)
+        .filter_map(|cmd| Some((base_name(cmd), lookup(cmd)?)))
+        // A path that cannot go into `Exec` would be offered but never work.
+        .filter(|(_, path)| validate_path(path).is_ok())
+        .chain(resolved_alternative.and_then(|path| {
+            let name = base_name(path.to_str()?);
+            exec_syntax(&name).map(|_| (name, path))
+        }));
+    let auto_name = match automatic {
+        Choice::Terminal { name, .. } => Some(name),
+        Choice::Fallback => None,
+    };
+    let mut entries: Vec<Entry> = Vec::new();
+    for (name, path) in wanted {
+        if entries.iter().all(|e| e.name != name) {
+            entries.push(Entry {
+                tested: RECORDED_TERMINALS.contains(&name.as_str())
+                    || recorded_target(&name, target.as_deref()).is_some(),
+                default: auto_name == Some(&name),
+                name,
+                path,
+            });
+        }
+    }
+    entries
+}
+
+/// Reads one answer (`None` is end of input). Enter picks the default, a
+/// number picks that entry, anything else asks again with a notice.
+pub fn parse_choice(input: Option<&str>, entries: &[Entry]) -> Parsed {
+    let Some(input) = input else {
+        return Parsed::Cancel;
+    };
+    let text = input.trim();
+    if text.is_empty() {
+        return Parsed::Pick(entries.iter().position(|e| e.default).unwrap_or(0));
+    }
+    match text.parse::<usize>() {
+        Ok(n) if (1..=entries.len()).contains(&n) => Parsed::Pick(n - 1),
+        _ => Parsed::Retry(format!(
+            "{text:?} is not valid: type a number from 1 to {}, or press Enter for the default",
+            entries.len()
+        )),
+    }
+}
 
 /// What the user asked for.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Options {
-    Install { terminal: Option<String> },
+    Install {
+        terminal: Option<String>,
+        /// Folder the launcher starts in, as typed (resolved by the caller).
+        dir: Option<String>,
+    },
     Uninstall,
     Help,
 }
@@ -74,6 +246,9 @@ pub enum Choice {
         /// `false` when the name is not in the table (generic `-e`).
         known: bool,
         source: Source,
+        /// What `x-terminal-emulator` resolves to, when known. The record is
+        /// judged on it; `Exec` keeps `path`.
+        runs: Option<String>,
     },
     /// No terminal found: `Terminal=true` and the desktop picks one.
     Fallback,
@@ -90,6 +265,7 @@ pub struct Plan {
 /// Parses what follows `install-desktop`.
 pub fn parse_args(args: &[OsString]) -> Result<Options, String> {
     let mut terminal = None;
+    let mut dir = None;
     let mut uninstall = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -101,16 +277,26 @@ pub fn parse_args(args: &[OsString]) -> Result<Options, String> {
                 let value = it.next().and_then(|v| v.to_str());
                 terminal = Some(terminal_value(value)?);
             }
-            _ => match arg.strip_prefix("--terminal=") {
-                Some(value) => terminal = Some(terminal_value(Some(value))?),
-                None => return Err(format!("unknown argument: {arg}")),
+            "--dir" => dir = Some(dir_value(it.next().map(OsString::as_os_str))?),
+            _ => match (arg.strip_prefix("--terminal="), arg.strip_prefix("--dir=")) {
+                (Some(value), _) => terminal = Some(terminal_value(Some(value))?),
+                (_, Some(value)) => dir = Some(dir_value(Some(OsStr::new(value)))?),
+                _ => return Err(format!("unknown argument: {arg}")),
             },
         }
     }
-    match (uninstall, terminal) {
-        (true, Some(_)) => Err("--uninstall cannot be combined with --terminal".into()),
-        (true, None) => Ok(Options::Uninstall),
-        (false, terminal) => Ok(Options::Install { terminal }),
+    match (uninstall, terminal.is_some() || dir.is_some()) {
+        (true, true) => Err("--uninstall cannot be combined with --terminal or --dir".into()),
+        (true, false) => Ok(Options::Uninstall),
+        (false, _) => Ok(Options::Install { terminal, dir }),
+    }
+}
+
+fn dir_value(value: Option<&OsStr>) -> Result<String, String> {
+    match value.map(|v| v.to_str().ok_or(v)) {
+        Some(Ok(v)) if !v.is_empty() && !v.starts_with('-') => Ok(v.to_string()),
+        Some(Err(_)) => Err("--dir: folder name is not valid UTF-8".into()),
+        _ => Err("--dir needs a folder".into()),
     }
 }
 
@@ -202,18 +388,28 @@ pub fn choose_terminal(
     Ok((Choice::Fallback, notes))
 }
 
-fn candidate(cmd: &str, path: PathBuf, source: Source) -> Choice {
-    let name = Path::new(cmd)
+/// The terminal a resolved `x-terminal-emulator` path names.
+pub fn target_name(path: &Path) -> Option<String> {
+    Some(base_name(path.to_str()?))
+}
+
+fn base_name(cmd: &str) -> String {
+    Path::new(cmd)
         .file_name()
         .and_then(OsStr::to_str)
         .unwrap_or(cmd)
-        .to_string();
+        .to_string()
+}
+
+fn candidate(cmd: &str, path: PathBuf, source: Source) -> Choice {
+    let name = base_name(cmd);
     let known = exec_syntax(&name).is_some();
     Choice::Terminal {
         name,
         path,
         known,
         source,
+        runs: None,
     }
 }
 
@@ -245,9 +441,67 @@ pub fn is_build_artefact(path: &Path) -> bool {
 
 const BUILD_ARTEFACT_NOTE: &str = "the launcher points at a build artefact that `cargo clean` removes; run install-desktop from the installed binary (cargo install) instead.";
 
-/// Renders the launcher for `choice` running `bin`.
-pub fn plan_install(choice: &Choice, bin: &Path) -> Result<Plan, String> {
+/// A Desktop Entry *string* value: `\` is `\\`, a leading space is `\s`;
+/// control characters are refused. Spaces elsewhere are kept verbatim.
+fn entry_string(text: &str) -> Result<String, String> {
+    if text.chars().any(char::is_control) {
+        return Err(format!("unsupported folder (control characters): {text:?}"));
+    }
+    let escaped = text.replace('\\', "\\\\");
+    Ok(match escaped.strip_prefix(' ') {
+        Some(rest) => format!("\\s{rest}"),
+        None => escaped,
+    })
+}
+
+/// ` --dir=<dir>` as an `Exec` argument: quoted when it holds a reserved
+/// character, then escaped as a string value.
+fn dir_argument(dir: &str) -> Result<String, String> {
+    let arg = format!("--dir={dir}");
+    let quoted = if arg.chars().any(|c| RESERVED.contains(c)) {
+        let mut out = String::from("\"");
+        for c in arg.chars() {
+            match c {
+                '"' | '`' | '$' | '\\' => out.extend(['\\', c]),
+                '%' => out.push_str("%%"),
+                _ => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    } else {
+        arg
+    };
+    Ok(format!(" {}", entry_string(&quoted)?))
+}
+
+/// Renders the launcher for `choice` running `bin`, starting in `dir` (an
+/// absolute, existing folder; the caller checks it).
+pub fn plan_install(
+    choice: &Choice,
+    bin: &Path,
+    dir: Option<&Path>,
+    wsl: bool,
+) -> Result<Plan, String> {
     validate_path(bin)?;
+    let (path_line, dir_arg) = match dir {
+        None => (None, String::new()),
+        Some(dir) => {
+            let text = dir
+                .to_str()
+                .filter(|t| dir.is_absolute() && t.trim() == *t)
+                .ok_or_else(|| {
+                    format!(
+                        "unsupported folder (must be absolute, no leading or trailing whitespace): {}",
+                        dir.display()
+                    )
+                })?;
+            (
+                Some(format!("Path={}", entry_string(text)?)),
+                dir_argument(text)?,
+            )
+        }
+    };
     let bin_text = bin.to_string_lossy().into_owned();
     let mut notes = Vec::new();
     if is_build_artefact(bin) {
@@ -255,7 +509,11 @@ pub fn plan_install(choice: &Choice, bin: &Path) -> Result<Plan, String> {
     }
     let (exec, terminal_flag, wm_class) = match choice {
         Choice::Terminal {
-            name, path, known, ..
+            name,
+            path,
+            known,
+            runs,
+            ..
         } => {
             validate_path(path)?;
             let syntax = exec_syntax(name).unwrap_or(GENERIC);
@@ -265,9 +523,12 @@ pub fn plan_install(choice: &Choice, bin: &Path) -> Result<Plan, String> {
                     path.display()
                 ));
             }
-            if name != "kitty" {
-                notes.push(NON_KITTY_NOTICE.to_string());
-            }
+            notes.push(match recorded_target(name, runs.as_deref()) {
+                Some(target) => {
+                    format!("{name} resolves to {target}, which has a record: {RECORDS_URL}")
+                }
+                None => terminal_notice(Some(name)),
+            });
             let mut words = vec![path.to_string_lossy().into_owned()];
             words.extend(syntax.args.iter().map(|a| a.to_string()));
             words.push(bin_text);
@@ -278,26 +539,50 @@ pub fn plan_install(choice: &Choice, bin: &Path) -> Result<Plan, String> {
                 "no terminal found; the launcher uses Terminal=true and your desktop picks one"
                     .to_string(),
             );
-            notes.push(NON_KITTY_NOTICE.to_string());
+            notes.push(terminal_notice(None));
             (bin_text, "true", false)
         }
     };
+    if wsl {
+        notes.extend(WSL_NOTES.map(String::from));
+    }
+    let contents = render(
+        &exec,
+        &dir_arg,
+        path_line.as_deref(),
+        terminal_flag,
+        wm_class,
+    );
     Ok(Plan {
-        contents: render(&exec, terminal_flag, wm_class),
-        exec,
+        contents,
+        exec: format!("{exec}{dir_arg}"),
         notes,
     })
 }
 
-fn render(exec: &str, terminal: &str, wm_class: bool) -> String {
+fn render(
+    exec: &str,
+    dir_arg: &str,
+    path_line: Option<&str>,
+    terminal: &str,
+    wm_class: bool,
+) -> String {
     let mut out = String::new();
     for line in TEMPLATE.lines() {
         match line {
             "@STARTUP_WM_CLASS@" if !wm_class => continue,
+            "@PATH@" => match path_line {
+                Some(path) => out.push_str(path),
+                None => continue,
+            },
             "@STARTUP_WM_CLASS@" => out.push_str(&format!("StartupWMClass={WM_CLASS}")),
             _ => substitute(
                 line,
-                &[("@EXEC@", exec), ("@TERMINAL@", terminal)],
+                &[
+                    ("@EXEC@", exec),
+                    ("@DIR_ARG@", dir_arg),
+                    ("@TERMINAL@", terminal),
+                ],
                 &mut out,
             ),
         }

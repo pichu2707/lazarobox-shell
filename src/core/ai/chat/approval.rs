@@ -6,6 +6,8 @@
 //! module holds no IO and does not know which key means what: the caller
 //! maps keys to a [`Reply`].
 
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -14,16 +16,19 @@ use serde_json::Value;
 
 use crate::core::ai::{
     chat::{
-        engine::CallId,
-        review::{self, BatchReview},
+        BlockWhy,
+        engine::{CallId, Decision},
+        review::{self, BatchReview, CommitReview, ScreenReview},
         review_view::ReviewView,
     },
-    config::ApprovalMode,
+    config::{ApprovalMode, Task, ToolToggle},
+    orchestra::WorkerKey,
     sanitize::clean,
     tools::{
         Call, Locality, allow,
         command::Refusal,
         exec::{self, Fallback, SafeCommand},
+        issue_draft::IssueDraft,
     },
 };
 
@@ -45,26 +50,43 @@ fn next_id() -> u64 {
 }
 
 /// How long a prompt the model opened ignores `y`, `n` and Esc, so a key the
-/// user was already typing cannot answer it. The review of a batch waits
-/// longer; see [`ApprovalAsk::arm_delay`].
-pub const ASK_ARM_DELAY: Duration = Duration::from_millis(400);
+/// user was already typing cannot answer it. It is longer than the usual OS
+/// auto-repeat delay (X11 660 ms, KDE 600 ms): the first repeat of a key held
+/// from before the prompt, which comes past the hold window, still finds the
+/// prompt unarmed. The review of a batch waits as long; see
+/// [`ApprovalAsk::arm_delay`].
+pub const ASK_ARM_DELAY: Duration = Duration::from_millis(800);
 
 /// The reason given to a request made while another is pending.
 pub const ANOTHER_PENDING: &str = "another approval is pending";
 
+/// How many worker asks may wait behind the one shown; one more is refused
+/// with [`ANOTHER_PENDING`], so a flood never grows without limit.
+pub const MAX_QUEUED: usize = 16;
+
+/// The reason given to a worker ask that finds the queue full.
+pub const QUEUE_FULL: &str = "approval queue full";
+
 /// The outcome line of a run action that was declined or withdrawn.
 pub const RUN_CANCELLED: &str = "cancelled";
 
-/// The outcome line of a command typed into pane `number`.
-pub fn run_sent_line(number: usize) -> String {
-    format!("sent to pane {number}; press Enter there to run it")
+/// The outcome line of a command typed into pane `number`, with why it was
+/// not run when `y` in `run` mode could not run it.
+pub fn run_sent_line(number: usize, not_run: Option<&str>) -> String {
+    let line = format!("sent to pane {number}; press Enter there to run it");
+    match not_run {
+        Some(why) => format!("{line} (not run: {why})"),
+        None => line,
+    }
 }
 
 /// Whether `line` is the outcome line of a run action. Such a line is shown
 /// but never stored or sent, and it does not hide the block it came from.
 pub fn is_run_outcome(line: &str) -> bool {
     line == RUN_CANCELLED
-        || (line.starts_with("sent to pane ") && line.ends_with("; press Enter there to run it"))
+        || (line.starts_with("sent to pane ")
+            && (line.ends_with("; press Enter there to run it")
+                || line.contains("; press Enter there to run it (not run: ")))
 }
 
 /// What the user is asked to allow.
@@ -73,11 +95,37 @@ pub enum ApprovalAsk {
     /// Type `command` into a pane. The command is already validated.
     Run { command: String },
     /// Read `path` (sanitized for display) and send its text to the engine.
-    Read { path: String },
+    /// `reach` is where the host found the read leads, and `cloud` whether the
+    /// engine is a cloud one; only the approval mode reads them (see
+    /// [`answers_itself`]). [`ask_for`] puts [`Reach::Other`]; the host fills
+    /// in what it found. The ask an edit opens is always `Other`.
+    Read {
+        path: String,
+        reach: Reach,
+        cloud: bool,
+    },
+    /// A worker's read outside its run's scope: `path`, `reach` and `cloud`
+    /// as in `Read`, so the approval mode answers it exactly as the same chat
+    /// read (see [`answers_itself`]), and the worker's `label` (see
+    /// [`worker_label`]) for its prompt.
+    WorkerRead {
+        path: String,
+        label: String,
+        /// The worker that asks: the session the answer is addressed to.
+        worker: WorkerKey,
+        reach: Reach,
+        cloud: bool,
+    },
     /// Search the text of the files under `dir` (the root when `.`) for
     /// `pattern`, and send the matching lines to the engine. Both are one
-    /// sanitized line.
-    Search { pattern: String, dir: String },
+    /// sanitized line. `reach` is [`Reach::Root`] when the host found the
+    /// chat's root concrete enough to search on its own, [`Reach::Broad`]
+    /// when it is HOME or above; [`ask_for`] puts [`Reach::Other`].
+    Search {
+        pattern: String,
+        dir: String,
+        reach: Reach,
+    },
     /// Call a tool of a user-declared MCP server.
     External {
         server: String,
@@ -105,18 +153,161 @@ pub enum ApprovalAsk {
         /// watched git places, as one sanitized line the host fills in.
         earlier: Option<String>,
     },
+    /// Show the diff of the repository to the engine: file text leaves the
+    /// machine, so a cloud engine asks (`git_status` and `git_log` return
+    /// names and subjects only and never ask). `path` is `.` for the whole
+    /// tree, as one clean line. Never routed by the approval mode.
+    GitDiff { staged: bool, path: String },
+    /// Tell the engine what the panes run (`list_panes`): command lines leave
+    /// the machine on a cloud engine, so it asks. `text` is exactly what is
+    /// sent, already redacted; [`ask_for`] leaves it empty and the host fills
+    /// it in. Never routed by the approval mode.
+    Panes { text: String },
+    /// Send the text on the screen of pane number `pane` (`read_pane`), with
+    /// `scrollback` earlier lines. The host asks with `review: None`; the app
+    /// reads the pane when the ask arrives and keeps the frozen review: what
+    /// the user reads is what `y` sends. Asked on every engine and never
+    /// routed by the approval mode.
+    Screen {
+        pane: u32,
+        scrollback: Option<u32>,
+        review: Option<Arc<ScreenReview>>,
+    },
+    /// Send GitHub issue or pull request text of `repo` to a cloud engine:
+    /// asked before `gh` starts, once per repository and turn. `what` is the
+    /// call as one clean line; [`ask_for`] leaves `repo` empty and the host
+    /// fills in the sanitized `owner/name`. `ollama_cloud` marks an Ollama
+    /// `*-cloud` model, which counts as cloud here. Never routed by the
+    /// approval mode.
+    GithubRead {
+        repo: String,
+        what: String,
+        ollama_cloud: bool,
+    },
+    /// Let the user grant the GitHub tools to this chat (`/github`, never a
+    /// tool call): `repo` is the sanitized `owner/name` of `origin`. Only the
+    /// user's `y` answers; no mode, timer or model output does. `ask_for` and
+    /// the host never build it. `folder` is the folder `repo` was read from:
+    /// the grant is refused once the chat is not in it any more.
+    GithubGrant { repo: String, folder: PathBuf },
+    /// Let the user turn the `toggle` family on for this chat (`/write`,
+    /// never a tool call): `folder` is the chat folder it was opened in. Only
+    /// the user's `y` answers; no mode, timer or model output does. `ask_for`
+    /// and the host never build it. The grant is refused once the chat is not
+    /// in `folder` any more.
+    ToolGrant { toggle: ToolToggle, folder: PathBuf },
+    /// Let the chat write in `folder`, the resolved Windows drive folder it is
+    /// in (openspec `wsl-drive-access` D8): opened by the app after the user
+    /// chose the folder, never by a tool call. Only the user's unmodified `y`
+    /// answers it; no mode, timer or model output does.
+    DriveGrant { folder: PathBuf },
+    /// The model drafted an issue: on `y` the Feedback form opens with it at
+    /// the end of the turn, and only the form's Ctrl+S sends it. Asked on every
+    /// call, and no mode answers it. Only the user's unmodified `y` accepts.
+    IssueDraft(IssueDraft),
+    /// Stage `paths` in the index (one clean line, as the user will read it).
+    /// `files` is how many files a dry run says would be staged; the host
+    /// fills it in, [`ask_for`] leaves it `None`. Never routed by the
+    /// approval mode: every mode asks.
+    GitAdd { paths: String, files: Option<usize> },
+    /// Record the index as a commit. The user reads the message, the signing
+    /// notice and the whole staged diff in the review view; it is never routed
+    /// by the approval mode, so no mode approves it.
+    Commit(Arc<CommitReview>),
     /// Write a proposed batch of files. The user reads it in the review view;
     /// it is never routed by the approval mode, so no mode approves it.
     Batch(Arc<BatchReview>),
+    /// A worker's staged change is `high` risk and a receipt-driven review
+    /// would spend lens workers on it (S7b, D16): the user is asked first.
+    /// `y` consents; anything else declines, and the change goes on to the
+    /// batch review marked `not reviewed`. Never routed by the approval mode,
+    /// and only the user answers it: the orchestrator cannot.
+    Consent {
+        /// The worker whose change it is: the session the answer goes to.
+        worker: WorkerKey,
+        /// That worker's label (see [`worker_label`]), one clean line.
+        label: String,
+        /// Why the change is `high` and which paths it holds, one clean line.
+        change: String,
+    },
+    /// Change the chat folder (the user's `/cd`, never a tool call). `from`
+    /// is the current folder as one sanitized line, `to` the resolved folder
+    /// that becomes the chat's on `y`, and `note` a fact the user must see
+    /// (a broad folder). Only `y` answers; every other key cancels. After
+    /// `y` the ask stays up with `checking` set while the folder is resolved
+    /// once more: only Esc answers then.
+    Folder {
+        from: String,
+        to: PathBuf,
+        note: Option<String>,
+        checking: bool,
+    },
 }
 
+/// Where a read leads, as the host found it on the real path (every link
+/// followed) before it asked. A fact for the approval mode, never a verdict:
+/// the read itself judges the path again when it runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Reach {
+    /// Inside the chat's root, and the path guard allows it.
+    Root,
+    /// Inside the chat's root, but the root is HOME or a folder above it
+    /// (`/`): too broad to keep a read anywhere, so `run` never lets it go.
+    Broad,
+    /// The path guard refuses it (a sensitive, missing or hidden path): the
+    /// read returns the refusal and opens nothing.
+    Refused,
+    /// Anything else: outside the root, or not judged (the ask of an edit, a
+    /// search nobody judged).
+    Other,
+    /// A local read outside the root whose path cannot be shown as it would
+    /// be opened ([`UNSHOWABLE`]): no prompt may approve it, so the ask's
+    /// `path` is empty. `ask` and `auto` let it run as they always have.
+    Unshowable,
+}
+
+/// Why a read whose path cannot be shown exactly as it would be opened is
+/// refused: the user must never approve a path that differs from the one read.
+pub const UNSHOWABLE: &str = "path cannot be shown safely";
+
 impl ApprovalAsk {
+    /// The ask of a read of `path` on a cloud engine, judged by nobody yet:
+    /// every mode prompts for it.
+    pub fn read(path: impl Into<String>) -> Self {
+        Self::Read {
+            path: path.into(),
+            reach: Reach::Other,
+            cloud: true,
+        }
+    }
+
+    /// Whether a worker raised the ask (a read outside its scope, a batch it
+    /// proposed): only those queue behind a pending approval.
+    pub fn is_worker(&self) -> bool {
+        match self {
+            Self::WorkerRead { .. } | Self::Consent { .. } => true,
+            Self::Batch(review) => review.label().is_some(),
+            _ => false,
+        }
+    }
+
+    /// The worker whose session the ask belongs to, `None` for a chat's own.
+    /// The answer, and the withdrawal when the worker ends, are addressed to
+    /// that session and no other.
+    pub fn worker(&self) -> Option<WorkerKey> {
+        match self {
+            Self::WorkerRead { worker, .. } | Self::Consent { worker, .. } => Some(*worker),
+            Self::Batch(review) => review.worker(),
+            _ => None,
+        }
+    }
+
     /// How long after it opens the keys start to answer this ask: the review
     /// of a batch waits longer than any other ask, because the user has to
     /// read it first.
     pub fn arm_delay(&self) -> Duration {
         match self {
-            Self::Batch(_) => review::ARM_DELAY,
+            Self::Batch(_) | Self::Commit(_) | Self::Screen { .. } => review::ARM_DELAY,
             _ => ASK_ARM_DELAY,
         }
     }
@@ -131,18 +322,22 @@ impl ApprovalAsk {
 /// The path of a read ask is shown as it is: the caller passes the target
 /// resolved by `tools::paths::display_target`, which exists only when display
 /// sanitizing would not change it. The host opens the file from the call.
+/// A worker's read is not decided here: outside the run's scope the host asks
+/// [`ApprovalAsk::WorkerRead`] where a chat read would ask.
+/// The host also asks for a local read that leads outside the chat's root,
+/// so that `run` can prompt for it (see [`answers_itself`]).
 pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
     match call {
         Call::RunInPane { command } => Some(ApprovalAsk::Run {
             command: command.clone(),
         }),
         Call::ReadFile { path, .. } if locality == Locality::Cloud => {
-            Some(ApprovalAsk::Read { path: path.clone() })
+            Some(ApprovalAsk::read(path.clone()))
         }
         // An edit answers whether a text occurs in the file, so on a cloud
-        // engine it asks like a read of that file (and routes like one).
+        // engine it asks like a read of that file, one no mode answers.
         Call::EditFile { path, .. } if locality == Locality::Cloud => {
-            Some(ApprovalAsk::Read { path: path.clone() })
+            Some(ApprovalAsk::read(path.clone()))
         }
         // A command always asks, on any engine and in any approval mode.
         Call::RunCommand { .. } => {
@@ -157,6 +352,40 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
                 earlier: None,
             })
         }
+        // The diff holds file text, so it goes to a cloud provider only after
+        // the user's `y`; on a local engine it runs free.
+        Call::GitDiff { staged, path } if locality == Locality::Cloud => {
+            let path = flat(path.as_deref().unwrap_or("."), SEARCH_SHOWN).0;
+            Some(ApprovalAsk::GitDiff {
+                staged: *staged,
+                path: if path.is_empty() { ".".into() } else { path },
+            })
+        }
+        // The command lines of the panes go to the provider: the host fills
+        // in the exact text.
+        Call::ListPanes if locality == Locality::Cloud => Some(ApprovalAsk::Panes {
+            text: String::new(),
+        }),
+        // A screen holds anything the user typed or ran: every engine asks,
+        // in every mode. The app reads it when the ask arrives.
+        Call::ReadPane { pane, scrollback } => Some(ApprovalAsk::Screen {
+            pane: *pane,
+            scrollback: *scrollback,
+            review: None,
+        }),
+        // GitHub text goes to the provider: a cloud engine asks.
+        Call::Github(gh) if locality == Locality::Cloud => Some(ApprovalAsk::GithubRead {
+            repo: String::new(),
+            what: format!("{} {}", gh.name(), gh.argument()),
+            ollama_cloud: false,
+        }),
+        // Nothing leaves without the user: every call, every mode, asks.
+        Call::IssueDraft(draft) => Some(ApprovalAsk::IssueDraft(draft.clone())),
+        // An add changes the index: it always asks, on any engine and mode.
+        Call::GitAdd { paths } => Some(ApprovalAsk::GitAdd {
+            paths: flat(&joined_paths(paths), GIT_ADD_SHOWN).0,
+            files: None,
+        }),
         // A user tool always asks, on any engine and in any approval mode:
         // lazarobox cannot know what it does, and a read-only hint is ignored.
         Call::External {
@@ -172,11 +401,13 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
                 pattern: flat(pattern, SEARCH_SHOWN).0,
                 // A blank folder is the root, as no folder is.
                 dir: if dir.is_empty() { ".".into() } else { dir },
+                reach: Reach::Other,
             })
         }
         // `glob` returns names only and, like the directory tools, never asks.
         // Staging touches no disk and asks nothing: the host builds the batch
-        // ask itself when `propose_batch` seals the batch.
+        // ask itself when `propose_batch` seals the batch. An orchestration
+        // call touches nothing of the user's: it never asks.
         Call::ReadFile { .. }
         | Call::FindDir { .. }
         | Call::ListDir { .. }
@@ -185,8 +416,51 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         | Call::CreateDir { .. }
         | Call::WriteFile { .. }
         | Call::EditFile { .. }
-        | Call::ProposeBatch => None,
+        | Call::ProposeBatch
+        | Call::GitStatus
+        | Call::ListPanes
+        | Call::GitDiff { .. }
+        | Call::GitLog { .. }
+        // The host reads the index and builds the commit review itself.
+        | Call::GitCommit { .. }
+        | Call::Github(_)
+        | Call::Orchestra(_) => None,
     }
+}
+
+/// The label of a worker's asks: `<kind> <engine>><model>`, the engine and
+/// the model each one sanitized line, cut like a server name.
+pub fn worker_label(kind: Task, engine: &str, model: &str) -> String {
+    format!("{} {}>{}", kind.id(), shown_name(engine), shown_name(model))
+}
+
+/// The most characters of the paths of an add that its prompt shows. The host
+/// refuses an add whose paths are longer, so the prompt never hides one.
+pub const GIT_ADD_SHOWN: usize = 400;
+
+/// The paths of an add as the prompt writes them: a path with whitespace is
+/// quoted, so two paths never read as one.
+fn joined_paths(paths: &[String]) -> String {
+    let word = |p: &String| {
+        if p.contains(char::is_whitespace) {
+            format!("'{p}'")
+        } else {
+            p.clone()
+        }
+    };
+    paths.iter().map(word).collect::<Vec<_>>().join(" ")
+}
+
+/// The paths of an add as the prompt will show them, or `None` when the line
+/// would be cut or changed: the host refuses such an add before it asks,
+/// because `y` must approve exactly the paths that are staged.
+pub fn add_line(paths: &[String]) -> Option<String> {
+    if paths.iter().any(|p| p.contains('\'')) {
+        return None;
+    }
+    let joined = joined_paths(paths);
+    let (line, cut) = flat(&joined, GIT_ADD_SHOWN);
+    (cut == 0 && line == joined && !line.is_empty()).then_some(line)
 }
 
 /// The most characters of a search ask's pattern or folder that are shown.
@@ -330,22 +604,90 @@ pub const MAX_RUN_FALLBACKS: u8 = 3;
 pub const NO_CWD: &str = "the pane's directory cannot be read on this system";
 /// Why a path check refuses a command: the one refusal that counts toward the pause.
 pub const NOT_ALLOWED: &str = "a path in the command is not allowed to run directly";
+/// Why a command that leaves the chat's folder asks: a path it acts on, or
+/// the pane's directory, is elsewhere. Asking is no fault of the model.
+pub const OUTSIDE_ROOT: &str = "the command reaches outside the chat's folder";
+/// Why every command of a cloud chat asks when its folder is HOME or `/`.
+pub const BROAD_ROOT: &str = "the chat's folder is your home or /";
 pub const PAUSED: &str = "auto-run paused for this turn";
 pub const NON_UTF8: &str = "the pane's locale is not UTF-8";
 /// Why a command that the grammar accepts still takes the prompt: the pane
 /// or the turn is not free. None of them is the model's doing.
 pub const RUNNING: &str = "a command is still running in the pane";
 pub const HALF_TYPED: &str = "the pane has a half-typed line";
+/// Why `y` in `run` mode types a command instead of running it: one Enter
+/// cannot end a multi-line paste, and its output has no single echo row.
+pub const MULTI_LINE: &str = "a multi-line command is typed, not run";
 pub const FOCUSED: &str = "the pane has the focus";
 pub const HIDDEN: &str = "the chat's tab is not shown";
 pub const TOO_MANY: &str = "too many commands this turn";
+/// Why every `run_in_pane` command of a conversation that read GitHub text
+/// takes the prompt and is only typed, never run.
+pub const GITHUB_READ: &str = "auto-run is off: this conversation read GitHub text";
+/// The system line shown when a conversation starts to be blocked (its first
+/// GitHub read) and when a blocked one is resumed. ASCII: it must read on a
+/// Linux console.
+pub const GITHUB_BLOCK_LINE: &str =
+    "auto-run is off here: GitHub text was read; commands are only typed";
+/// The line shown when a conversation with rows of a role this build does not
+/// know is resumed: a newer build may have written GitHub text there, so it
+/// is blocked, but nothing says GitHub was read. ASCII.
+pub const NEWER_BLOCK_LINE: &str =
+    "auto-run is off here: messages from a newer version; commands are only typed";
+/// The line of the approval toggle to `run` in a blocked conversation.
+pub const RUN_BLOCKED_LINE: &str =
+    "approval: run (blocked: GitHub text was read; commands are only typed)";
+/// Why a read of the user's files asks on a cloud engine once the
+/// conversation read GitHub text.
+pub const GITHUB_READ_ASK: &str = "this conversation read GitHub: reads of your files need your y";
+/// The same three texts for a conversation blocked by rows of a newer
+/// version: nothing says GitHub was read, so none may say it.
+const NEWER_READ: &str = "auto-run is off: messages from a newer version";
+const NEWER_READ_ASK: &str = "messages from a newer version: reads of your files need your y";
+const NEWER_RUN_LINE: &str =
+    "approval: run (blocked: messages from a newer version; commands are only typed)";
+
+impl BlockWhy {
+    /// Why every `run_in_pane` command of the conversation is only typed.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Marker => GITHUB_READ,
+            Self::NewerRows => NEWER_READ,
+        }
+    }
+
+    /// Why a cloud read of the user's files asks, whatever the mode.
+    pub fn read_ask(self) -> &'static str {
+        match self {
+            Self::Marker => GITHUB_READ_ASK,
+            Self::NewerRows => NEWER_READ_ASK,
+        }
+    }
+
+    /// The line of the approval toggle to `run`.
+    pub fn run_line(self) -> &'static str {
+        match self {
+            Self::Marker => RUN_BLOCKED_LINE,
+            Self::NewerRows => NEWER_RUN_LINE,
+        }
+    }
+}
 
 /// Whether a fallback is the model's doing: the reasons of the pane and of
 /// the pause itself never count toward the pause.
 pub fn counts_toward_pause(fallback: &Fallback) -> bool {
     !matches!(
         fallback.why,
-        NO_CWD | PAUSED | NON_UTF8 | RUNNING | HALF_TYPED | FOCUSED | HIDDEN | TOO_MANY
+        NO_CWD
+            | PAUSED
+            | NON_UTF8
+            | RUNNING
+            | HALF_TYPED
+            | FOCUSED
+            | HIDDEN
+            | TOO_MANY
+            | GITHUB_READ
+            | NEWER_READ
     )
 }
 
@@ -417,6 +759,8 @@ pub struct AutoCtx {
     pub dirty: bool,
     /// The pane's locale names UTF-8, so bytes >= 0x80 mean what they say.
     pub utf8: bool,
+    /// The conversation is blocked and why: no command of it is run.
+    pub github_read: Option<BlockWhy>,
 }
 
 /// `AutoType` only for a model `run_in_pane` in `auto` mode, and `AutoRun`
@@ -463,6 +807,9 @@ fn busy(ctx: AutoCtx) -> Option<&'static str> {
 /// then the grammar, then the limits.
 fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
     let because = |why| Route::Prompt(Some(Fallback { at: 0..0, why }));
+    if let Some(why) = ctx.github_read {
+        return because(why.reason());
+    }
     if !ctx.cwd_known {
         return because(NO_CWD);
     }
@@ -476,6 +823,81 @@ fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
         Ok(safe) => busy(ctx).map_or(Route::AutoRun(safe), because),
         Err(fallback) => Route::Prompt(Some(fallback)),
     }
+}
+
+/// How a chat in `mode` answers a model's read or search ask itself, with
+/// no prompt; `None` opens the prompt. A read or a search let go gets
+/// [`Decision::Unprompted`], which the host never takes for the user's `y`.
+///
+/// In every mode: a cloud read that the path guard refuses (the read then
+/// returns the refusal and no prompt opens). In `run`: a search of a concrete
+/// root (its walk never leaves the root), and a cloud read that stays in such
+/// a root. A read or a search under a root that
+/// is HOME or `/` ([`Reach::Broad`]) prompts, and so does a read that leads
+/// outside the root, on every engine; one whose path cannot be shown is
+/// denied, as no prompt may approve it. In `ask` and `auto`: a local
+/// read outside the root, which runs free there as it always has; every
+/// other ask prompts. A worker's read outside its run's scope is answered
+/// exactly as the same chat read. A command, a user tool, a batch and the ask
+/// of an edit are never answered here.
+pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode, blocked: bool) -> Option<Decision> {
+    // A conversation that read GitHub text asks for every cloud read and
+    // search, in every mode. The guard's own refusal and a path that cannot be
+    // shown keep their answers: neither opens anything.
+    if blocked_read_reason(ask, blocked.then_some(BlockWhy::Marker)).is_some()
+        && !matches!(
+            ask,
+            ApprovalAsk::Read {
+                reach: Reach::Refused | Reach::Unshowable,
+                ..
+            } | ApprovalAsk::WorkerRead {
+                reach: Reach::Refused | Reach::Unshowable,
+                ..
+            }
+        )
+    {
+        return None;
+    }
+    let (ApprovalAsk::Read { reach, cloud, .. } | ApprovalAsk::WorkerRead { reach, cloud, .. }) =
+        ask
+    else {
+        let search = matches!(
+            ask,
+            ApprovalAsk::Search {
+                reach: Reach::Root,
+                ..
+            }
+        );
+        return (search && mode == ApprovalMode::Run).then_some(Decision::Unprompted);
+    };
+    match (mode, reach, cloud) {
+        // A cloud read the path guard refuses (a secret such as `.env`, any
+        // spelling of it, or a path that does not exist) is answered in every
+        // mode: the read returns the refusal and opens nothing, so a prompt
+        // would offer the user a `y` that cannot work.
+        (_, Reach::Refused, true) => Some(Decision::Unprompted),
+        (ApprovalMode::Run, Reach::Root, true) => Some(Decision::Unprompted),
+        (ApprovalMode::Run, Reach::Unshowable, _) => Some(Decision::Denied(UNSHOWABLE)),
+        (ApprovalMode::Run, _, _) => None,
+        // The local engine asks only for a read outside the root.
+        (ApprovalMode::Ask | ApprovalMode::Auto, Reach::Other | Reach::Unshowable, false) => {
+            Some(Decision::Unprompted)
+        }
+        (ApprovalMode::Ask | ApprovalMode::Auto, _, _) => None,
+    }
+}
+
+/// Why a cloud read or search of a conversation that read GitHub text asks
+/// for `y`, whatever the mode. `None` for a local read, any other ask, and a
+/// conversation that is not blocked.
+pub fn blocked_read_reason(ask: &ApprovalAsk, blocked: Option<BlockWhy>) -> Option<&'static str> {
+    let reads = matches!(
+        ask,
+        ApprovalAsk::Read { cloud: true, .. }
+            | ApprovalAsk::WorkerRead { cloud: true, .. }
+            | ApprovalAsk::Search { .. }
+    );
+    blocked.filter(|_| reads).map(BlockWhy::read_ask)
 }
 
 /// Where the request came from.
@@ -566,17 +988,123 @@ pub struct ApprovalPrompt {
 
 /// The keys of a run prompt.
 pub const RUN_KEYS: &str = "y type it (no Enter) · n cancel · p next pane";
+/// The keys of a model's run prompt in `run` mode, where `y` runs it.
+pub const RUN_NOW_KEYS: &str = "y run it · n cancel · p next pane";
 /// The keys of a read prompt.
 pub const READ_KEYS: &str = "y read it · n deny";
+/// The keys of the prompt that sends what the panes run.
+pub const PANES_KEYS: &str = "y send it · n deny";
+/// The keys of a drafted issue: `y` opens a form, it sends nothing.
+pub const ISSUE_DRAFT_KEYS: &str = "y open the form · n deny";
 /// The keys of a search prompt.
 pub const SEARCH_KEYS: &str = "y search · n deny";
+/// The keys of the folder prompt: nothing but `y` changes it.
+pub const FOLDER_KEYS: &str = "y change folder · any other key cancels";
+/// The keys of the folder prompt while the folder is checked after `y`.
+pub const FOLDER_CHECKING_KEYS: &str = "Esc cancels";
+/// The keys of the consent prompt of a receipt-driven review.
+pub const CONSENT_KEYS: &str = "y review it · n skip the review";
+/// The keys of the `/github` dialog. ASCII: it must read on a Linux console.
+pub const GITHUB_GRANT_KEYS: &str = "y allow | n or Esc decline";
+/// What the `/github` dialog adds under the repository. ASCII.
+pub const GITHUB_GRANT_NOTE: &str = "the model may read this repo's issues and PRs, for this chat only\na cloud engine still asks before each turn's first read\nafter the first read, commands are typed, never run";
+/// The system line of a grant: tools on from the next message, a cloud engine
+/// still asks, commands are typed after the first read. ASCII, 80 columns.
+pub const GITHUB_GRANTED_LINE: &str =
+    "GitHub tools on from next message; cloud still asks; commands typed after a read";
+/// The system line of a declined dialog.
+pub const GITHUB_DECLINED_LINE: &str = "GitHub tools stay off";
+/// Why a model's call cannot open the `/github` dialog.
+pub const GITHUB_GRANT_DENIED: &str = "only the user can grant the GitHub tools";
+
+/// The keys of the `/write` dialog.
+pub const TOOL_GRANT_KEYS: &str = "y allow | n or Esc decline";
+/// What the `/write` dialog adds under the folder. ASCII.
+pub const WRITE_GRANT_NOTE: &str = "the model may propose file changes in this folder, this chat only\nyou still review each batch before it is written\nthe saved Write toggle stays as it is";
+/// The system line of a `/write` grant. ASCII, 80 columns.
+pub const WRITE_GRANTED_LINE: &str =
+    "Write on for this chat from the next message; batches are still reviewed";
+/// The system line of a declined `/write` dialog.
+pub const WRITE_DECLINED_LINE: &str = "Write stays off";
+/// Why a model's call cannot open the `/write` dialog.
+pub const TOOL_GRANT_DENIED: &str = "only the user can turn Write on for a chat";
+
+/// The prompt of the `/write` dialog for the chat folder `folder`.
+pub fn tool_grant_prompt(toggle: ToolToggle, folder: &Path, armed: bool) -> ApprovalPrompt {
+    let name = match toggle {
+        ToolToggle::Write => "Write",
+        other => other.key(),
+    };
+    ApprovalPrompt {
+        target: format!("Turn {name} on for this chat?"),
+        command: clean(&folder.to_string_lossy()),
+        keys: TOOL_GRANT_KEYS,
+        armed,
+        why: None,
+        notice: Some(WRITE_GRANT_NOTE.to_owned()),
+    }
+}
+
+/// The keys of the drive grant prompt. ASCII: it must read on a Linux console.
+pub const DRIVE_GRANT_KEYS: &str = "y allow | n or Esc decline";
+/// What the drive grant prompt adds under the folder. ASCII.
+pub const DRIVE_GRANT_NOTE: &str = "the model may write files, run commands and use git in this folder until you quit\nyou still review each change and command as in your home";
+/// Why a model's call cannot open the drive grant prompt.
+pub const DRIVE_GRANT_DENIED: &str =
+    "only the user can let the chat write, run commands and use git on a Windows drive";
+
+/// The prompt that asks whether the chat may write, run commands and use git
+/// in the Windows drive folder `folder` (openspec `wsl-drive-access` D8).
+pub fn drive_grant_prompt(folder: &Path, armed: bool) -> ApprovalPrompt {
+    let shown = clean(&folder.to_string_lossy());
+    ApprovalPrompt {
+        target: format!("Allow writes, commands and git in {shown}? (y/n)"),
+        command: shown,
+        keys: DRIVE_GRANT_KEYS,
+        armed,
+        why: None,
+        notice: Some(DRIVE_GRANT_NOTE.to_owned()),
+    }
+}
+
+/// The system line of a granted drive folder.
+pub fn drive_granted_line(folder: &Path) -> String {
+    format!(
+        "writes allowed in {} until you quit",
+        clean(&folder.to_string_lossy())
+    )
+}
+
+/// The system line of a declined drive grant: how to be asked again.
+pub fn drive_declined_line(folder: &Path) -> String {
+    let shown = clean(&folder.to_string_lossy());
+    format!("the chat stays read-only in {shown}; /cd {shown} asks again")
+}
+
+/// The prompt of the `/github` dialog for the sanitized `repo`.
+pub fn grant_prompt(repo: &str, armed: bool) -> ApprovalPrompt {
+    ApprovalPrompt {
+        target: "Let this chat read GitHub?".to_owned(),
+        command: clean(repo),
+        keys: GITHUB_GRANT_KEYS,
+        armed,
+        why: None,
+        notice: Some(GITHUB_GRANT_NOTE.to_owned()),
+    }
+}
+
 /// The keys of a user tool prompt: no `p`, it has no target pane.
 pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 
-/// The pending approval of a chat, if any.
+/// The pending approval of a chat, if any, and the worker asks queued behind
+/// it (first in, first shown).
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Approvals {
     pending: Option<Approval>,
+    /// Worker asks that arrived while another was shown, oldest first.
+    queue: VecDeque<Approval>,
+    /// A queued ask just became the pending one and the app has not armed it.
+    promoted: bool,
     /// The review view of a pending [`ApprovalAsk::Batch`]. It goes with the
     /// approval, however that ends.
     review: Option<ReviewView>,
@@ -588,8 +1116,26 @@ impl Approvals {
         self.pending.as_ref()
     }
 
+    /// The worker asks waiting behind the pending one, oldest first.
+    pub fn queued(&self) -> impl Iterator<Item = &Approval> {
+        self.queue.iter()
+    }
+
+    /// How many worker asks wait behind the pending one.
+    pub fn waiting(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Whether the pending approval was a queued one, promoted by an answer
+    /// or a withdrawal since the last call. The app then arms it afresh.
+    pub fn take_promoted(&mut self) -> bool {
+        std::mem::take(&mut self.promoted)
+    }
+
     /// Ask the user and return the id of the new approval. Refused with
-    /// [`ANOTHER_PENDING`] when one is pending; the first stays pending.
+    /// [`ANOTHER_PENDING`] when one is pending; the first stays pending. A
+    /// worker's ask (see [`ApprovalAsk::is_worker`]) queues instead, up to
+    /// [`MAX_QUEUED`].
     pub fn request(&mut self, ask: ApprovalAsk, origin: Origin) -> Result<u64, Refusal> {
         self.open(ask, origin, None, None)
     }
@@ -615,19 +1161,39 @@ impl Approvals {
         call: Option<(u64, CallId)>,
         why: Option<String>,
     ) -> Result<u64, Refusal> {
+        // Only a tool call (it has a call) queues: a review the user opened
+        // is never a worker's ask, whatever its label.
+        let worker = call.is_some() && ask.is_worker();
         if self.pending.is_some() {
-            return Err(Refusal::new(ANOTHER_PENDING));
+            if !worker {
+                return Err(Refusal::new(ANOTHER_PENDING));
+            }
+            if self.queue.len() >= MAX_QUEUED {
+                return Err(Refusal::new(QUEUE_FULL));
+            }
         }
         let id = next_id();
-        self.review = None;
-        self.pending = Some(Approval {
+        let approval = Approval {
             id,
             ask,
             origin,
             call,
             why,
-        });
+        };
+        if self.pending.is_some() {
+            self.queue.push_back(approval);
+        } else {
+            self.review = None;
+            self.pending = Some(approval);
+        }
         Ok(id)
+    }
+
+    /// The pending approval ended: the oldest queued ask takes its place.
+    fn promote(&mut self) {
+        self.review = None;
+        self.pending = self.queue.pop_front();
+        self.promoted = self.pending.is_some();
     }
 
     /// Answer approval `id`. Only a [`Press::Press`] answers; a repeat or a
@@ -640,8 +1206,9 @@ impl Approvals {
         if self.pending.as_ref()?.id != id {
             return None;
         }
-        self.review = None;
-        self.pending.take().map(|approval| (approval, reply))
+        let approval = self.pending.take();
+        self.promote();
+        approval.map(|approval| (approval, reply))
     }
 
     /// End approval `id` without an answer (cancel, close, a target that is
@@ -649,10 +1216,12 @@ impl Approvals {
     /// records the result as denied.
     pub fn withdraw(&mut self, id: u64) -> Option<Approval> {
         if self.pending.as_ref()?.id != id {
-            return None;
+            let at = self.queue.iter().position(|queued| queued.id == id)?;
+            return self.queue.remove(at);
         }
-        self.review = None;
-        self.pending.take()
+        let approval = self.pending.take();
+        self.promote();
+        approval
     }
 
     /// The review view of the pending batch, if it is one.
@@ -684,6 +1253,21 @@ impl Approvals {
 mod tests {
     use super::*;
 
+    // A typed command's line, with or without why `y` did not run it, is an
+    // outcome: shown, never stored or sent.
+    #[test]
+    fn a_sent_line_with_the_reason_is_still_a_run_outcome() {
+        let plain = run_sent_line(1, None);
+        let why = run_sent_line(1, Some(NO_CWD));
+        assert_eq!(plain, "sent to pane 1; press Enter there to run it");
+        assert_eq!(
+            why,
+            "sent to pane 1; press Enter there to run it (not run: the pane's directory cannot be read on this system)"
+        );
+        assert!(is_run_outcome(&plain) && is_run_outcome(&why));
+        assert!(!is_run_outcome("sent to pane 1 (not run: x)"));
+    }
+
     const FREE: AutoCtx = AutoCtx {
         typed_this_turn: 0,
         line_pending: false,
@@ -694,6 +1278,7 @@ mod tests {
         paused: false,
         dirty: false,
         utf8: true,
+        github_read: None,
     };
 
     fn run_ask() -> ApprovalAsk {
@@ -721,6 +1306,56 @@ mod tests {
         }
     }
 
+    // Spec (agent-orchestrator, Outside read asks with a label): the label
+    // is the kind and `engine>model`, the engine and the model each one
+    // sanitized line cut like a server name.
+    #[test]
+    fn a_worker_label_is_the_kind_and_engine_model_on_one_clipped_line() {
+        assert_eq!(
+            worker_label(Task::Review, "claude", "opus"),
+            "review claude>opus"
+        );
+        let model = format!("qwen\n\x1b[31m{}", "m".repeat(100));
+        let label = worker_label(Task::Code, "ollama", &model);
+        assert!(label.starts_with("code ollama>qwen "), "{label:?}");
+        assert!(
+            !label.contains('\n') && !label.contains('\x1b'),
+            "{label:?}"
+        );
+        assert!(label.ends_with('\u{2026}'), "{label:?}");
+        assert_eq!(label.chars().count(), "code ollama>".len() + SHOWN_NAME + 1);
+    }
+
+    // Spec (agent-orchestrator, Outside read follows the mode as a chat read):
+    // a worker's read ask is never typed or run: where the mode does not
+    // answer it, it prompts, as the same chat read does.
+    #[test]
+    fn a_worker_read_routes_as_the_same_chat_read_in_every_mode() {
+        for (reach, cloud) in [
+            (Reach::Other, true),
+            (Reach::Root, true),
+            (Reach::Other, false),
+        ] {
+            let worker = ApprovalAsk::WorkerRead {
+                worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+                path: "~/a".into(),
+                label: "review claude>opus".into(),
+                reach,
+                cloud,
+            };
+            let chat = ApprovalAsk::Read {
+                path: "~/a".into(),
+                reach,
+                cloud,
+            };
+            for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+                let got = route(&worker, Origin::Tool, mode, FREE);
+                assert_eq!(got, route(&chat, Origin::Tool, mode, FREE), "{mode:?}");
+                assert_eq!(got, Route::Prompt(None), "{mode:?}");
+            }
+        }
+    }
+
     // Spec (chat-pane, approval mode): D18 routing.
     #[test]
     fn a_model_run_in_auto_mode_is_typed_when_nothing_blocks_it() {
@@ -731,7 +1366,7 @@ mod tests {
 
     #[test]
     fn ask_mode_and_other_asks_always_prompt() {
-        let read = ApprovalAsk::Read { path: "~/a".into() };
+        let read = ApprovalAsk::read("~/a");
         let external = ApprovalAsk::External {
             server: "s".into(),
             tool: "t".into(),
@@ -805,7 +1440,7 @@ mod tests {
 
     #[test]
     fn auto_and_ask_never_produce_a_run() {
-        for ask in ["cd x", "ls", "pwd", "mkdir -p a"] {
+        for ask in ["cd x", "ls", "pwd", "mkdir -p a", "rg foo", "git status"] {
             for mode in [ApprovalMode::Auto, ApprovalMode::Ask] {
                 let ask = ask_of(ask);
                 let route = route(&ask, Origin::Tool, mode, FREE);
@@ -887,7 +1522,7 @@ mod tests {
             panic!("{got:?}")
         };
         assert_eq!((fallback.at, fallback.why), (3..4, "shell metacharacter"));
-        let ask = ask_of("git status");
+        let ask = ask_of("cargo build");
         let got = route(&ask, Origin::Tool, ApprovalMode::Run, FREE);
         assert_eq!(why(&got), Some("not a safe command"));
     }
@@ -933,7 +1568,7 @@ mod tests {
 
     #[test]
     fn only_a_model_run_can_run() {
-        let read = ApprovalAsk::Read { path: "~/a".into() };
+        let read = ApprovalAsk::read("~/a");
         for (ask, origin) in [
             (run_ask(), Origin::Block),
             (read.clone(), Origin::Tool),
@@ -998,7 +1633,7 @@ mod tests {
             assert!(matches!(&got, Route::Prompt(Some(f)) if !counts_toward_pause(f)));
         }
         // A command off the grammar still names the grammar, not the pane.
-        let off = ask_of("git status");
+        let off = ask_of("cargo build");
         let busy = AutoCtx {
             executing: true,
             ..FREE
@@ -1015,7 +1650,7 @@ mod tests {
             reason_line(&fallback, text)
         };
         assert_eq!(line("cd a && ls"), "shell metacharacter: `&&`");
-        assert_eq!(line("git status"), "not a safe command: `git`");
+        assert_eq!(line("cargo build"), "not a safe command: `cargo`");
         assert_eq!(line("ls -R src"), "flag not allowed: `-R`");
         // Nothing to name: no token, or a token that is only a space.
         assert_eq!(line("ls "), "trailing space");
@@ -1064,7 +1699,7 @@ mod tests {
             matches!(&got, Route::Prompt(Some(f)) if counts_toward_pause(f))
         };
         assert!(counted("ls *"));
-        assert!(counted("git status"));
+        assert!(counted("cargo build"));
         for ctx in [
             AutoCtx {
                 paused: true,
@@ -1116,9 +1751,7 @@ mod tests {
         assert_eq!(ask_for(&read, Locality::Local), None);
         assert_eq!(
             ask_for(&read, Locality::Cloud),
-            Some(ApprovalAsk::Read {
-                path: "~/a.txt".into()
-            })
+            Some(ApprovalAsk::read("~/a.txt"))
         );
     }
 
@@ -1152,10 +1785,295 @@ mod tests {
         }
     }
 
+    // Spec (pane-execution, Auto-run block): the block is checked first and is
+    // nobody's fault, so it never counts toward the pause.
+    #[test]
+    fn a_blocked_conversation_prompts_with_the_reason_before_anything_else() {
+        let blocked = AutoCtx {
+            github_read: Some(BlockWhy::Marker),
+            ..FREE
+        };
+        assert_eq!(
+            GITHUB_READ,
+            "auto-run is off: this conversation read GitHub text"
+        );
+        for command in ["cd x", "pwd", "ls", "cargo build"] {
+            let ask = ask_of(command);
+            let got = route(&ask, Origin::Tool, ApprovalMode::Run, blocked);
+            assert_eq!(why(&got), Some(GITHUB_READ), "{command}");
+            assert!(matches!(&got, Route::Prompt(Some(f)) if !counts_toward_pause(f)));
+        }
+        // It wins over the other reasons, the pause and the unknown directory.
+        let every = AutoCtx {
+            cwd_known: false,
+            paused: true,
+            executing: true,
+            ..blocked
+        };
+        let ask = run_ask();
+        let got = route(&ask, Origin::Tool, ApprovalMode::Run, every);
+        assert_eq!(why(&got), Some(GITHUB_READ));
+    }
+
+    // Rows of a newer version block too, with a reason that is true.
+    #[test]
+    fn a_newer_rows_block_prompts_with_its_own_reason() {
+        use super::super::BlockWhy;
+        let blocked = AutoCtx {
+            github_read: Some(BlockWhy::NewerRows),
+            ..FREE
+        };
+        let ask = run_ask();
+        let got = route(&ask, Origin::Tool, ApprovalMode::Run, blocked);
+        assert_eq!(why(&got), Some(BlockWhy::NewerRows.reason()));
+        assert_ne!(why(&got), Some(GITHUB_READ));
+        assert!(matches!(&got, Route::Prompt(Some(f)) if !counts_toward_pause(f)));
+    }
+
+    // Spec (pane-execution, Auto and ask unchanged).
+    #[test]
+    fn auto_and_ask_route_as_before_while_blocked() {
+        let blocked = AutoCtx {
+            github_read: Some(BlockWhy::Marker),
+            ..FREE
+        };
+        assert_eq!(
+            route(&run_ask(), Origin::Tool, ApprovalMode::Auto, blocked),
+            Route::AutoType
+        );
+        assert_eq!(
+            route(&run_ask(), Origin::Tool, ApprovalMode::Ask, blocked),
+            Route::Prompt(None)
+        );
+    }
+
+    // Spec (agent-tools, Reads in a blocked conversation).
+    #[test]
+    fn a_blocked_conversation_answers_no_cloud_read_or_search_itself() {
+        use ApprovalMode::{Ask, Auto, Run};
+        use Reach::{Broad, Other, Refused, Root, Unshowable};
+        let read = |reach, cloud| ApprovalAsk::Read {
+            path: "~/a".into(),
+            reach,
+            cloud,
+        };
+        let search = |reach| ApprovalAsk::Search {
+            pattern: "x".into(),
+            dir: ".".into(),
+            reach,
+        };
+        for mode in [Ask, Auto, Run] {
+            for reach in [Root, Broad, Other] {
+                assert_eq!(answers_itself(&read(reach, true), mode, true), None);
+                assert_eq!(answers_itself(&search(reach), mode, true), None);
+            }
+            // The guard's own refusal opens nothing and stays free.
+            assert_eq!(
+                answers_itself(&read(Refused, true), mode, true),
+                Some(Decision::Unprompted)
+            );
+            // The local engine is unchanged.
+            for reach in [Root, Broad, Other, Refused, Unshowable] {
+                assert_eq!(
+                    answers_itself(&read(reach, false), mode, true),
+                    answers_itself(&read(reach, false), mode, false),
+                    "{mode:?} {reach:?}"
+                );
+            }
+        }
+        assert_eq!(
+            answers_itself(&read(Unshowable, true), Run, true),
+            Some(Decision::Denied(UNSHOWABLE))
+        );
+        // Unblocked rows are as they were.
+        assert_eq!(
+            answers_itself(&read(Root, true), Run, false),
+            Some(Decision::Unprompted)
+        );
+        assert_eq!(
+            answers_itself(&search(Root), Run, false),
+            Some(Decision::Unprompted)
+        );
+    }
+
+    #[test]
+    fn the_read_reason_names_blocked_cloud_reads_only() {
+        let cloud = ApprovalAsk::Read {
+            path: "a".into(),
+            reach: Reach::Root,
+            cloud: true,
+        };
+        let local = ApprovalAsk::Read {
+            path: "a".into(),
+            reach: Reach::Other,
+            cloud: false,
+        };
+        assert_eq!(
+            blocked_read_reason(&cloud, Some(BlockWhy::Marker)),
+            Some("this conversation read GitHub: reads of your files need your y")
+        );
+        assert_eq!(blocked_read_reason(&cloud, None), None);
+        assert_eq!(blocked_read_reason(&local, Some(BlockWhy::Marker)), None);
+        assert_eq!(
+            blocked_read_reason(&ask_of("ls"), Some(BlockWhy::Marker)),
+            None
+        );
+    }
+
+    fn worker_ask(reach: Reach, cloud: bool) -> ApprovalAsk {
+        ApprovalAsk::WorkerRead {
+            path: "a".into(),
+            label: "w".into(),
+            worker: WorkerKey::for_test(1, 1),
+            reach,
+            cloud,
+        }
+    }
+
+    #[test]
+    fn a_blocked_worker_cloud_read_asks_in_every_mode() {
+        let ask = worker_ask(Reach::Other, true);
+        assert_eq!(
+            blocked_read_reason(&ask, Some(BlockWhy::Marker)),
+            Some(GITHUB_READ_ASK)
+        );
+        assert_eq!(blocked_read_reason(&ask, None), None);
+        assert_eq!(
+            blocked_read_reason(&worker_ask(Reach::Other, false), Some(BlockWhy::Marker)),
+            None
+        );
+        for mode in [ApprovalMode::Run, ApprovalMode::Ask, ApprovalMode::Auto] {
+            for reach in [Reach::Root, Reach::Other, Reach::Broad] {
+                assert_eq!(
+                    answers_itself(&worker_ask(reach, true), mode, true),
+                    None,
+                    "{mode:?} {reach:?}"
+                );
+            }
+        }
+        // The guard's refusal and an unshowable path keep their answers.
+        assert_eq!(
+            answers_itself(&worker_ask(Reach::Refused, true), ApprovalMode::Run, true),
+            Some(Decision::Unprompted)
+        );
+        assert_eq!(
+            answers_itself(
+                &worker_ask(Reach::Unshowable, true),
+                ApprovalMode::Run,
+                true
+            ),
+            Some(Decision::Denied(UNSHOWABLE))
+        );
+    }
+
+    #[test]
+    fn the_github_lines_fit_80_columns() {
+        for line in [
+            GITHUB_BLOCK_LINE,
+            NEWER_BLOCK_LINE,
+            RUN_BLOCKED_LINE,
+            GITHUB_READ,
+            GITHUB_READ_ASK,
+            GITHUB_GRANTED_LINE,
+            GITHUB_DECLINED_LINE,
+            GITHUB_GRANT_DENIED,
+            GITHUB_GRANT_KEYS,
+            TOOL_GRANT_KEYS,
+            WRITE_GRANTED_LINE,
+            WRITE_DECLINED_LINE,
+            TOOL_GRANT_DENIED,
+        ] {
+            assert!(line.is_ascii() && line.len() <= 80, "{line:?}");
+        }
+    }
+
     fn search_ask(pattern: &str, dir: &str) -> ApprovalAsk {
         ApprovalAsk::Search {
             pattern: pattern.into(),
             dir: dir.into(),
+            reach: Reach::Other,
+        }
+    }
+
+    // The whole table of what a mode answers itself: every mode, every read
+    // reach on both kinds of engine, every search reach, and the asks no mode
+    // answers. `Some(None)` is a prompt.
+    #[test]
+    fn answers_itself_follows_its_table_for_every_mode_ask_and_reach() {
+        use ApprovalMode::{Ask, Auto, Run};
+        use Reach::{Broad, Other, Refused, Root, Unshowable};
+        let free = Some(Decision::Unprompted);
+        let read = |reach, cloud| ApprovalAsk::Read {
+            path: "~/a".into(),
+            reach,
+            cloud,
+        };
+        let search = |reach| ApprovalAsk::Search {
+            pattern: "x".into(),
+            dir: ".".into(),
+            reach,
+        };
+        let unshowable = Some(Decision::Denied(UNSHOWABLE));
+        #[rustfmt::skip]
+        let reads = [
+            // (reach, cloud, run, ask and auto)
+            (Root, true, free, None),
+            // A path the guard refuses never prompts on a cloud engine, in
+            // any mode: the user's `y` could not open it (T10).
+            (Refused, true, free, free),
+            (Broad, true, None, None),
+            (Other, true, None, None),
+            (Unshowable, true, unshowable, None),
+            (Root, false, None, None),
+            (Refused, false, None, None),
+            (Broad, false, None, None),
+            (Other, false, None, free),
+            (Unshowable, false, unshowable, free),
+        ];
+        // A worker's read outside its run's scope follows the same table
+        // (agent-orchestrator, Outside read follows the mode as a chat read).
+        let worker = |reach, cloud| ApprovalAsk::WorkerRead {
+            worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+            path: "~/a".into(),
+            label: "review claude>opus".into(),
+            reach,
+            cloud,
+        };
+        for (reach, cloud, run, others) in reads {
+            for ask in [read(reach, cloud), worker(reach, cloud)] {
+                assert_eq!(answers_itself(&ask, Run, false), run, "{ask:?}");
+                for mode in [Ask, Auto] {
+                    assert_eq!(
+                        answers_itself(&ask, mode, false),
+                        others,
+                        "{mode:?} {ask:?}"
+                    );
+                }
+            }
+        }
+        for (reach, run) in [(Root, free), (Broad, None), (Other, None), (Refused, None)] {
+            assert_eq!(answers_itself(&search(reach), Run, false), run, "{reach:?}");
+            for mode in [Ask, Auto] {
+                assert_eq!(
+                    answers_itself(&search(reach), mode, false),
+                    None,
+                    "{mode:?}"
+                );
+            }
+        }
+        let never = [
+            run("ls"),
+            ApprovalAsk::External {
+                server: "s".into(),
+                tool: "t".into(),
+                args: "{}".into(),
+            },
+            ApprovalAsk::read("~/a"),
+        ];
+        for ask in never {
+            for mode in [Ask, Auto, Run] {
+                assert_eq!(answers_itself(&ask, mode, false), None, "{mode:?} {ask:?}");
+            }
         }
     }
 
@@ -1189,7 +2107,7 @@ mod tests {
             pattern: "a\u{1b}[31mb\nc".into(),
             dir: Some("x\ny".into()),
         };
-        let Some(ApprovalAsk::Search { pattern, dir }) = ask_for(&call, Locality::Cloud) else {
+        let Some(ApprovalAsk::Search { pattern, dir, .. }) = ask_for(&call, Locality::Cloud) else {
             panic!("a cloud grep must ask");
         };
         assert_eq!((pattern.as_str(), dir.as_str()), ("ab c", "x y"));
@@ -1266,17 +2184,111 @@ mod tests {
         let mut a = Approvals::default();
         a.request(run("one"), Origin::Block).unwrap();
         let err = a
-            .request(ApprovalAsk::Read { path: "/x".into() }, Origin::Tool)
+            .request(ApprovalAsk::read("/x"), Origin::Tool)
             .unwrap_err();
         assert_eq!(err.reason(), "another approval is pending");
         assert_eq!(a.pending().unwrap().ask(), &run("one"));
+    }
+
+    fn worker_read(path: &str, label: &str) -> ApprovalAsk {
+        ApprovalAsk::WorkerRead {
+            worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+            path: path.into(),
+            label: label.into(),
+            reach: Reach::Other,
+            cloud: false,
+        }
+    }
+
+    // Spec (agent-tools, Approval queue for workers; FIFO order): asks A then
+    // B from different workers are shown A first, then B, one at a time.
+    #[test]
+    fn worker_asks_queue_in_arrival_order_and_show_one_at_a_time() {
+        let mut a = Approvals::default();
+        let first = a
+            .request_call(worker_read("a", "review claude>opus"), 1, CallId(1), None)
+            .unwrap();
+        let second = a
+            .request_call(worker_read("b", "general codex>x"), 1, CallId(2), None)
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(a.pending().unwrap().id(), first);
+        assert_eq!(a.waiting(), 1);
+        let (done, _) = a.answer(first, Reply::Approve, Press::Press).unwrap();
+        assert_eq!(done.call(), Some((1, CallId(1))));
+        assert_eq!(a.pending().unwrap().id(), second);
+        assert_eq!(a.waiting(), 0);
+        assert!(a.take_promoted());
+        assert!(!a.take_promoted(), "reported once");
+        a.answer(second, Reply::Decline, Press::Press).unwrap();
+        assert!(a.pending().is_none() && !a.take_promoted());
+    }
+
+    // Spec (chat-pane, Approval label and queue): each answer applies to its
+    // own prompt only; an id that is not the shown one changes nothing.
+    #[test]
+    fn an_answer_applies_to_its_own_prompt_only() {
+        let mut a = Approvals::default();
+        a.request_call(worker_read("a", "w"), 1, CallId(1), None)
+            .unwrap();
+        let second = a
+            .request_call(worker_read("b", "w"), 1, CallId(2), None)
+            .unwrap();
+        assert!(a.answer(second, Reply::Approve, Press::Press).is_none());
+        assert_eq!(a.waiting(), 1);
+    }
+
+    // Spec (agent-tools): cancelling a session denies its pending and queued
+    // approvals. A queued ask can be withdrawn without touching the shown one.
+    #[test]
+    fn a_queued_ask_can_be_withdrawn_and_the_shown_one_stays() {
+        let mut a = Approvals::default();
+        let first = a
+            .request_call(worker_read("a", "w"), 1, CallId(1), None)
+            .unwrap();
+        let second = a
+            .request_call(worker_read("b", "w"), 1, CallId(2), None)
+            .unwrap();
+        let withdrawn = a.withdraw(second).unwrap();
+        assert_eq!(withdrawn.call(), Some((1, CallId(2))));
+        assert_eq!(a.pending().unwrap().id(), first);
+        assert_eq!(a.waiting(), 0);
+        assert!(!a.take_promoted());
+    }
+
+    // A chat's own asks keep the one-pending rule; only a worker's queue.
+    #[test]
+    fn a_chat_ask_is_still_refused_beside_a_pending_worker_ask() {
+        let mut a = Approvals::default();
+        a.request_call(worker_read("a", "w"), 1, CallId(1), None)
+            .unwrap();
+        let err = a
+            .request_call(ApprovalAsk::read("/x"), 1, CallId(2), None)
+            .unwrap_err();
+        assert_eq!(err.reason(), ANOTHER_PENDING);
+        assert_eq!(a.waiting(), 0);
+    }
+
+    // The queue is bounded: a flood is refused, never grown without limit.
+    #[test]
+    fn the_worker_queue_is_bounded() {
+        let mut a = Approvals::default();
+        for n in 0..=MAX_QUEUED as u64 {
+            a.request_call(worker_read("a", "w"), 1, CallId(n), None)
+                .unwrap();
+        }
+        let err = a
+            .request_call(worker_read("z", "w"), 1, CallId(999), None)
+            .unwrap_err();
+        assert_eq!(err.reason(), QUEUE_FULL);
+        assert_eq!(a.waiting(), MAX_QUEUED);
     }
 
     #[test]
     fn all_three_asks_can_be_pending() {
         for ask in [
             run("ls"),
-            ApprovalAsk::Read { path: "/x".into() },
+            ApprovalAsk::read("/x"),
             ApprovalAsk::External {
                 server: "s".into(),
                 tool: "t".into(),
@@ -1430,6 +2442,238 @@ mod tests {
                     })
                 );
             }
+        }
+    }
+
+    // list_panes follows read_file: free on a local engine, asked on a cloud
+    // one (the host fills in the text).
+    #[test]
+    fn list_panes_asks_on_a_cloud_engine_only() {
+        assert_eq!(ask_for(&Call::ListPanes, Locality::Local), None);
+        assert_eq!(
+            ask_for(&Call::ListPanes, Locality::Cloud),
+            Some(ApprovalAsk::Panes {
+                text: String::new()
+            })
+        );
+    }
+
+    // No approval mode answers it: the user reads the text.
+    #[test]
+    fn no_approval_mode_answers_the_panes_ask() {
+        let ask = ApprovalAsk::Panes { text: "x".into() };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            assert_eq!(answers_itself(&ask, mode, false), None, "{mode:?}");
+        }
+    }
+
+    // read_pane sends the text of a screen to the model: it asks on every
+    // engine, and the screen is read later, by the app.
+    #[test]
+    fn read_pane_asks_on_every_engine() {
+        let call = Call::ReadPane {
+            pane: 3,
+            scrollback: Some(20),
+        };
+        for locality in [Locality::Local, Locality::Cloud] {
+            assert_eq!(
+                ask_for(&call, locality),
+                Some(ApprovalAsk::Screen {
+                    pane: 3,
+                    scrollback: Some(20),
+                    review: None
+                }),
+                "{locality:?}"
+            );
+        }
+    }
+
+    // No approval mode answers it, blocked or not: only the user's `y` on the
+    // frozen text does.
+    #[test]
+    fn no_approval_mode_answers_a_screen_ask() {
+        let ask = ApprovalAsk::Screen {
+            pane: 2,
+            scrollback: None,
+            review: None,
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for blocked in [false, true] {
+                assert_eq!(answers_itself(&ask, mode, blocked), None, "{mode:?}");
+            }
+        }
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            assert_eq!(
+                route(&ask, Origin::Tool, mode, FREE),
+                Route::Prompt(None),
+                "{mode:?}"
+            );
+        }
+    }
+
+    // Spec (github-tools, Cloud consent): GitHub text goes to the provider, so
+    // a cloud engine asks and a local one reads free; the host fills in `repo`.
+    #[test]
+    fn a_github_read_asks_on_a_cloud_engine_only() {
+        use crate::core::ai::tools::github::{GhCall, State};
+        let view = Call::Github(GhCall::IssueView {
+            number: 12,
+            comments: true,
+        });
+        let list = Call::Github(GhCall::IssueList {
+            state: State::All,
+            limit: 5,
+        });
+        assert_eq!(ask_for(&view, Locality::Local), None);
+        assert_eq!(ask_for(&list, Locality::Local), None);
+        for (call, what) in [
+            (view, "gh_issue_view #12 comments"),
+            (list, "gh_issue_list all (max 5)"),
+        ] {
+            assert_eq!(
+                ask_for(&call, Locality::Cloud),
+                Some(ApprovalAsk::GithubRead {
+                    repo: String::new(),
+                    what: what.into(),
+                    ollama_cloud: false
+                })
+            );
+        }
+    }
+
+    // No mode answers it, blocked or not: the user reads the repository.
+    #[test]
+    fn no_approval_mode_answers_the_github_ask() {
+        let ask = ApprovalAsk::GithubRead {
+            repo: "o/r".into(),
+            what: "gh_pr_view #7".into(),
+            ollama_cloud: true,
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for blocked in [false, true] {
+                assert_eq!(answers_itself(&ask, mode, blocked), None, "{mode:?}");
+            }
+        }
+    }
+
+    // Spec (git-tools, Read verbs): `git_status` and `git_log` run free;
+    // `git_diff` shows file text, so it asks on a cloud engine only.
+    #[test]
+    fn git_diff_asks_on_a_cloud_engine_and_the_other_read_verbs_never_do() {
+        let diff = Call::GitDiff {
+            staged: true,
+            path: Some("src/a.rs".into()),
+        };
+        assert_eq!(ask_for(&diff, Locality::Local), None);
+        assert_eq!(
+            ask_for(&diff, Locality::Cloud),
+            Some(ApprovalAsk::GitDiff {
+                staged: true,
+                path: "src/a.rs".into()
+            })
+        );
+        let whole = Call::GitDiff {
+            staged: false,
+            path: None,
+        };
+        assert_eq!(
+            ask_for(&whole, Locality::Cloud),
+            Some(ApprovalAsk::GitDiff {
+                staged: false,
+                path: ".".into()
+            })
+        );
+        let log = Call::GitLog {
+            max_count: None,
+            path: None,
+        };
+        for locality in [Locality::Local, Locality::Cloud] {
+            assert_eq!(ask_for(&Call::GitStatus, locality), None);
+            assert_eq!(ask_for(&log, locality), None);
+        }
+    }
+
+    // Spec (git-tools, add): every engine asks for an add, with the paths as
+    // one line; a path with a space is quoted so two never read as one.
+    #[test]
+    fn an_add_asks_on_every_engine_with_the_paths_on_one_line() {
+        let add = Call::GitAdd {
+            paths: vec!["src/a.rs".into(), "my notes.md".into()],
+        };
+        for locality in [Locality::Local, Locality::Cloud] {
+            assert_eq!(
+                ask_for(&add, locality),
+                Some(ApprovalAsk::GitAdd {
+                    paths: "src/a.rs 'my notes.md'".into(),
+                    files: None
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn the_paths_of_an_add_that_would_not_show_whole_have_no_line() {
+        let paths = |p: &[&str]| p.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            add_line(&paths(&["a.rs", "b.rs"])).as_deref(),
+            Some("a.rs b.rs")
+        );
+        assert_eq!(add_line(&paths(&[&"a".repeat(GIT_ADD_SHOWN + 1)])), None);
+        assert_eq!(
+            add_line(&paths(&["a\nb"])),
+            None,
+            "a newline is not one line"
+        );
+        assert_eq!(
+            add_line(&paths(&["a  b"])),
+            None,
+            "spaces are not collapsed"
+        );
+        assert_eq!(add_line(&[]), None);
+        assert_eq!(
+            add_line(&paths(&["'a", "b'"])),
+            None,
+            "a quote makes the quoting ambiguous"
+        );
+    }
+
+    // The commit asks through the review the host builds; `ask_for` alone
+    // gives no ask, which the host never takes for a free run (it always
+    // fills one in or refuses).
+    #[test]
+    fn a_commit_has_no_ask_of_its_own_in_ask_for() {
+        let commit = Call::GitCommit {
+            message: "m".into(),
+        };
+        assert_eq!(ask_for(&commit, Locality::Cloud), None);
+    }
+
+    #[test]
+    fn a_git_diff_path_is_shown_as_one_clean_line() {
+        let call = Call::GitDiff {
+            staged: false,
+            path: Some("a\n\u{202e}b".into()),
+        };
+        let Some(ApprovalAsk::GitDiff { path, .. }) = ask_for(&call, Locality::Cloud) else {
+            panic!("no ask");
+        };
+        assert!(
+            path.chars().all(|c| !c.is_control() && c != '\u{202e}'),
+            "{path:?}"
+        );
+    }
+
+    #[test]
+    fn a_git_diff_ask_prompts_in_every_mode_and_origin() {
+        let ask = ApprovalAsk::GitDiff {
+            staged: false,
+            path: ".".into(),
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for origin in [Origin::Tool, Origin::Block] {
+                assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
+            }
+            assert_eq!(answers_itself(&ask, mode, false), None);
         }
     }
 

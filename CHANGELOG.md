@@ -10,6 +10,1177 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The chat can draft an issue: the new `gh_issue_draft` tool (kind `idea` or
+  `bug`, title, description) asks a `y` at the composer and, at the end of the
+  turn, opens the Feedback form on the draft's kind with the title and the
+  description in their own fields. You review it and send it with Ctrl+S; the
+  model never writes to GitHub. New `[ai.tools] issue_draft` toggle, on by
+  default, with its own `Issue draft` row on the Tools tab.
+- With the draft tool offered, the tools block of the system prompt tells the
+  model to offer a draft (by calling the tool, whose `y`/`n` is the permission)
+  when you ask for an issue, when lazarobox lacks what you asked for, or when a
+  lazarobox tool or the chat fails; never for errors in your own code. Without
+  the tool (an engine without tools, tools off or `issue_draft = false`), a
+  failed turn or a tool error shows `If this looks like a lazarobox problem,
+  type /feedback to report it`, at most once per turn and never after a
+  denied call.
+- The model picker deletes a downloaded Ollama model: `d` on its row opens a
+  confirmation with the name and the size, and only a plain `y` deletes it,
+  through the local server. A model that a task or a running chat turn uses is
+  refused and the notice says who uses it, and so is any delete while a
+  download runs. The notice says what was freed, as an upper bound, since
+  Ollama models share layers.
+- The model picker deletes a llama.cpp model file the same way: `d` on its row
+  measures it, and the confirmation names the file, its folder and its size
+  (all parts of a split model), and warns when the file is in the shared
+  Hugging Face cache. In that cache the snapshot link and its blob go
+  together, a blob another snapshot still uses stays, and a repository left
+  empty goes. lazarobox checks the file again before removing anything: it
+  must lie inside the scanned model folders with links followed, and it
+  removes only files and folders left empty. The managed llama-server's model
+  and a model a task uses are refused.
+
+### Fixed
+
+- A draft issue no longer opens over a menu screen that waits for you: the
+  engine and model picker, its delete confirmation, the Hugging Face token
+  field and its disconnect question, and the usage view stay as they were, and
+  the chat names the draft that was not opened, as with the Memory warning.
+
+## [1.16.0] - 2026-11-09
+
+### Added
+
+- A click on an `http://` or `https://` link shown in a shell pane or in the
+  chat opens it in the browser, on the release of the left button. A link that
+  wraps opens whole. With no browser the link is copied and a notice says so.
+- `Ctrl+Space` then `u` lists the links the focused pane shows: a row's key
+  opens it, `y` copies the selected one, `Esc` closes the list.
+
+## [1.15.2] - 2026-11-09
+
+### Changed
+
+- Chat: `run_command` follows `[build] jobs` too, so a build started by the
+  model cannot use more compile jobs than a build in a pane. A change in the
+  menu applies to the next command.
+
+## [1.15.1] - 2026-11-09
+
+### Fixed
+
+- Orchestrator: the review of an orphaned worker batch that was never proposed
+  (the worker was cancelled while staging, or ended without `propose_batch`)
+  now opens with the worker label too, as 1.14.4 promised. A batch from plain
+  chat stays unlabelled.
+- Orchestrator: a worker ending or being cancelled no longer takes away a review
+  you opened on an orphan. Reviews a worker asked for are withdrawn as before.
+- Batch review: a drifted apply says `1 path changed` instead of `1 paths
+  changed`.
+
+## [1.15.0] - 2026-11-09
+
+### Added
+
+- Menu: a `Build jobs` row in Settings (`[build] jobs`). New pane shells get
+  `CARGO_BUILD_JOBS` and `CMAKE_BUILD_PARALLEL_LEVEL`. `auto` (the default)
+  caps the jobs by the cores and by the memory at 2 GiB a job, so a machine
+  with many cores and little RAM no longer runs out of memory on a full
+  build; `l` counts up from 1 and `h` from `auto` jumps to all the cores.
+
+## [1.14.4] - 2026-11-08
+
+### Fixed
+
+- Batch review: Ctrl+C on an open review (or on a proposal cancelled before
+  its ask showed) no longer discards the staged work; the batch stays as an
+  orphan for you to review or discard, as the README promises. Only your own
+  `n` or `Esc` discards it.
+- Orchestrator: the review of an orphaned worker batch keeps the worker label
+  (`n/m kind engine>model`) instead of opening unlabelled.
+- Orchestrator: the close report no longer says the claims match the ledger
+  while a bare name or an absolute path in the handoff was not compared; it
+  says `not checked`. Only project-relative paths with a directory are compared.
+
+## [1.14.3] - 2026-11-08
+
+### Changed
+
+- Folder picker: when you open a chat from a pane that is in `$HOME`, the
+  first row is now that folder (`current`, preselected, with a warning that a
+  broad folder means no writes, commands or git for the chat's tools) instead of the last used project, so
+  one Enter no longer moves you to another project. `/`, system folders and
+  folders outside `$HOME` are still never a row, and nothing is chosen
+  without a key press.
+- Batch review: the first row now starts with the chat's folder (`~` for
+  `$HOME`, cut from the front when long), so you see where the batch will be
+  written before you press `y`. The folder only takes the room the counter
+  leaves and never displaces the gate.
+
+## [1.14.2] - 2026-11-07
+
+### Fixed
+
+- Orchestrator: when a step gate refuses a code worker and the coordinator's
+  turn ends, the run now waits for your reply instead of ending. Once the pane
+  says the run waits, press Enter to lift the gates and send your reply: it
+  continues the same run and the coordinator is told the gates were lifted.
+  The pane says when the run waits and when the wait ends. A lift pressed
+  while the first turn still runs is not kept if that turn ends without a
+  refusal standing.
+- Orchestrator: a spawn refused by a step gate no longer tells the coordinator
+  never to retry it. The refusal and the coordinator prompts now say to spawn
+  again once that step is handed off.
+
+## [1.14.1] - 2026-11-07
+
+### Fixed
+
+- A command whose stdout went past its cap no longer loses the stderr it wrote
+  just before: the final read after the kill now drains both pipes.
+
+## [1.14.0] - 2026-11-07
+
+### Added
+
+- The chat can now read the screen of another pane with the new `read_pane`
+  tool, so it sees what a command printed (for example over SSH), not only the
+  folder. It reads the visible screen, and with `scrollback` (1 to 200) that
+  many earlier lines too, keeping the last 8 KiB. Every call asks, on every
+  engine and in every approval mode: the review shows the exact text that will
+  be sent, already cleaned and redacted, and `y` stays locked until you have
+  scrolled to the end. The text is frozen when the review opens, so what you
+  approve is what the model gets, even if the pane changes or closes. Only
+  panes `list_panes` shows can be read, never the chat's own; ORCH workers and
+  the coordinator never get the tool. A denied read, a pane that is not open,
+  a blank screen and a read refused because another approval is pending each
+  print a chat line; a cut text and scrollback asked of a full-screen app are
+  warnings in the review. Redaction is partial: read the text before you
+  approve.
+
+## [1.13.0] - 2026-11-07
+
+### Added
+
+- ORCH now checks a worker's handoff against what the worker really staged.
+  When the coordinator's handoff names a path (with a directory) that the
+  worker's change ledger does not hold, the handoff acknowledgement, every
+  later `collect` of that worker and the stored note say `named in handoff,
+  not in ledger: <path>`, and so does the close report, under the worker. The
+  flag stays when the coordinator saves the handoff again without the path;
+  only the worker staging it clears it. A handoff that names no path says `not
+  checked` and why, never `ok`, and a code worker judged `on_course` that
+  staged nothing gets a neutral second line. lazarobox makes the check itself,
+  without any model, and it is conservative: a name only counts when it ends in
+  a known source extension, a bare file name, a host-like path or a name with
+  odd characters is never flagged, and paths outside the project are never
+  shown.
+- ORCH now holds a run to its own steps. A `code` worker is spawned only once
+  the steps before `implement` are closed, and `finish` is refused when the
+  run was granted `implement` and no `code` worker ran. Every refusal is a
+  chat line naming the gate and the step, and the coordinator gets the same
+  text; nothing pauses and no failure alert opens. The review lenses and the
+  correction worker lazarobox starts are not gated. If a gate keeps refusing
+  until `max_turns`, the stop line names it. While a refusal stands, the line
+  above the composer says `Enter gates off`: Enter on an empty composer lifts
+  both gates for the live run and the chat says so; it ends with that run. With
+  no live run it lifts nothing, and the chat says that too. Only your key press
+  lifts a gate: text, a worker's answer or a tool call never does. The line
+  goes when a `code` worker starts or the run ends. Gates are on for every ORCH
+  run, so a coordinator that skips `authorize` now stops at the spawn.
+- Two `code` workers of one ORCH run can now write at the same time, each
+  with a batch of its own. When one proposes, the review lists only its
+  files, and it is labelled with the worker; two pending proposals are
+  reviewed one at a time, in arrival order. Approving one does not touch the
+  other. The review lenses and the correction read the batch of the worker
+  they review, a worker that staged and never proposed is named even when a
+  sibling did propose, and a closed pane or a finished run leaves one orphan
+  badge that counts all of them. A plain chat is not a worker and keeps its
+  single batch.
+- When two workers of a run start on the same local server (Ollama, llama.cpp
+  and the like), the chat says once per run and engine that the server may
+  queue their requests and names the key that fixes it, `max_parallel = 1` in
+  `[ai.orchestrator]`. `max_parallel` stays your only limit: nothing is
+  throttled for you. Cloud engines and Ollama `*-cloud` models are not
+  counted.
+
+## [1.12.0] - 2026-11-07
+
+### Added
+
+- Tools with llama.cpp: `llamacpp` joins the engines whose requests carry
+  tools, so chat turns and ORCH workers on a `llama-server` run the same tool
+  loop as on Ollama. Verified on Qwen2.5-7B-Instruct Q4_K_M with llama-server
+  b11935 (`--jinja --parallel 1`); Qwen3.8-27B was not run. It needs a model
+  and chat template that support tool calls: Qwen2.5-Coder-7B answers its tool
+  calls as text and fails, as Ollama's `qwen2.5-coder:14b` does. `lmstudio` and
+  `vllm` stay text-only.
+
+- `/write` in a chat turns Write on for that chat only. It opens a `y` dialog
+  that names the Write toggle and the folder; the grant lives in memory, is not
+  saved to the config, and ends (with a line) on a folder change, a resume,
+  tools turned off or a change of the saved Write toggle. It reaches the next
+  worker the coordinator spawns (a worker that is already running keeps its
+  tools) and, in a plain chat, the next turn. Only you can open it: a model,
+  a worker or a tool result cannot.
+
+### Changed
+
+- ORCH workers now follow the Write toggle of the AI menu. Before, the saved
+  toggles were ignored for workers and a `code` worker always got the write
+  tools. Now, while Write is off (the default):
+  - a spawn of a `code` worker is refused with a notice in the chat, and the
+    run goes on; type `/write` in the chat (or turn Write on in the AI menu,
+    `Ctrl+Space m`) and spawn it again;
+  - a `code` worker that is retried, relaunched or taken off the queue follows
+    the toggle at that moment, and if it is refused the run asks again;
+  - a review correction is skipped with a notice;
+  - a worker that is already running keeps the tools it started with.
+
+  Turning ORCH on says this when Write is off.
+- When a turn ends while a batch is waiting for your answer, the model that
+  owns the batch can now propose it again and you are asked again. Before,
+  `propose_batch` was refused with "waiting for review" and the batch could
+  only be reviewed from the pane badge. This applies to a plain chat and to
+  workers; a second proposal while your first ask is still open stays refused.
+
+### Fixed
+
+- An ORCH `code` worker that changed no file and whose reply holds tool calls
+  written as JSON text (small local models on Ollama or llama.cpp do this
+  instead of calling the tools) now gets a notice that says so: `... ended done
+  and changed no file; its reply holds tool calls written as text: the model
+  may lack tool support`. The coordinator is told the same, so it no longer
+  reports files that were never created. A worker whose turn ran without tools
+  keeps the plain notice.
+
+## [1.11.0] - 2026-11-06
+
+### Added
+
+- An unknown key inside a table lazarobox owns (`[statusline]`, `[tabbar]`,
+  `[updates]`, `[workspace]`, and `[ai]` with every table under it) now gives
+  a startup notice with its full path, for example
+  `config: unknown key: ai.tols`, so typos no longer pass silently. The file
+  still loads, the key is ignored and a menu save keeps it. Keys and tables at
+  the root of the file that lazarobox does not read are not reported.
+
+## [1.10.0] - 2026-11-06
+
+### Added
+
+- Under WSL, `run_command` and git work in a Windows drive folder the user
+  granted, inside the same jail as in the home folder. The grant prompt now
+  reads `Allow writes, commands and git in <folder>? (y/n)`, and without the
+  grant every write, command and git verb answers `path not available: the
+  chat's folder <folder> is on a Windows drive, where writes, commands and git
+  need your permission; ask the user to run /cd <folder>`. A broad drive folder
+  stays refused even with a grant, and the jail also refuses, without letter
+  case, a drive root, `Users`, any `Users/<name>`, the Windows system folders
+  and DOS 8.3 short names as the root of a command. Refs #550.
+
+## [1.9.0] - 2026-11-05
+
+### Added
+
+- Under WSL, the chat can write in a Windows drive folder once the user
+  allows it: right after the folder is chosen in the picker, a `/cd` is
+  confirmed or a conversation resumes there, the chat asks
+  `Allow writes in <folder>? (y/n)`, and only an unmodified lowercase `y`
+  grants. The grant covers that folder and its subfolders, lives in memory
+  until the app quits, ends on a folder change, is not stored (a resume asks
+  again) and is not inherited by a new chat; `/cd` to the current folder asks
+  again. Broad drive folders never ask. Without the grant every write answers
+  `path not available: the chat's folder <folder> is on a Windows drive, where
+  writes need your permission; ask the user to run /cd <folder>`. On drvfs,
+  which has no no-replace rename, a new file is published with `linkat`, which
+  never replaces a file either. `run_command` and git on a drive are still
+  refused. Refs #550.
+
+## [1.8.0] - 2026-11-05
+
+### Added
+
+- Under WSL, the chat's read tools reach the Windows drives (`/mnt/c`,
+  `/mnt/d`…, drvfs mounts from `/proc/mounts`), so a project on `C:` can be
+  read and chosen as the chat folder. Windows system folders (and what an
+  upgrade leaves: `Windows.old`, `$Windows.~BT`…), DOS 8.3 short names such
+  as `PROGRA~3`, other users' profiles, and `AppData`, `NTUSER.DAT*` and the usual secret folders and
+  files of the own profile and `Public` stay refused, compared without letter
+  case. The own profile comes from `%USERPROFILE%`, asked once at start; until
+  it answers only `Public` is readable. A drive root, `Users` and a profile
+  root are broad folders, accepted only when typed. Writes, `run_command` and
+  git on a drive are still refused. Refs #550.
+
+## [1.7.1] - 2026-11-04
+
+### Fixed
+
+- Overwriting an existing environment template no longer tells the model what it
+  holds. `write_file` over an existing `.env.example` (or `.sample`,
+  `.template`, `.dist`) answered "staged" or "use edit_file" depending on a
+  secret-looking run, CRLF or size, with no ask. It now asks first like
+  `edit_file` does, once per file per turn, and a denial gives the same answer
+  whatever the file holds. A worker, which cannot be asked, gets the usual
+  refusal. Creating a new template is unchanged. Refs #583.
+- Turning ORCH on (`Ctrl+O`) now says in the chat that, in this mode, the chat
+  itself cannot write files, run commands or read GitHub, even with those
+  tools on in the AI menu: a `code` worker writes, through the batch review,
+  and `Ctrl+O` goes back to a plain chat. Before, the model said it had no
+  tools and nothing explained why.
+
+## [1.7.0] - 2026-11-04
+
+### Added
+
+- Feedback looks for open issues like yours before creating one. `Ctrl+S` first
+  searches the repository's open issues with the key words of the title. When
+  some share at least two of them, the form lists them: `Enter` adds your
+  report to the chosen one as a comment instead of opening a duplicate, and
+  `Ctrl+S` creates the issue anyway. With nothing similar, or when the search
+  fails or takes more than 10 seconds, the issue is created as before.
+
+### Fixed
+
+- Under WSL with `networkingMode=mirrored`, engine detection no longer waits
+  800 ms for engines that are not running (LM Studio, vLLM…). There a connect
+  to a port nothing listens on is never answered, so detection now gives up a
+  connect after 200 ms; a running server answers it in about a millisecond
+  (#584).
+- Feedback no longer sends you to file a new issue when a comment on an existing
+  one finds `gh` missing or not logged in: the form says so and keeps the chosen
+  issue, so `Enter` tries it again. The same goes for any failed comment. Long
+  titles in the list of similar issues are cut by display columns, so
+  double-width characters stay on the row, and the footer says it is looking for
+  similar issues during the search (#588).
+- A chat can write an environment template such as `.env.example`. It was
+  always refused with no prompt, because the write primitives judged the name
+  more strictly than the path policy. Now it stops at the batch review like any
+  write and reaches the disk only with your `y`, in every approval mode. `.env`
+  and `.env.local` stay refused, and so does reading the template (#583).
+
+## [1.6.0] - 2026-11-04
+
+### Added
+
+- GitHub read tools, off by default: `gh_issue_list`, `gh_issue_view` and
+  `gh_pr_view` read the issues and pull requests of the repository in the
+  chat folder's `origin`, through your own `gh` login. Turn them on with
+  `[ai.tools] github = true` or the new `GitHub` row of the Tools tab. They
+  never return a diff, never take a repository from the model, and show
+  everything they read as untrusted data with secrets masked. A cloud engine
+  (and an Ollama `*-cloud` model) asks for your `y` before the first read of a
+  repository in each turn.
+- `/github` in the chat composer lets one chat use the GitHub read tools
+  without turning the toggle on. It reads the folder's `origin` (no network),
+  names the repository in a dialog and only an unmodified `y` grants; `n` and
+  Esc decline and every other key says why it did nothing. It is a command of
+  yours: no message, no request, nothing stored, and the model, a tool result
+  or a stored message cannot open or answer it. The grant is for that chat
+  only, starts at the next message, never writes the config and ends with a
+  resume, a folder change, tools off or the saved toggle going off. A cloud
+  engine still asks before the first read of each turn. `//github` sends the
+  text, and `/github` followed by words says `/github takes no arguments`.
+- A quiet hint above the chat composer suggests `/github` and names the
+  repository (`Type /github to let this chat read owner/name's issues and
+  PRs`) when tools are on, the GitHub toggle is off and the folder's `origin`
+  is on github.com. One line, ASCII, shortened by dropping the name first;
+  shown once per pane and repository, never stored or sent to the model.
+- After a GitHub read, commands of that conversation wait for your Enter for
+  the rest of the conversation, in every approval mode: `run_in_pane` only
+  types, `y` types without Enter, and the bar shows `RUN OFF`. On a cloud
+  engine `read_file` and `grep` also ask each time. The block survives a
+  resume; it is kept as a marker row, so an older build opening that
+  conversation shows its "not shown" notice for it and does not enforce the
+  block. A conversation with saved messages this build does not know opens
+  blocked as well, and every text of that block says so instead of claiming
+  GitHub was read.
+
+### Fixed
+
+- When `$HOME` is reached through a symlink, a refused write now names the
+  chat's folder as `~/…` instead of its full real path (#438).
+- The chat's context budget now counts the schemas of external MCP tools.
+  The runtime reports what they weigh when a turn starts: the context fill of
+  that turn is corrected, and the next turns reserve them, so many connected
+  tools no longer push an Ollama prompt past its window unnoticed. The turn
+  that first starts the servers is still budgeted without them (#556).
+- An orchestra worker on Ollama whose prompt and setup pass the model's
+  window now says so at the top of its transcript, with the estimated tokens
+  and the window, instead of Ollama cutting the prompt silently (#557).
+- In WSL, text copied with `y` no longer pastes with a `<feff>` in front.
+  `clip.exe` kept the byte order mark as a character, so lazarobox now copies
+  with `powershell.exe` (`Set-Clipboard`, UTF-8, given 5 s to start) and falls
+  back to `clip.exe`, which only gets the mark for non-ASCII text.
+- In `run` mode, a `cd` you approve with `y` now adds the
+  `pane N: cd … → <dir>` line to the transcript, like a `cd` that runs on its
+  own. A run that finds the pane moved now says "the pane's directory changed
+  before the command could run" instead of naming a check that a `y` run never
+  had (#438).
+
+## [1.5.0] - 2026-11-03
+
+### Added
+
+- Ollama turns now ask for a context window: `options.num_ctx` is the smaller
+  of the model's own window (read from the `POST /api/show` reply detection
+  already sends, no new request) and `[ai.servers.ollama] num_ctx_cap`
+  (default 16384). Every turn of a model sends the same value, so Ollama never
+  reloads it because of it. The menu does not write the key; a bad value falls
+  back with a startup notice.
+- The desktop entry now shows the Lazarobox logo. `install-desktop` writes the
+  embedded icons (PNG 256, 128, 48, 32 and 16 px, plus an SVG) to
+  `<XDG_DATA_HOME>/icons/hicolor/` and the entry uses `Icon=lazarobox`;
+  `--uninstall` removes them. A failed icon write is reported and exits with
+  an error, but keeps the installed entry (#268). Existing users must re-run
+  `install-desktop` to get the logo.
+- `[ai] tool_mark` (`"auto"`, `"emoji"` or `"text"`) to force how the tool mark
+  is drawn. `"text"` is for terminals with no emoji font, where `🔧` shows as an
+  empty box and cannot be detected. A bad value falls back to `"auto"` with a
+  startup notice (#488).
+
+### Changed
+
+- Ollama turns send `keep_alive = "30m"` when `[ai.servers.ollama] keep_alive`
+  is unset, instead of Ollama's own five minutes; a value set in the file is
+  sent as written. Other engines' requests do not change.
+- The history budget of local servers now counts the system prompt, the tools
+  block and the tool schemas before any message, also when the window is
+  unknown (the 12,000-character cap is reduced by that head, never below 4,000
+  characters). Trimming still drops whole user and assistant pairs, oldest
+  first, with the usual marker. A message that cannot fit a known window is
+  still sent whole, with a notice, and an Ollama model with an unknown window
+  shows `window unknown for <model>: 12k chars` once per run. A Modelfile
+  `PARAMETER num_ctx` does not override the cap when the window is known; when
+  it is unknown no `num_ctx` is sent and the Modelfile value applies.
+- The wait line of a chat turn says what it waits for: `waiting for your
+  answer…` under an approval prompt, `running <tool>…` while a tool runs, and
+  the model otherwise. For a local server engine the long wait adds the
+  seconds the request clock has run and its limit (`still waiting for the
+  model… 45s (gives up at 120s)`), counted from the clock's own slow event and
+  only while the line waits for the model (not under an approval prompt or a
+  running tool). Once the server starts to answer, the runtime reports its
+  reads (at most one per second, dropped if the channel is full) and the limit
+  shown is the 60 s idle limit counted from the last read the app knows, up to
+  one second low, and capped at the 15 minute limit of the whole turn (`gives
+  up at 73s`). Known gap: in the no-tools retry the first seconds of the new
+  request still show the previous limit. The CLI engines show neither seconds
+  nor limit. The rolling summary run counts from its own clock, not from the
+  last turn (#437).
+
+### Fixed
+
+- A turn that Ollama retries without tools after a 400 now tells the user once
+  per pane, without claiming the model lacks tool support, as llama.cpp already
+  did (#550).
+- Reading a SQLite file now says it is a database that cannot be read as text
+  and suggests a `sqlite3` command for the user to run in their pane, instead
+  of `the file is not text` (#550).
+- The chat prompt now says the file tools only reach the home folder and that
+  the model must report a refusal or failed tool instead of guessing contents
+  (#550).
+- A chat opened in a folder outside the home folder and kept with `Esc` now
+  says the file tools cannot read it and that the project must move into the
+  home folder (`/cd` refuses folders outside it) (#550).
+- A key the approval prompt does not take, a paste, and an answer that comes
+  before the prompt is armed no longer vanish silently: the footer says
+  `Answer the pending confirm first` or `Prompt just opened: answer again in a
+  moment`. The batch review does the same, except that an early `y` keeps its
+  own hint in the view and shows no such notice. The answer keys still never
+  answer an unarmed prompt (#437).
+
+## [1.4.0] - 2026-11-03
+
+### Added
+
+- Prompt-cache options for the local servers: `[ai.servers.ollama] keep_alive`
+  (how long the model stays loaded after a turn, such as `"30m"` or seconds)
+  and `[ai.servers.llamacpp] cache_prompt`. Unset, nothing is sent and each
+  server keeps its default (#515).
+
+## [1.3.1] - 2026-11-03
+
+### Fixed
+
+- A program that asks for focus reports (mode 1004, as nvim does) now gets
+  `ESC[I` and `ESC[O` when the lazarobox window gains or loses focus, while its
+  pane has the focus. Other panes get nothing (#483).
+
+## [1.3.0] - 2026-11-03
+
+### Added
+
+- `/feedback <text>` in a chat opens the Feedback form with the text written in
+  it: the first line is the title and the rest the description. Nothing reaches
+  the model, and the issue is sent only by the form's `Ctrl+S`. `//feedback`
+  sends a message with one slash less (#551).
+
+## [1.2.4] - 2026-11-03
+
+### Fixed
+
+- `install-desktop` judges `x-terminal-emulator` by the terminal it resolves to:
+  the picker marks it `(tested)` and the note names that terminal when it has a
+  record (#487).
+
+## [1.2.3] - 2026-11-03
+
+### Changed
+
+- Deleting a conversation from the chat list now takes `Del`, then `Enter` to
+  confirm or `Tab` to also delete its notes. `d`, `y` and `a` no longer delete.
+  This is a deliberate exception to the key binding promise of the 1.0
+  stability rules, released as a patch because the old keys could lose data
+  (#491).
+
+### Fixed
+
+- Words typed right after the chat opens on its conversation list can no longer
+  delete a conversation: `day` deleted it, with its notes when they could be
+  deleted (#491).
+
+## [1.2.2] - 2026-11-02
+
+### Added
+
+- `/cost` shows the cache share per engine for today, the last 7 days and this
+  chat (`cache today: claude 91% · codex 79%`): cache reads over fresh input,
+  cache reads and cache writes. Engines that report no cache show no figure.
+  Visibility only; no prompt changes (#515).
+- `/cost` shows the prefill speed of local server engines that report timings
+  (Ollama, llama.cpp, LM Studio, vLLM) (`prefill today: llamacpp
+  2.2 ms/1k tok · ollama 1.4 ms/1k tok`), from Ollama's `prompt_eval_duration`
+  and llama.cpp's `prompt_ms`; a low figure means the prompt cache was hit.
+  Ollama's `load_duration` is stored too. Two additive nullable columns of
+  `turn_usage`, no schema version change. Visibility only (#515).
+
+## [1.2.1] - 2026-11-02
+
+### Added
+
+- `list_panes`, a read-only chat tool that tells the model what each pane
+  runs: its number, whether it is focused, its folder and the foreground
+  program (`nvim prueba.rs`). It is free on local engines; on a cloud engine
+  it asks first and the prompt shows the exact text that would be sent, so the
+  foreground command lines of your panes reach a provider only after your `y`.
+  Arguments are an allowlist, not a denylist: the focused pane shows the
+  program name, flags without their `=value` and paths (starting with `/`,
+  `./`, `../` or `~/`, or naming an existing entry in the program's folder);
+  every other argument is `…`, and `bash -c`, `python -c`, `node -e`, `perl -e`
+  and `ruby -e` show the flag only. Other panes show the program name only.
+  Each argument is capped at 120 characters and each pane at 300, and paths
+  under `$HOME` show as `~/`. The environment of other processes is never
+  read, and the shared state only ever holds redacted text. Linux reads
+  `/proc/<pgid>/cmdline` and `cwd`; on macOS the program and folder are
+  `unknown`. A pane that cannot be read shows `program: unknown`. Existing
+  file names are shown as they are (`--password-file creds.txt` shows
+  `creds.txt`; contents are never read) and only the first 16 arguments of the
+  focused pane are looked up on disk. Every fragment is cleaned like the other
+  prompts (no escape sequences, bidi or zero-width characters), redacted and
+  capped; a program title with spaces or `:` shows as `…`. The text is bounded
+  (5 panes, focused first, then `+N more`) so the prompt stays answerable,
+  and the refresh (the `/proc` reads and the disk lookups) runs off the UI
+  loop. A pane list older than 10 s says so in the text, because the refresh
+  may be stuck. An Ollama `*-cloud` model counts as
+  local, so it does not ask.
+- Pin change: `list_panes` joins the legacy tool families, so the default
+  tool list (the MCP `tools/list` bytes, the Ollama and llama.cpp `tools`
+  body and the tools prompt, 865 to 1033 bytes) is no longer the 0.18.0 one.
+  The golden and the registry pins were updated on purpose.
+- `lazarobox-shell --check-install` prints whether the tools can run from this
+  install, outside the TUI: exit 0 when the binary and its folder pass the
+  trust check, exit 1 with the same reason and `chmod` fix as the chat notice
+  otherwise.
+
+### Changed
+
+- When group write is the only reason `tools are off` (the usual result of
+  `cargo install` under `umask 002`), the notice ends with
+  `(install with umask 022 to keep it)` before the `chmod` command (which stays
+  last, ready to paste), and the README install and update sections explain why and how to avoid it. The trust
+  rule is unchanged. (#526)
+- The in-app update (Updates row) runs its `cargo install` with `umask 022` for
+  that child process only, so the binary it installs is not group-writable even
+  when the user's umask is 002. The `cargo install` arguments are passed
+  unchanged. (#526)
+- `/cost` no longer describes a chat-history-off view: chat history is always
+  on, and an unreadable `chat.db` shows `usage history is not available`.
+
+### Fixed
+
+- The tools on the `codex` engine were refused by codex itself (`MCP tool call
+  requires approval, but approval policy is never`), so no call reached
+  lazarobox: `list_panes`, `read_file` and the rest failed, and no lazarobox ask
+  appeared. codex now passes our calls on (`default_tools_approval_mode =
+  "approve"` for the `lazarobox` server only) and they reach lazarobox's own
+  approval, which is unchanged. Checked with codex 0.162.1; the key needs codex
+  0.125 or later (older versions reject it and the turn fails with codex's
+  config error).
+- `Ctrl+Space r r` and `Ctrl+Space r d` showed nothing when the answer was
+  already known, or when the store answered at once (#501, #527): the notice
+  (`No interrupted run to resume or discard`) was set but the screen was not
+  redrawn, so the `RUN` key hint stayed up. The key now always redraws.
+- `/cost` showed `unknown` for a turn that used several models (gemini's router
+  plus its main model, claude's sub-agents). Such a turn is now stored and shown
+  as `mixed` (`gemini › mixed`). Rows stored before this stay `unknown`.
+- Chat with `codex` and `gemini` no longer sends the user's own setup to the
+  provider (#519). Neither CLI has a flag that stops it loading its global
+  instruction files (`~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`) or skills
+  (`~/.gemini/skills/`), so each turn now runs with a private `CODEX_HOME` or
+  `GEMINI_CLI_HOME` inside its wiped temp folder. It holds only symlinks to the
+  login files (nothing is copied or moved) and, for gemini, a `settings.json` with the login type
+  and `context.memoryBoundaryMarkers`. A turn that cannot prepare it fails with a notice
+  instead of using the real folder. `GEMINI_SYSTEM_MD` is also dropped from the
+  child environment. A codex login refresh writes `auth.json` in place, so it follows the link to
+  the real file. The turn warns before it starts when no login is found, honours
+  a validated `GEMINI_CLI_HOME`, rewrites gemini's `.env` with only its login keys (never a link, so `GEMINI_SYSTEM_MD` cannot come back through it), reads `settings.json` with comments,
+  and also drops `GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_CLI_SYSTEM_DEFAULTS_PATH`
+  and `GEMINI_CLI_TRUSTED_FOLDERS_PATH`. The two CLIs keep no state between turns
+  (model cache, installation id), which costs a few extra calls. A gemini login
+  refreshed during a turn is not saved back (lazarobox never writes credential
+  files), so each turn refreshes the token again, which is a little slower; if
+  Google ever rotated the refresh token, a new `gemini` login would be needed.
+  The login notices show once per run.
+  Neither CLI walks up from its working folder for `AGENTS.md` or `GEMINI.md`
+  any more (`-c project_root_markers=[]` for codex, `context.memoryBoundaryMarkers`
+  set to `[]` for gemini). A value of the gemini `.env` that cannot be rewritten
+  safely is skipped with a notice, never silently; a line that opens a quote it
+  does not close, and the lines up to its closing quote, are skipped with a
+  notice. In the `.env`, `KEY=abc#def` keeps `#def`: only ` #` starts a comment.
+  Empty values do not count as a login.
+- `Prefix r r` and `Prefix r d` no longer say `No interrupted run to resume or
+  discard` when ORCH was never turned on since the start: the store is asked on
+  the spot (off the UI thread, with a `Looking for interrupted runs` notice) and
+  the answer completes the key that waited (including `Turn ORCH on in this pane
+  first`). A failed or silent (10 s) read is said and retried by the next press,
+  never reported as `No interrupted run`. (#501)
+- A refused worker (for example one routed to an ollama model that is not
+  downloaded) now gives the coordinator the reason in the tool result (one
+  redacted line, capped) instead of only `worker N: refused`. (#502)
+- `m` on a refused worker opens the model picker of the engine configured for
+  its task instead of the engine picker; with no engine to take from, it opens
+  the engines and a notice says why. (#502)
+- The failure alert shows the error class (`other` is omitted), `(setup)` for a
+  refused worker whose engine or model is not available. The refusal reason
+  given to the coordinator has absolute paths replaced by `<path>`. (#502)
+
+## [1.2.0] - 2026-11-02
+
+### Added
+
+- The menu's AI tab is split into the tabs Models, Tools, Connectors and Chat
+  after Settings, so the popup is 17 rows high instead of 25 and the smallest
+  usable terminal is 24x16; the Usage row of Settings takes the 17th row. `Tab`
+  and `Shift+Tab` still cycle them and the new jump keys `1` to `5` go straight
+  to a tab by its fixed number (`2` Models, `3` Tools, `5` Chat). Connectors
+  stays hidden until it has rows, so `4` says there are no connectors yet. The
+  bar hint reads `⇥ Tab · 1-5`. A digit or `Tab` that cannot switch tabs now
+  shows a notice in the footer (`Tabs are 1-5`, `No other tabs`) instead of
+  doing nothing. Nothing changes in `config.toml`.
+- `/cost` (alpha) in the chat composer opens a view over the conversation,
+  headed `AI usage (alpha)`, with the tokens of today and of the last 7 days
+  over every stored chat, the usage per engine and model, this chat and this
+  session. `Esc` closes it, the arrows and `PageUp`/`PageDown` scroll it and
+  long lines wrap. It is a command of yours: no message, no request, and it
+  works during a stream. `/cost` followed by text says `/cost takes no
+  arguments`; `//cost` sends the text `/cost`. A value an engine did not report
+  reads `no data` (never 0) and dollars appear only when the engine reports
+  them, labelled `list-price equivalent` by default. With chat history off it
+  shows this session only, from memory, and says so.
+- A dim usage line (alpha) under each chat answer (`usage: in 2 · out 4 ·
+  $0.0049 list-price equivalent`), on by default. Turn it off with
+  `line = false` under `[ai.usage]` or in the Usage menu view. A turn the
+  engine reported nothing for reads `usage: no data`; a cut or failed turn gets
+  the line only if it has a record, marked `partial`. It is not stored, not
+  sent to the engine, not part of a yank and not shown after a resume.
+- The status bar of a focused chat shows ` · today: N tok` (alpha; all chats
+  and engines, today), on by default. Turn it off with `statusline = false`
+  under `[ai.usage]` or in the Usage menu view. Dollars are added only for
+  engines in `per-token` mode (`$0.42`, `<$0.01` below half a cent, nothing for
+  a zero sum). It is read from the history when the first chat is focused and
+  again when the local day changes, never shows yesterday's figure, and a read
+  that fails keeps the last figure, is told as `Usage not read: <reason>`,
+  shows `today: ?` when no valid figure is left, and is retried after a minute.
+  It is the first segment dropped when the bar is narrow.
+- `[ai.usage]` (`line`, `statusline`, and the thresholds `turn_tokens`,
+  `day_tokens`, `day_usd`) and
+  `[ai.usage.billing]` (`claude`, `codex`, `gemini`: `subscription`, the
+  default, or `per-token`). A wrong value falls back to its default and is
+  reported at startup; a threshold of 0 or less is off.
+- AI usage settings in the menu (alpha). A new `Usage (alpha)` row in Settings,
+  after `llama-server idle`, reads `line on · bar on` and opens a view with
+  `Usage line` and `Usage in bar` (`[ai.usage] line` and `statusline`)
+  and `claude billing`, `codex billing` and `gemini billing`
+  (`[ai.usage.billing]`: `subscription` or `per-token`); local engines have no
+  row. Changes are a draft until `s` saves, only the changed keys are written,
+  and `Esc` goes back keeping the draft; any other key inside the view says
+  `Esc first to leave Usage`. The README now says what the usage history
+  stores: numbers only, never message text, pruned after 90 days.
+- Usage limits (alpha). Three optional limits add a passive note and never
+  block, delay or cancel a send: `turn_tokens` (a finished turn used more
+  tokens than the limit: `turn used 1200 tokens (limit 1000)`), `day_tokens`
+  (`today's usage reached 5200 tokens (limit 5000)`) and `day_usd` (`today's
+  spend reached $5.01 (limit $1.00)`, counting only the engines in `per-token`
+  mode; list-price equivalents and local engines never count). The turn note
+  shows on every turn over the limit; the two day notes show once per local day
+  per run. The Usage view gets the rows `Turn tokens`, `Day tokens` and `Day
+  $`: `Enter` edits, digits type (one `.` and two decimals for dollars, at most
+  12 digits; a paste of valid digits is accepted), `Enter` keeps it, `Esc`
+  cancels, and `0` or an empty field is `off` (the key is removed from
+  `config.toml`). A stored value with more decimals than you can type (`day_usd
+  = 0.125`) is shown as it is and kept unless you change it. A key that cannot
+  be typed shows a footer notice. When the first status read of the day finds a
+  day limit already reached, its note shows at startup.
+- Usage charts (alpha). `/cost` ends with two text charts of the last 7 days
+  when there are records: `per day` (one glyph per local day from `▁` to `█`
+  scaled to the biggest day, `·` for a day with no known total, ending in `max
+  <N>`) and `per engine` (a bar of up to 20 `█` per engine, or `no data` when
+  it reported no totals). They chart tokens only: a missing count is a gap,
+  never zero, and no dollars are drawn. They wrap like any other line in a
+  narrow pane and are not shown with the history off. A ` *` after a figure
+  means some turns did not report both counts, so it is a minimum.
+- AI usage of orchestrator workers (alpha, slice 5 of #440). Each worker turn
+  is now stored in the usage store with the role `worker`, the worker's engine
+  and model and its `<run>.<worker>` id, under the same rules as a chat turn:
+  nothing is stored with the history off (`/cost` still counts it in `this
+  session`), a count the engine did not report stays `no data`, a worker that
+  failed, was cancelled or ran past its deadline is stored `partial`, a failed
+  write shows `Usage not saved: <reason>` once per run, and deleting the chat
+  keeps the records. They count in `today`, `last 7 days`, the charts, the
+  status bar's `today: N tok` and the day limits; the per-turn limit never
+  fires for a worker. `/cost` adds `of which workers: <tokens>` after `last 7
+  days` when there are worker records, and on the coordinator's orchestrated
+  turn its usage line reads `usage (coordinator): ...` so it is not taken for
+  the run total. There is no per-worker or per-run breakdown yet. Usage that
+  arrives after its pane was closed is still stored (unlinked); if that write
+  fails there is no pane to tell.
+### Changed
+
+- The `Orchestrator` row of the menu is now in the Tools tab (it was in the AI
+  tab before the tabs split).
+
+### Fixed
+
+- Orchestrator worker rows count the prompt as input plus cache reads and
+  writes, so it means the same for every engine. A worker on llama.cpp now
+  shows its usage, and a failed `claude` worker keeps the usage it reported. A
+  report cut short is marked partial and shows no cost.
+
+## [1.1.0] - 2026-11-01
+
+### Added
+
+- Agent orchestrator (experimental, off by default). One coordinator model
+  splits a job across workers, each running on the engine and model the menu
+  assigns to its task, and every step is recorded. Turn it on with the
+  `Orchestrator` row of the AI tab (`[ai.orchestrator] enabled`), then press
+  `Ctrl+O` in a chat pane to switch its ORCH mode on; the new `orchestrate`
+  row picks the coordinator's engine (it falls back to `general`, and Ollama
+  is marked `not recommended`). Workers run in parallel (`max_parallel`,
+  `max_workers`, `run_timeout_mins`, `max_turns`, `worker_timeout_secs`), read
+  the chat folder without asking and ask for anything outside it; a `code`
+  worker only stages files, which reach the disk through your batch review. A
+  high-risk change asks your consent first and then gets a lens review and a
+  receipt in the batch review, which you always decide. `Alt+Down`/`Alt+Up`
+  select a worker, the first `Ctrl+C` cancels only it and a second one cancels
+  the run, `Ctrl+Space W` opens its transcript, and an interrupted run is
+  named after a restart and resumed or discarded with `Ctrl+Space r r` and
+  `r d`. Handoffs and receipts go to engram when memory allows it. Providers
+  recommend API keys for automation and consumer-account logins carry risk; no
+  key is required. Known limit: workers cannot run commands or tests yet, so
+  the coordinator asks you to run them (test-first evidence is planned for
+  1.2). The ODD flow (classify, feature document, one question at a time)
+  depends on the model following its instructions and is not reliable yet; a
+  later version will enforce it. See the README, "Orquestador de agentes".
+- Installed Ollama models in the model picker show a tool mark: `🔧` beside
+  `✓` for a model of 3B parameters or more that declares tool support, and
+  `tools: unreliable` for a smaller one. A model without tool support, or with
+  unknown support or size, shows no mark. The mark is informational (the model
+  stays selectable) and shows even with `[ai.tools] enabled = false`. On
+  `TERM=linux` or a non-UTF-8 locale, `🔧` is spelled `tools`.
+- Detected `claude`, `codex` and `gemini` engine rows in the model picker show
+  the same `🔧` mark (`tools` on `TERM=linux` or a non-UTF-8 locale), shown
+  even with `[ai.tools] enabled = false`. `opencode`, `ollama`, engines not
+  detected and CLI model rows carry none.
+- The Ollama download screens mark models that declare tools: a Popular row
+  gets `🔧` (or `tools: unreliable` under 3B) judged by the largest size that
+  fits this PC, and each Sizes row by its own tag. No new request is made.
+- Ollama detection now sends one `POST /api/show` per installed model to the
+  local Ollama server (127.0.0.1 only; at most 32 per detection, 4 at a time,
+  2 seconds in total, cached by digest) to read whether it declares tools.
+- Copy now sends OSC 52 and also runs a local tool when one exists (`wl-copy`,
+  `xclip`, `xsel`, or `clip.exe` in WSL; none over SSH). The notice says what
+  happened, short and action first so it fits an 80-column statusline:
+  `Copied (<tool>)`, `<tool> failed; sent via OSC 52 (<reason>)`,
+  `<tool> failed; not copied: too large for OSC 52 (<reason>)`, or
+  `No paste? Install wl-copy or xclip (OSC 52 sent)`.
+- `Ctrl+]` (and `Ctrl+5`) works as an alias of the `Ctrl+Space` prefix.
+- First-run prefix check: if `Ctrl+Space` does not reach lazarobox, it says to
+  use `Ctrl+]`. The result is kept per terminal; `--check-prefix` runs it
+  again.
+- `install-desktop` asks which terminal to use when run on a TTY without
+  `--terminal`, marks terminals with a test record, and prints notes for WSL.
+- `docs/terminals/` holds the support policy, the checklist and the record
+  templates. A terminal is supported only with a filled record.
+- Terminal records for Kitty 0.41.1 and zutty 0.16.2 (2026-11-01), with the
+  known issues they found; `zutty` joins `RECORDED_TERMINALS`.
+
+### Fixed
+
+- Alt+Enter is no longer lost in zutty, which sends it as `CSI 27;3;13~` while
+  xterm modifyOtherKeys is on (the input library cannot parse that form):
+  startup asks the terminal to turn that mode off (`CSI > 4 ; 0 m`) and exit
+  asks it to return to its initial value. zutty then sends ESC LF, which the
+  chat now treats as a newline (Alt+Ctrl+J).
+- When the jail refuses the tools shim (or an interpreter) because it or its
+  folder is writable, the notice now names the cause and the fix instead of the
+  generic "they could not be set up": `tools are off: ~/.cargo/bin and
+  ~/.cargo/bin/lazarobox-shell are writable by its group; run: chmod g-w
+  ~/'.cargo/bin' ~/'.cargo/bin/lazarobox-shell'`. With umask 002 (Ubuntu,
+  Debian, Parrot) `cargo install` leaves those at 775, so a default install
+  needs that one chmod (#496). Paths you do not own are listed apart for their
+  owner. A path that cannot be inspected says `cannot check <path>: permission
+  denied` instead of being called writable. The trust rule itself is
+  unchanged.
+
+### Changed
+
+- A single `Ctrl+]` or `Ctrl+5` no longer reaches the program in a pane: it is
+  the prefix alias now and takes two presses (`Ctrl+] Ctrl+]` sends 0x1D). This
+  affects vim tag jump and the telnet escape.
+- `install-desktop` no longer says lazarobox is "tested in Kitty"; it says
+  whether the terminal has a test record, and never refuses to install.
+- README: Windows is described as WSL only, and the terminal record policy is
+  linked.
+
+### Internal
+
+- Agent orchestrator groundwork (S1, behind the `[ai.orchestrator] enabled`
+  gate, off by default): the ORCH badge of an orchestrating chat pane, worker
+  rows coloured by status, the provider notice and the failure alert above the
+  composer, and the final `orchestrate` prompts of both profiles.
+  The `handoff` tool also closes an ODD step (`step` instead of `id`): steps
+  close in order, each with its handoff, and a goal authorized `read_only`
+  refuses `code` workers. A large goal gets a feature document (the user's
+  requirements in their own words, tasks and a log that starts with the goal),
+  saved to engram under one key per run and kept in the run ledger; a
+  correction appends to the log and rewrites one requirement. The
+  `orchestrate` prompts gain a playbook per step. A risk tier for staged
+  changes (S7b): build, CI, dependency, lock, config and secret
+  paths are `high`, and the orchestrator can only raise it with the new `raise`
+  tool. The review of a `high` change (S7b): a `code` worker's `propose_batch`
+  asks an inline consent first; on `y` read-only lens workers and a refuter
+  look at the staged change and at most one correction worker fixes the
+  blockers that survived, all under the run limits; on `n` the change goes on
+  to your batch review marked not reviewed. Nothing approves the batch. Each
+  review leaves a receipt (tier, consent, lenses, findings, outcome, paths not
+  reviewed), saved to engram, and a one-line note in the batch review header.
+  Runs are stored locally (S9, first part): a run is saved in the chat database as
+  its workers change, and after a restart a run that was live is marked
+  interrupted and named in the pane the first time ORCH is turned on; nothing
+  runs again on its own. Run ids start above the highest one stored. With a
+  worker selected (Alt+Up/Down), `Ctrl+Space W` opens a full-pane, read-only
+  transcript of it (its output and tool rows, the last 128 KiB, cleaned of
+  control characters); Esc or `q` close it and it follows new output.
+  An interrupted run is named again at each start until you answer it, in the
+  folder it started in only (runs of other folders are counted, never shown):
+  `Ctrl+Space r r` starts a new run from its goal, with its read scope set again
+  from the chat folder and the orchestrator told to relaunch no worker until you
+  say so, and `Ctrl+Space r d` discards it. The old run closes when the new one
+  has a worker; one older than 30 days is closed unseen. An approval refused
+  between two orchestrator turns now says so in the pane.
+- Agent orchestrator write integration (S7, same gate): a `code` worker gets
+  `create_dir`, `write_file`, `edit_file` and `propose_batch`. Its writes are
+  staged in the pane's batch, only inside the run's read scope, and reach the
+  disk only when the user approves the batch, whose review header names the
+  worker. `collect` lists the worker's `files changed` (path, size, diff
+  hash, applied or not applied).
+- Agent orchestrator usage (S6, same gate): the claude, codex, gemini and
+  Ollama decoders report the tokens (and the cost, where claude gives one) of
+  a turn. A worker row shows its own numbers, or `n/a` when its engine
+  reported none, and a `run` row shows the sum. Nothing is estimated.
+- Agent orchestrator multiple workers (S3, same gate): read grants belong to
+  one worker, worker approvals queue one prompt at a time, each worker has its
+  own session, and `[ai.orchestrator]` `max_parallel`, `max_workers` and
+  `run_timeout_mins` bound the run. With a worker row selected (Alt+Down,
+  Alt+Up) the first Ctrl+C cancels only that worker and a second one within
+  two seconds cancels the run.
+- Agent orchestrator handoffs (S4, same gate): the orchestrator records each
+  finished worker with a `handoff` (verdict, reason, done, left, decisions)
+  and ends the run with `finish`; an `off_course` or `blocked` verdict shows
+  in the transcript. Missing handoffs are filled in by lazarobox, never from
+  worker text. Each handoff and the closed run ledger are saved to engram
+  under `orchestra/<run>/...` keys; with memory off the run turns it on for
+  itself only (`memory on for this run`), and when engram cannot be used the
+  run goes on with `handoffs not persisted`, said once.
+
+### Known limits
+
+- Chat with `codex` and `gemini` is not fully isolated from the user's own
+  setup: they still load the global instruction files (`~/.codex/AGENTS.md`,
+  `~/.gemini/GEMINI.md`) and, for gemini, the user's skills in
+  `~/.gemini/skills/`. That text reaches the provider and can change
+  answers. `claude` is isolated. It predates 1.1.0 and is planned for 1.1.1
+  (#519).
+
+### Not yet checked by hand
+
+These parts passed automated tests but have not been tried by hand yet.
+Reports are welcome.
+
+- Terminals: WSL and WezTerm have no manual record yet (#490).
+- Kitty: keys, paste refusal, and typing commands in bash and zsh (including
+  auto mode) were checked. fish, launching from rofi and the desktop entry
+  `Path=` in other terminals were not.
+- Orchestrator, MCP: a hand-started session against the lazarobox MCP server
+  (P04, P05) has not been checked.
+- Orchestrator, model-dependent steps: classification, the feature document
+  and correcting a written spec (T21 to T25) depend on the coordinator model
+  following its instructions (#503).
+
+## [1.0.1] - 2026-10-31
+
+### Changed
+
+- The batch review no longer reads `y locked` in the counter: it says
+  `N remaining · ↓ to unlock y`, and the keys row `y after scrolling` (`y
+  locked` in panes too narrow for it). Pressing `y` with lines unseen still
+  does nothing, but for 2 seconds the counter says what to do first, `scroll ↓
+  · N lines unseen · y needs all` (`scroll ↓ · N unseen` in narrow panes). On a
+  batch that cannot be approved (too large or empty) `y` says `y can't approve
+  this batch · press n`, and an empty batch no longer reads "too large to
+  review".
+- Write works on Linux and macOS (APFS and HFS+); on any other system an
+  approved batch writes nothing and says so. On macOS, a filesystem without an
+  atomic no-replace rename (exFAT, SMB, NFS) answers "this system or volume does
+  not support a safe no-replace write" and whatever was done is undone, and
+  replacing a file drops its extended attributes, ACLs, quarantine flag and
+  Finder tags, and the new file takes its group from the parent folder (BSD
+  semantics).
+
+### Internal
+
+- Releases can be started with one click: Actions -> Release -> Run workflow
+  bumps the version, moves `[Unreleased]` under it, commits, tags and
+  publishes, and `dry_run` rehearses it. Pushing a `vX.Y.Z` tag by hand still
+  works. See `RELEASING.md`.
+
+## [1.0.0] - 2026-10-30
+
+First stable release. From here on, `config.toml`, the `chat.db` format, the
+public CLI and the key bindings follow the stability promise described in the
+README. It builds on 1.0.0-rc.1 with what testing the chat on local models
+turned up: small Ollama and llama.cpp models now finish write tasks with fewer
+stops (the batch review opens by itself, refusals name the chat's folder, a
+tool call written as text or a step left unfinished gets one reminder), and
+`y` on a model's command in run mode runs it.
+
+### Changed
+
+- With Ollama and llama.cpp, reasoning that a model leaks into its answer
+  after a tool round, closed by a bare `</think>`, is now shown as reasoning
+  instead of as part of the answer. In those rounds the answer appears whole
+  at the end of the round.
+- With Ollama and llama.cpp, a model that writes a tool call as JSON text
+  instead of making it is asked once, in the same turn, to call the tool. The
+  chat shows `the model wrote a tool call as text; it was asked to call the
+  tool`. The text is never run, and the extra request counts toward the
+  turn's limit.
+- With Ollama and llama.cpp, a model whose answer ends by announcing its
+  next action ("I'll create the test next") without a tool call is asked
+  once, in the same turn, to do that step or to sum up. The chat shows `the
+  model said what it would do next without a tool call; it was asked to do
+  it`. A question, an offer, a courtesy or a summary does not count (#439).
+- With Ollama and llama.cpp, an empty answer with tools on, or one whose
+  last sentence starts with a sign-off such as "Ready for next steps." or
+  "Listo para el commit.", gets the same single reminder; the chat shows `the
+  model sent an empty answer; it was asked to go on` or `the model stopped
+  before finishing; it was asked to go on` (#439).
+- A turn that offers the write, exec or git write tools no longer tells the
+  model it cannot change files, in the system prompt or in the `run_in_pane`
+  description. The system prompt now names what its tools allow (write,
+  test, commit), says it must do every step asked in the same turn, and must
+  not claim a file, test run or commit that no tool result shows (#439).
+- The result of an applied batch now ends with `Continue with any step the
+  user asked for that is not finished yet.`, and the refusal of `run_command`
+  and the git tools while changes are staged now says `propose them first
+  with propose_batch, then call this tool again` (#439).
+- A refused write (`write_file`, `edit_file`, `create_dir`, `propose_batch`)
+  now names the chat's folder, so a model learns where its paths start:
+  `path not available (paths are relative to the chat's folder ~/proj)`. The
+  text is still the same for every reason. Only a missing parent folder of a
+  path the policy allowed is named: `the folder src/ does not exist`.
+- When a chat turn ends normally and the model left staged changes without
+  calling `propose_batch` (common with small local models), the batch review
+  opens by itself, with the same coverage check, arming delay and `y`/`n` as a
+  proposed batch. A cancelled, timed-out or failed turn, or a chat that already
+  waits on an approval, still leaves the orphan behind `Ctrl+G`.
+- In approval mode `run`, `y` on a model's `run_in_pane` prompt now runs the
+  command: lazarobox presses Enter, waits for it and returns its output to the
+  model, like a safe command that runs on its own. The prompt says
+  `y run it · n cancel · p next pane`. A command that cannot run (multi-line,
+  unknown pane directory, a busy or half-typed pane, a non-UTF-8 locale) is
+  typed without Enter as before, and the chat line says why. `ask`, `auto` and
+  the `Ctrl+Space`, `e` confirm keep typing without Enter.
+
+## [1.0.0-rc.1] - 2026-10-30
+
+First release candidate for 1.0.0. It is published to crates.io, but cargo
+does not install a pre-release unless asked for it (`cargo install
+lazarobox-shell --version 1.0.0-rc.1`). Use it, report what turns up, and
+1.0.0 follows from the last good candidate. From 1.0.0 on, `config.toml`, the
+`chat.db` format, the public CLI and the key bindings follow the stability
+promise described in the README.
+
+### Added
+
+- Chat folder: the chat now asks for its folder instead of silently using the
+  folder it was launched from. When it opens (or resumes a conversation)
+  with no usable folder, for example from a desktop launcher that starts in
+  `$HOME`, a picker offers the last used project, the repository roots of the
+  panes, recent chat folders and a typed path with `Tab` completion; `Esc`
+  keeps the current folder. `/cd <folder>` changes the folder of an open
+  chat: it is your command (it never reaches the model), asks `y` showing the
+  old and the new folder, and waits while a write, an approval or a command
+  is pending. The chat remembers its last folder and a resumed conversation
+  opens in it. To send a message that really starts with `/cd`, type
+  `//cd`.
+
+- The codex row of the AI menu names how codex is installed after its version, for example `codex available · 0.153.4 · standalone` (also `npm` and `homebrew`; nothing for an unknown layout). It is a label for messages only: the jail rules still come from the real paths alone (#180).
+- A menu save says where it wrote in the statusline (`saved to
+  ~/.config/lazarobox/config.toml`), and the README has a section on where
+  `config.toml` lives.
+- `lazarobox-shell --version` (`-V`) and `--help` (`-h`) print and exit 0,
+  before the terminal or the nesting guard are touched.
+- Start folder: `lazarobox-shell --dir <folder>` and `[workspace] dir` in
+  `config.toml` choose where the first shell starts (flag, then config, then
+  the launch folder). An invalid folder does not stop the app: it starts in
+  the launch folder and shows a notice inside lazarobox.
+- `install-desktop --dir <folder>` writes `Path=` and `--dir=` in the
+  launcher; running it again without `--dir` removes both.
+
+### Changed
+
+- When the jail refuses a codex layout, the full reason (`y` in the menu, and the chat) now names the layout and what to do, for example `codex (standalone) is installed in a layout the jail cannot isolate: … would be both run and written; reinstall it with the official installer, npm or Homebrew`. The short form on the menu row is unchanged.
+- `codex --version` now runs through the jail, like the model list. Before, it ran outside it, and with the standalone install the binary sits in codex's own writable folder.
+- An unknown option or command now prints one line on stderr and exits 2
+  instead of silently starting the TUI.
+- `chat.db` schema 3: the closed-list checks on `profile`, `role` and `status`
+  are gone (the values are still validated when written), so a new profile,
+  role or status can be added without rebuilding tables. Opening an older
+  file rebuilds `conversations`, `messages` and `tags` once, in one
+  transaction, keeping every row and id. A build that only knows schema 2
+  refuses a schema 3 file and leaves it untouched. The migration drops
+  messages or tags whose conversation no longer exists (they could never be
+  shown) and vacuums the file afterwards. Resuming a conversation leaves out
+  messages of a role this version does not know and says how many.
+
+### Fixed
+
+- The AI menu no longer shows `available` for codex or gemini when the jail will refuse to start them. The row reads `codex refused · …/bin is run and written`, cannot be chosen, and the chat explains why. claude keeps `available · no jail: …` where it really runs without a jail (#180).
+- The nesting guard no longer treats the value of `--dir` as a subcommand.
+
+### Docs
+
+- README: the chat folder picker and `/cd`, and the key reference for both.
+- README: new "Estabilidad y compatibilidad (1.0)" section (what is frozen:
+  `config.toml`, the `chat.db` format with forward migration, the public CLI
+  and the key bindings; what is not: `__*` subcommands, log text, UI layout),
+  an upgrade note, a single key-bindings reference for every view (the
+  `openspec/` link is gone), a security and threat-model index, and macOS
+  stated as not officially supported in 1.0.
+- `SECURITY.md`: supported versions and private vulnerability reporting.
+- `RELEASING.md`: the post-1.0 SemVer rule and the pre-1.0 release checklist.
+## [0.30.0] - 2026-10-29
+
+### Added
+
+- Ollama downloads: with the Ollama server running, its model level ends in
+  `download from Ollama…`. It lists up to 20 of the most popular models of
+  the Ollama library that fit this PC's memory (embedding and cloud-only
+  models left out), then the exact size of each tag from its registry
+  manifest, then a confirmation with the license title, a link to read it,
+  the models folder and the free space. Nothing is pulled before `y`. The
+  pull goes through the local Ollama server (`POST /api/pull` on
+  `127.0.0.1`), with progress on the row and in the status bar, a cancel
+  prompt that keeps what Ollama pulled, and one detection when it ends.
+  When the library page cannot be read, the built-in list is shown instead.
+- One download runs at a time across Hugging Face and Ollama: while one
+  runs, the other entry row says `a download is already running`.
+
+### Changed
+
+- The loopback client may POST to `/api/pull`, for the Ollama download only;
+  chat requests still refuse that path.
+
+### Fixed
+
+- A held key no longer repeats a decision: on prompts, confirmations and
+  menus, a key held down acts once, and only a new press acts again.
+  `Ctrl+H` works as Backspace in text fields.
+- Tool approval prompts arm after 800 ms instead of 400 ms, so the first OS
+  key repeat of a held key (about 600-760 ms) can never answer one.
+- The feedback form's footers say what `Esc` does on every screen.
+
+## [0.29.0] - 2026-10-28
+
+### Added
+
+- Chat COPY mode (`Ctrl+Space [` in a chat pane): `v` and `V` select, `y`
+  copies through OSC 52 (75 000-byte limit, same notice as the shell) and
+  returns to TERMINAL. The text is clean: no drawing prefixes, wrapped lines
+  rejoined, no key hints. `Ctrl+Y` (last answer) and `Ctrl+B` (last code
+  block) also work inside COPY mode.
+- Run mode (`approval = "run"`):
+  - `read_file` and `grep` inside the chat's folder run without asking. The
+    path is confined to the root when the file is opened. A read outside the
+    folder still asks, a sensitive file is still refused, and with a cloud
+    engine every read asks when the chat's folder is `$HOME` or `/`.
+  - Safe pane search commands (`cd`, `pwd`, `ls`, `tree`, `grep`, `rg`,
+    `find`) run without asking while they stay inside the chat's folder.
+    Leaving the folder, a broad root with a cloud engine or an oversized walk
+    asks; reaching a sensitive file, a git config or a secret folder is
+    refused. `rg` is checked with ripgrep's own walker (`ignore` crate).
+- A skill for coding agents to report lazarobox defects to GitHub, with the
+  user's consent, after searching existing issues.
+- README: demo GIFs for panes, COPY mode, the AI menu, history and run mode.
+- Git tools for the chat, behind two toggles that are off by default: `git`
+  (`git_status`, `git_diff`, `git_log`) and `git_write` (`git_add`,
+  `git_commit`). No other verb exists and no tool takes a free-form argument
+  list. Linux only; git must be in a system place.
+  - The read tools exclude secret file names by pathspec, redact the whole
+    output and are refused while a write batch is staged or proposed. A
+    refused path opens no prompt. A local engine never asks; a cloud engine
+    asks only for `git_diff`.
+  - `git_add` shows a one-line prompt with the paths and the file count. Paths
+    that cannot be shown whole, or that contain `'`, are refused.
+  - `git_commit` opens a full-pane review on every engine: the message, a
+    `signing disabled for this commit` notice, the hooks that will run and the
+    whole staged diff (`--text`). The commit is unsigned, has no trailer and
+    runs its hooks inside the jail. It is refused on a secret in the index or
+    a cut diff, and the index is checked byte for byte again after `y`. The
+    commit has a 120 s timeout.
+  - After the commit the committed tree is compared with the reviewed one. A
+    difference (a hook changed files) is reported, never undone, with a
+    `git reset --soft HEAD~1` hint. An edit of the message by a `commit-msg`
+    hook is not detected.
+- README: how the chat's folder is chosen (the focused pane's folder when you
+  open the chat, fixed for its life; CLI engines run in a private folder) and
+  a threat model for `run_command` and git (the allow-list bounds the verb,
+  the network is on, `.env` can be exfiltrated, UNIX sockets stay reachable,
+  daemonizing grandchildren, hooks that change a commit or are written by the
+  model).
+
+### Changed
+
+- The `git` and `git_write` rows of the AI menu now offer real tools instead
+  of only holding the switch.
+- `mkdir` and `git` are no longer on the run-mode allow-list: they always
+  ask.
+- New dependency: `ignore` 0.4.
+
 ## [0.28.0] - 2026-10-28
 
 ### Added
@@ -1278,7 +2449,40 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.16.0...HEAD
+[1.16.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.2...v1.16.0
+[1.15.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.1...v1.15.2
+[1.15.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.0...v1.15.1
+[1.15.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.4...v1.15.0
+[1.14.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.3...v1.14.4
+[1.14.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.2...v1.14.3
+[1.14.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.1...v1.14.2
+[1.14.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.14.0...v1.14.1
+[1.14.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.13.0...v1.14.0
+[1.13.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.12.0...v1.13.0
+[1.12.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.11.0...v1.12.0
+[1.11.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.10.0...v1.11.0
+[1.10.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.9.0...v1.10.0
+[1.9.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.8.0...v1.9.0
+[1.8.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.7.1...v1.8.0
+[1.7.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.7.0...v1.7.1
+[1.7.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.6.0...v1.7.0
+[1.6.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.5.0...v1.6.0
+[1.5.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.3.1...v1.4.0
+[1.3.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.4...v1.3.0
+[1.2.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.3...v1.2.4
+[1.2.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.2...v1.2.3
+[1.2.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.1...v1.2.2
+[1.2.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.1...v1.1.0
+[1.0.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.0.0-rc.1...v1.0.0
+[1.0.0-rc.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.30.0...v1.0.0-rc.1
+[0.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.29.0...v0.30.0
+[0.29.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.1...v0.26.0

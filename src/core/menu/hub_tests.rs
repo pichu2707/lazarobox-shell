@@ -519,6 +519,18 @@ fn a_reply_for_a_level_the_user_left_is_dropped() {
     assert_eq!(hint(&m), "Enter search · Esc back");
 }
 
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_query() {
+    let mut m = at_query();
+    type_text(&mut m, "qwen");
+    send(
+        &mut m,
+        KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(field(&m), Some("qwe".to_owned()));
+}
+
 #[test]
 fn keys_other_than_esc_are_ignored_while_asking() {
     let mut m = at_query();
@@ -567,6 +579,7 @@ fn hub_labels_are_sanitized() {
 
 fn running() -> Running {
     Running {
+        source: crate::core::ai::picker::Source::HuggingFace,
         file: "a-Q4_K_M.gguf".to_owned(),
         license: "apache-2.0".to_owned(),
         done: 42,
@@ -601,4 +614,73 @@ fn the_end_of_a_download_puts_the_entry_back() {
     m.set_download(None);
     assert_eq!(cursor_label(&m), HF_ROW);
     assert_ne!(hint(&m), "cancel the download? (y/n)");
+}
+
+// The Ollama screens of the ollama picker (config-menu, Ollama screens).
+
+/// The chat picker, on the Popular screen of a running Ollama.
+fn at_ollama_popular() -> MenuState {
+    use crate::core::ai::ollama_lib::{Answer, Ask, Card};
+    let d = detection(&[engine("ollama", Status::Available, &["qwen3:4b"], None)]);
+    let mut m = menu(None, None, Some(d));
+    open(&mut m, "chat");
+    goto_pick(&mut m, "ollama");
+    send(&mut m, key(KeyCode::Enter));
+    goto_pick(&mut m, crate::core::ai::picker::OLLAMA_ROW);
+    assert_eq!(
+        send(&mut m, key(KeyCode::Enter)),
+        MenuCommand::OllamaAsk(Ask::Popular)
+    );
+    // Every key but Esc waits for the reply.
+    assert_eq!(hint(&m), "asking ollama.com…");
+    assert_eq!(press(&mut m, 'j'), MenuCommand::None);
+    assert_eq!(press(&mut m, 'y'), MenuCommand::None);
+    let card = |name: &str| Card {
+        name: name.to_owned(),
+        description: String::new(),
+        capabilities: Vec::new(),
+        sizes: vec!["1b".to_owned()],
+        pulls: "1M".to_owned(),
+    };
+    m.ollama_reply(
+        Ask::Popular,
+        Ok(Answer::Popular {
+            cards: vec![card("a"), card("b")],
+            fallback: false,
+            ram: RAM,
+        }),
+    );
+    m
+}
+
+#[test]
+fn the_ollama_screens_move_with_j_and_k_and_only_confirm_takes_y() {
+    let mut m = at_ollama_popular();
+    assert_eq!(hint(&m), "j/k move · Enter choose · Esc back");
+    assert_eq!(cursor_label(&m), "a  1M pulls  1b");
+    press(&mut m, 'j');
+    assert_eq!(cursor_label(&m), "b  1M pulls  1b");
+    assert_eq!(press(&mut m, 'y'), MenuCommand::None);
+    assert_eq!(press(&mut m, 'n'), MenuCommand::None);
+    assert_eq!(cursor_label(&m), "b  1M pulls  1b");
+    // Esc goes back to the ollama model level, on the entry row.
+    send(&mut m, key(KeyCode::Esc));
+    assert_eq!(cursor_label(&m), crate::core::ai::picker::OLLAMA_ROW);
+}
+
+#[test]
+fn a_failed_ollama_request_is_the_footer_error() {
+    use crate::core::ai::ollama_lib::Ask;
+    let mut m = at_ollama_popular();
+    let ask = Ask::Sizes {
+        model: "a".to_owned(),
+        tags: vec!["1b".to_owned()],
+    };
+    assert_eq!(
+        send(&mut m, key(KeyCode::Enter)),
+        MenuCommand::OllamaAsk(ask.clone())
+    );
+    let message = "Ollama library request failed: HTTP 500";
+    m.ollama_reply(ask, Err(message.to_owned()));
+    assert_eq!(m.footer(), Footer::Error(message));
 }

@@ -424,3 +424,181 @@ The save MUST also own `ai.notify`. It is written only when its draft differs fr
 - GIVEN `[ai.notify]\nx = 1\n` and a changed draft
 - WHEN the save is attempted
 - THEN it is refused with `config.toml: ai.notify is a table; fix it before saving` and the file is byte-identical
+
+### Requirement: Tools key is owned
+The save MUST also own `ai.tools.enabled`. It is written only when its draft differs from the value captured at open, as a TOML boolean, explicitly even when it equals the default (`true`), in place when the key exists (comments and neighbours untouched), and created under an implicit `[ai.tools]` table otherwise (no empty parent header). A scalar of the wrong type under `enabled` is replaced by the draft boolean. The save MUST be refused (file unchanged, menu open, draft intact) with the footer `config.toml: ai.tools is not a table; fix it before saving` when `ai.tools` holds a non-table value, and `config.toml: ai.tools.enabled is a table; fix it before saving` when `enabled` holds a table or an array of tables. These checks apply only when the tools draft differs from the value at open. An unknown key under `ai.tools` is preserved.
+
+#### Scenario: Table created [auto]
+- GIVEN a file `# mine\n[statusline]\nposition = "bottom"\n` and the tools draft changed to off
+- WHEN the save succeeds
+- THEN the original bytes are unchanged and the file ends with `[ai.tools]\nenabled = false\n`
+
+#### Scenario: Updated in place [auto]
+- GIVEN `[ai.tools]\n# c\nenabled = false  # off\n` and the draft on
+- WHEN the save succeeds
+- THEN only the value changes: `enabled = true  # off`
+
+#### Scenario: Default written explicitly [auto]
+- GIVEN `enabled = false` and the draft changed to on (the default)
+- WHEN the save succeeds
+- THEN the file contains `enabled = true` and the key is not removed
+
+#### Scenario: Untouched when unchanged [auto]
+- GIVEN the tools draft equals the open value and only a position changed
+- WHEN the save succeeds
+- THEN a file without `[ai.tools]` gains none and an existing one is byte-identical
+
+#### Scenario: Collisions [auto]
+- GIVEN `[ai]` holding `tools = 3`, and in another file `[ai.tools.enabled]`, and a changed tools draft
+- WHEN `s` is pressed
+- THEN each file is byte-identical and the matching footer is shown
+
+#### Scenario: Collision ignored when unchanged [auto]
+- GIVEN a file with `[ai.tools.enabled]`, an unchanged tools draft and a changed position
+- WHEN `s` is pressed
+- THEN the position is saved and the table is untouched
+
+#### Scenario: Saved file parses back [auto]
+- GIVEN any save result with a tools draft
+- WHEN it is parsed by `Config::parse`
+- THEN tools equal the draft and no notice is produced
+
+### Requirement: Approval mode key is owned
+The save MUST also own `ai.tools.approval`, with the same rules as `ai.tools.enabled`: written only when its draft differs from the value captured at open, as the TOML string `"ask"`, `"auto"` or `"run"`, explicitly even when it equals the default, in place when the key exists (comments and neighbours untouched), created under an implicit `[ai.tools]` table otherwise, and a value of the wrong type replaced. The save MUST be refused (file unchanged, menu open, draft intact) with `config.toml: ai.tools is not a table; fix it before saving` when `ai.tools` holds a non-table value, and `config.toml: ai.tools.approval is a table; fix it before saving` when `approval` holds a table or an array of tables; these checks apply only when the approval draft differs from the value at open.
+
+#### Scenario: Created next to enabled [auto]
+- GIVEN `[ai.tools]\nenabled = true\n` and the approval draft changed to `run`
+- WHEN the save succeeds
+- THEN `enabled = true` is byte-identical and the table gains `approval = "run"`
+
+#### Scenario: Updated in place [auto]
+- GIVEN `approval = "run"  # mine` and the draft changed to `ask`
+- WHEN the save succeeds
+- THEN only the value changes: `approval = "ask"  # mine`
+
+#### Scenario: Untouched when unchanged [auto]
+- GIVEN the approval draft equals the open value and only a position changed
+- WHEN the save succeeds
+- THEN no `approval` key is added and an existing one is byte-identical
+
+#### Scenario: Collision [auto]
+- GIVEN `[ai.tools.approval]` and a changed approval draft
+- WHEN `s` is pressed
+- THEN the file is byte-identical and the footer is `config.toml: ai.tools.approval is a table; fix it before saving`
+
+#### Scenario: Saved file parses back [auto]
+- GIVEN any save result with an approval draft among `ask`, `auto` and `run`
+- WHEN it is parsed by `Config::parse`
+- THEN the approval mode equals the draft and no notice is produced
+
+### Requirement: MCP server lists are never written
+The save MUST NEVER add, change, reorder or remove any `ai.mcp.*` key, the global `[[ai.mcp.servers]]` entries and the per-project extras included: they are edited by hand. Every byte of them, including arrays of tables, comments, unknown keys and invalid entries, MUST be preserved by every save, and a collision or an error inside them MUST NOT block the save of other keys. No secret is ever written, and no environment value is ever written.
+
+#### Scenario: Servers preserved [auto]
+- GIVEN a file with two `[[ai.mcp.servers]]` entries, comments between them, and a changed statusline position
+- WHEN the save succeeds
+- THEN only the position changes and the server entries are byte-identical
+
+#### Scenario: Invalid entries do not block [auto]
+- GIVEN `ai.mcp.servers` holding invalid entries and a changed tools draft
+- WHEN the save succeeds
+- THEN the tools key is saved and the entries are byte-identical
+
+#### Scenario: Nothing created [auto]
+- GIVEN a file with no `ai.mcp`
+- WHEN any save succeeds
+- THEN the file gains no `ai.mcp` table
+
+### Requirement: Family toggle keys are owned
+The five family keys under `[ai.tools]` (see configuration, Family toggle keys) MUST be owned by the config menu like `ai.tools.enabled`: saving writes only a key whose value changed, through the existing comment-preserving edit, and leaves every other key, table and comment byte for byte as it was. A key the user never changed MUST NOT be added to the file. A save MUST NOT write any MCP server list or any secret.
+
+#### Scenario: Only the changed key is written [auto]
+- GIVEN a file with comments and the Write toggle changed to on
+- WHEN the config is saved
+- THEN the file holds `write = true` under `[ai.tools]`, no other key was added, and all comments are unchanged
+
+#### Scenario: No change, no write [auto]
+- GIVEN the menu opened and closed with all toggles unchanged
+- WHEN `s` is pressed
+- THEN the file is not touched
+
+#### Scenario: Round trip [auto]
+- GIVEN every family toggle saved as on
+- WHEN the file is parsed again
+- THEN all five toggles read on
+
+### Requirement: Orchestrator keys are owned [S1]
+Saving MUST own and write the `[ai.tasks.orchestrate]` table (`engine`, `model`) and the keys `enabled`, `acknowledged` and `worker_timeout_secs` of `[ai.orchestrator]` (and [S3] `max_parallel`, `max_workers` and `run_timeout_mins`; the per-pane ORCH mode and run overrides are never written), under the same rules as the other owned keys: atomic write, comments and unrelated keys preserved, nested-table edits, refusal on a file that cannot be parsed. A cleared `orchestrate` slot MUST remove its keys rather than write empty strings. Saving the notice acceptance MUST NOT require any other change to be pending.
+
+#### Scenario: Save the slot [auto]
+- GIVEN `orchestrate` set to `claude` / `opus` in the draft
+- WHEN s is pressed
+- THEN `[ai.tasks.orchestrate]` holds `engine = "claude"` and `model = "opus"` and other content, comments and unknown keys are preserved
+
+#### Scenario: Clearing removes the keys [auto]
+- GIVEN a file with `[ai.tasks.orchestrate]` and the draft clears the slot
+- WHEN it is saved
+- THEN the keys are removed and the rest of the file is unchanged
+
+#### Scenario: Notice acceptance saved [auto]
+- GIVEN `acknowledged` true in the draft and no other change
+- WHEN it is saved
+- THEN the file holds `acknowledged = true` under `[ai.orchestrator]`
+
+#### Scenario: A failure picker choice is never persisted [S2, auto]
+- GIVEN the picker from a failure alert chooses `review` = `claude` / `sonnet` as a run-scoped override
+- WHEN the choice is confirmed and the run later ends
+- THEN no write to the config file was made, `[ai.review]` is byte-identical to before, and the next save of the menu does not include the override
+
+### Requirement: Usage keys are owned
+The save MUST also own `ai.usage.line`, `ai.usage.statusline`, `ai.usage.turn_tokens`, `ai.usage.day_tokens`, `ai.usage.day_usd` and `ai.usage.billing.claude`, `.codex`, `.gemini`. Each owned key MUST be written only when its draft differs from the value captured at open, in place when the key exists (comments and neighbours untouched) and created otherwise, with missing tables created implicitly holding only the changed keys. Booleans are written as TOML booleans and billing modes as the strings `subscription` or `per-token`, explicitly even when they equal the default. A threshold is written as a TOML integer (`turn_tokens`, `day_tokens`) or float (`day_usd`, with at most 2 decimals); clearing a threshold (draft empty) MUST remove its key, leaving everything else byte for byte, and removing a key that does not exist changes nothing. A scalar of the wrong type under an owned key is replaced. Unknown keys under `ai.usage` and `ai.usage.billing` are preserved. The save MUST be refused (file unchanged, menu open, draft intact) with the footer `config.toml: ai.usage is not a table; fix it before saving` when `ai.usage` holds a non-table value, `config.toml: ai.usage.billing is not a table; fix it before saving` when `billing` does, and `config.toml: ai.usage.<key> is a table; fix it before saving` when an owned key holds a table. The checks apply only when a draft of the matching keys differs from the value at open. No secret is ever written.
+
+#### Scenario: Table created [auto]
+- GIVEN a file `# mine\n[statusline]\nposition = "bottom"\n` and the drafts `line = false`, `turn_tokens = 4000`
+- WHEN the save succeeds
+- THEN the original bytes are unchanged and the file ends with `[ai.usage]\nline = false\nturn_tokens = 4000\n`
+
+#### Scenario: Updated in place [auto]
+- GIVEN `[ai.usage]\n# c\nline = true  # on\nfoo = 1\n` and the draft `line = false`
+- WHEN the save succeeds
+- THEN only the value changes: `line = false  # on`, and `foo` and the comment are byte-identical
+
+#### Scenario: Default written explicitly [auto]
+- GIVEN no file and the draft `statusline` changed off and back to on before the save, then `claude` changed to `per-token` and back
+- WHEN the save succeeds
+- THEN nothing is written for either key (drafts equal the open values)
+
+#### Scenario: Billing written [auto]
+- GIVEN no file and the draft `claude = per-token`
+- WHEN the save succeeds
+- THEN the file is `[ai.usage.billing]\nclaude = "per-token"\n` and it parses back as per-token with no problem
+
+#### Scenario: Clearing a threshold removes the key [auto]
+- GIVEN `[ai.usage]\nturn_tokens = 4000\nday_tokens = 9000\n` and the `turn_tokens` draft emptied
+- WHEN the save succeeds
+- THEN the file has `day_tokens = 9000` and no `turn_tokens`
+
+#### Scenario: Float threshold [auto]
+- GIVEN the `day_usd` draft `2.5`
+- WHEN the save succeeds
+- THEN the file holds `day_usd = 2.5` and parses back as 2.5
+
+#### Scenario: Untouched when unchanged [auto]
+- GIVEN usage drafts equal to the open values and only a position changed
+- WHEN the save succeeds
+- THEN a file without `[ai.usage]` gains none and an existing one is byte-identical
+
+#### Scenario: Collisions refuse [auto]
+- GIVEN a file with `[ai]\nusage = 3`, another with `[ai.usage]\nbilling = 1`, another with `[ai.usage.line]`, and a changed usage draft each
+- WHEN `s` is pressed
+- THEN each file is byte-identical and the matching footer is shown
+
+#### Scenario: Collision ignored when unchanged [auto]
+- GIVEN a file with `[ai.usage.line]`, unchanged usage drafts and a changed position
+- WHEN `s` is pressed
+- THEN the position is saved and the table is untouched
+
+#### Scenario: Saved file parses back [auto]
+- GIVEN any save result with usage drafts
+- WHEN it is parsed by `Config::parse`
+- THEN every draft equals the parsed value and no notice is produced

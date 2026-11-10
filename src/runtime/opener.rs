@@ -9,13 +9,27 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::core::opener::{candidates, is_web_url, leading_args};
+use crate::core::opener::{candidates, is_link_url, leading_args};
 use crate::runtime::desktop::which;
 
 /// How long after its start an opener's error still means the link did
 /// not open. `xdg-open` that finds no browser fails at once; one that runs
 /// the browser in the foreground exits with it, much later.
 const LAUNCH: Duration = Duration::from_secs(5);
+
+/// Runs `spawn`, retrying briefly on ETXTBSY: a program that was written a
+/// moment ago is still "busy" while a concurrent fork holds its write handle.
+fn spawn_retrying<T>(spawn: impl Fn() -> io::Result<T>) -> io::Result<T> {
+    for attempt in 0..5 {
+        match spawn() {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 4 => {
+                thread::sleep(Duration::from_millis(20 * (attempt + 1)));
+            }
+            other => return other,
+        }
+    }
+    unreachable!("the last attempt always returns")
+}
 
 /// The program that opens links on this host.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -43,14 +57,14 @@ impl Opener {
             })
     }
 
-    /// Starts the opener on `url`. A link [`is_web_url`] refuses is never
+    /// Starts the opener on `url`. A link [`is_link_url`] refuses is never
     /// handed over. `failed` runs, on the reaping thread, when the opener
     /// exits with an error within [`LAUNCH`]: it found no browser (an SSH
     /// session, a desktop with no default). A later exit is the browser's.
     /// The exit of a Windows program (`rundll32.exe`) says nothing about the
     /// browser, so it is not read.
     pub fn open(&self, url: &str, failed: impl FnOnce() + Send + 'static) -> io::Result<()> {
-        if !is_web_url(url) {
+        if !is_link_url(url) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "not a web link",
@@ -61,13 +75,15 @@ impl Opener {
             .file_name()
             .and_then(OsStr::to_str)
             .unwrap_or_default();
-        let mut child = Command::new(&self.program)
-            .args(leading_args(name))
-            .arg(url)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+        let mut child = spawn_retrying(|| {
+            Command::new(&self.program)
+                .args(leading_args(name))
+                .arg(url)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        })?;
         let trust_exit = !name.ends_with(".exe");
         let started = Instant::now();
         let launch = self.launch;
@@ -156,6 +172,28 @@ mod tests {
 
     // Bug (WSL): `rundll32.exe` opens the link through `url.dll`, given
     // before the link, still with no shell.
+    // The flake of the full suite: another test's fork holds the script's write
+    // handle for a moment and `exec` fails with ETXTBSY. Reproduced here by
+    // holding the handle on purpose.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_program_busy_for_a_moment_still_opens_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("args");
+        let opener = fake(dir.path(), &out);
+        let holder = fs::OpenOptions::new()
+            .append(true)
+            .open(&opener.program)
+            .unwrap();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            drop(holder);
+        });
+        opener.open("https://example.com/", || {}).unwrap();
+        release.join().unwrap();
+        assert_eq!(wait_for(&out), "https://example.com/\n");
+    }
+
     #[test]
     fn rundll32_gets_the_url_handler_then_the_link() {
         let dir = tempfile::tempdir().unwrap();

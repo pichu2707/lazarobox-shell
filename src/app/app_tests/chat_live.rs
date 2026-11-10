@@ -12,6 +12,7 @@ use crate::core::{
         },
         config::{Assignment, Task},
     },
+    clipboard::osc52_only,
     copy::osc52,
 };
 
@@ -65,6 +66,7 @@ pub(super) fn ollama() -> AiConfig {
             model: Some("llama3:8b".into()),
         },
     );
+    ai.set_usage(crate::core::ai::config::UsageConfig::without_line());
     ai
 }
 
@@ -169,6 +171,8 @@ fn prefix_c_opens_a_focused_chat_to_the_right_without_spawning_anything() {
             Effect::ResizePty(PaneId::FIRST, _)
                 | Effect::DetectEngines
                 | Effect::PreparePrompt { .. }
+                // The `/github` hint reads the origin of the folder.
+                | Effect::ProbeOrigin { dialog: false, .. }
         )),
         "{effects:?}"
     );
@@ -263,6 +267,19 @@ fn shifted_letters_are_typed() {
     let mut a = ready_app();
     a.update(code(KeyCode::Char('H'), KeyModifiers::SHIFT));
     assert_eq!(composer(&a), "H");
+}
+
+// zutty sends Alt+Enter as ESC LF once modifyOtherKeys is off. crossterm
+// 0.29 in raw mode decodes LF as Ctrl+J and ESC adds Alt, so the event is
+// Alt+Ctrl+J: it must insert a newline like Alt+Enter does.
+#[test]
+fn alt_ctrl_j_from_esc_lf_inserts_a_newline() {
+    let mut a = ready_app();
+    type_text(&mut a, "uno");
+    let both = KeyModifiers::ALT | KeyModifiers::CONTROL;
+    assert_eq!(a.update(code(KeyCode::Char('j'), both)), vec![]);
+    type_text(&mut a, "dos");
+    assert_eq!(composer(&a), "uno\ndos");
 }
 
 #[test]
@@ -465,12 +482,35 @@ fn the_composer_survives_the_menu_and_the_menu_does_not_feed_it() {
 
 // Yank ------------------------------------------------------------------------
 
+// copy-selection: Other callers get the same notice (chat copy).
+#[test]
+fn ctrl_y_with_a_tool_copies_locally_and_the_answer_updates_the_notice() {
+    let mut a = answered("hello").with_clipboard(Some(crate::core::clipboard::Tool::WlCopy), false);
+    let effects = a.update(ctrl('y'));
+    assert_eq!(
+        effects,
+        vec![
+            Effect::SetClipboard(osc52("hello").unwrap()),
+            Effect::CopyLocal {
+                seq: 1,
+                text: "hello".to_owned()
+            }
+        ]
+    );
+    assert_eq!(a.notice(), Some("Copying (wl-copy)"));
+    a.update(AppEvent::Clipboard {
+        seq: 1,
+        result: Ok(()),
+    });
+    assert_eq!(a.notice(), Some("Copied (wl-copy)"));
+}
+
 #[test]
 fn ctrl_y_copies_the_last_answer_and_says_how_much() {
     let mut a = answered("hello");
     let effects = a.update(ctrl('y'));
     assert_eq!(effects, vec![Effect::SetClipboard(osc52("hello").unwrap())]);
-    assert_eq!(a.notice(), Some("Copied 5 characters"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
     assert!(a.take_dirty());
 }
 
@@ -478,7 +518,7 @@ fn ctrl_y_copies_the_last_answer_and_says_how_much() {
 fn a_one_character_yank_is_singular() {
     let mut a = answered("x");
     a.update(ctrl('y'));
-    assert_eq!(a.notice(), Some("Copied 1 character"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
 }
 
 #[test]
@@ -505,7 +545,7 @@ fn ctrl_b_copies_the_last_code_block_without_its_fences() {
         effects,
         vec![Effect::SetClipboard(osc52("let x = 1;").unwrap())]
     );
-    assert_eq!(a.notice(), Some("Copied 10 characters"));
+    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
 }
 
 #[test]
@@ -1116,6 +1156,7 @@ fn the_engine_is_checked_again_on_every_send() {
     ask(&mut a, "hello");
     assert_eq!(composer(&a), "hello");
     a.update(AppEvent::EnginesDetected(detection(&["llama3:8b"])));
+    let_go();
     let effects = a.update(plain(KeyCode::Enter));
     assert!(
         matches!(effects.as_slice(), [Effect::ChatSend { .. }]),
@@ -1335,6 +1376,47 @@ fn a_held_cancel_sent_as_presses_cancels_once() {
     assert_eq!(ask(&mut a, "two").len(), 1);
     let again = at(&mut a, 2000, plain(KeyCode::Esc));
     assert_eq!(again, vec![Effect::ChatCancel(chat_id())]);
+}
+
+#[test]
+fn a_held_esc_that_closed_the_menu_does_not_cancel_the_stream() {
+    NOW_MS.with(|n| n.set(0));
+    let mut a = ready_app().with_clock(mock_now);
+    assert_eq!(ask(&mut a, "one").len(), 1);
+    press(&mut a, "m");
+    at(&mut a, 0, plain(KeyCode::Esc));
+    assert_eq!(a.input(), InputMode::Terminal);
+    for ms in [100, 200] {
+        let effects = at(&mut a, ms, plain(KeyCode::Esc));
+        assert!(
+            !effects.contains(&Effect::ChatCancel(chat_id())),
+            "Esc at {ms}: {effects:?}"
+        );
+    }
+    assert!(chat_of(&a).stream_phase().is_some(), "still streaming");
+}
+
+#[test]
+fn held_text_and_editing_keys_still_repeat_in_the_composer() {
+    NOW_MS.with(|n| n.set(0));
+    let mut a = ready_app().with_clock(mock_now);
+    for ms in [0, 30, 60] {
+        at(&mut a, ms, key('l'));
+    }
+    assert_eq!(composer(&a), "lll");
+    for ms in [90, 120] {
+        at(&mut a, ms, plain(KeyCode::Backspace));
+    }
+    assert_eq!(composer(&a), "l");
+}
+
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_composer() {
+    let mut a = ready_app();
+    type_text(&mut a, "ab");
+    assert_eq!(a.update(ctrl('h')), vec![]);
+    assert_eq!(composer(&a), "a");
 }
 
 // PR12: the system prompt is prepared per conversation ------------------------

@@ -147,6 +147,11 @@ fn a_cargo_install_runs_cargo_directly_in_a_new_visible_tab() {
          release nor CARGO_INSTALL_ROOT can change what is installed"
     );
     assert!(spec.report_status);
+    assert_eq!(
+        spec.umask,
+        Some(0o022),
+        "the install child, and only it, runs with umask 022 (issue #526)"
+    );
     assert!(
         spec.env_os.contains(&(
             OsString::from("PATH"),
@@ -255,10 +260,39 @@ fn a_binary_outside_cargo_only_shows_the_command_and_copies_it() {
         let mut a = on_updates(Some("0.15.4"), Some(distro_env()));
         assert!(a.update(enter()).is_empty(), "nothing runs");
         assert_eq!(footer(&a), Fallback::NotCargoInstall.footer());
+        let_go();
         let copy = a.update(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
         let sequence = crate::core::copy::osc52(INSTALL_COMMAND).unwrap();
         assert_eq!(copy, vec![Effect::SetClipboard(sequence)], "{code:?}");
     }
+}
+
+// copy-selection: Other callers get the same notice (update command).
+#[test]
+fn the_update_command_copy_goes_through_the_local_tool_too() {
+    let mut a = on_updates(Some("0.15.4"), Some(distro_env()))
+        .with_clipboard(Some(crate::core::clipboard::Tool::WlCopy), false);
+    a.update(enter());
+    let_go();
+    let copy = a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('y'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        copy,
+        vec![
+            Effect::SetClipboard(crate::core::copy::osc52(INSTALL_COMMAND).unwrap()),
+            Effect::CopyLocal {
+                seq: 1,
+                text: INSTALL_COMMAND.to_owned()
+            }
+        ]
+    );
+    a.update(AppEvent::Clipboard {
+        seq: 1,
+        result: Ok(()),
+    });
+    assert_eq!(footer(&a), "Copied (wl-copy)");
 }
 
 #[test]

@@ -9,13 +9,14 @@
 use std::{collections::HashMap, sync::Arc};
 
 use super::{
+    run::{ANSWER_FIRST, JUST_OPENED},
     tool::{CANCELLED, DECLINED},
     *,
 };
 use crate::core::ai::chat::{
     approval::Reply,
     approval::{ApprovalAsk, Origin},
-    engine::Decision,
+    engine::{Decision, ScreenText},
     review::{ARM_DELAY, Badge, BatchEvent, BatchReview, NO_ORPHAN, TOO_LARGE, closed_notice},
     review_view::{Move, ReviewView},
 };
@@ -45,19 +46,34 @@ impl App {
 
     /// The batches the runtime holds, by pane (it polls on its tick): each
     /// chat wears the badge of its own, or none. Redraws only on a change.
-    pub fn sync_batches(&mut self, badges: &HashMap<PaneId, Badge>) {
+    /// A batch that turns into an orphan when the last turn ended with
+    /// `Done` (the model staged it and never proposed it) has its review
+    /// asked for at once, unless the chat already waits on an approval
+    /// (local-model-writes D1). A cancelled or failed turn leaves the orphan
+    /// to Ctrl+G.
+    pub fn sync_batches(&mut self, badges: &HashMap<PaneId, Badge>) -> Vec<Effect> {
         let mut changed = false;
+        let mut effects = Vec::new();
         for (id, state) in &mut self.panes {
             let Some(chat) = state.chat_mut() else {
                 continue;
             };
             let badge = badges.get(id).copied();
             if chat.batch_badge() != badge {
+                let was_orphan = matches!(chat.batch_badge(), Some(Badge::Orphan(_)));
                 chat.set_batch_badge(badge);
                 changed = true;
+                if matches!(badge, Some(Badge::Orphan(_)))
+                    && !was_orphan
+                    && chat.take_clean_end()
+                    && chat.approvals().pending().is_none()
+                {
+                    effects.push(Effect::BatchReview(*id));
+                }
             }
         }
         self.dirty |= changed;
+        effects
     }
 
     /// Ctrl+G: asks the runtime for the review of the orphan chat `id` wears.
@@ -184,7 +200,23 @@ impl App {
             (key.code, key.modifiers),
             (KeyCode::Char('y' | 'n') | KeyCode::Esc, KeyModifiers::NONE)
         );
-        if repeat || (answers && !self.review_answerable(id)) {
+        // A `y` the gate will refuse says why; the gate itself is untouched.
+        if !repeat && key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE {
+            let now = (self.clock)();
+            if let Some(view) = self.review_mut(id)
+                && view.y_pressed(now)
+            {
+                self.dirty = true;
+            }
+        }
+        if repeat {
+            return Vec::new();
+        }
+        if answers && !self.review_answerable(id) {
+            // A `y` has its own hint in the view.
+            if key.code != KeyCode::Char('y') {
+                self.ignored_key(&key, JUST_OPENED);
+            }
             return Vec::new();
         }
         match (key.code, key.modifiers) {
@@ -195,7 +227,10 @@ impl App {
                 effects.extend(self.chat_cancel_key(id));
                 effects
             }
-            _ => Vec::new(),
+            _ => {
+                self.ignored_key(&key, ANSWER_FIRST);
+                Vec::new()
+            }
         }
     }
 
@@ -235,15 +270,36 @@ impl App {
             return Vec::new();
         }
         let orphan = self.reviewed_orphan(id);
+        let drive_grant = self
+            .panes
+            .get_mut(&id)
+            .and_then(PaneState::chat_mut)
+            .and_then(|chat| chat.drive_grant().map(std::path::Path::to_path_buf));
         let closed = self.close_approval(id, Reply::Approve);
         if let Some(batch) = orphan {
             return vec![Effect::BatchApply {
                 pane: id,
                 id: batch,
+                drive_grant,
             }];
         }
         closed
-            .and_then(|approval| Self::answer(id, &approval, Decision::Sent))
+            .and_then(|approval| match (approval.ask(), approval.call()) {
+                // The text the user read is the text that goes.
+                (
+                    ApprovalAsk::Screen {
+                        review: Some(screen),
+                        ..
+                    },
+                    Some((turn, call)),
+                ) => Some(Effect::ToolScreen {
+                    pane: id,
+                    turn,
+                    call,
+                    text: ScreenText(screen.text().to_owned()),
+                }),
+                _ => Self::answer(id, &approval, Decision::Sent),
+            })
             .into_iter()
             .collect()
     }
@@ -259,6 +315,14 @@ impl App {
                 id: batch,
             }];
         }
+        let commit = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .and_then(|chat| chat.approvals().pending())
+            .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::Commit(_)));
+        let screen = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .and_then(|chat| chat.approvals().pending())
+            .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::Screen { .. }));
         let Some(view) = self.review_mut(id) else {
             return Vec::new();
         };
@@ -268,9 +332,11 @@ impl App {
             TOO_LARGE
         };
         let counts = view.review().counts();
+        let what = if commit { "commit" } else { "batch" };
         let effects = self.decline(id, reason);
-        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-            chat.push_system_line(format!("batch rejected: {counts}"));
+        // A screen says it was denied in `decline`.
+        if !screen && let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.push_system_line(format!("{what} rejected: {counts}"));
         }
         effects
     }

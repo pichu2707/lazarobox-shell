@@ -17,25 +17,48 @@ pub enum Family {
     Git,
     GitWrite,
     Pane,
+    /// The orchestrator's `spawn_agent`, `wait`, `collect` and `cancel`.
+    Orchestra,
+    /// The three read-only GitHub tools, run through `gh` on the host.
+    Github,
+    /// `gh_issue_draft`: opens the Feedback form with the model's draft. It
+    /// runs no `gh`: only the user's Ctrl+S in the form sends anything.
+    IssueDraft,
 }
 
 /// Which families are on: a bitset, one bit per [`Family`]. The single gate
 /// for what is offered and what a call may name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct FamilySet(u8);
+pub struct FamilySet(u16);
 
 impl FamilySet {
     pub const EMPTY: FamilySet = FamilySet(0);
     /// The 0.18.0 tools, the only ones offered until a toggle is on.
     pub const LEGACY: FamilySet = FamilySet::EMPTY.with(Family::Read).with(Family::Pane);
 
+    /// Every family: the menu with all of it on, the default ceiling.
+    pub const ALL: FamilySet = FamilySet::LEGACY
+        .with(Family::Search)
+        .with(Family::Write)
+        .with(Family::Exec)
+        .with(Family::Git)
+        .with(Family::GitWrite)
+        .with(Family::Orchestra)
+        .with(Family::Github)
+        .with(Family::IssueDraft);
+
+    /// This set minus `family`.
+    pub const fn without(self, family: Family) -> FamilySet {
+        FamilySet(self.0 & !(1 << family as u16))
+    }
+
     /// This set plus `family`.
     pub const fn with(self, family: Family) -> FamilySet {
-        FamilySet(self.0 | 1 << family as u8)
+        FamilySet(self.0 | 1 << family as u16)
     }
 
     pub const fn contains(self, family: Family) -> bool {
-        self.0 & (1 << family as u8) != 0
+        self.0 & (1 << family as u16) != 0
     }
 }
 
@@ -56,6 +79,12 @@ pub enum ArgKind {
     StrList {
         items: usize,
         each: usize,
+    },
+    /// At most `items` integers, each at least `min`; one below is refused,
+    /// never clamped, because these are ids.
+    IntList {
+        items: usize,
+        min: i64,
     },
 }
 
@@ -86,6 +115,7 @@ pub enum ArgValue {
     Int(i64),
     Bool(bool),
     List(Vec<String>),
+    Ints(Vec<i64>),
 }
 
 /// The arguments of a call that passed [`parse_args`], in `ArgDef` order.
@@ -131,6 +161,9 @@ fn kind_schema(kind: &ArgKind) -> Value {
         ArgKind::Bool => json!({ "type": "boolean" }),
         ArgKind::StrList { items, .. } => {
             json!({ "type": "array", "items": { "type": "string" }, "maxItems": items })
+        }
+        ArgKind::IntList { items, min } => {
+            json!({ "type": "array", "items": { "type": "integer", "minimum": min }, "maxItems": items })
         }
     }
 }
@@ -194,6 +227,14 @@ fn typed(kind: &ArgKind, value: &Value) -> Result<ArgValue, ToolError> {
                 .collect();
             ArgValue::List(texts.ok_or(wrong)?)
         }
+        ArgKind::IntList { min, .. } => {
+            let items = value.as_array().ok_or(wrong)?;
+            let ints: Option<Vec<i64>> = items
+                .iter()
+                .map(|v| v.as_i64().filter(|n| n >= min))
+                .collect();
+            ArgValue::Ints(ints.ok_or(wrong)?)
+        }
     })
 }
 
@@ -203,6 +244,7 @@ fn too_long(kind: &ArgKind, value: &ArgValue) -> bool {
         (ArgKind::StrList { items, each }, ArgValue::List(list)) => {
             list.len() > *items || list.iter().any(|text| text.len() > *each)
         }
+        (ArgKind::IntList { items, .. }, ArgValue::Ints(list)) => list.len() > *items,
         _ => false,
     }
 }
@@ -392,7 +434,7 @@ mod tests {
         assert!(without["properties"].get("timeout_secs").is_none());
     }
 
-    const EVERY_FAMILY: [Family; 7] = [
+    const EVERY_FAMILY: [Family; 10] = [
         Family::Read,
         Family::Search,
         Family::Write,
@@ -400,6 +442,9 @@ mod tests {
         Family::Git,
         Family::GitWrite,
         Family::Pane,
+        Family::Orchestra,
+        Family::Github,
+        Family::IssueDraft,
     ];
 
     // Spec (agent-tools, tool families): one bit per family, so the two git
@@ -419,7 +464,8 @@ mod tests {
         }
     }
 
-    // Spec: off equals 0.18.0, so the default set is exactly Read and Pane.
+    // The default set (every toggle off) is exactly Read and Pane. It is no
+    // longer the 0.18.0 tool list: `list_panes` joined the Pane family.
     #[test]
     fn legacy_is_read_and_pane_only() {
         for family in EVERY_FAMILY {
@@ -437,5 +483,54 @@ mod tests {
             "the original is Copy"
         );
         assert_eq!(grown.with(Family::Git), grown);
+    }
+
+    const IDS: &[ArgDef] = &[ArgDef {
+        name: "ids",
+        kind: ArgKind::IntList { items: 2, min: 1 },
+        required: true,
+        gate: None,
+    }];
+
+    fn ids(args: Value) -> Result<Parsed, ToolError> {
+        parse_args(IDS, &args, FamilySet::EMPTY)
+    }
+
+    // A list of integers: each at least `min`, at most `items` of them.
+    #[test]
+    fn an_integer_list_is_checked_for_type_floor_and_count() {
+        let got = ids(json!({"ids": [1, 40]})).unwrap();
+        assert_eq!(got.get("ids"), Some(&ArgValue::Ints(vec![1, 40])));
+        for (args, want) in [
+            (json!({"ids": [1, "2"]}), ToolError::WrongType),
+            (json!({"ids": [1.5]}), ToolError::WrongType),
+            (json!({"ids": [0]}), ToolError::WrongType),
+            (json!({"ids": [-3]}), ToolError::WrongType),
+            (json!({"ids": [u64::MAX]}), ToolError::WrongType),
+            (json!({"ids": 7}), ToolError::WrongType),
+            (json!({"ids": [1, 2, 3]}), ToolError::TooLong),
+            (json!({}), ToolError::MissingArgument),
+        ] {
+            assert_eq!(ids(args.clone()), Err(want), "{args}");
+        }
+    }
+
+    #[test]
+    fn an_integer_list_schema_says_its_floor_and_count() {
+        let def = ToolDef {
+            name: "demo",
+            description: "d",
+            access: Access::Read,
+            family: Family::Read,
+            args: IDS,
+        };
+        assert_eq!(
+            schema(&def, FamilySet::EMPTY)["properties"]["ids"],
+            json!({
+                "type": "array",
+                "items": {"type": "integer", "minimum": 1},
+                "maxItems": 2,
+            })
+        );
     }
 }

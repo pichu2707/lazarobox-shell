@@ -41,7 +41,7 @@ const GITHUB: &str = "https://github.com";
 const API_TIMEOUT_SECS: u64 = 15;
 
 /// Most bytes of an API reply kept; a longer one fails.
-const REPLY_CAP: usize = 4 * 1024 * 1024;
+pub(crate) const REPLY_CAP: usize = 4 * 1024 * 1024;
 
 /// Most bytes of curl's error output read.
 const ERROR_CAP: u64 = 4 * 1024;
@@ -49,9 +49,32 @@ const ERROR_CAP: u64 = 4 * 1024;
 /// How often the progress of a download is read.
 const TICK: Duration = Duration::from_millis(250);
 
-/// How curl is run for the Hub, or for GitHub (the llama-server install).
+/// How one GET is asked for: what it accepts, how much of the reply is
+/// kept and whether it follows redirects.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Fetch {
+    pub accept: &'static str,
+    /// Most bytes kept.
+    pub cap: usize,
+    /// A longer reply is cut at `cap` instead of failing.
+    pub cut: bool,
+    /// Follows HTTPS redirects (`--location`).
+    pub follow: bool,
+}
+
+/// An API request of the Hub: JSON, 4 MiB, no redirects.
+pub const API: Fetch = Fetch {
+    accept: "application/json",
+    cap: REPLY_CAP,
+    cut: false,
+    follow: false,
+};
+
+/// How curl is run for the Hub, GitHub (the llama-server install) or the
+/// Ollama library.
 pub struct Curl {
-    /// The service, as errors name it ("Hugging Face", "GitHub").
+    /// The service, as errors name it ("Hugging Face", "GitHub",
+    /// "Ollama library").
     label: &'static str,
     program: OsString,
     /// The `PATH` curl is looked up in.
@@ -104,6 +127,19 @@ impl Curl {
         self
     }
 
+    /// The production curl of the Ollama library: `base` over HTTPS only,
+    /// with no token.
+    pub fn ollama(path: OsString, base: &str) -> Self {
+        Self::to("Ollama library", base, path, None)
+    }
+
+    /// A test curl of the Ollama library: plain HTTP to a local server,
+    /// never through a proxy.
+    #[cfg(test)]
+    pub(crate) fn local_ollama(base: &str) -> Self {
+        Curl::ollama(std::env::var_os("PATH").unwrap_or_default(), base).local(base)
+    }
+
     /// What a missing curl reads as.
     fn no_curl(&self) -> String {
         format!("{} needs curl on the PATH", self.label)
@@ -111,7 +147,12 @@ impl Curl {
 
     /// What a reply that is not the expected text reads as.
     fn unreadable(&self) -> String {
-        format!("{} request failed: unreadable reply", self.label)
+        self.failed("unreadable reply")
+    }
+
+    /// A failure of this service's request.
+    pub(crate) fn failed(&self, why: impl std::fmt::Display) -> String {
+        format!("{} request failed: {why}", self.label)
     }
 
     /// The arguments every request starts with.
@@ -136,18 +177,25 @@ impl Curl {
 
     /// An API GET of `path`: no redirects, the status after the body.
     pub fn api_args(&self, path: &str) -> Vec<String> {
+        self.fetch_args(path, API)
+    }
+
+    /// A GET of `path` as `fetch` says, the status after the body.
+    pub fn fetch_args(&self, path: &str, fetch: Fetch) -> Vec<String> {
         let mut args = self.common();
         let secs = API_TIMEOUT_SECS.to_string();
+        if fetch.follow {
+            args.push("--location".to_owned());
+        }
+        args.extend(["--max-time", &secs, "--connect-timeout", &secs].map(str::to_owned));
+        // A reply that may be cut must not be refused by curl first.
+        if !fetch.cut {
+            args.extend(["--max-filesize".to_owned(), fetch.cap.to_string()]);
+        }
         args.extend(
             [
-                "--max-time",
-                &secs,
-                "--connect-timeout",
-                &secs,
-                "--max-filesize",
-                &REPLY_CAP.to_string(),
                 "--header",
-                "Accept: application/json",
+                &format!("Accept: {}", fetch.accept),
                 "--write-out",
                 "\n%{http_code}",
                 "--",
@@ -249,7 +297,7 @@ impl Curl {
             .spawn()
             .map_err(|e| match e.kind() {
                 io::ErrorKind::NotFound => self.no_curl(),
-                _ => format!("{} request failed: {e}", self.label),
+                _ => self.failed(e),
             })?;
         let guard = child
             .id()
@@ -264,9 +312,15 @@ impl Curl {
 
     /// An API GET: the status and the body, or why it failed.
     pub(super) async fn get(&self, path: &str) -> Result<(u16, String), String> {
-        let (mut child, mut guard) = self.spawn(&self.api_args(path)).await?;
+        self.fetch(path, API).await
+    }
+
+    /// A GET as `fetch` says: the status and the body, or why it failed. A
+    /// cut reply is the first `cap` bytes, with status 200.
+    pub async fn fetch(&self, path: &str, fetch: Fetch) -> Result<(u16, String), String> {
+        let (mut child, mut guard) = self.spawn(&self.fetch_args(path, fetch)).await?;
         let mut out = Vec::new();
-        let limit = REPLY_CAP as u64 + 8;
+        let limit = fetch.cap as u64 + 8;
         let read = match child.stdout.take() {
             Some(stdout) => stdout.take(limit).read_to_end(&mut out).await.is_ok(),
             None => false,
@@ -274,15 +328,19 @@ impl Curl {
         let too_long = out.len() as u64 >= limit;
         let error = error_line(&mut child).await;
         let status = finish(&mut child, &mut guard, !read || too_long).await;
+        if too_long && fetch.cut {
+            out.truncate(fetch.cap);
+            return Ok((200, String::from_utf8_lossy(&out).into_owned()));
+        }
         if too_long {
-            return Err(format!("{} request failed: reply too long", self.label));
+            return Err(self.failed("reply too long"));
         }
         let text = String::from_utf8(out).map_err(|_| self.unreadable())?;
         let (body, code) = text.rsplit_once('\n').unwrap_or(("", &text));
         match code.parse::<u16>() {
             Ok(code) if code != 0 => Ok((code, body.to_owned())),
             _ if status.is_ok_and(|s| s.success()) => Err(self.unreadable()),
-            _ => Err(format!("{} request failed: {error}", self.label)),
+            _ => Err(self.failed(error)),
         }
     }
 }

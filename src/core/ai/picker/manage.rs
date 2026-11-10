@@ -47,6 +47,7 @@ pub(super) fn manage_row(detection: &Detection) -> Option<PickRow> {
         mark: super::Mark::Plain,
         enabled: true,
         current: false,
+        tools: None,
     })
 }
 

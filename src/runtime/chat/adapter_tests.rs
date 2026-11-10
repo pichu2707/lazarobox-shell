@@ -22,6 +22,7 @@ use super::*;
 use crate::core::ai::chat::{
     ANSWER_CAP, ChatState, Entry, REASONING_CAP, SendOutcome,
     engine::{Availability, ChatMessage, Finish, Role, Tools},
+    usage::TurnUsage,
 };
 
 const QWEN3: &str = include_str!("../../../tests/fixtures/ollama/qwen3-thinking.ndjson");
@@ -34,6 +35,8 @@ fn pane(n: u32) -> PaneId {
 
 fn request(model: &str) -> ChatRequest {
     ChatRequest {
+        drive_grant: None,
+        cache: Default::default(),
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "ollama".into(),
         model: Some(model.into()),
@@ -54,6 +57,8 @@ fn request(model: &str) -> ChatRequest {
                 content: "and now?".into(),
             },
         ],
+        ollama: Default::default(),
+        github_read: false,
     }
 }
 
@@ -135,6 +140,9 @@ async fn run(port: u16, req: ChatRequest) -> Vec<StreamEvent> {
             .await
             .expect("an event within 10 s")
             .expect("the channel is open");
+        if event == StreamEvent::Reading {
+            continue;
+        }
         let last = matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_));
         events.push(event);
         if last {
@@ -191,7 +199,10 @@ async fn a_turn_posts_the_pinned_request_and_streams_the_answer() {
     assert_eq!(json["model"], "llama3:8b");
     assert_eq!(json["stream"], true);
     assert_eq!(json["messages"].as_array().unwrap().len(), 4);
-    assert_eq!(json.as_object().unwrap().len(), 3, "no think option");
+    // The live runner adds the keep-alive; no window is known here, so no
+    // `options`; and there is no think option.
+    assert_eq!(json["keep_alive"], "30m");
+    assert_eq!(json.as_object().unwrap().len(), 4);
     // Only the chat POST: nothing pulled a model or fetched anything else.
     assert_eq!(server.connections.load(Ordering::SeqCst), 1);
     assert_eq!(server.requests.lock().unwrap().len(), 1);
@@ -242,7 +253,7 @@ async fn the_request_does_not_carry_earlier_reasoning() {
     else {
         panic!("first send refused");
     };
-    let events = run(first.port, one).await;
+    let events = run(first.port, *one).await;
     let thought = text(&events, reasoning);
     assert!(thought.len() > 20, "the fixture reasons: {thought:?}");
     let events_answer = events.clone();
@@ -265,7 +276,7 @@ async fn the_request_does_not_carry_earlier_reasoning() {
     };
     assert_eq!(two.messages.len(), 3);
     let second = Recorder::start(reply(QWEN3)).await;
-    let _ = run(second.port, two).await;
+    let _ = run(second.port, *two).await;
     let (_, json) = second.request(0);
     let body = json.to_string();
     assert!(body.contains(&answer_text), "{body}");
@@ -391,6 +402,15 @@ async fn an_openai_compatible_turn_posts_the_pinned_request_and_streams_the_answ
                 StreamEvent::Delta("Hi".into()),
                 StreamEvent::Delta(" there".into()),
                 StreamEvent::Delta(".".into()),
+                StreamEvent::usage(TurnUsage {
+                    input: Some(18),
+                    output: Some(4),
+                    cache_read: Some(5),
+                    duration_ms: Some(215),
+                    prefill_ms: Some(174),
+                    model: Some("qwen2.5-0.5b-instruct-q4_k_m".into()),
+                    ..Default::default()
+                }),
                 StreamEvent::Done(Finish::Stop)
             ],
             "{engine}"
@@ -490,10 +510,16 @@ async fn cancelling_while_the_model_thinks_closes_the_connection_and_ends_the_ev
     let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
     let mut chats = Chats::new(adapter_runner_at(Some(port)), tx);
     chats.send(pane(1), 1, request("qwen3:14b"));
-    let (_, turn, first) = timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .expect("the thinking delta arrives")
-        .expect("the channel is open");
+    let (_, turn, first) = loop {
+        let tagged = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the thinking delta arrives")
+            .expect("the channel is open");
+        // The read reports are timing, not content.
+        if tagged.2 != StreamEvent::Reading {
+            break tagged;
+        }
+    };
     assert_eq!(
         (turn, first),
         (1, StreamEvent::ThinkingDelta("Let me".into()))
@@ -531,6 +557,9 @@ async fn run_managed(
             .await
             .expect("an event within 10 s")
             .expect("the channel is open");
+        if event == StreamEvent::Reading {
+            continue;
+        }
         let last = matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_));
         events.push(event);
         if last {
@@ -712,4 +741,32 @@ async fn a_turn_of_another_engine_never_starts_the_managed_server() {
     let (events, _chats) = run_managed(ports, managed.clone(), request("m")).await;
     assert_eq!(events, [StreamEvent::Done(Finish::Stop)]);
     assert_eq!(managed.pid().await, None);
+}
+
+// Issue #515: a turn carries the cache options the runtime was given.
+#[tokio::test]
+async fn a_turn_sends_the_cache_options_of_the_live_servers() {
+    let body = "{\"message\":{\"content\":\"ok\"},\"done\":true,\"done_reason\":\"stop\"}\n";
+    let server = Recorder::start(reply(body)).await;
+    let live = LiveServers::new(ServerPorts::every(server.port), None);
+    live.set_cache(crate::core::ai::CacheOptions {
+        keep_alive: Some(crate::core::ai::KeepAlive::from("30m")),
+        cache_prompt: Some(true),
+    });
+    let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
+    let mut chats = Chats::new(adapter_runner_live(live.clone()), tx).with_live(live);
+    chats.send(pane(1), 1, request("llama3:8b"));
+    loop {
+        let (_, _, event) = timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("an event within 10 s")
+            .expect("the channel is open");
+        if matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_)) {
+            assert_eq!(event, StreamEvent::Done(Finish::Stop));
+            break;
+        }
+    }
+    let (_, json) = server.request(0);
+    assert_eq!(json["keep_alive"], "30m");
+    assert!(json.get("cache_prompt").is_none(), "{json}");
 }

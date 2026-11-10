@@ -63,6 +63,7 @@ fn app(memory: bool, summarize: Option<&str>) -> App {
     if memory {
         a.update(AppEvent::Memory(MemReply::Project {
             pane: chat_id(),
+            epoch: 0,
             result: Ok(PROJECT.into()),
         }));
     }
@@ -664,4 +665,58 @@ fn a_quiet_summary_save_leaves_a_saving_note_editor_untouched() {
         assert_eq!(editor.notice(), None);
         assert_eq!(editor.title(), "My note");
     }
+}
+
+// local-model-writes D1: a compaction run after the clean `Done` keeps the
+// pane live and bumps the turn; the batch the turn left still opens its
+// review once the run ends.
+#[test]
+fn a_compaction_run_after_a_clean_end_still_opens_the_review_of_its_batch() {
+    use crate::core::ai::chat::review::Badge;
+    let badges = |badge: Badge| AppEvent::Badges([(chat_id(), badge)].into_iter().collect());
+    let mut a = app(true, Some("tiny"));
+    a.update(badges(Badge::Staged(1)));
+    let (turn, _) = until_compaction(&mut a);
+    finish(&mut a, turn, "summary");
+    assert_eq!(
+        a.update(badges(Badge::Orphan(1))),
+        vec![Effect::BatchReview(chat_id())]
+    );
+}
+
+// ai-cost 1b.4: the run's usage reaches the store with its role.
+#[test]
+fn a_compaction_run_that_reported_usage_is_recorded_with_history_on() {
+    use crate::core::ai::chat::{store::StoreCmd, usage::TurnUsage};
+    let mut a = app(false, Some("tiny")).with_chat_history();
+    let (turn, _) = until_compaction(&mut a);
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::usage(TurnUsage {
+            output: Some(9),
+            ..TurnUsage::default()
+        }),
+    ));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Delta("- the decision".into()),
+    ));
+    let end = a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let roles: Vec<String> = end
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Store(StoreCmd::RecordUsage { role, usage, .. }) => {
+                assert_eq!(usage.model.as_deref(), Some("tiny"));
+                Some(role.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(roles, vec!["compaction".to_owned()]);
 }

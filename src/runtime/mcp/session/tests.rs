@@ -16,6 +16,7 @@ use tokio::{
 
 use super::*;
 use crate::{
+    core::ai::orchestra::{RunId, Toolset, WorkerId, WorkerKey, tools::OrchCall},
     core::ai::tools::{
         Call,
         mcp::MAX_LINE_BYTES,
@@ -163,6 +164,10 @@ fn hub(dir: &Path) -> Hub {
     Hub::new(&[dir.join("run")]).unwrap()
 }
 
+fn hub_in(dir: &Path) -> Hub {
+    hub(dir)
+}
+
 fn pane(n: u32) -> PaneId {
     PaneId::for_test(n)
 }
@@ -245,10 +250,10 @@ async fn the_first_candidate_that_cannot_be_private_is_skipped() {
     let tmp = tempfile::tempdir().unwrap();
     let blocker = tmp.path().join("file");
     std::fs::write(&blocker, "x").unwrap();
-    let hub = Hub::new(&[blocker.join("lazarobox"), tmp.path().join("run")]).unwrap();
+    let hub = Hub::<PaneId>::new(&[blocker.join("lazarobox"), tmp.path().join("run")]).unwrap();
     assert_eq!(hub.dir, tmp.path().join("run"));
-    assert!(Hub::new(&[blocker.join("x")]).is_err());
-    assert!(Hub::new(&[]).is_err());
+    assert!(Hub::<PaneId>::new(&[blocker.join("x")]).is_err());
+    assert!(Hub::<PaneId>::new(&[]).is_err());
 }
 
 #[tokio::test]
@@ -625,7 +630,7 @@ async fn starting_sweeps_a_socket_left_by_a_crashed_run() {
     // pid_max is below 2^22, so this pid is never a live process.
     let stale = dir.join(format!("s-{}-1.sock", u32::MAX - 1));
     std::fs::write(&stale, "").unwrap();
-    let _hub = Hub::new(&[dir]).unwrap();
+    let _hub = Hub::<PaneId>::new(&[dir]).unwrap();
     assert!(!stale.exists());
 }
 
@@ -949,4 +954,261 @@ async fn an_empty_slot_leaves_only_the_built_in_tools() {
     let names = listed(&mut c).await;
     assert!(names.contains(&"read_file".to_owned()), "{names:?}");
     assert!(names.iter().all(|n| !n.contains("__")), "{names:?}");
+}
+
+fn worker_hub(dir: &Path) -> Hub<WorkerKey> {
+    Hub::new(&[dir.join("run")]).unwrap()
+}
+
+fn worker(run: u64, n: u32) -> WorkerKey {
+    WorkerKey {
+        run: RunId(run),
+        worker: WorkerId(n),
+    }
+}
+
+fn open_worker(hub: &mut Hub<WorkerKey>, key: WorkerKey, toolset: Toolset) -> Started {
+    hub.open(
+        key,
+        Arc::new(Fake::default()),
+        Slot::default(),
+        toolset.families(),
+    )
+    .unwrap()
+}
+
+// Spec (lazarobox-mcp-server, Own socket per worker): the socket of a worker
+// is named by run and worker, and no two workers share a path or a token.
+#[tokio::test]
+async fn each_worker_gets_its_own_socket_and_token_named_by_run_and_worker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = worker_hub(tmp.path());
+    let one = open_worker(&mut hub, worker(3, 1), Toolset::ReadOnly);
+    let two = open_worker(&mut hub, worker(3, 2), Toolset::ReadOnly);
+    let dir = tmp.path().join("run");
+    let pid = std::process::id();
+    assert_eq!(one.socket, dir.join(format!("s-{pid}-w3-1.sock")));
+    assert_eq!(two.socket, dir.join(format!("s-{pid}-w3-2.sock")));
+    assert_eq!(mode(&one.socket), 0o600);
+    assert_ne!(one.token.reveal(), two.token.reveal());
+    // Run and worker are not interchangeable: w1-12 is not w12-1.
+    let a = open_worker(&mut hub, worker(1, 12), Toolset::ReadOnly);
+    let b = open_worker(&mut hub, worker(12, 1), Toolset::ReadOnly);
+    assert_ne!(a.socket, b.socket);
+    assert!(a.socket.exists() && b.socket.exists());
+    // One token opens only its own socket.
+    let mut c = connect(&two.socket).await;
+    send(&mut c, &hello(one.token.reveal())).await;
+    assert_eq!(recv(&mut c).await, None);
+    // Both go when the workers end.
+    hub.close(worker(3, 1));
+    assert!(!one.socket.exists() && two.socket.exists());
+    drop(hub);
+    assert!(!two.socket.exists() && !a.socket.exists() && !b.socket.exists());
+}
+
+// Spec (agent-tools, Cross-session call refused): with two worker sessions,
+// a call made with the other's token is refused and reaches neither
+// dispatch; each token still reaches its own worker's dispatch only.
+#[tokio::test]
+async fn a_workers_token_reaches_no_other_workers_dispatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = worker_hub(tmp.path());
+    let (fake_one, fake_two) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
+    let open = |hub: &mut Hub<WorkerKey>, key, fake: &Arc<Fake>| {
+        hub.open(
+            key,
+            fake.clone(),
+            Slot::default(),
+            Toolset::ReadOnly.families(),
+        )
+        .unwrap()
+    };
+    let one = open(&mut hub, worker(1, 1), &fake_one);
+    let two = open(&mut hub, worker(1, 2), &fake_two);
+    let call = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"find_dir","arguments":{"query":"x"}}}"#;
+    let mut crossed = connect(&two.socket).await;
+    send(&mut crossed, &hello(one.token.reveal())).await;
+    send(&mut crossed, call).await;
+    assert_eq!(recv(&mut crossed).await, None, "refused and closed");
+    assert!(fake_one.0.lock().unwrap().is_empty() && fake_two.0.lock().unwrap().is_empty());
+    let mut own = ready(&two).await;
+    send(&mut own, call).await;
+    assert!(recv(&mut own).await.is_some());
+    assert_eq!(fake_two.0.lock().unwrap().len(), 1);
+    assert!(fake_one.0.lock().unwrap().is_empty());
+}
+
+// A pane and a worker may share a folder: their names never meet.
+#[tokio::test]
+async fn a_pane_socket_and_a_worker_socket_do_not_collide() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut panes = hub(tmp.path());
+    let mut workers = worker_hub(tmp.path());
+    let p = open(&mut panes, 1, Arc::new(Fake::default()));
+    let w = open_worker(&mut workers, worker(1, 1), Toolset::ReadOnly);
+    assert_ne!(p.socket, w.socket);
+    assert!(p.socket.exists() && w.socket.exists());
+}
+
+// Design D7 / the P0 contract: for a worker key too, the offered list and
+// the parse gate come from the same families.
+#[tokio::test]
+async fn a_worker_session_offers_its_toolset_and_refuses_orchestration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = worker_hub(tmp.path());
+    let fake = Arc::new(Fake::default());
+    let s = hub
+        .open(
+            worker(1, 1),
+            fake.clone(),
+            Slot::default(),
+            Toolset::ReadOnly.families(),
+        )
+        .unwrap();
+    let mut c = ready(&s).await;
+    assert_eq!(listed(&mut c).await, ["find_dir", "list_dir", "read_file"]);
+    for (id, name, args) in [
+        (5, "spawn_agent", r#"{"kind":"code","prompt":"p"}"#),
+        (6, "run_in_pane", r#"{"command":"ls"}"#),
+    ] {
+        send(
+            &mut c,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{name}","arguments":{args}}}}}"#
+            ),
+        )
+        .await;
+        let got = recv(&mut c).await.unwrap();
+        assert_eq!(
+            got["result"]["content"][0]["text"], "unknown tool",
+            "{name}"
+        );
+        assert_eq!(got["result"]["isError"], true, "{name}");
+    }
+    assert!(
+        fake.0.lock().unwrap().is_empty(),
+        "nothing reached the dispatch"
+    );
+}
+
+#[tokio::test]
+async fn an_orchestrator_session_lists_and_dispatches_the_orchestration_tools() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    let fake = Arc::new(Fake::default());
+    let s = hub
+        .open(
+            pane(1),
+            fake.clone(),
+            Slot::default(),
+            Toolset::Orchestrator.families(),
+        )
+        .unwrap();
+    let mut c = ready(&s).await;
+    let names = listed(&mut c).await;
+    assert_eq!(
+        names,
+        [
+            "find_dir",
+            "list_dir",
+            "read_file",
+            "spawn_agent",
+            "wait",
+            "collect",
+            "cancel",
+            "handoff",
+            "raise",
+            "finish"
+        ]
+    );
+    send(
+        &mut c,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"cancel","arguments":{"id":2}}}"#,
+    )
+    .await;
+    assert_eq!(recv(&mut c).await.unwrap()["result"]["isError"], false);
+    assert_eq!(
+        *fake.0.lock().unwrap(),
+        [Call::Orchestra(OrchCall::Cancel { id: WorkerId(2) })]
+    );
+}
+
+#[test]
+fn the_sweep_knows_the_worker_socket_form() {
+    let tmp = tempfile::tempdir().unwrap();
+    // pid 100 is dead, pid 200 is alive.
+    let dead_workers = ["s-100-w1-1.sock", "s-100-w12-345.sock"];
+    let kept = [
+        "s-200-w1-1.sock",
+        // Dead pid, but not a socket of ours: left alone.
+        "s-100-w1.sock",
+        "s-100-w-1.sock",
+        "s-100-w1-.sock",
+        "s-100-wx-1.sock",
+        "s-100-w1-1-2.sock",
+        "s-100-1w.sock",
+        "s-100-w1-1",
+        "s-x-w1-1.sock",
+    ];
+    for name in dead_workers.iter().chain(&kept) {
+        std::fs::write(tmp.path().join(name), "").unwrap();
+    }
+    sweep(tmp.path(), &|pid| pid == 200);
+    for name in dead_workers {
+        assert!(!tmp.path().join(name).exists(), "{name} should go");
+    }
+    for name in kept {
+        assert!(tmp.path().join(name).exists(), "{name} should stay");
+    }
+}
+
+// A worker never lists or routes a user server's tool, even when the caller
+// hands the hub a populated slot: the key type decides, not the caller.
+#[tokio::test]
+async fn a_worker_session_ignores_a_populated_external_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    let lab = lab();
+    let servers = [lab.server("fs", "search", "found")];
+    let refs: Vec<&crate::core::ai::config::McpServer> = servers.iter().collect();
+    let set = Arc::new(
+        ExternalSet::start(
+            &refs,
+            &lab.home,
+            host_env,
+            timeouts(Duration::from_secs(10)),
+        )
+        .await,
+    );
+    let slot = Slot::default();
+    assert!(slot.set(set.clone()).is_ok());
+    let fake = Arc::new(Fake::default());
+    let mut hub = worker_hub(dir.path());
+    let s = hub
+        .open(
+            worker(1, 1),
+            fake.clone(),
+            slot.clone(),
+            Toolset::ReadOnly.families(),
+        )
+        .unwrap();
+    let mut c = ready(&s).await;
+    assert_eq!(listed(&mut c).await, ["find_dir", "list_dir", "read_file"]);
+    send(
+        &mut c,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"fs__search","arguments":{}}}"#,
+    )
+    .await;
+    let got = recv(&mut c).await.unwrap();
+    assert_eq!(got["result"]["content"][0]["text"], "unknown tool");
+    assert_eq!(got["result"]["isError"], true);
+    assert!(fake.0.lock().unwrap().is_empty());
+    // The same slot on a pane hub still serves the external tool.
+    let mut panes = hub_in(dir.path());
+    let p = panes
+        .open(pane(1), Arc::new(Fake::default()), slot, FamilySet::LEGACY)
+        .unwrap();
+    let mut c = ready(&p).await;
+    assert!(listed(&mut c).await.contains(&"fs__search".to_owned()));
+    set.shutdown().await;
 }

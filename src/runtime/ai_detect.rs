@@ -2,6 +2,7 @@
 //! `--version`. The facts are classified by the pure `core::ai::reduce`.
 
 use std::{
+    collections::HashMap,
     ffi::OsStr,
     fs,
     net::SocketAddr,
@@ -20,15 +21,16 @@ use tokio::{
     time::timeout,
 };
 
-use futures::future::join_all;
+use futures::{StreamExt, future::join_all, stream};
 
 use super::{chat::CliEnv, proc::GroupKill};
 use crate::core::ai::{
-    Detection, Engine, Kind, Probe, ServerPorts, Status,
+    Detection, Engine, Kind, ModelFacts, Probe, ServerPorts, Status,
     chat::{cli::last_line, engine::ChatError},
     http::{MAX_BODY, parse_response},
     jail::{Cli, NOT_ENFORCED_MARKER, exit_error},
-    parse::sanitize,
+    marks::Tools,
+    parse::{self, sanitize},
     reduce,
     sanitize::redact_tokens,
     window,
@@ -40,26 +42,85 @@ const READ_SLACK: usize = 16 * 1024;
 /// Covers connect, write and read of one loopback request.
 pub const HTTP_TIMEOUT: Duration = Duration::from_millis(800);
 
+/// Longest the connect of one loopback request may take. A server that
+/// listens answers it in about a millisecond, a closed port refuses it at
+/// once; only a connect nobody answers waits. Under WSL's mirrored
+/// networking that is every port below the ephemeral range that nothing in
+/// Linux listens on (#584), so an engine that is not running would cost the
+/// whole [`HTTP_TIMEOUT`] of each detection.
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(200);
+
 /// Longest `--version` is allowed to run before the child is killed.
 pub const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Most `--version` output kept; more than this means the probe gave up.
 const VERSION_CAP: usize = 64 * 1024;
 
-/// GETs `path` from `127.0.0.1:port`. `None` on any failure or timeout.
-pub async fn http_get(port: u16, path: &'static str) -> Option<(u16, Vec<u8>)> {
-    timeout(HTTP_TIMEOUT, exchange(port, path)).await.ok()?
+#[cfg(test)]
+thread_local! {
+    /// A test seam: how many times longer the probe timeouts below last on
+    /// this thread, so a test that measures wall time keeps its margins on a
+    /// slow machine. `1` everywhere else.
+    static TIME_SCALE: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
 }
 
-async fn exchange(port: u16, path: &str) -> Option<(u16, Vec<u8>)> {
-    // HTTP/1.0 with `Connection: close`: the reply ends at EOF. The host is
-    // fixed, so no request can leave the machine.
-    let mut stream = TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port)))
-        .await
-        .ok()?;
+/// `base` as the probes use it: itself, but for the test seam.
+fn scaled(base: Duration) -> Duration {
+    #[cfg(test)]
+    return base * TIME_SCALE.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    base
+}
+
+/// GETs `path` from `127.0.0.1:port`. `None` on any failure or timeout.
+pub async fn http_get(port: u16, path: &'static str) -> Option<(u16, Vec<u8>)> {
     let request = format!(
         "GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
     );
+    timeout(scaled(HTTP_TIMEOUT), exchange(port, &request))
+        .await
+        .ok()?
+}
+
+/// The only path detection POSTs to, and only on the Ollama port. It is a
+/// constant, never a parameter, so no caller can aim this POST elsewhere.
+const SHOW_PATH: &str = "/api/show";
+
+/// Longest one `/api/show` call may take.
+const SHOW_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Longest the whole `/api/show` phase may take; the models still unanswered
+/// are `Unknown`.
+const SHOW_DEADLINE: Duration = Duration::from_secs(2);
+
+/// Most `/api/show` calls in flight at once.
+const SHOW_PARALLEL: usize = 4;
+
+/// Most `/api/show` calls of one run (cached models cost none).
+const SHOW_MAX_CALLS: usize = 32;
+
+/// Most digests the cache keeps before it is cleared.
+const SHOW_CACHE_CAP: usize = 256;
+
+/// `POST /api/show` for `model` to `127.0.0.1:port`: the body holds the model
+/// name and nothing else. `None` on any failure or timeout.
+pub async fn http_post_show(port: u16, model: &str) -> Option<(u16, Vec<u8>)> {
+    let body = serde_json::json!({ "model": model }).to_string();
+    let request = format!(
+        "POST {SHOW_PATH} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    timeout(scaled(SHOW_TIMEOUT), exchange(port, &request))
+        .await
+        .ok()?
+}
+
+/// Sends `request` (a whole HTTP/1.0 request) to `127.0.0.1:port`.
+async fn exchange(port: u16, request: &str) -> Option<(u16, Vec<u8>)> {
+    // HTTP/1.0 with `Connection: close`: the reply ends at EOF. The host is
+    // fixed, so no request can leave the machine.
+    let connect = TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port)));
+    let mut stream = timeout(scaled(CONNECT_TIMEOUT), connect).await.ok()?.ok()?;
     stream.write_all(request.as_bytes()).await.ok()?;
     // Headers fit well inside the slack; a longer reply is cut and rejected.
     let mut raw = Vec::new();
@@ -69,6 +130,91 @@ async fn exchange(port: u16, path: &str) -> Option<(u16, Vec<u8>)> {
         .await
         .ok()?;
     parse_response(&raw)
+}
+
+/// What one `POST /api/show` told about a model: tool support and the
+/// model's own context window.
+type Shown = (Tools, Option<usize>);
+
+/// What `/api/show` said of Ollama models by digest, in memory for the life
+/// of the process (never on disk). Only answers (`Yes`, `No`) are kept: an
+/// `Unknown` is probed again on the next run. A Modelfile edit changes the
+/// digest, so the window is read again too.
+#[derive(Default)]
+pub struct ShowCache(Mutex<HashMap<String, Shown>>);
+
+impl ShowCache {
+    pub fn get(&self, digest: &str) -> Option<Shown> {
+        let map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(digest).copied()
+    }
+
+    pub fn put(&self, digest: &str, shown: Shown) {
+        let (tools, _) = shown;
+        if tools == Tools::Unknown {
+            return;
+        }
+        let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if map.len() >= SHOW_CACHE_CAP && !map.contains_key(digest) {
+            map.clear();
+        }
+        map.insert(digest.to_owned(), shown);
+    }
+}
+
+/// The model facts of `detection` with their tool support filled in, from the
+/// cache or `POST /api/show`, within the bounds above. A model left
+/// unanswered stays `Unknown`; nothing here changes the engine state or the
+/// model list.
+async fn show_phase(
+    detection: &Detection,
+    ports: &ServerPorts,
+    cache: &ShowCache,
+) -> Vec<ModelFacts> {
+    let mut facts_all = detection.model_facts.clone();
+    let up = detection
+        .engines
+        .iter()
+        .any(|s| s.id == "ollama" && s.status == Status::Available);
+    let Some(port) = ports.port("ollama").filter(|_| up) else {
+        return facts_all;
+    };
+    let mut todo = Vec::new();
+    for (at, facts) in facts_all.iter_mut().enumerate() {
+        match facts.digest.as_deref().and_then(|d| cache.get(d)) {
+            Some((tools, window)) => (facts.tools, facts.window) = (tools, window),
+            None => todo.push((at, facts.name.clone())),
+        }
+    }
+    todo.truncate(SHOW_MAX_CALLS);
+    let mut calls = stream::iter(todo)
+        .map(|(at, name)| async move {
+            let reply = http_post_show(port, &name).await;
+            let shown = match reply {
+                Some((200, body)) => (
+                    parse::show_tools(&body),
+                    window::ollama_context_length(&body),
+                ),
+                _ => (Tools::Unknown, None),
+            };
+            (at, shown)
+        })
+        .buffer_unordered(SHOW_PARALLEL);
+    let mut answers = Vec::new();
+    let _ = timeout(scaled(SHOW_DEADLINE), async {
+        while let Some(answer) = calls.next().await {
+            answers.push(answer);
+        }
+    })
+    .await;
+    for (at, shown) in answers {
+        let facts = &mut facts_all[at];
+        (facts.tools, facts.window) = shown;
+        if let Some(digest) = &facts.digest {
+            cache.put(digest, shown);
+        }
+    }
+    facts_all
 }
 
 /// The first executable regular file called `name` in an absolute `path`
@@ -518,6 +664,7 @@ pub async fn detect_in(targets: &[Target], path: &OsStr, lister: Option<Lister<'
 pub async fn detect_all(
     env: &CliEnv,
     cache: &ListingCache,
+    show: &ShowCache,
     force: bool,
     ports: &ServerPorts,
     model_dirs: &[PathBuf],
@@ -531,20 +678,24 @@ pub async fn detect_all(
         .and_then(Path::parent)
         .map(Path::to_path_buf);
     detection.vulkan_icd = crate::runtime::llama_install::installer::has_vulkan_icd();
-    // The two do not wait on each other: the model scan is off the executor
-    // and the `/props` probe is on the network.
-    let (models, windows) = tokio::join!(
+    // None waits on another: the model scan is off the executor, the `/props`
+    // probe and the `/api/show` calls (the only POST detection sends, to
+    // Ollama alone) are on the network.
+    let (models, windows, facts) = tokio::join!(
         local_models(&detection, model_dirs),
-        windows(&detection, ports)
+        windows(&detection, ports),
+        show_phase(&detection, ports, show)
     );
     detection.local_models = models;
     detection.windows = windows;
+    detection.model_facts = facts;
     detection
 }
 
 /// The context windows of the servers that are up and say theirs: a running
 /// llama-server's `n_ctx` (`GET /props`). Ollama is left out: its window sits
-/// behind a POST (`/api/show`), which this GET-only probe does not make.
+/// behind a POST (`/api/show`), which [`show_phase`] sends and keeps on the
+/// model facts.
 async fn windows(detection: &Detection, ports: &ServerPorts) -> Vec<(&'static str, usize)> {
     let up = detection
         .engines
@@ -596,17 +747,27 @@ pub fn spawn_detection(
     tx: mpsc::Sender<Detection>,
     env: CliEnv,
     cache: Arc<ListingCache>,
+    show: Arc<ShowCache>,
     force: bool,
-    ports: ServerPorts,
     model_dirs: Arc<[PathBuf]>,
+    live: super::chat::LiveServers,
 ) {
     spawn_detection_of(tx, async move {
-        detect_all(&env, &cache, force, &ports, &model_dirs).await
+        // The ports as the menu has them now.
+        let ports = live.ports();
+        let mut detection = detect_all(&env, &cache, &show, force, &ports, &model_dirs).await;
+        // A probe that failed this run must not make a known window unknown:
+        // the model would be asked for another `num_ctx` and reload.
+        detection.carry_windows(&live.ollama_windows());
+        // The runtime learns the windows before the app does, so a request
+        // never carries less than the budget assumed.
+        live.set_ollama_windows(detection.ollama_windows());
+        detection
     });
 }
 
 /// Why the jailed CLI `id`, found at `file`, would run without its jail.
-fn jail_note_of(id: &str, env: &CliEnv, file: &Path) -> Option<String> {
+fn jail_note_of(id: &str, env: &CliEnv, file: &Path) -> Option<super::chat::JailNote> {
     let cli = match id {
         "claude" => Cli::Claude,
         "codex" => Cli::Codex,
@@ -614,6 +775,24 @@ fn jail_note_of(id: &str, env: &CliEnv, file: &Path) -> Option<String> {
         _ => return None,
     };
     super::chat::jail_note(env, cli, file)
+}
+
+/// The version output of a CLI. With a lister, codex is asked through its
+/// jail: the standalone install puts the program inside codex's own writable
+/// state folder, so it is never run outside the jail. Without one (no jail
+/// context, tests) the plain run stays.
+async fn cli_version(
+    id: &str,
+    file: &Path,
+    search: &OsStr,
+    lister: Option<&Lister<'_>>,
+) -> Option<Vec<u8>> {
+    match (id, lister) {
+        ("codex", Some(l)) => super::chat::run_version(l.env, VERSION_TIMEOUT, VERSION_CAP)
+            .await
+            .ok(),
+        _ => version(file, search).await,
+    }
 }
 
 async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Probe {
@@ -628,7 +807,7 @@ async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Pr
             // Only a resolved absolute path is ever run. Only codex has a
             // model listing, and it runs next to the version probe, so a slow
             // listing never adds to the version's time.
-            let (stdout, listing, jail) = match &found {
+            let (stdout, listing, note, install) = match &found {
                 Some(file) => {
                     let list = async {
                         match (lister, target.id) {
@@ -636,18 +815,24 @@ async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Pr
                             _ => None,
                         }
                     };
-                    let (stdout, listing) = tokio::join!(version(file, path), list);
-                    let jail = lister.and_then(|l| jail_note_of(target.id, l.env, file));
-                    (stdout, listing, jail)
+                    let (stdout, listing) =
+                        tokio::join!(cli_version(target.id, file, path, lister), list);
+                    let note = lister.and_then(|l| jail_note_of(target.id, l.env, file));
+                    let install = lister
+                        .filter(|_| target.id == "codex")
+                        .and_then(|l| super::chat::codex_install(l.env, file));
+                    (stdout, listing, note, install)
                 }
-                None => (None, None, None),
+                None => (None, None, None, None),
             };
             Probe::Cli {
                 id: target.id,
                 path: found,
                 stdout,
                 listing,
-                jail,
+                jail: note.as_ref().map(|n| n.short.clone()),
+                jail_full: note.map(|n| n.full),
+                install,
             }
         }
     }
@@ -794,6 +979,23 @@ mod tests {
             http_get(refused.port(), "/api/tags"),
         )
         .await;
+        assert_eq!(answer, Ok(None));
+    }
+
+    // #584: a connect that is never answered (WSL mirrored networking drops
+    // it for a port nothing listens on) is given up long before the request's
+    // time limit. A listener whose accept queue is full drops it the same way
+    // on Linux.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn http_get_gives_up_on_an_unanswered_connect_quickly() {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listener = socket.listen(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // The first connect fills the queue; the next ones get no answer.
+        let _held = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let answer = tokio::time::timeout(HTTP_TIMEOUT / 2, http_get(port, "/api/tags")).await;
         assert_eq!(answer, Ok(None));
     }
 
@@ -1463,6 +1665,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn codex_is_never_run_for_its_version_without_a_jail() {
+        let lab = lab();
+        let ran = lab.rec.join("ran");
+        write_script(
+            &lab.bin,
+            "codex",
+            &format!("touch '{}'\necho codex 0.5.0", ran.display()),
+            0o755,
+        );
+        let env = env_of(&lab, false);
+        let cache = real_cache();
+        let d = detect_in(
+            &cli_targets(&["codex"]),
+            &join(&[&lab.bin]),
+            Some(lister(&env, &cache, false)),
+        )
+        .await;
+        let codex = d.engines.iter().find(|e| e.id == "codex").unwrap();
+        assert_eq!(codex.status, Status::Available);
+        assert_eq!(codex.version, None);
+        assert!(!ran.exists(), "codex ran outside the jail");
+    }
+
+    #[tokio::test]
+    async fn the_version_runs_through_the_jail_helper() {
+        let lab = lab();
+        fake_codex(&lab, "echo '{\"models\":[]}'");
+        let env = env_of(&lab, true);
+        let cache = real_cache();
+        let d = detect_in(
+            &cli_targets(&["codex"]),
+            &join(&[&lab.bin]),
+            Some(lister(&env, &cache, false)),
+        )
+        .await;
+        let codex = d.engines.iter().find(|e| e.id == "codex").unwrap();
+        assert_eq!(codex.version.as_deref(), Some("codex 0.5.0"));
+        assert!(
+            helper_args(&lab)
+                .iter()
+                .any(|a| a == "--version" || a == "debug")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_standalone_layout_is_read_from_the_real_path_and_the_state_folder() {
+        let lab = lab();
+        let real = lab
+            .home
+            .join(".codex/packages/standalone/releases/1.0.0/bin");
+        fs::create_dir_all(&real).unwrap();
+        write_script(&real, "codex", "echo codex 1.0.0", 0o755);
+        std::os::unix::fs::symlink(real.join("codex"), lab.bin.join("codex")).unwrap();
+        let env = env_of(&lab, false);
+        let cache = real_cache();
+        let d = detect_in(
+            &cli_targets(&["codex"]),
+            &join(&[&lab.bin]),
+            Some(lister(&env, &cache, false)),
+        )
+        .await;
+        let codex = d.engines.iter().find(|e| e.id == "codex").unwrap();
+        assert_eq!(
+            codex.diagnostics.install,
+            Some(crate::core::ai::codex_install::CodexInstall::Standalone)
+        );
+        // Without a jail the full reason says what to do, whatever the layout.
+        assert!(codex.diagnostics.jail_full.is_some());
+        let d = detect_in(&cli_targets(&["claude"]), &join(&[&lab.bin]), None).await;
+        assert!(d.engines.iter().all(|e| e.diagnostics.install.is_none()));
+    }
+
+    #[tokio::test]
     async fn a_failing_version_probe_is_available_with_an_unknown_version() {
         let lab = lab();
         write_script(&lab.bin, "claude", "echo broken >&2\nexit 1", 0o755);
@@ -1481,7 +1756,15 @@ mod tests {
         let lab = lab();
         write_script(&lab.bin, "claude", "echo claude 9.9.9", 0o755);
         let env = env_of(&lab, false);
-        let d = detect_all(&env, &real_cache(), false, &ServerPorts::default(), &[]).await;
+        let d = detect_all(
+            &env,
+            &real_cache(),
+            &ShowCache::default(),
+            false,
+            &ServerPorts::default(),
+            &[],
+        )
+        .await;
         let claude = d.engines.iter().find(|e| e.id == "claude").unwrap();
         assert_eq!(claude.version.as_deref(), Some("claude 9.9.9"));
     }
@@ -1497,7 +1780,15 @@ mod tests {
         let lab = lab();
         let env = env_of(&lab, false);
         let ports = ServerPorts::default().with("llamacpp", port);
-        let d = detect_all(&env, &real_cache(), false, &ports, &[]).await;
+        let d = detect_all(
+            &env,
+            &real_cache(),
+            &ShowCache::default(),
+            false,
+            &ports,
+            &[],
+        )
+        .await;
         let llamacpp = d.engines.iter().find(|e| e.id == "llamacpp").unwrap();
         assert_eq!(llamacpp.status, Status::Available);
         assert_eq!(llamacpp.models, ["m"]);
@@ -1528,7 +1819,15 @@ mod tests {
         let lab = lab();
         let env = env_of(&lab, false);
         let ports = ServerPorts::default().with("llamacpp", port);
-        let d = detect_all(&env, &real_cache(), false, &ports, &[]).await;
+        let d = detect_all(
+            &env,
+            &real_cache(),
+            &ShowCache::default(),
+            false,
+            &ports,
+            &[],
+        )
+        .await;
         assert_eq!(d.window("llamacpp"), Some(8_192));
         assert_eq!(d.window("ollama"), None);
     }
@@ -1541,7 +1840,15 @@ mod tests {
         let lab = lab();
         let env = env_of(&lab, false);
         let ports = ServerPorts::default().with("llamacpp", port);
-        let d = detect_all(&env, &real_cache(), false, &ports, &[]).await;
+        let d = detect_all(
+            &env,
+            &real_cache(),
+            &ShowCache::default(),
+            false,
+            &ports,
+            &[],
+        )
+        .await;
         assert_eq!(d.window("llamacpp"), None);
         assert_eq!(requests.lock().unwrap().len(), 1, "only the detection");
     }
@@ -1556,10 +1863,26 @@ mod tests {
         let dirs = [models.path().to_path_buf()];
         let lab = lab();
         let env = env_of(&lab, false);
-        let d = detect_all(&env, &real_cache(), false, &ports, &dirs).await;
+        let d = detect_all(
+            &env,
+            &real_cache(),
+            &ShowCache::default(),
+            false,
+            &ports,
+            &dirs,
+        )
+        .await;
         assert_eq!(d.local_models, Vec::<PathBuf>::new(), "no llama-server");
         write_script(&lab.bin, "llama-server", "exit 0", 0o755);
-        let d = detect_all(&env, &real_cache(), false, &ports, &dirs).await;
+        let d = detect_all(
+            &env,
+            &real_cache(),
+            &ShowCache::default(),
+            false,
+            &ports,
+            &dirs,
+        )
+        .await;
         let llamacpp = d.engines.iter().find(|e| e.id == "llamacpp").unwrap();
         assert_eq!(llamacpp.status, Status::NotRunning);
         assert_eq!(d.local_models, [models.path().join("qwen.gguf")]);
@@ -2065,7 +2388,21 @@ mod tests {
             binary: Some(bin.join(state.id)),
             ..state
         };
+        // The fixture's listing has names only: facts with no size or digest.
+        let model_facts = ollama
+            .models
+            .iter()
+            .map(|name| crate::core::ai::ModelFacts {
+                engine: "ollama",
+                name: name.clone(),
+                params: None,
+                digest: None,
+                tools: Tools::Unknown,
+                window: None,
+            })
+            .collect();
         Detection {
+            model_facts,
             engines: vec![
                 found(ollama),
                 state("lmstudio", Status::Available, &["gemma-3-4b"], None),
@@ -2128,3 +2465,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod show_tests;

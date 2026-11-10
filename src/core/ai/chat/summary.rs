@@ -20,6 +20,7 @@ use super::{
         history_chars,
     },
     note::REDACTED_AGAIN as NOTE_REDACTED_AGAIN,
+    usage::SideRun,
     yank,
 };
 use crate::core::ai::{memory::redact::redact, sanitize::clean};
@@ -265,15 +266,22 @@ impl ChatState {
             content: INSTRUCTION.to_owned(),
         });
         self.compaction.cancel();
+        self.end_side_run(true);
         self.turn += 1;
         self.phase = Phase::Waiting { slow: false };
         self.started = Some(now);
+        // The summary has a clock of its own: an anchor left by the last turn
+        // is not its start.
+        self.clock_reset();
         self.request_model = model.clone().unwrap_or_default();
         self.summarizing = Some(String::new());
+        self.side_run = Some(SideRun::new("summary", engine, model.as_deref()));
         self.generation += 1;
         Some((
             self.turn,
             ChatRequest {
+                drive_grant: None,
+                cache: Default::default(),
                 families: crate::core::ai::tools::registry::FamilySet::LEGACY,
                 engine: engine.clone(),
                 model: model.clone(),
@@ -281,24 +289,39 @@ impl ChatState {
                 memory: None,
                 tools: Tools::Off,
                 messages,
+                ollama: Default::default(),
+                github_read: false,
             },
         ))
     }
 
     /// One event of the summary run: thinking is dropped, text is collected
     /// and the draft opens when the run ends well.
-    pub(super) fn apply_summary(&mut self, event: StreamEvent) -> Follow {
+    pub(super) fn apply_summary(&mut self, event: StreamEvent, now: Instant) -> Follow {
         match event {
             StreamEvent::Slow => {
                 if let Phase::Waiting { slow } = &mut self.phase {
                     *slow = true;
+                    self.clock_said_slow(now);
+                }
+                Follow::Nothing
+            }
+            StreamEvent::Reading => {
+                self.clock_read(now);
+                Follow::Nothing
+            }
+            StreamEvent::Usage(usage) => {
+                if let Some(run) = self.side_run.as_mut() {
+                    run.add(*usage);
                 }
                 Follow::Nothing
             }
             StreamEvent::ThinkingDelta(_)
             | StreamEvent::Notice(_)
             | StreamEvent::ToolCall { .. }
-            | StreamEvent::ToolResult { .. } => Follow::Nothing,
+            | StreamEvent::ToolResult { .. }
+            | StreamEvent::ExternalTools(_)
+            | StreamEvent::GithubStarted => Follow::Nothing,
             StreamEvent::Delta(text) => {
                 if text.is_empty() {
                     return Follow::Nothing;
@@ -348,9 +371,11 @@ impl ChatState {
     /// Ends the run: the draft opens on the text, or the failure is said once.
     /// `cut` marks a stream that ended early: the draft says so.
     fn finish_summary(&mut self, failure: Option<String>, cut: bool) {
+        self.end_side_run(failure.is_some() || cut);
         let text = self.summarizing.take().unwrap_or_default();
         self.phase = Phase::Idle;
         self.started = None;
+        self.clock_reset();
         self.request_model.clear();
         self.generation += 1;
         match failure {
@@ -372,9 +397,11 @@ impl ChatState {
 
     /// Stops the run in flight; no draft opens.
     pub(super) fn cancel_summary(&mut self) -> Follow {
+        self.end_side_run(true);
         self.summarizing = None;
         self.phase = Phase::Idle;
         self.started = None;
+        self.clock_reset();
         self.request_model.clear();
         self.turn += 1;
         self.generation += 1;

@@ -1,0 +1,316 @@
+# Code Write Specification
+
+## Purpose
+
+Let a model create and change files in one project root without touching the disk until the user approves. The model stages changes, closes the batch, and the user reviews it all-or-nothing. Linux only in v1. Tags: [auto] = `cargo test` (temp dirs, fake clocks); [manual] = real terminal; [design-confirm] = value or name that design must pin. Names marked (provisional) are pinned by design.
+
+Terms: "root" = the chat origin directory. "Batch" = the staged changes of one chat. "Proposed" = the model closed the batch with the propose tool. "Orphan" = a batch left staged after its turn ended without the user reviewing it (cancelled, failed, or ended with the batch never proposed). "Refusal text" = `path not available`.
+
+## Requirements
+
+### Requirement: Family and toggle
+`create_dir`, `write_file`, `edit_file` and the propose tool (`propose_batch`, provisional) MUST belong to the `Write` family. They MUST be offered only when tools are on and the Write toggle is on. The toggle MUST be off by default. With it off, no write tool is registered or executed.
+
+#### Scenario: Off by default [auto]
+- GIVEN a config with no write toggle
+- WHEN the tool list is built
+- THEN no write tool is present and a call to `write_file` returns an error result
+
+### Requirement: Root policy
+Writes MUST be allowed only under one root: the chat origin directory. They MUST be refused when the origin is missing, is `$HOME`, is a parent of `$HOME`, or is a system directory, and, under WSL, when the origin is a Windows drive folder (agent-tools, WSL drive read policy) that the user has not granted (chat-folder, WSL drive grant). A target path MUST be refused when, after resolving `..` and symlinks, it is outside the root. Every refusal, including the refusals of the deny rules below, MUST return the same text, `path not available (paths are relative to the chat's folder <folder>)`, where `<folder>` is the chat origin with `$HOME` shown as `~`, so the result does not reveal whether a path exists. The one exception is a chat folder that is itself broad (`$HOME`, a parent of `$HOME`, or `/`): every write then returns the folder-level text `path not available: the chat's folder is <folder>, where files cannot be written; ask the user to run /cd <project folder>`, which depends only on the folder and never on the path, so it still reveals nothing about any path. The same holds for a Windows drive folder without a grant: every write then returns `path not available: the chat's folder <folder> is on a Windows drive, where writes, commands and git need your permission; ask the user to run /cd <folder>`. One case MAY say more: when the path passed this policy and the deny rules and only its parent folder is missing, the text MUST be `path not available: the folder <parent>/ does not exist (paths are relative to the chat's folder <folder>)`, with `<parent>` as the model wrote it.
+
+#### Scenario: Origin refused [auto]
+- GIVEN origins `$HOME`, `/home`, `/usr` and a missing directory
+- WHEN `write_file` is called with each
+- THEN each returns `path not available` and nothing is staged
+
+#### Scenario: Escape refused [auto]
+- GIVEN a root and the paths `../x`, `/etc/x` and `link/x` where `link` points outside the root
+- WHEN `write_file` is called with each
+- THEN each returns `path not available`
+
+#### Scenario: One refusal text [auto]
+- GIVEN an existing denied path and a missing path outside the root
+- WHEN `edit_file` is called on each
+- THEN both results carry the identical text
+
+#### Scenario: Missing parent named [auto]
+- GIVEN a chat opened in `~/Descargas` with no `Descargas` folder inside it
+- WHEN `write_file` is called with `Descargas/fibonacci.py`
+- THEN it returns `path not available: the folder Descargas/ does not exist (paths are relative to the chat's folder ~/Descargas)` and nothing is staged
+- AND `nope/.env` below a missing `nope` returns the one refusal text
+
+#### Scenario: Drive folder without a grant [auto]
+- GIVEN WSL and a chat in `/mnt/c/Users/ana/Documents/app` that the user did not grant
+- WHEN `write_file` is called with `main.py` and with `../x`
+- THEN both return the folder-level drive text and nothing is staged
+
+#### Scenario: Granted drive folder [auto]
+- GIVEN the same chat after the user granted it
+- WHEN `write_file` is called with `main.py` and with `../x`
+- THEN the first is staged and the second returns the one refusal text
+
+### Requirement: Deny rules
+A write MUST be refused (with the refusal text) when the target is inside `.git/` or `node_modules/`, or matches the existing secret lists of agent-tools (for example `.env`, `.npmrc`). The one exception is an environment template: an env name ending in `.example`, `.sample`, `.template` or `.dist` (for example `.env.example`, never `.env.local`). `write_file` and `edit_file` MAY stage it, judged by the folder it sits in, and like every write it reaches the disk only through the user's approval of the batch review, in every approval mode (#583). Its `edit_file` MUST ask like a read before it runs, on a local engine too, once per file per turn, because the answer tells whether a text occurs in a file no read may show. So MUST a `write_file` over a template that already exists, because staging it answers "staged" or "use edit_file" by what the file holds (a secret-looking run, CRLF, over the read cap); a denial, or an approval mode that answers for the user, MUST give one answer whatever the file holds, and a write of a template that does not exist yet asks nothing. A worker's `write_file` over an existing template MUST get the one refusal text whatever the file holds. It is still refused as a folder name, as the real target of a secret link of `$HOME`, to a worker's `edit_file` (a worker asks no one before it stages, and the answer would tell what the file holds), and to `read_file`; a review worker's prompt only names it. Reads of `.git/config` MUST be refused. A write MUST be refused when the content holds invalid UTF-8 or a bidi or zero-width control character, or holds CRLF line endings. `edit_file` MUST be refused on a file that is not UTF-8 or holds CRLF. Refused content MUST NOT be cleaned or rewritten.
+
+#### Scenario: Protected directories [auto]
+- GIVEN the targets `.git/hooks/pre-commit` and `node_modules/x/index.js`
+- WHEN `write_file` is called with each
+- THEN each is refused and nothing is staged
+
+#### Scenario: Secret names [auto]
+- GIVEN the target `.env`
+- WHEN `write_file` is called
+- THEN it is refused
+
+#### Scenario: Environment template asks the user [auto]
+- GIVEN the target `.env.example`
+- WHEN `write_file` is called and the batch is proposed
+- THEN it is staged and nothing is written until the user approves the batch
+- AND a denied batch leaves no file
+- AND after an approved batch `read_file` on it is still refused
+
+#### Scenario: Editing an environment template asks first [auto]
+- GIVEN an existing `.env.example` and a chat on a local engine
+- WHEN `edit_file` is called on it and the ask is denied
+- THEN nothing is staged and the result is the same whether or not `old` occurs in the file
+
+#### Scenario: Writing over an environment template asks first [auto]
+- GIVEN existing templates that hold plain text, a secret-looking run, CRLF or more than the read cap
+- WHEN `write_file` is called on each and the ask is denied, or the approval mode answers it
+- THEN nothing is staged and the result is the same for every file
+- AND a worker's `write_file` over any of them gets the one refusal text
+
+#### Scenario: Environment template limits [auto]
+- GIVEN `create_dir` on `.env.example`, `write_file` on `.env.local`, or `write_file` on `.env.example` when `~/.env` links to it
+- WHEN the call is made
+- THEN it is refused and nothing is staged
+
+#### Scenario: Git config unreadable [auto]
+- GIVEN `.git/config` in the root
+- WHEN `read_file` is called on it
+- THEN it is refused with the refusal text
+
+#### Scenario: Hostile characters [auto]
+- GIVEN content with a right-to-left override, content with a zero-width space, and content with `\r\n`
+- WHEN `write_file` is called with each
+- THEN each is refused and the content is not altered or staged
+
+#### Scenario: Non-UTF-8 file [auto]
+- GIVEN an existing Latin-1 file
+- WHEN `edit_file` is called on it
+- THEN it is refused
+
+### Requirement: Caps
+`write_file` content MUST be at most 32 KiB. Each `edit_file` field (`old`, `new`) MUST be at most 16 KiB. A file to be edited or overwritten MUST be at most 1 MiB. A call over a cap MUST return an error result and stage nothing.
+
+#### Scenario: At and over the cap [auto]
+- GIVEN content of 32 KiB and of 32 KiB + 1 byte
+- WHEN `write_file` is called with each
+- THEN the first is staged and the second is refused
+
+#### Scenario: Edit field and file caps [auto]
+- GIVEN an `old` of 16 KiB + 1 byte, and a 2 MiB file
+- WHEN `edit_file` is called with each
+- THEN both are refused
+
+### Requirement: create_dir and write_file staging
+`create_dir` and `write_file` MUST add to the batch and MUST NOT touch the disk. `create_dir` joins the batch like every other write. `write_file` on a missing file stages a create. `write_file` on an existing file stages an overwrite, which MUST be allowed only when the file is at most the read cap in size and its text is unchanged by redaction (so what the review shows is what is on disk); otherwise it MUST be refused. A repeated call for the same path MUST replace the earlier staged entry for that path.
+
+#### Scenario: Create stays off disk [auto]
+- GIVEN an empty root
+- WHEN `write_file` stages `src/main.rs` and `create_dir` stages `src/util`
+- THEN neither exists on disk and the batch lists both
+
+#### Scenario: Overwrite allowed [auto]
+- GIVEN an unredacted 2 KiB `a.txt`
+- WHEN `write_file` is called on it
+- THEN an overwrite is staged
+
+#### Scenario: Overwrite refused when redaction changes the text [auto]
+- GIVEN `a.txt` holding a recognizable API key, and another file over the read cap
+- WHEN `write_file` is called on each
+- THEN both are refused
+
+#### Scenario: Restage replaces [auto]
+- GIVEN a staged `write_file` for `a.txt`
+- WHEN `write_file` is called again for `a.txt`
+- THEN the batch holds one entry for `a.txt` with the latest content
+
+### Requirement: edit_file staging
+`edit_file` MUST take a path, an exact `old` string and a `new` string. It MUST apply to the staged version when one exists, otherwise to the disk version. It MUST be refused with an error result when `old` is empty, matches zero times, or matches more than once. It MUST NOT touch the disk. Because its answers say whether a text occurs in a file, on a Cloud engine it MUST ask the user like `read_file`, once per file per turn.
+
+#### Scenario: Unique match [auto]
+- GIVEN `a.txt` holding `foo bar`
+- WHEN `edit_file` is called with `old` `bar` and `new` `baz`
+- THEN the batch holds `foo baz` and the disk still holds `foo bar`
+
+#### Scenario: No match or many [auto]
+- GIVEN `a.txt` holding `x x`
+- WHEN `edit_file` is called with `old` `y`, and again with `old` `x`
+- THEN both return an error result and stage nothing
+
+#### Scenario: Chained edits on one file [auto]
+- GIVEN a staged edit of `a.txt`
+- WHEN a second `edit_file` targets text introduced by the first
+- THEN it matches the staged version
+
+#### Scenario: Cloud engine asks once per file [ask]
+- GIVEN a Cloud engine and `a.txt`, whose text the model has not been allowed to read
+- WHEN `edit_file` targets `a.txt`
+- THEN the user is asked as for `read_file` of `a.txt` (same prompt, same approval modes, never typed or run directly), and a denial stages nothing and returns the usual denied text
+- AND later edits of `a.txt` in the same turn do not ask again, nor do they after an allowed `read_file` of it; a new turn asks again; a Local engine never asks
+
+An `edit_file` with an empty `old` MUST be refused before the ask (with the usual `old must not be empty` text), so the user is never prompted for a call that is sure to fail. A missing or ambiguous `old` still asks: those answers are an oracle too, and that cost is accepted.
+
+Accepted behaviors of the once-per-file memory (the key is the path as shown, resolved by text alone):
+- Two concurrent edits of the same file in one model response may ask twice, since neither has been answered when the other checks. This over-asks, which is safe.
+- A symlink and its target are separate keys, so editing both asks twice.
+- A `read_file` records into the memory but never consults it: it asks even after an allowed edit of the same file.
+
+### Requirement: Propose batch and size cap
+The model closes a batch by calling the propose tool. It MAY stage across several turns before calling it. The propose tool MUST refuse an empty batch and MUST refuse a batch over about 50 entries or 1 MiB of total staged content (whichever comes first), with a message that asks the model to split it. A refused proposal MUST leave the batch staged and unchanged. A proposed batch MUST NOT accept new staging until the user answers.
+
+#### Scenario: Empty batch [auto]
+- GIVEN no staged entries
+- WHEN the propose tool is called
+- THEN it returns an error result and no review opens
+
+#### Scenario: Over the cap [auto]
+- GIVEN 51 staged entries, and in another run entries totalling 1 MiB + 1 byte
+- WHEN the propose tool is called
+- THEN it refuses, asks for a split, and the batch is unchanged
+
+#### Scenario: Staging across turns [auto]
+- GIVEN entries staged in turn 1
+- WHEN more are staged in turn 2 and the propose tool is called
+- THEN the review holds all of them
+
+### Requirement: Batch review and coverage gate
+A proposed batch MUST open a full-pane review view in the chat pane. It shows every change: a create shows the new text, an overwrite or edit shows a diff, a `create_dir` shows its path. The approving key MUST stay disabled until every row of the whole batch has been drawn on screen (the coverage gate; a row in a hidden pane does not count), and it MUST stay disabled for the arm delay after the view is first drawn (longer than the delay of other approvals, value pinned by design). The review is all-or-nothing: the user approves the whole batch or rejects the whole batch. A change to a build file (for example `Makefile`, `build.rs`, `package.json`) MUST carry a visible warning. A rejected or timed-out review MUST end as `denied`, MUST write nothing, and MUST discard the batch. A review cancelled with Ctrl+C MUST also end as `denied` and write nothing, but MUST leave the batch as an orphan (see Orphan, close and quit); a propose call dropped after the batch was sealed and before its ask shows MUST NOT discard the batch either. A pending approval of another kind MUST make the propose tool return `denied` (`another approval is pending`).
+
+#### Scenario: Gate blocks early approval [auto]
+- GIVEN a batch of 40 diff rows of which 12 have been shown
+- WHEN `y` is pressed
+- THEN nothing is applied and the view says how many rows remain
+
+#### Scenario: Gate opens after full coverage [auto]
+- GIVEN the same batch, every row shown and the arm delay elapsed (fake clock)
+- WHEN `y` is pressed
+- THEN the apply step starts
+
+#### Scenario: Reject discards [auto]
+- GIVEN a proposed batch
+- WHEN `n` or Esc is pressed
+- THEN the disk is unchanged, the batch is gone and the propose call returns `denied`
+
+#### Scenario: Ctrl+C on review keeps an orphan [auto]
+- GIVEN a proposed batch under review
+- WHEN Ctrl+C is pressed
+- THEN the propose call returns `denied`, nothing is written and the batch is kept as an orphan, while `n` still discards it
+
+#### Scenario: A propose dropped before its ask shows keeps the batch [auto]
+- GIVEN a batch sealed by a propose call whose ask has not been announced yet
+- WHEN the call is dropped (the turn is cancelled)
+- THEN the batch is kept and can be reviewed as an orphan
+
+#### Scenario: Build file warning [auto]
+- GIVEN a batch that stages `build.rs`
+- WHEN the review renders
+- THEN the row for `build.rs` carries the warning [TestBackend + insta]
+
+#### Scenario: CLI timeout while reviewing [auto]
+- GIVEN a CLI call timeout shorter than the review
+- WHEN it expires
+- THEN the call returns `denied`, the review is withdrawn, the batch is kept as an orphan and a later `y` writes nothing
+
+### Requirement: Apply
+After approval the app MUST re-read every target and compare it with the snapshot taken at staging; if anything drifted, the whole batch MUST be refused and nothing written. It MUST write each file with a temp file and an atomic rename, with `openat2`-style no-symlink opens, and MUST NOT follow or write through a symlink or a hard-linked file. If a write fails partway, the files already written MUST be restored to their pre-batch state. If the rollback itself fails, the result MUST report the batch as partial and list exactly the paths that changed. A successful apply MUST return one `Change` record per path (path, kind, bytes, added and removed lines) to the caller.
+
+#### Scenario: Drift refuses the batch [auto]
+- GIVEN a reviewed batch and a target changed on disk after staging
+- WHEN `y` is pressed
+- THEN no file is written and the result says the batch drifted
+
+#### Scenario: Rollback on failure [auto]
+- GIVEN a 3-file batch where the third write fails
+- WHEN apply runs
+- THEN the first two files are back to their pre-batch content and the result says the batch failed
+
+#### Scenario: Rollback fails [auto]
+- GIVEN the same batch where restoring the first file also fails
+- WHEN apply runs
+- THEN the result says `partial` and lists exactly the changed paths
+
+#### Scenario: Symlink target [auto]
+- GIVEN a target that became a symlink after staging
+- WHEN apply runs
+- THEN it is refused and nothing is written through the link
+
+#### Scenario: Change records [auto]
+- GIVEN an applied batch with one create and one edit
+- WHEN apply returns
+- THEN two `Change` records carry path, kind, bytes and line counts
+
+### Requirement: Orphan, close and quit
+An orphan batch MUST stay staged in the chat, and the pane MUST show an indicator of it. The user MUST be able to review and apply it, or to discard it. Closing the chat pane MUST discard a staged batch and show a notice. Quitting the app MUST discard staged batches the same way, with a notice. Staged state MUST NOT survive a restart. When a turn ends with the engine's `Done` and leaves a batch the model never proposed, the app MUST open that batch's review at once, through the same path, view, coverage gate and arming as an orphan review, unless the chat already waits on an approval; a cancelled or failed turn MUST leave the orphan to the user's own review key.
+
+#### Scenario: Cancel leaves an orphan [auto]
+- GIVEN a staged batch and a turn that is cancelled
+- WHEN the pane is rendered
+- THEN the batch is still staged and the indicator is visible [TestBackend + insta]
+
+#### Scenario: A clean end opens the review of an unproposed batch [auto]
+- GIVEN a turn that staged a batch, never proposed it, and ended with `Done`
+- WHEN the runtime's poll first shows the batch as an orphan
+- THEN the batch review opens once, with no call to answer, and `y` applies it behind the coverage gate
+
+#### Scenario: Review an orphan [auto]
+- GIVEN an orphan batch
+- WHEN the user opens it, covers it and presses `y`
+- THEN it is applied as a normal batch
+
+#### Scenario: Discard an orphan [auto]
+- GIVEN an orphan batch
+- WHEN the user discards it
+- THEN the batch is gone and the disk is unchanged
+
+#### Scenario: Close and quit discard [auto]
+- GIVEN a staged batch
+- WHEN the pane is closed, and in another run the app quits
+- THEN the batch is discarded and a notice is shown each time
+
+#### Notes: orphan answers (accepted decisions)
+- The host is the trust boundary: an orphan apply is refused, writing nothing, when the batch is not reviewable or a turn of its pane is live.
+- What the model hears of a user-side answer is a fixed line with counts only, never a path. It is sent once with the next request. A turn that ends (cancel, failure at start) before the engine produced any event did not deliver it, so it is queued again for the following request. A drifted apply leaves the batch proposed and tells the model nothing (user decision).
+- Accepted UI cost: orphan review and apply run on the runtime thread under the `Stages` lock, so a close or discard can wait for an in-flight W-f `spawn_blocking` apply. That apply is bounded to 50 entries and 1 MiB.
+- A signal exit (SIGTERM or SIGHUP) prints no discard notice: the loop is left without the quit effects, so no `BatchClose` runs. Nothing is written either way, because the batch lives in memory only.
+
+### Requirement: Worker batches
+A batch staged by an orchestrator worker MUST be reviewed and applied by the user through the approval queue of the orchestrator (S3). A worker MUST NOT apply a batch itself. The interaction details are pinned by design.
+
+#### Scenario: Worker cannot apply [auto]
+- GIVEN a worker with a staged batch
+- WHEN the worker finishes
+- THEN nothing is written until the user approves through the queue
+
+### Requirement: Nothing writes without approval
+No tool MUST change a file, directory or permission on disk except the apply step of an approved batch. Staging, searching and proposing MUST NOT touch the disk.
+
+#### Scenario: Recording filesystem [auto]
+- GIVEN every write tool called against a recording filesystem and no approval given
+- WHEN the calls complete
+- THEN no file or directory was created, changed or removed
+
+### Requirement: Creating a file on a Windows drive
+When the no-replace rename that publishes a new file fails with `EINVAL` (drvfs does not support it), the app MUST publish the file with `linkat` from the temp name to the target, which fails when the target exists, and then remove the temp name. A target that exists MUST give the same result as the no-replace rename (`Exists`) and MUST keep its bytes. A temp name that cannot be removed MUST NOT change the result; it is removed by the usual temp cleanup. No other error of the rename MAY fall back.
+
+#### Scenario: New file on drvfs [auto]
+- GIVEN the rename seam answering `EINVAL` and a missing target
+- WHEN a new file is applied
+- THEN the target holds the bytes and no temp name is left
+
+#### Scenario: Existing file on drvfs [auto]
+- GIVEN the rename seam answering `EINVAL` and a target that already exists
+- WHEN a new file is applied over it
+- THEN the result is `Exists` and the target's bytes are unchanged

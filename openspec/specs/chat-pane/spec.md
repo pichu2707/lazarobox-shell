@@ -9,7 +9,7 @@ Terms: "idle" = no stream running; "streaming" = a request was sent and the answ
 ## Requirements
 
 ### Requirement: Chat pane kind and opening
-`Ctrl+Space c` MUST open a chat: it splits the focused pane to the right exactly like `w v` (same minimum-size refusal, same focus rule), and the new pane is a chat pane. No shell is spawned and no PTY exists for it. The chat MAY be opened from a shell pane or from a chat pane, and several chat panes MAY exist at once in any tab. Opening a chat records the origin cwd, requests an engine detection run (single flight, see ai-engine-detection) and shows the conversation list (see chat-history).
+`Ctrl+Space c` MUST open a chat: it splits the focused pane to the right exactly like `w v` (same minimum-size refusal, same focus rule), and the new pane is a chat pane. No shell is spawned and no PTY exists for it. The chat MAY be opened from a shell pane or from a chat pane, and several chat panes MAY exist at once in any tab. Opening a chat records the chat folder (the effective cwd of the pane it was opened from, or the current folder of the chat it was opened from), requests an engine detection run (single flight, see ai-engine-detection) and, when the folder is `$HOME`, `/` or unknown, shows the folder picker (see chat-folder) before the conversation list; otherwise it shows the conversation list directly (see chat-history).
 
 #### Scenario: Open from a shell pane [auto]
 - GIVEN one shell pane in TERMINAL
@@ -36,6 +36,16 @@ Terms: "idle" = no stream running; "streaming" = a request was sent and the answ
 - WHEN `Ctrl+Space c` is pressed
 - THEN a chat pane appears beside the shell and typing goes to the chat, not to the shell
 
+#### Scenario: Broad folder shows the picker [auto]
+- GIVEN a shell pane whose cwd is `$HOME`
+- WHEN `Ctrl+Space` then `c` are pressed
+- THEN the chat pane shows the folder picker and detection is still requested once
+
+#### Scenario: Project folder skips the picker [auto]
+- GIVEN a shell pane whose cwd is an acceptable project folder
+- WHEN a chat is opened
+- THEN the conversation list is shown and no picker exists
+
 ### Requirement: Pane content layout
 A chat pane MUST show the transcript above and the composer below. The composer MUST grow with its content up to 5 rows and MUST never take the transcript below 1 row. All text MUST be drawn through styled spans of already sanitized text; model output MUST NOT be written to the terminal as raw bytes. Rendering MUST NOT panic at any pane size down to 1x1.
 
@@ -55,7 +65,7 @@ A chat pane MUST show the transcript above and the composer below. The composer 
 - THEN nothing panics
 
 ### Requirement: Composer
-The composer MUST accept typed characters, Backspace, Delete, Left, Right, Home and End, and insert a newline on the newline binding (see modal-input). A paste MUST be inserted as text and MUST NOT send the message. Control and format characters other than newline MUST be dropped on input and on paste, and CRLF MUST become a newline. The composer MUST hold at most 8000 characters; input beyond the cap is not accepted. Sending a message that is empty or only whitespace MUST do nothing. While a stream is running a send MUST be refused: the composer text is kept and a system line asks to wait or cancel. A refused or guidance-blocked send MUST keep the composer text.
+The composer MUST accept typed characters, Backspace, Delete, Left, Right, Home and End, and insert a newline on the newline binding (see modal-input). A paste MUST be inserted as text and MUST NOT send the message. Control and format characters other than newline MUST be dropped on input and on paste, and CRLF MUST become a newline. The composer MUST hold at most 8000 characters; input beyond the cap is not accepted. Sending a message that is empty or only whitespace MUST do nothing. While a stream is running a send MUST be refused: the composer text is kept and a system line asks to wait or cancel. A refused or guidance-blocked send MUST keep the composer text. A composer text whose first token is exactly `/cd` MUST be handled as the folder command and not sent to the model (see chat-folder); `/cd` is the only composer command, and any other text starting with `/` is a normal message. A command that is refused keeps the composer text.
 
 #### Scenario: Type and send [auto]
 - GIVEN an idle chat with a ready engine and the composer holding `hello`
@@ -87,8 +97,18 @@ The composer MUST accept typed characters, Backspace, Delete, Left, Right, Home 
 - WHEN another character is typed
 - THEN the composer is unchanged
 
+#### Scenario: Slash command is not sent [auto]
+- GIVEN an idle chat with a ready engine and the composer holding `/cd /w/proj`
+- WHEN send is requested
+- THEN no ChatSend effect is emitted and no user message is appended
+
+#### Scenario: Other slash text is sent [auto]
+- GIVEN the composer holding `/usr/bin is where?`
+- WHEN send is requested
+- THEN a user message is appended and ChatSend is emitted
+
 ### Requirement: Stream lifecycle
-A send MUST append the user message, show a waiting state and start one request. Until the first byte arrives the pane MUST show `waiting for the model…`, and when the first byte has not arrived after 3 seconds it MUST show `still waiting for the model…` instead (a cold model load is not a hang). Each text delta MUST be appended to the assistant message in arrival order and drawn incrementally. A final event MUST finish the message, return the pane to idle and persist the exchange (see chat-history). An error MUST add an error system line, keep any partial text received before it, and return the pane to idle. A stream that ends without a final event (cut stream) MUST keep the partial text, add the system line `stream interrupted`, and return to idle. A pane MUST run at most one stream at a time; several chat panes MAY stream at once.
+A send MUST append the user message, show a waiting state and start one request. Until the first byte arrives the pane MUST show `waiting for the model…`, and when the first byte has not arrived after 3 seconds it MUST show `still waiting for the model…` instead (a cold model load is not a hang). The line MUST name what the turn waits for: `waiting for your answer…` while an approval is pending, `running <tool>…` while a tool call has no result yet, and the model otherwise. For a server engine the model wait line, once the runtime clock has said it is slow, MUST add the whole seconds that clock has run and the first-byte limit it reads (`still waiting for the model… 45s (gives up at 120s)`; once the runtime reports a read, the limit MUST be the idle limit counted from the last reported read, e.g. `gives up at 73s`, at most the total limit of the turn, and MAY be up to one second low because reports are throttled; a read report MUST NOT end the wait or count as a byte of the answer; the first seconds of a new request inside a turn MAY still show the limit of the previous one), counted from that event, not from the send, and only while the line waits for the model (never under an approval or a running tool); it MUST drop the limit, then the seconds, when the pane is too narrow, and MUST NOT change its row count. A CLI engine MUST show neither seconds nor limit. Each text delta MUST be appended to the assistant message in arrival order and drawn incrementally. A final event MUST finish the message, return the pane to idle and persist the exchange (see chat-history). An error MUST add an error system line, keep any partial text received before it, and return the pane to idle. A stream that ends without a final event (cut stream) MUST keep the partial text, add the system line `stream interrupted`, and return to idle. A pane MUST run at most one stream at a time; several chat panes MAY stream at once.
 
 #### Scenario: First-byte wait [auto]
 - GIVEN a send was issued and no byte arrived
@@ -497,7 +517,7 @@ Closing a chat pane (confirmed `w q`, closing its tab, or quitting) MUST cancel 
 - THEN it is ignored with no panic and no effect
 
 ### Requirement: Context truncation marker
-When the history sent to the engine omits older messages because of the client-side cap (see chat-engines), the transcript MUST show the system line `earlier messages are not sent to the model` once, at the position of the oldest message that is sent. The marker MUST NOT be stored.
+When the history sent to the engine omits older messages because of the client-side budget (the message cap, the character cap, or the real context window; see chat-engines), the transcript MUST show the system line `earlier messages are not sent to the model` once, at the position of the oldest message that is sent. The marker MUST NOT be stored.
 
 #### Scenario: Marker shown [auto]
 - GIVEN a conversation longer than the history cap
@@ -508,6 +528,11 @@ When the history sent to the engine omits older messages because of the client-s
 - GIVEN a conversation within the cap
 - WHEN a message is sent
 - THEN no marker is shown
+
+#### Scenario: Window trim shows the marker [auto]
+- GIVEN a forced small window that drops the oldest pair
+- WHEN a message is sent
+- THEN the marker appears before the oldest sent message and is absent from the stored conversation
 
 ### Requirement: Memory views in the pane
 The chat pane MUST support three memory views, each drawn inside the pane area in place of the conversation view while it is open, like the conversation list and the tag editor: the note editor (category, title and content fields, the focused field marked, a one-line key hint), the summary editor (the content field alone, with the line `Summary (not saved until you approve)`), and the start-server confirmation (the offer text of engram-client with `(y/n)`). While one of them is open the composer text, the transcript, the scroll position and any running stream MUST be kept and keep updating underneath, and closing the view returns to the conversation view unchanged. A pane has at most one memory view at a time. All text drawn is already sanitized text in styled spans, and rendering MUST NOT panic at any pane size down to 1x1.
@@ -554,3 +579,672 @@ Memory system lines (`memory unavailable: <reason>`, the server-started line, th
 - GIVEN a conversation with the memory hint line
 - WHEN a message is sent and the store commands and the engine history are inspected
 - THEN neither contains the hint
+
+### Requirement: No-jail guidance on macOS (S1 refusal, S4 copy)
+When `codex` or `gemini` is refused on macOS because Seatbelt is unavailable, the pane MUST keep the existing `<engine>: not available on this system yet` guidance, MUST add the macOS reason (Seatbelt not enforcing) in place of any "needs Linux" hint, MUST send nothing and MUST keep the composer text. A jail error (exit 71) MUST show as a jail error line, not as a CLI error. `claude` on macOS MUST never show the no-jail guidance. On Linux the guidance is unchanged.
+
+#### Scenario: No jail on macOS [auto]
+- GIVEN macOS, `chat` is `gemini`, gemini is `available` and the Seatbelt probe is Unavailable
+- WHEN send is attempted
+- THEN the guidance starts with `gemini: not available on this system yet`, names the Seatbelt reason, no process is started and the composer text is kept
+
+#### Scenario: Exit 71 shows a jail error [auto]
+- GIVEN macOS and a turn whose helper exits 71
+- WHEN the turn ends
+- THEN the transcript shows a jail error, not a CLI error
+
+#### Scenario: claude on macOS [auto]
+- GIVEN macOS, an Unavailable probe, `chat` is `claude` and claude is `available`
+- WHEN send is attempted
+- THEN no no-jail guidance is shown and the message is sent
+
+#### Scenario: Linux guidance unchanged [auto]
+- GIVEN Linux and an Unavailable jail
+- WHEN send is attempted
+- THEN the guidance equals the existing `No jail` text
+
+### Requirement: Run action on code blocks
+A chat pane MUST offer the run-in-pane action of pane-commands on the last shell code block of the last finished answer. When such a block exists and tools are on, the pane MUST show a one-line hint under that block naming the binding; the hint MUST NOT be stored, yanked or sent to the model. The action opens the pending confirm (see Approval prompt). Yank (Ctrl+B) MUST be unchanged.
+
+#### Scenario: Hint under the block [auto, TestBackend + insta]
+- GIVEN a finished answer with a bash block and tools on
+- WHEN rendered
+- THEN a hint line naming the run binding is drawn under the block
+
+#### Scenario: No hint otherwise [auto, TestBackend + insta]
+- GIVEN an answer with no shell block, or tools off, or a streaming message
+- WHEN rendered
+- THEN no hint line is drawn and the snapshot equals the one without this requirement
+
+#### Scenario: Hint is not content [auto]
+- GIVEN the hint shown
+- WHEN Ctrl+Y and Ctrl+B are pressed and the next request is built
+- THEN the clipboard text and the history contain no hint
+
+### Requirement: Tool rows
+Each tool event MUST be drawn inline in the transcript at its position in the turn, as a row distinct from messages, system lines and reasoning: a call row with the tool name and the short argument summary (for example `find_dir curso-rust`), and a result row with its status (`ok`, `error`, `denied`) and the short summary. A call and its result MUST read as a pair. Row text is already sanitized, wrapped at the pane width, shown literally (no markdown, no fences) and capped. Rows are system-produced: they are not messages, do not count toward the 400 messages per conversation, are never stored in the database, never yanked and never sent to the model. Text of an answer that imitates a row MUST NOT get the row style.
+
+#### Scenario: Call and result rows [auto, TestBackend + insta]
+- GIVEN a turn with a `find_dir` call returning `~/dev/curso-rust`
+- WHEN rendered
+- THEN a call row `find_dir curso-rust` and a result row `ok` with the summary appear between the surrounding text, in the tool-row style
+
+#### Scenario: Denied row [auto, TestBackend + insta]
+- GIVEN a declined `run_in_pane`
+- WHEN rendered
+- THEN the result row reads `denied`
+
+#### Scenario: Rows are literal and sanitized [auto]
+- GIVEN a result summary holding a line of three backticks, `# x` and an escape sequence
+- WHEN rendered
+- THEN everything is shown literally without code styling and no control character is drawn
+
+#### Scenario: Rows are not stored or sent [auto]
+- GIVEN a conversation with rows, then a send
+- WHEN the store commands and the engine history are inspected
+- THEN neither contains a row, and the message count is unchanged by rows
+
+#### Scenario: Imitation is plain text [auto, TestBackend + insta]
+- GIVEN an assistant answer whose text looks like a tool row
+- WHEN rendered
+- THEN it uses the plain answer style
+
+#### Scenario: Rows follow the scroll rules [auto]
+- GIVEN a transcript at the bottom, and another scrolled up
+- WHEN tool rows arrive
+- THEN the first follows the bottom and the second stays pinned
+
+#### Scenario: Tiny pane with rows [auto]
+- GIVEN a pane from 1x1 to 10x2 with rows and a pending confirm
+- WHEN rendered
+- THEN nothing panics
+
+### Requirement: Issue draft prompt
+A `gh_issue_draft` call MUST be asked with a prompt at the composer naming the kind and the title (`draft issue: Idea or goal` and the title below), with keys `y open the form · n deny`. Only an unmodified lowercase `y` accepts; `n`, Esc, a timeout, a cancel and a closed chat end as `denied`, and the chat shows `no draft issue was opened`. No approval mode answers it. A call while another approval is pending, or while a Feedback form is open, MUST be denied at once. After `y` the chat holds the draft and the Feedback form opens when the turn ends (see issue-draft); while the turn streams no form opens, so a later approval of the turn is not left under it. A form opened after the `y`, another input mode the user is in, or a menu screen that waits for the user (a warning, a picker with its delete confirmation, a field, a `y/n`, the usage view), is left alone: the draft is dropped and a system line names its title.
+
+#### Scenario: The form waits for the end of the turn [auto]
+- GIVEN a draft accepted with `y` during a streaming turn
+- WHEN the tool result arrives and the turn goes on
+- THEN no menu is open, and the Feedback form opens only when the turn ends
+
+### Requirement: The `/feedback` hint
+A chat turn that does not offer `gh_issue_draft` MUST show the system line `If this looks like a lazarobox problem, type /feedback to report it` after it fails or after a tool result that is an `Error`, at most once per turn and never after a `Denied` result (see issue-draft, The `/feedback` hint).
+
+#### Scenario: A failed turn without the tool [auto]
+- GIVEN a chat whose engine has no tools
+- WHEN its turn fails
+- THEN the transcript ends with the hint line
+
+### Requirement: Approval prompt
+A pending confirm or tool approval MUST be drawn at the composer (replacing the composer's hint line, not the transcript), naming what will happen: for the pane command `run in pane N (<cwd>)` and the exact command text drawn visibly; for `read_file` on a cloud engine `read <path>` with the sanitized path; for a user tool the server, tool and arguments; plus the keys (`y` run/allow, `n` decline, `p` target pane for the pane command). The prompt is an overlay of the chat pane's own state, not a global input mode. The composer text and cursor MUST be kept untouched under it. While a prompt is pending the pane MUST show it even when scrolled. A multi-line or long command MUST be wrapped and clipped to a visible maximum with the clipping marked, and the full text is what `y` writes; if the command or path cannot be shown in full in the available space (more than six wrapped rows, or a pane too short) the prompt MUST say so ("pane too small to show it all: enlarge it or press n") and show no part of it, and `y` MUST NOT approve it until a resize makes the whole text visible; `n`, Esc and Ctrl+C still deny. The same function decides what is drawn and whether `y` may approve. A prompt the model opened (not one the user opened with `Prefix e`) MUST ignore `y`, `n` and Esc for a short arming delay (400 ms) so a key typed for the composer cannot answer it, and its keys line shows `…` until then; Ctrl+C always cancels.
+
+#### Scenario: Pane command prompt [auto, TestBackend + insta]
+- GIVEN a pending confirm for `cd ~/dev/curso-rust` on pane 2 with cwd `~/dev`
+- WHEN rendered in a 60x16 pane
+- THEN the prompt reads `run in pane 2 (~/dev)`, the command and the key hints appear at the composer
+
+#### Scenario: Composer kept [auto]
+- GIVEN a composer holding `draft` and a pending confirm
+- WHEN the confirm is declined
+- THEN the composer still holds `draft`
+
+#### Scenario: Long command [auto, TestBackend + insta]
+- GIVEN a command of 20 lines
+- WHEN the prompt is rendered
+- THEN the visible part is marked as clipped and the prompt states the line count
+
+#### Scenario: Prompt in a scrolled transcript [auto]
+- GIVEN a transcript scrolled up and a pending confirm
+- WHEN rendered
+- THEN the prompt is still visible at the composer
+
+### Requirement: Streaming with a pending approval
+While an approval is pending the pane stays in its streaming state (one stream at a time, send refused), and the stream phase is unchanged. Cancel MUST stop the stream and deny the approval. Closing the pane MUST deny it and write nothing. A pending approval MUST survive modes, focus changes, zoom and tab switches (as the stream does), and a send MUST be refused with the existing system line. The waiting texts of the first byte do not apply while an approval is pending.
+
+#### Scenario: Cancel denies [auto]
+- GIVEN a streaming chat with a pending `run_in_pane` approval
+- WHEN cancel is requested
+- THEN a ChatCancel effect is emitted, the approval result is `denied`, nothing is written and the pane is idle
+
+#### Scenario: Close denies [auto]
+- GIVEN the same state
+- WHEN the pane is closed
+- THEN the result is `denied`, no WritePty is emitted and late events are ignored
+
+#### Scenario: Send is refused [auto]
+- GIVEN a pending approval and composer text `next`
+- WHEN send is requested
+- THEN no ChatSend is emitted and the composer still holds `next`
+
+#### Scenario: Survives a tab switch [auto]
+- GIVEN a pending approval and a switch to another tab and back
+- WHEN the pane is shown
+- THEN the same approval is pending
+
+### Requirement: Untrusted tool output in the transcript
+Tool results shown in the pane MUST be drawn only as rows (see Tool rows) with sanitized text; the pane MUST NOT interpret anything in a tool result (no fences, no links, no escape sequences), and MUST label rows from user MCP servers with the server name so their origin is visible.
+
+#### Scenario: Server origin visible [auto, TestBackend + insta]
+- GIVEN a result row from user server `fs`
+- WHEN rendered
+- THEN the row names `fs`
+
+#### Scenario: Hostile result [auto]
+- GIVEN a result with a clickable-link escape sequence and a bidi control
+- WHEN rendered
+- THEN neither reaches the screen
+
+### Requirement: Batch review view
+A proposed write batch, and a `git_commit` review, MUST open as a full-pane view inside the chat pane, in the same family as the list, memory and tag views. The view MUST render every row of the batch with a fixed row model, and the renderer and the approving key MUST share one coverage count. The view MUST show how many rows remain unseen and keep the approving key disabled until all are shown and the arm delay has passed. The view MUST support scrolling, and MUST work in zoom and after a resize. It MUST show the total number of files, the added and removed lines, a warning on build files, and for a commit the message and the signing notice. The counter row MUST be headed by the chat's folder (`~` for `$HOME`, sanitized), so the destination is read before `y`: the folder keeps its end when it is cut and takes only the room the counter and the gate leave (it is left out when fewer than 8 cells remain), so it never displaces the gate. `n` and Esc MUST reject the whole batch.
+
+#### Scenario: Folder in the review header [auto]
+- GIVEN a chat whose folder is `/w/app` and a pending batch review
+- WHEN the review is drawn
+- THEN the counter row starts with `/w/app · `, and with a folder too long for the row it starts with `…` and the end of the path
+
+#### Scenario: Remaining count [auto, TestBackend + insta]
+- GIVEN a batch of 30 rows with 10 shown
+- WHEN the view renders
+- THEN it shows 20 rows remaining and the approve key reads as disabled
+
+#### Scenario: Scroll covers rows [auto]
+- GIVEN a batch taller than the pane
+- WHEN the user scrolls to the end
+- THEN the coverage count reaches the total and the approve key is enabled after the arm delay
+
+#### Scenario: Resize keeps coverage [auto]
+- GIVEN rows already covered
+- WHEN the pane is resized
+- THEN the covered rows stay covered and no row is lost
+
+#### Scenario: Reject [auto]
+- GIVEN an open review
+- WHEN `n` is pressed
+- THEN the view closes, the batch is discarded and the transcript gets a system line
+
+#### Scenario: Reject waits like approve, except when it is the only exit [auto]
+- GIVEN a reviewable batch whose review was first drawn at t
+- WHEN `n` or Esc is pressed before t + 800 ms
+- THEN nothing happens, and at t + 800 ms (the same delay as `y`) they reject the batch
+- AND on a batch that cannot be reviewed (too large or empty) `n` and Esc reject at once
+
+#### Scenario: Only drawn rows count [auto]
+- GIVEN a review opened in a background tab, a hidden pane or under another chat view
+- WHEN the pane is resized or scrolled without being drawn
+- THEN no row counts as seen and the arm delay has not started, until a frame draws the review
+
+#### Scenario: The countdown ends on screen [auto]
+- GIVEN a drawn review counting down with no stream running
+- WHEN the arm delay elapses
+- THEN the screen is redrawn once more and the header reads `y ready`
+
+#### Scenario: The review owns the pane [auto, TestBackend]
+- GIVEN an open review in a pane with the AUTO badge or a scrolled transcript
+- WHEN the pane renders and the wheel turns over it
+- THEN the badges do not cover the counter row, the wheel scrolls the review and never the transcript, and other mouse events do nothing
+- AND the keys row cuts from the right with `n reject` first, then `y`, then the scroll hints
+
+### Requirement: Staged batch indicator
+While the chat holds a staged batch the pane MUST show an indicator with the number of staged entries. An orphan batch (after a cancelled turn) MUST show a distinct indicator and MUST offer the keys to review it or discard it. The indicator MUST be visible in every chat view, focused or not, and MUST disappear when the batch is applied or discarded.
+
+#### Scenario: Indicator count [auto, TestBackend + insta]
+- GIVEN 3 staged entries
+- WHEN the pane renders
+- THEN the indicator shows 3
+
+#### Scenario: Orphan indicator and keys [auto]
+- GIVEN a turn cancelled with a staged batch
+- WHEN the pane renders and the review key is pressed
+- THEN the orphan indicator is visible and the review view opens
+
+#### Scenario: Gone after discard [auto]
+- GIVEN an orphan batch
+- WHEN it is discarded
+- THEN the indicator disappears
+
+### Requirement: Closing discards a batch
+Closing a chat pane that holds a staged or orphan batch MUST discard the batch and MUST show a notice that names the number of discarded entries. Nothing is written to disk by the close. Quitting the app MUST do the same for every chat.
+
+#### Scenario: Close notice [auto]
+- GIVEN a chat with 2 staged entries
+- WHEN the pane is closed
+- THEN the batch is gone, the disk is untouched and a notice names 2 entries
+
+#### Scenario: Quit [auto]
+- GIVEN two chats with staged batches
+- WHEN the app quits
+- THEN both batches are discarded and a notice is shown
+
+### Requirement: Approval mode badge and system lines
+A chat pane with tools on in `auto` mode MUST show the badge ` AUTO ` in amber, and in `run` mode the badge ` RUN ` in red, both high contrast, in every chat view, focused or not; `ask` shows none. When the pane is narrower than the badge (below 6 columns for ` AUTO `, below 5 for ` RUN `) the badge MUST shrink to `A` or `R`; the badge text is bold on the base background colour. The badge is system-drawn: never stored, yanked or sent to the model. Changing the mode (see modal-input) MUST add a system line naming the new mode and saying what it does: `ask` asks for each command; `auto` types commands without Enter; `run` types and runs a short list of navigation commands (`cd`, `pwd`, `ls`, `tree`, `mkdir`) and sends their output to the model; the `run` line reads `approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)`. System lines are never stored or sent to the model. After a `cd` ran under pane-execution the transcript MUST show the system line `pane N: <exact command> → <cwd>`.
+
+#### Scenario: Badges [auto, TestBackend + insta]
+- GIVEN chats in `auto`, `run` and `ask` with tools on
+- WHEN rendered
+- THEN ` AUTO ` is amber, ` RUN ` is red and `ask` has no badge
+
+#### Scenario: Narrow pane [auto, TestBackend + insta]
+- GIVEN a chat in `run` rendered at 4 columns, and one in `auto` at 5 columns
+- WHEN rendered
+- THEN the badges read `R` and `A`, a `run` chat at 5 columns still reads ` RUN `, and nothing panics
+
+#### Scenario: System line on change [auto]
+- GIVEN a chat in `auto`
+- WHEN the mode changes to `run`
+- THEN the system line reads `approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)`; it is not in the store or the next request
+
+#### Scenario: Cd line shows the exact command [auto]
+- GIVEN `cd ~/dev/curso-rust` run and settled
+- WHEN rendered
+- THEN a system line reads `pane N: cd ~/dev/curso-rust → <cwd>`
+
+#### Scenario: Tools off shows nothing [auto, TestBackend + insta]
+- GIVEN tools off and `approval = "run"`
+- WHEN rendered
+- THEN no badge appears and the snapshot equals the one without this change
+
+### Requirement: Run result rows
+Within the Tool rows rules, the result row of a `run_in_pane` call MUST start with the exact command and then read `ran in pane N` (with the cwd or the line count), `ran in pane N — still running`, `ran — output not available`, `typed into pane N — no Enter` or `denied`, with at most a short sanitized preview of the output; the full bounded output goes to the model only and is never stored in the transcript.
+
+#### Scenario: Ran row [auto, TestBackend + insta]
+- GIVEN a settled `ls -l` with 30 output lines
+- WHEN rendered
+- THEN the row starts with `ls -l`, reads `ran in pane N` and shows at most a capped preview, not all 30 lines
+
+#### Scenario: Timed out row [auto, TestBackend + insta]
+- GIVEN a run that hit the timeout
+- WHEN rendered
+- THEN the row starts with the exact command and reads `ran in pane N — still running`
+
+### Requirement: Folder views in the pane
+The folder picker and the `/cd` confirmation MUST be drawn inside the chat pane area in place of the conversation view while open, like the memory views. While one is open the composer text, the transcript, the scroll position and any running stream MUST be kept and keep updating underneath; closing it returns to the conversation view (or, for the picker, to the conversation list). A pane has at most one such view at a time and never together with a memory view. The picker shows the candidate rows with the highlighted one marked, the typed-path field, the reason of the last refusal (or, while the `current` row is highlighted and no refusal stands, its warning about broad folders) and a one-line key hint. All text drawn is already sanitized text in styled spans (folder names are sanitized like any displayed path), and rendering MUST NOT panic at any pane size down to 1x1. Keys: Up/Down move the highlight, printable characters edit the typed path, Tab completes, Enter accepts, Esc dismisses; no key reaches the composer while the picker is open.
+
+#### Scenario: Picker drawn [auto, TestBackend + insta]
+- GIVEN the picker with three candidates, the first highlighted, in a 50x16 pane
+- WHEN rendered
+- THEN the rows, the highlight, the typed-path field and the key hint are visible
+
+#### Scenario: Composer survives [auto]
+- GIVEN the composer holding `draft` and a `/cd` confirmation opened and cancelled
+- WHEN the conversation view is shown again
+- THEN the composer still holds `draft`
+
+#### Scenario: Keys do not reach the composer [auto]
+- GIVEN the picker open
+- WHEN `x` is typed and a paste arrives
+- THEN they edit the typed path and the composer is unchanged
+
+#### Scenario: Tiny pane [auto]
+- GIVEN a pane of any size from 1x1 to 10x2
+- WHEN the picker and the confirmation are rendered
+- THEN nothing panics
+
+#### Scenario: Hostile folder name [auto]
+- GIVEN a candidate directory name containing an escape sequence and a bidi override
+- WHEN the picker is rendered
+- THEN the drawn text holds no control or bidi characters
+
+### Requirement: Per-pane ORCH mode and badge [S1]
+Each chat pane MUST have its own ORCH mode, off for a new pane, held in memory only (not saved, not restored). Ctrl+O toggles it (see modal-input). A pane MUST show an ORCH badge, in the same place and style family as AUTO and RUN (placed beside the existing mode badge), only while it is orchestrating: the global `enabled` gate is on AND the pane's ORCH mode is on. The badge MUST be absent otherwise. Only an orchestrating pane runs its chat turns on the `orchestrate` assignment; the other panes keep the `chat` assignment. While a run is active in the pane the toggle MUST NOT change the mode and the footer hint says so. With the global gate off the toggle does nothing.
+
+#### Scenario: Badge follows both switches [auto, TestBackend + insta]
+- GIVEN a chat pane
+- WHEN `enabled` is false; then true with ORCH off; then true with ORCH on
+- THEN the badge is absent, absent, then present
+
+#### Scenario: Toggle is per pane [auto]
+- GIVEN `enabled` true and two chat panes A and B, both with ORCH off
+- WHEN Ctrl+O is pressed in A
+- THEN A shows ORCH and B does not
+
+#### Scenario: Toggle does nothing with the gate off [auto]
+- GIVEN `enabled` false
+- WHEN Ctrl+O is pressed in a chat pane
+- THEN the pane mode and render are unchanged and no key reaches a PTY
+
+#### Scenario: Toggle blocked during a run [auto]
+- GIVEN an orchestrating pane with an active run
+- WHEN Ctrl+O is pressed
+- THEN the mode stays on and the footer hint says to cancel the run first
+
+### Requirement: Worker rows [S1]
+A worker MUST appear as a transcript row (kind, `engine>model`, status, elapsed), updated in place. The row MUST NOT be sent as history, MUST NOT be saved as a message, and MUST be included in yank and COPY like tool rows.
+
+#### Scenario: Row rendered [auto, TestBackend + insta]
+- GIVEN a `review` worker running on `claude>opus` for 12 s
+- WHEN the pane is rendered
+- THEN a row shows `review`, `claude>opus`, `running` and `12s`
+
+### Requirement: Announced workers [S1]
+A worker MUST be announced by its transcript row and start at once: no prompt, key or answer is needed to start a run or a worker (user decision, 2026-10-29: "lo avisas pero no pides permisos"). Its reads follow the run's read scope and the pane's approval mode (agent-orchestrator, Read scope of a run). The composer text MUST be kept.
+
+#### Scenario: Worker starts without a prompt [auto]
+- GIVEN an orchestrating pane whose composer holds `draft`
+- WHEN the orchestrator spawns a `review` worker
+- THEN its row is shown, the worker starts with no prompt and no key pressed, and the composer still holds `draft`
+
+### Requirement: Failure alert [S1, S2]
+A worker failure MUST show an inline alert in the pane with the worker label, the error class [S2] and the provider message, and the options: [S1] retry, cancel; [S2] retry, change model, change provider, cancel. The alert stays until the user chooses; it is not dismissed by a timer or by new output. While it is shown the pane MUST say the run is paused. When a run-scoped override is active the pane MUST show it in the run state and mark the affected worker rows (`engine>model` plus an override marker).
+
+#### Scenario: Alert content [auto, TestBackend + insta]
+- GIVEN a `code` worker failed with 429 `rate limit reached`
+- WHEN the pane is rendered
+- THEN the alert names the worker, shows class `rate_limit` and the message, and lists the four options
+
+#### Scenario: Alert persists [auto]
+- GIVEN an alert shown
+- WHEN time passes and sibling output arrives
+- THEN the alert is still shown with the same options
+
+### Requirement: Approval label and queue [S1, S3]
+Every approval prompt raised by a worker MUST show a label `worker n/m <kind> <engine>><model>`. [S3] The single pending approval limit MUST be replaced for workers by a FIFO queue showing one prompt at a time with the count waiting; each answer applies to its own prompt only. [S1] With one worker, at most one prompt is pending. A prompt MUST never be answered by a timer.
+
+#### Scenario: Label shown [auto, TestBackend + insta]
+- GIVEN worker 2 of 3, kind `review` on `claude>opus`, asks for a read
+- WHEN the pane is rendered
+- THEN the prompt shows `worker 2/3 review claude>opus` and the sanitized path
+
+#### Scenario: Queue count [S3, auto]
+- GIVEN three pending asks
+- WHEN the pane is rendered
+- THEN one prompt is shown and a `2 more waiting` indicator
+
+### Requirement: Handoff persistence hint [S4]
+When a run turned memory on the pane MUST show `memory on for this run` once per run (never again for the same run, however many handoffs follow); when handoffs are not persisted it MUST show `handoffs not persisted` once per run; and a verdict `off_course` or `blocked` MUST be shown as a transcript line.
+
+#### Scenario: Hint once [auto]
+- GIVEN memory off, engram unreachable and a run with three workers
+- WHEN the run ends
+- THEN `handoffs not persisted` was shown once
+
+### Requirement: The `/feedback` command
+`/feedback` MUST be a user-only composer command, recognized when the composer text, trimmed of surrounding whitespace, is exactly `/feedback` or `/feedback` followed by whitespace (case-sensitive). Sending it MUST NOT create a user message or a request to the engine, MUST clear the composer, and MUST open the Feedback form with the text that follows it (see config-menu). `//feedback` MUST send the message with one slash less.
+
+#### Scenario: The command is not a message [auto]
+- GIVEN an idle chat and the composer holding `/feedback The chat hangs`
+- WHEN it is sent
+- THEN the Feedback form opens holding that text, the composer is empty, the transcript is unchanged and no request starts
+
+#### Scenario: Escaped [auto]
+- GIVEN the composer holding `//feedback is a command`
+- WHEN it is sent
+- THEN the message `/feedback is a command` is sent to the engine and no form opens
+
+### Requirement: The `/cost` command
+`/cost` MUST be a user-only composer command, recognized when the composer text, trimmed of surrounding whitespace, is exactly `/cost` (case-sensitive). Sending it MUST NOT create a user message, MUST NOT emit ChatSend, MUST NOT start a stream, MUST NOT contact any engine, MUST NOT be stored in the conversation and MUST NOT enter the history of later requests. It clears the composer and appends the `/cost` view (see `ai-usage`) as system lines. It MUST work while a stream is running in the pane (the send-refusal rule does not apply) and in a conversation with no messages. `/cost` followed by anything (`/cost now`) MUST show the system line `/cost takes no arguments` and keep the composer text. The view's lines are system lines: not stored, not sent to an engine, not copied as part of an answer. If the pane has no engine configured, `/cost` still works.
+
+#### Scenario: No message, no request [auto]
+- GIVEN an idle chat and the composer holding `/cost`
+- WHEN send is requested
+- THEN no user message is added, no ChatSend effect is emitted, the composer is empty and the view lines are appended
+
+#### Scenario: Works during a stream [auto]
+- GIVEN a stream running and the composer holding `/cost`
+- WHEN send is requested
+- THEN the view is appended, the stream is unaffected and no wait-or-cancel line appears
+
+#### Scenario: Not in the history [auto]
+- GIVEN `/cost` was run and then `hello` is sent
+- WHEN the request is built
+- THEN the history holds `hello` only and nothing from `/cost`
+
+#### Scenario: Not stored [auto]
+- GIVEN a conversation where `/cost` was run
+- WHEN the store is read
+- THEN it holds no message with `/cost` or the view text
+
+#### Scenario: Arguments refused [auto]
+- GIVEN the composer holding `/cost now`
+- WHEN send is requested
+- THEN the system line `/cost takes no arguments` appears and the composer still holds `/cost now`
+
+#### Scenario: Other text is a normal message [auto]
+- GIVEN the composer holding `what does /cost do`
+- WHEN send is requested
+- THEN it is sent as a normal user message
+
+#### Scenario: Pending read [auto]
+- GIVEN a slow store
+- WHEN `/cost` is sent
+- THEN `reading usage…` shows at once and the view replaces it when the data arrives, without blocking keys
+
+### Requirement: Per-answer usage line
+After a turn that ended with a final event, the pane MUST append one dim system line below the answer, in the format of `ai-usage` (Usage text formats), when the `ai.usage.line` setting is on (default on). For a turn with no record the line reads `usage: no data`. For a cancelled, interrupted or errored turn the line appears only when the turn has a record (it is then marked `partial`). The line is not part of the assistant message: not stored, not sent to an engine, not included by yank of an answer, and not shown after resume. With the setting off, no usage line appears and nothing else changes. The line appears before any threshold note of the same turn. When the turn is the coordinator's turn of an orchestrator run, the line starts `usage (coordinator):` instead of `usage:` (every other part is unchanged, `no data` included): it is the coordinator's own usage, not the run total, and the workers' usage is recorded apart (see `ai-usage`, Worker usage).
+
+#### Scenario: Line after a claude turn [auto, TestBackend + insta]
+- GIVEN a claude turn with 2 in, 4 out, cost 0.004936 and mode `subscription`
+- WHEN the turn ends
+- THEN the line `usage: in 2 · out 4 · $0.0049 list-price equivalent` appears below the answer
+
+#### Scenario: Local engine [auto]
+- GIVEN an ollama turn with 12 in and 34 out
+- WHEN the turn ends
+- THEN the line reads `usage: in 12 · out 34`
+
+#### Scenario: No data [auto]
+- GIVEN a turn whose engine reported nothing
+- WHEN the turn ends
+- THEN the line reads `usage: no data`
+
+#### Scenario: Coordinator label [auto]
+- GIVEN an orchestrator turn with 12 in and 34 out
+- WHEN the turn ends
+- THEN the line reads `usage (coordinator): in 12 · out 34`, and a plain chat turn still reads `usage: in 12 · out 34`
+
+#### Scenario: Turned off [auto]
+- GIVEN `ai.usage.line` off
+- WHEN a turn ends
+- THEN no usage line appears
+
+#### Scenario: Cancelled without usage [auto]
+- GIVEN a turn cancelled before any usage was reported
+- WHEN the pane returns to idle
+- THEN no usage line appears
+
+#### Scenario: Not stored or resumed [auto]
+- GIVEN a turn with a usage line
+- WHEN the store is read and the conversation is resumed
+- THEN neither holds the line
+
+#### Scenario: Yank excludes it [auto]
+- GIVEN an answer followed by its usage line
+- WHEN the answer is yanked
+- THEN the yanked text does not contain the usage line
+
+### Requirement: Threshold notes in the pane
+Threshold notes (see `ai-usage`, Thresholds) MUST appear as dim system lines after the usage line of the turn that crossed them, in this order when several apply: turn, daily tokens, daily dollars. They MUST NOT block the composer, delay a send, hide the answer or change focus, and MUST NOT play a sound or notification of their own. They are shown whether or not the usage line is on.
+
+#### Scenario: Note after the usage line [auto]
+- GIVEN `turn_tokens` 100 and a turn of 300 tokens with the usage line on
+- WHEN the turn ends
+- THEN the usage line is followed by `turn used 300 tokens (limit 100)`
+
+#### Scenario: Usage line off, note on [auto]
+- GIVEN the usage line off and a crossed threshold
+- WHEN the turn ends
+- THEN only the note appears
+
+#### Scenario: Composer stays usable [auto]
+- GIVEN a note was shown
+- WHEN a message is typed and sent
+- THEN it is sent normally
+
+### Requirement: The `/github` command
+`/github` MUST be a user-only composer command, recognized when the composer text, trimmed of surrounding whitespace, is exactly `/github` (case-sensitive). Sending it MUST NOT create a user message, MUST NOT emit ChatSend, MUST NOT start a stream, MUST NOT contact any engine, MUST NOT be stored in the conversation and MUST NOT enter the history of later requests. It clears the composer and opens the grant dialog (see below) when the chat can be granted. It MUST work while a stream is running in the pane; the grant then takes effect from the next message. `/github` followed by anything (`/github now`) MUST show the system line `/github takes no arguments` and keep the composer text, as `/cost` does. `//github` MUST send the message with one slash less (`/github`), and no dialog opens. Other text that merely contains `/github` is a normal message. The command MUST be refused with a visible system line, the composer cleared and no dialog, in these cases: tools are off (the line says so); the pane is orchestrating, or the engine of the chat offers no tools (the line says which, because a grant would never be offered); the chat folder is not in a git repository; the folder has no `origin`; `origin` is not on `github.com`; the GitHub tools are already on, by the toggle or by an earlier grant (the line says they are already on); another confirm, approval or dialog is pending in the pane (the line is `Answer the pending confirm first` and the composer is kept); a `/github` probe is still running in the pane (the line says it is still checking). On a valid command the pane MUST show the line `checking origin...`. There MUST be at most one probe in flight per pane. An answer that arrives and cannot open the dialog (the folder changed, tools are off, the toggle or a grant is on, the pane is orchestrating, the engine offers no tools, or the history list is open) MUST NOT vanish: it shows a line `/github cancelled: <why>`; only a closed pane stays silent. The repository checks MUST NOT block the render thread or the event loop and MUST NOT use the network.
+
+#### Scenario: The command is not a message [auto]
+- GIVEN an idle chat in a clone whose `origin` is on GitHub, tools on and the GitHub tools off, and the composer holding `/github`
+- WHEN send is requested
+- THEN the dialog opens, the composer is empty, no user message is added, no ChatSend effect is emitted and no request starts
+
+#### Scenario: Not in the history or the store [auto]
+- GIVEN `/github` was run and then `hello` is sent
+- WHEN the request is built and the store is read
+- THEN the history holds `hello` only and the store holds no message with `/github`
+
+#### Scenario: Arguments refused [auto]
+- GIVEN the composer holding `/github now`
+- WHEN send is requested
+- THEN the system line `/github takes no arguments` appears, the composer still holds `/github now` and no dialog opens
+
+#### Scenario: Escaped [auto]
+- GIVEN the composer holding `//github is a command`
+- WHEN it is sent
+- THEN the message `/github is a command` is sent to the engine and no dialog opens
+
+#### Scenario: Other text is a normal message [auto]
+- GIVEN the composer holding `what does /github do`
+- WHEN send is requested
+- THEN it is sent as a normal user message
+
+#### Scenario: Already on [auto]
+- GIVEN the GitHub toggle on, and in another run a chat already granted
+- WHEN `/github` is sent
+- THEN a system line says the GitHub tools are already on, no dialog opens and the composer is cleared
+
+#### Scenario: Folder with no repository [auto]
+- GIVEN a chat whose folder is not in a git repository
+- WHEN `/github` is sent
+- THEN a system line says the folder has no repository, and no dialog opens
+
+#### Scenario: No origin or not GitHub [auto]
+- GIVEN a repository with no `origin`, and in another run an `origin` on `gitlab.com`
+- WHEN `/github` is sent
+- THEN a system line says there is no `origin` remote, or that `origin` is not on GitHub, and no dialog opens
+
+#### Scenario: Tools off [auto]
+- GIVEN `[ai.tools] enabled = false`
+- WHEN `/github` is sent
+- THEN a system line says tools are off, no dialog opens and no grant exists
+
+#### Scenario: Works during a stream [auto]
+- GIVEN a stream running and the composer holding `/github`
+- WHEN send is requested and the user presses `y` on the dialog
+- THEN the stream is unaffected, no wait-or-cancel line appears and the grant applies from the next message
+
+#### Scenario: Pending confirm blocks the dialog [auto]
+- GIVEN a pending confirm in the pane
+- WHEN `/github` is sent
+- THEN the system line `Answer the pending confirm first` appears, the composer is kept and no dialog opens
+
+### Requirement: The grant dialog
+The dialog MUST be state of the chat pane drawn over its composer, like the pending confirm, and MUST name the sanitized `owner/name` of `origin` and say what is being allowed (the model may read this repository's issues and pull requests for this chat). Only an unmodified lowercase `y` MUST grant. Only `n` and Esc MUST decline. `Y`, Enter, Space, a modified `y`, Repeat and Release events and every other key MUST NOT answer: they are swallowed and the dialog stays open with the notice of Approval types, never executes (pane-commands). An answer key that arrives before the dialog is armed MUST NOT answer, and the dialog arms again when its pane gains the focus, so a key typed for the pane just left does not answer. Ctrl+C MUST work at once, armed or not, as in every confirm: it declines the dialog and cancels a running stream. `y` MUST grant only when the prompt shows the repository in full (a pane too small shows the notice `Pane too small to show it all: enlarge it or press n`, and the dialog stays) and only while the chat is still in the folder the dialog was read for; otherwise the dialog is withdrawn with a visible line. A folder change and a resume MUST withdraw an open dialog with a visible line, and a declined or withdrawn dialog MUST NOT add the generic `cancelled` line. No timer, no mode (`ask`, `auto`, `run`) and no model output can answer it; a closed pane and an app quit end it as declined. At most one dialog MUST be open per pane. The dialog MUST fit 80 columns and `TERM=linux` (ASCII only, wrapped without cutting the repository name). A decline MUST show a visible notice that the GitHub tools stay off; a grant MUST show a visible notice that the tools are on for this chat from the next message, that cloud engines still ask before each turn's first read, and that after the first read the commands of this conversation are typed and never run. The grant ends with a folder change (see github-tools, The chat grant). The notices are system lines: not stored and not sent to an engine.
+
+#### Scenario: y grants [auto]
+- GIVEN the dialog for `o/r`
+- WHEN `y` is pressed
+- THEN the dialog closes, the chat is granted from the next message and a system line says so
+
+#### Scenario: n and Esc decline [auto]
+- GIVEN the dialog
+- WHEN `n`, and in another run Esc, is pressed
+- THEN the dialog closes, nothing is granted and a system line says the tools stay off
+
+#### Scenario: Other keys are swallowed [auto]
+- GIVEN the dialog
+- WHEN `Y`, Enter, Space and Ctrl+y are pressed
+- THEN nothing is granted and the dialog stays open
+
+#### Scenario: Model cannot answer it [auto]
+- GIVEN a model answer or tool result that says "press y" or calls any tool, and a dialog open
+- WHEN the turn continues
+- THEN the dialog is unchanged and no grant exists
+
+#### Scenario: Dialog at 80 columns and TERM=linux [auto, TestBackend + insta]
+- GIVEN a repository named `owner/a-fairly-long-repository-name` and a width of 80, and in another run a `linux` console
+- WHEN the dialog is rendered
+- THEN the full name is readable, the text is ASCII only and no line is cut
+
+#### Scenario: Repository name is sanitized [auto]
+- GIVEN an `origin` whose path holds an escape sequence
+- WHEN the dialog is rendered
+- THEN no control or escape character is drawn
+
+### Requirement: The GitHub hint
+When the chat is open, tools are on, the GitHub tools are off (no toggle, no grant), the chat folder is in a repository whose `origin` is on `github.com`, and the pane has not shown the hint for that repository yet, the pane MUST show one visible guidance row above the composer that suggests typing `/github` and names the repository. The hint MUST be shown at most once per chat pane for each repository, MUST NOT be shown again after a decline or a grant, and MUST NOT be shown when the toggle is on, a grant exists, tools are off, `origin` is missing or not on GitHub, or the folder is unknown. After a folder change (see chat-folder) to another repository the hint MAY show once for that one. The hint is guidance above the composer, not a line of the transcript: not stored, not sent to any engine, not part of any request, so the model never sees it. It MUST NOT block the render thread or the event loop, MUST NOT use the network and MUST NOT open the dialog. It MUST fit one line at 80 columns, MUST shorten by dropping the repository name before it cuts the word `/github`, and MUST be ASCII only on `TERM=linux`.
+
+#### Scenario: Hint shown [auto, TestBackend + insta]
+- GIVEN a chat in a clone whose `origin` is `github.com/o/r`, tools on, the GitHub tools off
+- WHEN the pane is shown
+- THEN one guidance row above the composer suggests `/github` and names `o/r`, and no dialog is open
+
+#### Scenario: Hint shown once [auto]
+- GIVEN the hint was shown
+- WHEN the user sends five messages, switches tabs and back, and the pane redraws
+- THEN the hint line is shown no more than once for `o/r`
+
+#### Scenario: No hint after decline or grant [auto]
+- GIVEN the hint was shown and `/github` was declined, and in another run granted
+- WHEN a new message is sent
+- THEN no hint appears again for `o/r`
+
+#### Scenario: No hint when it does not apply [auto]
+- GIVEN each of: the toggle on; a grant; tools off; no `origin`; `origin` on `gitlab.com`; an unknown folder
+- WHEN the pane is shown
+- THEN no hint appears
+
+#### Scenario: Model never sees the hint [auto]
+- GIVEN the hint was shown
+- WHEN the next request is built and the store is read
+- THEN neither holds the hint text
+
+#### Scenario: Hint at 80 columns and TERM=linux [auto, TestBackend + insta]
+- GIVEN a width of 80 and a long repository name, and in another run a `linux` console
+- WHEN the hint is rendered
+- THEN it takes one line, `/github` is intact, and on the console it is ASCII only
+
+#### Scenario: New repository after /cd [auto]
+- GIVEN the hint was shown for `o/a`, with a grant for `o/a` in another run, and the folder changes to a clone of `o/b`
+- WHEN the pane is shown
+- THEN the grant has ended and the hint may show once for `o/b`
+
+### Requirement: read_pane approval preview
+A pending `read_pane` approval MUST be drawn as a scrollable preview of the EXACT text that would be sent: after `redact(clean())`, with the truncation marker if any, and naming the pane (`read pane N`). The preview MUST scroll with the keys the prompt shows, and the same frozen value MUST be what is drawn and what `y` sends. The preview reuses the batch-review view: `y` stays locked until every line has been seen (scrolled to), then arms after the arming delay, as in the existing batch review. Keys `n`, Esc and Ctrl+C deny; the arming delay of the Approval prompt applies. The composer text and cursor MUST be kept. The model's text is untrusted: control and escape sequences MUST NOT reach the terminal.
+
+#### Scenario: Exact preview, scrollable [auto, TestBackend + insta]
+- GIVEN a frozen text of 60 lines with a secret assignment
+- WHEN the prompt is rendered and scrolled down
+- THEN later lines appear, the secret is redacted, and the drawn text equals the text `y` sends
+
+#### Scenario: y locked until every line is seen [auto]
+- GIVEN a frozen text longer than the preview rows
+- WHEN `y` is pressed before the last line has been seen
+- THEN nothing is sent; after scrolling to the end and the arming delay, `y` sends the frozen text
+
+#### Scenario: Deny returns nothing [auto]
+- GIVEN a pending `read_pane` prompt
+- WHEN the user presses `n`
+- THEN the tool result is a denial, no screen text is returned, and the composer still holds its draft
+
+#### Scenario: Escape sequences neutralised [auto]
+- GIVEN a screen holding `\x1b[2J` and a bidi override
+- WHEN the preview is drawn
+- THEN neither reaches the terminal
+
+### Requirement: read_pane notices
+The chat MUST show a visible notice (a system line, never silence) for each of these outcomes of `read_pane`: denied by the user; pane gone (closed before the prompt opened, so there is nothing to read; no prompt); empty screen (denied, no prompt); text truncated by the cap; scrollback requested in a pane running an alternate-screen (full-screen) app, where only the visible grid is read. The model MUST also receive a result that states the outcome.
+
+#### Scenario: Denied [auto]
+- GIVEN a pending `read_pane` prompt
+- WHEN the user denies it, or it times out
+- THEN a notice says the read was denied and the model gets a denied result
+
+#### Scenario: Gone pane [auto]
+- GIVEN `read_pane` on a pane that closed before the prompt opened
+- WHEN the call is served
+- THEN no prompt opens, a notice says the pane is gone, and the result is an error
+
+#### Scenario: Empty screen [auto]
+- GIVEN a pane with a blank screen
+- WHEN the call is served
+- THEN the call is denied without a prompt, a notice says the screen is empty, and the result tells the model the screen is empty
+
+#### Scenario: Truncated [auto]
+- GIVEN a read that exceeds the 8 KiB cap
+- WHEN the prompt opens
+- THEN the preview and a notice state the text was cut and the tail kept
+
+#### Scenario: Scrollback in a full-screen app [auto]
+- GIVEN a pane running an alternate-screen app and `scrollback: 50`
+- WHEN the call is served
+- THEN the visible grid is read and a notice says scrollback is unavailable there

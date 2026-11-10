@@ -2,7 +2,7 @@
 
 use std::{io, path::PathBuf};
 
-use crate::core::pane::PaneSize;
+use crate::core::{ai::tools::panes::Foreground, pane::PaneSize};
 
 pub mod fake;
 pub mod portable;
@@ -27,6 +27,9 @@ pub struct SpawnSpec {
     /// Ask the adapter for a [`PtyEvent::Status`] before `Exited`. Off for
     /// shells: only a pane that runs one job cares how it ended.
     pub report_status: bool,
+    /// A umask for this child only (the app's own is untouched). `None` keeps
+    /// the inherited one. Needs a Unix `/bin/sh` (see [`SpawnSpec::launch`]).
+    pub umask: Option<u32>,
 }
 
 impl SpawnSpec {
@@ -51,7 +54,24 @@ impl SpawnSpec {
             ],
             size,
             report_status: false,
+            umask: None,
         }
+    }
+
+    /// The program and arguments to start. With a [`umask`](Self::umask) the
+    /// child is `sh -c 'umask NNN && exec "$0" "$@"' sh <program> <args>`: the
+    /// arguments reach the program as they are, never parsed by the shell.
+    pub fn launch(&self) -> (PathBuf, Vec<String>) {
+        let Some(mask) = self.umask else {
+            return (self.program.clone(), self.args.clone());
+        };
+        let mut args = vec![
+            "-c".to_owned(),
+            format!("umask {mask:03o} && exec \"$0\" \"$@\""),
+            self.program.to_string_lossy().into_owned(),
+        ];
+        args.extend(self.args.iter().cloned());
+        (PathBuf::from("/bin/sh"), args)
     }
 }
 
@@ -68,6 +88,10 @@ pub enum PtyEvent {
 /// Receives child events from the reader; returns `false` when nobody is
 /// listening any more, so the reader can stop.
 pub type PtySink = Box<dyn FnMut(PtyEvent) -> bool + Send>;
+
+/// The slow step of [`PtyHandle::probe`]: the shell's folder and the program
+/// in the foreground.
+pub type Probe = Box<dyn FnOnce() -> (Option<PathBuf>, Option<Foreground>) + Send>;
 
 /// A running child behind a PTY.
 pub trait PtyHandle: Send {
@@ -89,6 +113,17 @@ pub trait PtyHandle: Send {
     fn cwd(&self) -> Option<PathBuf> {
         std::fs::read_link(format!("/proc/{}/cwd", self.pid()?)).ok()
     }
+    /// A reading of the pane for `list_panes`, in two steps so the slow one
+    /// can leave the UI loop. This call is the cheap step and runs on the
+    /// loop: it takes the foreground process group with one ioctl. The
+    /// returned closure does the `/proc` reads, which can block on a stuck
+    /// process, and yields the shell's folder and the foreground program (its
+    /// argv from `/proc/<pgid>/cmdline` and its folder from
+    /// `/proc/<pgid>/cwd`; never the environment). Each is `None` when it
+    /// cannot be read.
+    fn probe(&self) -> Probe {
+        Box::new(|| (None, None))
+    }
     /// Terminates the child. Idempotent; implementations also call it on drop.
     fn kill(&mut self);
 }
@@ -105,6 +140,71 @@ mod tests {
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn a_shell_spec_keeps_the_inherited_umask() {
+        let spec = SpawnSpec::new(Some("/bin/zsh"), "/".into(), SIZE);
+        assert_eq!(spec.umask, None);
+        assert_eq!(spec.launch(), (spec.program.clone(), Vec::<String>::new()));
+    }
+
+    #[test]
+    fn a_umask_wraps_the_program_without_parsing_its_arguments() {
+        let mut spec = SpawnSpec::new(None, "/".into(), SIZE);
+        spec.program = "/usr/bin/cargo".into();
+        spec.args = vec!["install".into(), "a b; $(x)".into()];
+        spec.umask = Some(0o022);
+        let (program, args) = spec.launch();
+        assert_eq!(program, PathBuf::from("/bin/sh"));
+        assert_eq!(
+            args[2..],
+            ["/usr/bin/cargo", "install", "a b; $(x)"].map(String::from)
+        );
+        assert!(args[1].contains("umask 022"), "{args:?}");
+    }
+
+    #[test]
+    fn the_wrapped_child_really_runs_with_that_umask() {
+        let mut spec = SpawnSpec::new(None, "/".into(), SIZE);
+        spec.program = "/bin/sh".into();
+        spec.args = vec!["-c".into(), "umask".into()];
+        spec.umask = Some(0o022);
+        let (program, args) = spec.launch();
+        let out = std::process::Command::new(program)
+            .args(args)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        // A /bin/sh may print `022`: compare the number, not the text.
+        assert_eq!(u32::from_str_radix(text.trim(), 8), Ok(0o22), "{text}");
+    }
+
+    #[test]
+    fn hostile_arguments_reach_the_program_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let pwned = dir.path().join("pwned");
+        let hostile = format!(
+            "a b; $(touch {}) `touch {}` 'q' \"d\"\nnext",
+            pwned.display(),
+            pwned.display()
+        );
+        let mut spec = SpawnSpec::new(None, "/".into(), SIZE);
+        spec.program = "/bin/sh".into();
+        spec.args = vec![
+            "-c".into(),
+            "printf %s \"$1\"".into(),
+            "x".into(),
+            hostile.clone(),
+        ];
+        spec.umask = Some(0o022);
+        let (program, args) = spec.launch();
+        let out = std::process::Command::new(program)
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), hostile);
+        assert!(!pwned.exists(), "an argument was run as a command");
     }
 
     // Spec: SHELL set.

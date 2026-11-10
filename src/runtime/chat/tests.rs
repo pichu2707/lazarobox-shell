@@ -22,6 +22,7 @@ use super::*;
 use crate::{
     core::ai::chat::{
         ANSWER_CAP, ChatState, Follow, MsgStatus, REASONING_CAP,
+        approval::ApprovalAsk,
         engine::{Availability, ChatError, Finish, Tools},
     },
     runtime::proc::GroupKill,
@@ -45,6 +46,8 @@ pub(super) fn done() -> StreamEvent {
 
 pub(super) fn request(system: &str) -> ChatRequest {
     ChatRequest {
+        drive_grant: None,
+        cache: Default::default(),
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "ollama".into(),
         model: Some("llama3:8b".into()),
@@ -52,6 +55,8 @@ pub(super) fn request(system: &str) -> ChatRequest {
         memory: None,
         tools: Tools::Off,
         messages: Vec::new(),
+        ollama: Default::default(),
+        github_read: false,
     }
 }
 
@@ -81,6 +86,27 @@ fn reasoning_of(events: &[StreamEvent]) -> String {
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn a_usage_report_passes_the_pipe_untouched() {
+    use crate::core::ai::chat::usage::TurnUsage;
+    let usage = TurnUsage {
+        input: Some(3),
+        output: Some(4),
+        cost_micros: Some(5),
+        ..TurnUsage::default()
+    };
+    let mut pipe = Pipe::new();
+    assert_eq!(
+        pipe.event(StreamEvent::usage(usage.clone())),
+        [StreamEvent::usage(usage)]
+    );
+    // It is not a final event: the turn goes on until `Done`.
+    assert_eq!(
+        pipe.event(StreamEvent::Done(Finish::Stop)),
+        [StreamEvent::Done(Finish::Stop)]
+    );
 }
 
 #[test]
@@ -366,10 +392,16 @@ fn chats(runner: Runner) -> (Chats, mpsc::Receiver<Tagged>) {
 }
 
 async fn next(rx: &mut mpsc::Receiver<Tagged>) -> Tagged {
-    timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .expect("an event within 5 s")
-        .expect("the channel is open")
+    loop {
+        let tagged = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("an event within 5 s")
+            .expect("the channel is open");
+        // The read reports are timing, not content.
+        if tagged.2 != StreamEvent::Reading {
+            return tagged;
+        }
+    }
 }
 
 /// Events up to and including the final one of the turn.
@@ -457,6 +489,51 @@ async fn cancel_stops_the_events_and_drops_the_adapter() {
     tokio::time::sleep(Duration::from_secs(10)).await;
     assert!(rx.try_recv().is_err(), "no event after a cancel");
     assert!(dropped.load(Ordering::SeqCst), "the adapter was dropped");
+}
+
+/// Notes the system prompt of a turn whose adapter was dropped.
+struct Gone(Arc<Mutex<Vec<String>>>, String);
+
+impl Drop for Gone {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().push(self.1.clone());
+    }
+}
+
+// Spec (agent-orchestrator S1d-3, chat unchanged): with no run manager
+// attached, Ctrl+C drops the pane's turn and denies its waits, and quitting
+// drops every other turn, as before the run manager existed.
+#[tokio::test(start_paused = true)]
+async fn without_a_run_manager_cancel_and_shutdown_behave_as_before() {
+    let gone = Arc::new(Mutex::new(Vec::new()));
+    let notes = gone.clone();
+    let runner: Runner = Arc::new(move |request, tx| {
+        let gone = Gone(notes.clone(), request.system);
+        Box::pin(async move {
+            let (_gone, _tx) = (gone, tx);
+            std::future::pending::<()>().await;
+        })
+    });
+    let (mut chats, mut rx) = chats(runner);
+    assert!(chats.orchestra.is_none());
+    chats.send(pane(1), 1, request("one"));
+    chats.send(pane(2), 1, request("two"));
+    tokio::task::yield_now().await;
+    let ask = ApprovalAsk::Run {
+        command: "ls".into(),
+    };
+    let asked = chats
+        .waits()
+        .approver(pane(1), 1, Pending::new())
+        .ask(CallId(1), &ask);
+    chats.cancel(pane(1));
+    let denied = Decision::Denied(crate::runtime::tools::approver::ENDED);
+    assert_eq!(asked.await, denied.into());
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(*gone.lock().unwrap(), ["one"]);
+    chats.shutdown(Duration::from_secs(3)).await;
+    assert_eq!(*gone.lock().unwrap(), ["one", "two"]);
+    assert!(rx.try_recv().is_err(), "no event from either turn");
 }
 
 #[tokio::test(start_paused = true)]
@@ -665,7 +742,7 @@ async fn escapes_split_across_deltas_never_reach_the_chat_state() {
     else {
         panic!("send refused");
     };
-    chats.send(pane(1), turn, request);
+    chats.send(pane(1), turn, *request);
     for (_, id, event) in turn_events(&mut rx).await {
         assert_eq!(state.apply(id, event), Follow::Nothing);
     }
@@ -705,7 +782,7 @@ async fn an_endless_answer_is_cut_at_1_mib_without_a_second_report() {
     else {
         panic!("send refused");
     };
-    chats.send(pane(1), turn, request);
+    chats.send(pane(1), turn, *request);
     let events = turn_events(&mut rx).await;
     for (_, id, event) in events {
         assert_eq!(
@@ -1046,4 +1123,48 @@ fn answer_text_that_imitates_a_tool_row_stays_a_delta() {
         out.iter().all(|e| matches!(e, StreamEvent::Delta(_))),
         "{out:?}"
     );
+}
+
+fn usage(input: u64) -> StreamEvent {
+    StreamEvent::usage(crate::core::ai::chat::usage::TurnUsage {
+        input: Some(input),
+        ..Default::default()
+    })
+}
+
+#[test]
+fn usage_passes_through_before_the_end_and_unchanged() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(delta("hi"));
+    out.extend(pipe.event(usage(7)));
+    out.extend(pipe.event(done()));
+    assert_eq!(out, [delta("hi"), usage(7), done()]);
+}
+
+#[test]
+fn usage_is_delivered_before_an_error_too() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(usage(3));
+    out.extend(pipe.event(StreamEvent::Error(ChatError::Interrupted)));
+    assert_eq!(out, [usage(3), StreamEvent::Error(ChatError::Interrupted)]);
+}
+
+#[test]
+fn usage_after_the_final_event_is_dropped() {
+    let mut pipe = Pipe::new();
+    pipe.event(done());
+    assert_eq!(pipe.event(usage(1)), []);
+}
+
+// The host's `GithubStarted` reaches the app as it is, and never after the
+// turn ended.
+#[test]
+fn the_github_started_event_passes_the_pipe_once() {
+    let mut pipe = Pipe::new();
+    assert_eq!(
+        pipe.event(StreamEvent::GithubStarted),
+        [StreamEvent::GithubStarted]
+    );
+    pipe.event(StreamEvent::Done(Finish::Stop));
+    assert_eq!(pipe.event(StreamEvent::GithubStarted), []);
 }

@@ -20,6 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::core::ai::tools::windows::WinDrives;
 use crate::{
     core::{
         ai::{
@@ -28,7 +29,8 @@ use crate::{
             tools::{
                 Call, Lines,
                 paths::{
-                    PathVerdict, REFUSED, SecretRoots, is_excluded_name, is_git_config, resolve,
+                    PathVerdict, REFUSED, SecretRoots, is_excluded_name, is_git_config,
+                    real_target, resolve,
                 },
             },
         },
@@ -87,6 +89,14 @@ pub struct ToolEnv {
     pub xdg_data_home: Option<OsString>,
     /// The chat's origin cwd, against which a relative path is read.
     pub origin: PathBuf,
+    /// The Windows drives of WSL for the drive read policy. `None` reads the
+    /// ones the runtime knows at each call (the own profile arrives later);
+    /// a test sets its own.
+    pub drives: Option<WinDrives>,
+    /// The Windows drive folder the user let the chat write in (openspec
+    /// `wsl-drive-access` D7), the chat's resolved folder. `None` for every
+    /// call but a chat's file tools after the user's `y`.
+    pub drive_grant: Option<PathBuf>,
 }
 
 /// Why a call failed. The text is short and never holds file content or a
@@ -95,6 +105,8 @@ pub struct ToolEnv {
 pub enum Failure {
     Refused,
     NotText,
+    /// A file that starts with the SQLite header: binary, but worth saying so.
+    Sqlite,
     Unreadable,
     TimedOut,
     EmptyQuery,
@@ -109,12 +121,31 @@ impl Failure {
         match self {
             Failure::Refused => REFUSED,
             Failure::NotText => "the file is not text",
+            Failure::Sqlite => SQLITE_MESSAGE,
             Failure::Unreadable => "could not read",
             Failure::TimedOut => "timed out",
             Failure::EmptyQuery => "the query is empty",
             Failure::NotReadTool => "not a read tool",
             Failure::BadPattern => "the pattern is not a valid expression",
         }
+    }
+}
+
+/// What a SQLite file is answered with: the user's pane is the way in, and
+/// `sqlite3` is not read-only by name, so it still waits for the user's Enter.
+const SQLITE_MESSAGE: &str = "the file is a SQLite database, not text; propose a sqlite3 command for the user to run in their pane";
+
+/// The first bytes of every SQLite database.
+const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
+
+/// Why `bytes` are not text, when they hold a NUL byte.
+fn binary(bytes: &[u8]) -> Option<Failure> {
+    if bytes.starts_with(SQLITE_HEADER) {
+        Some(Failure::Sqlite)
+    } else if bytes.contains(&0) {
+        Some(Failure::NotText)
+    } else {
+        None
     }
 }
 
@@ -185,6 +216,39 @@ thread_local! {
     static OPEN_DELAY: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
 }
 
+/// A test's way to change the disk at the last moment before a read: a hook
+/// runs once, just before the next `read_file` against its origin judges its
+/// path, on whatever thread the read runs.
+#[cfg(test)]
+pub(crate) mod hooks {
+    use std::{
+        path::{Path, PathBuf},
+        sync::{Mutex, PoisonError},
+    };
+
+    type Hook = Box<dyn FnOnce() + Send>;
+
+    static BEFORE_READ: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+
+    /// Runs `hook` once, before the next read whose origin is `origin`.
+    pub(crate) fn before_read(origin: &Path, hook: impl FnOnce() + Send + 'static) {
+        let mut hooks = BEFORE_READ.lock().unwrap_or_else(PoisonError::into_inner);
+        hooks.push((origin.to_path_buf(), Box::new(hook)));
+    }
+
+    pub(super) fn fire(origin: &Path) {
+        let ready: Vec<Hook> = {
+            let mut hooks = BEFORE_READ.lock().unwrap_or_else(PoisonError::into_inner);
+            let (ready, kept) = std::mem::take(&mut *hooks)
+                .into_iter()
+                .partition(|(at, _)| at == origin);
+            *hooks = kept;
+            ready.into_iter().map(|(_, hook)| hook).collect()
+        };
+        ready.into_iter().for_each(|hook| hook());
+    }
+}
+
 /// Runs one read tool, synchronously. Builds the secret roots ONCE for the
 /// whole call and refuses the call when they cannot be built.
 pub fn execute(call: &Call, env: &ToolEnv, limits: &Limits) -> Result<String, Failure> {
@@ -211,10 +275,35 @@ pub fn execute_over(
     cancel: &AtomicBool,
     view: Option<&StagedView>,
 ) -> Result<String, Failure> {
+    execute_within(call, env, limits, cancel, view, Within::Anywhere)
+}
+
+/// Where a `read_file` may lead. The other tools keep their own bounds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Within {
+    /// Anywhere the path guard allows.
+    Anywhere,
+    /// Only inside the real root of the chat (`ToolEnv::origin`), judged on
+    /// the path the read opens: a read the approval mode let go because it
+    /// stayed in the root.
+    Root,
+}
+
+/// [`execute_over`] with a `read_file` kept [`Within`] a bound.
+pub fn execute_within(
+    call: &Call,
+    env: &ToolEnv,
+    limits: &Limits,
+    cancel: &AtomicBool,
+    view: Option<&StagedView>,
+    within: Within,
+) -> Result<String, Failure> {
     let roots = load_roots(env)?;
     let budget = Budget::new(limits, cancel);
     match call {
-        Call::ReadFile { path, lines } => read_file(&roots, env, path, *lines, limits, view),
+        Call::ReadFile { path, lines } => {
+            read_file(&roots, env, path, *lines, limits, view, within)
+        }
         Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits, view),
         Call::FindDir { query } => find_dir(&roots, &budget, query, limits).map(plain),
         // Whether `grep` may run is decided before this, by `ask_for`; `glob`
@@ -225,14 +314,25 @@ pub fn execute_over(
         Call::Grep { pattern, dir } => {
             super::search::grep_over(pattern, dir.as_deref(), env, limits, cancel, view)
         }
-        // A user tool runs on its own server, never here.
+        // A user tool runs on its own server and an orchestration call goes
+        // to the run manager: neither runs here.
         Call::RunInPane { .. }
         | Call::External { .. }
         | Call::CreateDir { .. }
         | Call::WriteFile { .. }
         | Call::EditFile { .. }
         | Call::RunCommand { .. }
-        | Call::ProposeBatch => Err(Failure::NotReadTool),
+        | Call::GitStatus
+        | Call::ListPanes
+        | Call::ReadPane { .. }
+        | Call::GitDiff { .. }
+        | Call::GitLog { .. }
+        | Call::GitAdd { .. }
+        | Call::GitCommit { .. }
+        | Call::ProposeBatch
+        | Call::Github(_)
+        | Call::IssueDraft(_)
+        | Call::Orchestra(_) => Err(Failure::NotReadTool),
     }
 }
 
@@ -255,7 +355,14 @@ pub(crate) fn load_roots(env: &ToolEnv) -> Result<SecretRoots, Failure> {
     .into_iter()
     .flatten()
     .collect();
-    SecretRoots::load(Path::new(home), &extra).ok_or(Failure::Refused)
+    SecretRoots::load(Path::new(home), &extra)
+        .map(|roots| {
+            let drives = env.drives.clone();
+            roots
+                .with_drives(drives.unwrap_or_else(crate::runtime::win_drives::drives))
+                .with_grant(env.drive_grant.clone())
+        })
+        .ok_or(Failure::Refused)
 }
 
 /// Opens the already resolved `real` path and proves the descriptor is that
@@ -263,28 +370,47 @@ pub(crate) fn load_roots(env: &ToolEnv) -> Result<SecretRoots, Failure> {
 /// swapped in after the judgment fails the open; the descriptor's own path is
 /// read back and judged against the same snapshot of roots.
 pub fn open_checked(roots: &SecretRoots, real: &Path, dir: bool) -> Result<OwnedFd, Failure> {
+    open_checked_errno(roots, real, dir).map_err(|(failure, _)| failure)
+}
+
+/// [`open_checked`] that also gives the `errno` of a failed open (`None` for
+/// a refusal made before or after the open), for a caller that tells a macOS
+/// denial apart from a refusal.
+pub fn open_checked_errno(
+    roots: &SecretRoots,
+    real: &Path,
+    dir: bool,
+) -> Result<OwnedFd, (Failure, Option<i32>)> {
     if !roots.judge_real(real) {
-        return Err(Failure::Refused);
+        return Err((Failure::Refused, None));
     }
+    // HOME, or the Windows drive the path lies on under WSL.
+    let base = roots.base_of(real);
     let rel = real
-        .strip_prefix(roots.home())
-        .map_err(|_| Failure::Refused)?;
-    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| {
+        .strip_prefix(base)
+        .map_err(|_| (Failure::Refused, None))?;
+    let fd = open_beneath(base, rel, dir).map_err(|error| {
         // No safe open on this platform: the tool cannot work at all. An OS
         // error of that kind is about the file (macOS opens a socket with
         // `EOPNOTSUPP`), so it is refused like any other.
-        if error.kind() == std::io::ErrorKind::Unsupported && error.raw_os_error().is_none() {
-            Failure::Unreadable
-        } else {
-            Failure::Refused
-        }
+        let failure =
+            if error.kind() == std::io::ErrorKind::Unsupported && error.raw_os_error().is_none() {
+                Failure::Unreadable
+            } else {
+                Failure::Refused
+            };
+        (failure, error.raw_os_error())
     })?;
     match fd_path(&fd) {
         Ok(opened) if opened == real && roots.judge_real(&opened) => Ok(fd),
-        _ => Err(Failure::Refused),
+        _ => Err((Failure::Refused, None)),
     }
 }
 
+/// Reads a file. Kept [`Within::Root`], the path is judged in the same step
+/// as the open: the open follows no link in any component and the descriptor
+/// is proved to be the real path that was judged inside the root, so a link
+/// swapped in at any moment cannot lead the read outside it.
 fn read_file(
     roots: &SecretRoots,
     env: &ToolEnv,
@@ -292,9 +418,19 @@ fn read_file(
     window: Option<Lines>,
     limits: &Limits,
     view: Option<&StagedView>,
+    within: Within,
 ) -> Result<String, Failure> {
+    let root = match within {
+        Within::Anywhere => None,
+        Within::Root => Some(env.origin.canonicalize().map_err(|_| Failure::Refused)?),
+    };
+    let inside = |real: &Path| root.as_ref().is_none_or(|root| real.starts_with(root));
     // A staged text goes through the same cut, clean and redaction as a file.
-    if let Some(text) = view.and_then(|v| v.file(roots, &env.origin, path)) {
+    // It is in memory, so judging where it would be written is enough.
+    let staged = view.and_then(|v| v.file(roots, &env.origin, path));
+    if let Some(text) = staged.filter(|_| {
+        root.is_none() || real_target(roots, &env.origin, path).is_some_and(|real| inside(&real))
+    }) {
         let bytes = text.as_bytes().to_vec();
         let body = match window {
             Some(window) => window_text(bytes, window, limits),
@@ -302,14 +438,34 @@ fn read_file(
         }?;
         return Ok(format!("{MARKER}\n{body}"));
     }
+    #[cfg(test)]
+    hooks::fire(&env.origin);
     let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
         return Err(Failure::Refused);
     };
-    // Judged on the real path, so a link to it is refused too.
-    if is_git_config(&real) {
+    // Kept in the root: judged on the real path, which the open proves.
+    if !inside(&real) {
         return Err(Failure::Refused);
     }
-    let file = std::fs::File::from(open_checked(roots, &real, false)?);
+    read_real(roots, &real, window, limits)
+}
+
+/// Reads the file at `real`, a path already resolved and judged with
+/// `roots`: opened with no link followed, proven to be that path and judged
+/// again ([`open_checked`]), and paged by `window` like any read. A worker
+/// read inside its run's scope comes here with the path the scope returned,
+/// so the request is never resolved again.
+pub(crate) fn read_real(
+    roots: &SecretRoots,
+    real: &Path,
+    window: Option<Lines>,
+    limits: &Limits,
+) -> Result<String, Failure> {
+    // Judged on the real path, so a link to it is refused too.
+    if is_git_config(real) {
+        return Err(Failure::Refused);
+    }
+    let file = std::fs::File::from(open_checked(roots, real, false)?);
     let meta = file.metadata().map_err(|_| Failure::Unreadable)?;
     // A directory, FIFO, socket or device: refused like any hidden path.
     if !meta.is_file() {
@@ -342,8 +498,8 @@ fn read_head(file: std::fs::File, limits: &Limits) -> Result<String, Failure> {
 /// The start of `bytes` (a file, or a staged text) as far as the cap allows.
 fn head_text(mut bytes: Vec<u8>, limits: &Limits) -> Result<String, Failure> {
     let window = limits.read_bytes + REDACT_MARGIN;
-    if bytes.contains(&0) {
-        return Err(Failure::NotText);
+    if let Some(failure) = binary(&bytes) {
+        return Err(failure);
     }
     let more = bytes.len() > window;
     bytes.truncate(window);
@@ -411,8 +567,8 @@ fn read_window(file: std::fs::File, window: Lines, limits: &Limits) -> Result<St
 
 /// [`read_window`] over the bytes themselves.
 fn window_text(mut bytes: Vec<u8>, window: Lines, limits: &Limits) -> Result<String, Failure> {
-    if bytes.contains(&0) {
-        return Err(Failure::NotText);
+    if let Some(failure) = binary(&bytes) {
+        return Err(failure);
     }
     let scan_cut = bytes.len() > PAGE_SCAN;
     bytes.truncate(PAGE_SCAN);
@@ -870,6 +1026,8 @@ mod tests {
 
     pub(super) fn env(home: &Path) -> ToolEnv {
         ToolEnv {
+            drives: Default::default(),
+            drive_grant: None,
             home: Some(home.into()),
             xdg_config_home: None,
             xdg_data_home: None,
@@ -1154,6 +1312,35 @@ mod tests {
     }
 
     #[test]
+    fn a_sqlite_file_gets_its_own_message_and_other_binaries_keep_theirs() {
+        let f = fixture();
+        let mut db = b"SQLite format 3\0".to_vec();
+        db.extend_from_slice(b"SECRET-ROW-1\0\0");
+        fs::write(f.home.join("app.db"), &db).unwrap();
+        fs::write(f.home.join("bin"), b"SQLite format 4\0x").unwrap();
+        let e = env(&f.home);
+        let paged = Call::ReadFile {
+            path: "~/app.db".into(),
+            lines: Some(Lines { start: 1, max: 5 }),
+        };
+        for result in [
+            read(&e, "~/app.db"),
+            execute(&paged, &e, &Limits::default()),
+        ] {
+            let err = result.unwrap_err();
+            assert_eq!(err, Failure::Sqlite);
+            let text = err.message();
+            assert!(text.contains("SQLite database") && text.contains("sqlite3"));
+            assert!(
+                text.contains("for the user to run in their pane")
+                    && !text.contains("SECRET-ROW-1")
+            );
+            assert!(!text.contains("run_in_pane"));
+        }
+        assert_eq!(read(&e, "~/bin").unwrap_err(), Failure::NotText);
+    }
+
+    #[test]
     fn a_paged_read_still_refuses_binary_and_secret_files() {
         let f = fixture();
         fs::write(f.home.join("bin"), b"a\0b\n").unwrap();
@@ -1194,6 +1381,33 @@ mod tests {
             "ref: refs/heads/main\n"
         );
         assert_eq!(read(&e, "~/dev/app/src/config").unwrap(), "ok\n");
+    }
+
+    // A read kept within the root is judged on the file it opens: a link in
+    // the root that leads out of it, or a path that climbs out, reads nothing.
+    #[test]
+    fn a_read_kept_within_the_root_refuses_what_leads_out_of_it() {
+        let f = fixture();
+        let mut e = env(&f.home);
+        e.origin = f.home.join("dev/app");
+        fs::write(f.home.join("dev/other.txt"), "other").unwrap();
+        symlink(
+            f.home.join("dev/other.txt"),
+            f.home.join("dev/app/link.txt"),
+        )
+        .unwrap();
+        let read_in = |path: &str, within| {
+            let call = Call::ReadFile {
+                path: path.into(),
+                lines: None,
+            };
+            let cancel = AtomicBool::new(false);
+            execute_within(&call, &e, &Limits::default(), &cancel, None, within)
+        };
+        assert_eq!(read_in("link.txt", Within::Anywhere).unwrap(), "other");
+        assert_eq!(read_in("link.txt", Within::Root), Err(Failure::Refused));
+        assert_eq!(read_in("../other.txt", Within::Root), Err(Failure::Refused));
+        assert_eq!(read_in("main.rs", Within::Root).unwrap(), "fn main() {}\n");
     }
 
     #[test]

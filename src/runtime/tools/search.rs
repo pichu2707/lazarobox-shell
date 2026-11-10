@@ -407,6 +407,8 @@ mod tests {
         }
         fs::write(home.join("outside/leak.txt"), "fn main outside\n").unwrap();
         let env = ToolEnv {
+            drives: Default::default(),
+            drive_grant: None,
             home: Some(home.clone().into_os_string()),
             xdg_config_home: None,
             xdg_data_home: None,
@@ -640,7 +642,28 @@ mod tests {
             format!("needle\n{}", "z".repeat(MAX_FILE_BYTES - 7)),
         )
         .unwrap();
-        assert_eq!(run(&f, "needle", None).unwrap(), "edge.txt:1:needle");
+        // The ~2 MiB scan must not race the wall clock: a slow CI machine
+        // once ran the default 2 s budget out and got the bound marker.
+        let patient = Limits {
+            time: std::time::Duration::from_secs(600),
+            ..Limits::default()
+        };
+        let out = grep("needle", None, &f.env, &patient, &AtomicBool::new(false)).unwrap();
+        assert_eq!(out, "edge.txt:1:needle");
+    }
+
+    // Reproduces, deterministically, what the slow CI run saw: a budget that
+    // runs out says so instead of silently dropping the file.
+    #[test]
+    fn a_spent_time_budget_is_reported_as_bounded() {
+        let f = fixture();
+        fs::write(f.root.join("edge.txt"), "needle\n").unwrap();
+        let spent = Limits {
+            time: std::time::Duration::ZERO,
+            ..Limits::default()
+        };
+        let out = grep("needle", None, &f.env, &spent, &AtomicBool::new(false)).unwrap();
+        assert!(out.ends_with(BOUND_MARKER), "{out}");
     }
 
     #[test]

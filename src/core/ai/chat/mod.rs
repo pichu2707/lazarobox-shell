@@ -15,25 +15,35 @@ pub mod codex;
 pub mod compact;
 pub mod composer;
 pub mod copy;
+pub mod cost_view;
 pub mod engine;
+pub mod folder;
+pub mod folder_picker;
 pub mod gemini;
 pub mod guidance;
 pub mod history;
+pub mod leaked_thinking;
 pub mod list;
 pub mod memory;
+pub mod next_step;
 pub mod note;
 pub mod notify;
 pub mod prompts;
 pub mod review;
 pub mod review_view;
+pub mod run_trace;
 pub mod store;
 pub mod stream;
 pub mod streams;
 pub mod summary;
 pub mod tag_editor;
 pub mod tags;
+pub mod text_call;
 pub mod tool;
 pub mod transcript;
+pub mod usage;
+pub mod usage_view;
+pub mod wait_line;
 pub mod workspace;
 pub mod wrap;
 pub mod yank;
@@ -45,15 +55,63 @@ use std::{
 
 use crate::core::{
     ai::{
-        config::{ApprovalMode, Profile},
-        tools::stage::BatchId,
+        config::{ApprovalMode, Assignment, Profile, Task},
+        orchestra::{
+            RunId, WorkerId, WorkerKey,
+            event::{Continuation, WorkerRow},
+            overrides::{FailurePicker, RunOverrides},
+            steps::{Gate, Step},
+            worker::{ErrorClass, WorkerStatus},
+        },
+        tools::{issue_draft::IssueDraft, stage::BatchId},
     },
     layout::PaneId,
 };
+/// Why a resumed conversation opens blocked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockWhy {
+    /// Its marker row is stored: GitHub text was read.
+    Marker,
+    /// Rows of a role this build does not know: nothing says what they hold.
+    NewerRows,
+}
+
 use composer::Composer;
-use engine::{Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools};
+use engine::{Availability, CallId, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools};
 use prompts::Resolved;
 use transcript::{LineCache, Scroll};
+
+/// A worker failure that halted the pane's run, until the user answers it
+/// (agent-orchestrator, Failure stops the run): the error as it came, only
+/// sanitized and capped by the pipe, never replaced by a generic text.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OrchAlert {
+    pub run: RunId,
+    pub worker: WorkerId,
+    pub class: ErrorClass,
+    pub text: String,
+}
+
+/// The step gate refusal the `Enter gates off` key can lift (agent-
+/// orchestrator [W3], D24): the gate and the step it saw, in the run it
+/// refused in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct GateOffer {
+    pub run: RunId,
+    pub gate: Gate,
+    pub step: Step,
+}
+
+/// Why the last answer to the alert did not go through.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum OrchNote {
+    /// A retry the run manager declined: the alert says `retry failed`.
+    RetryFailed(String),
+}
+
+/// Columns the batch badge leaves free on the right of the pane: the widest
+/// mode badge (` AUTO `) and a gap.
+pub const BATCH_BADGE_ROOM: usize = 8;
 
 /// The longest answer kept, in bytes. Past it the answer is cut.
 pub const ANSWER_CAP: usize = 1 << 20;
@@ -68,6 +126,20 @@ pub const STILL_WAITING: &str = "still waiting for the model…";
 pub const INTERRUPTED: &str = "stream interrupted";
 /// System line shown once, before the oldest message the model still sees.
 pub const TRUNCATION_MARKER: &str = "earlier messages are not sent to the model";
+/// System line for a send whose setup and newest message alone pass a known
+/// context window: it goes whole, and the server may cut it.
+pub fn over_window(tokens: usize, window: usize) -> String {
+    format!(
+        "this message and the setup are about {tokens} tokens, over the {window}-token window: the server may cut them"
+    )
+}
+/// Trace line for a worker whose prompt and setup pass its Ollama window: the
+/// one message goes whole, and Ollama cuts it without saying so (#557).
+pub fn worker_over_window(tokens: usize, window: usize) -> String {
+    format!(
+        "the worker prompt and setup are about {tokens} tokens, over the {window}-token window: the server may cut them"
+    )
+}
 /// System line for a send while an answer is still streaming.
 pub const BUSY: &str = "still answering: wait for it or press Esc to cancel";
 /// System line for a send into a full conversation.
@@ -149,6 +221,25 @@ pub enum Entry {
     /// A tool call and its result: shown, never stored, never sent as
     /// history.
     Tool(tool::ToolRow),
+    /// The usage line under an answer: shown, never stored, never sent as
+    /// history, never part of a yank.
+    Usage(String),
+    /// A worker of the pane's orchestrator run, updated in place as its
+    /// status changes: shown, never stored, never sent as history.
+    Worker(WorkerRow),
+    /// What the pane's run used, summed over its workers: kept last as the
+    /// rows change, shown, never stored, never sent as history.
+    RunUsage(RunUsage),
+}
+
+/// The per-run usage row. `usage` is `None` when no worker reported any.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RunUsage {
+    pub run: RunId,
+    pub usage: Option<engine::Usage>,
+    /// The sum misses something: a worker still running or one that
+    /// reported nothing. The cost is then left out.
+    pub partial: bool,
 }
 
 /// The most reasoning text kept per turn, in bytes. Past it the rest is
@@ -218,7 +309,10 @@ pub enum StreamPhase {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SendOutcome {
     /// The message was appended; the app emits `Effect::ChatSend`.
-    Sent { turn: u64, request: ChatRequest },
+    Sent {
+        turn: u64,
+        request: Box<ChatRequest>,
+    },
     /// Nothing was sent; the caller keeps the composer text.
     Refused,
 }
@@ -265,6 +359,11 @@ pub struct ChatState {
     composer: Composer,
     /// When the stream in flight was sent.
     started: Option<Instant>,
+    /// When the clock of the request in flight started, as its `Slow` event
+    /// says; `None` before it. See [`wait_line`].
+    wait_since: Option<Instant>,
+    /// The last read the runtime reported while the model was silent.
+    idle_from: Option<Instant>,
     /// The model of the request in flight, as sent.
     request_model: String,
     /// Moves with every change of the transcript.
@@ -297,6 +396,8 @@ pub struct ChatState {
     tag_editor: Option<tag_editor::TagEditor>,
     /// The conversation list, while it is shown instead of the conversation.
     list: Option<list::ListView>,
+    /// The folder picker, while it is shown over the pane (chat-folder).
+    folder_picker: Option<folder_picker::FolderPicker>,
     /// The profile of the conversation: the current one when it is new, the
     /// stored one when it was resumed.
     profile: Profile,
@@ -309,10 +410,33 @@ pub struct ChatState {
     /// How full the context of the last request was, and the engine and model
     /// it was sent to.
     fill: Option<ContextFill>,
-    /// The turn about to be sent offers tools.
-    tools_offered: bool,
+    /// The last send went over the window and the transcript said so; kept
+    /// until a send that fits, so an overflow streak is told once.
+    over_window_told: bool,
+    /// What the tool block and schemas of the turn about to be sent weigh, in
+    /// estimated tokens; 0 when it offers none.
+    tools_reserve: usize,
+    /// What the external tools of the last turn weighed, as the runtime
+    /// reported (#556); the app reserves it for the next turn.
+    external_tools: usize,
+    /// The part of `external_tools` the fill of the turn in flight counted,
+    /// replaced when the runtime reports this turn's.
+    fill_external: usize,
     /// The engine of the request in flight, as sent.
     request_engine: String,
+    /// What the last turn used, summed over its `Usage` events. Cleared by
+    /// the next send, so it outlives the turn for whoever stores it.
+    turn_usage: Option<usage::TurnUsage>,
+    /// The usage settings, handed in by the app before each event.
+    usage_config: crate::core::ai::config::UsageConfig,
+    /// The `/cost` overlay, while it is shown over the conversation.
+    cost: Option<cost_view::CostView>,
+    /// What this pane used, kept in memory for the `this session` line of `/cost`.
+    session_usage: usage_view::Session,
+    /// Usage of ended runs the store has not been told about yet.
+    usage_outbox: Vec<usage::Pending>,
+    /// The compaction or summary run in flight, for its own usage.
+    side_run: Option<usage::SideRun>,
     /// `close_stream` already queued the answer in progress.
     closing: bool,
     /// The profile changed while the first system prompt was still being
@@ -337,6 +461,29 @@ pub struct ChatState {
     auto_typed: u8,
     /// Consecutive grammar or policy fallbacks of `run` (D23).
     run_fallbacks: u8,
+    /// The conversation read GitHub text: no command of it runs, for good.
+    github_read: bool,
+    /// Why the conversation is blocked, while `github_read` holds.
+    block_why: BlockWhy,
+    /// The flag is up and its marker row was not asked of the store yet.
+    github_unmarked: bool,
+    /// The user granted the GitHub tools to this chat with `/github`. Never
+    /// stored: it ends with the pane, a resume and the events of the spec.
+    github_granted: bool,
+    /// The user turned Write on for this chat with `/write`. Never stored or
+    /// saved to the config: it ends with the pane, a resume, a folder change
+    /// and the tools going off.
+    write_granted: bool,
+    /// The Windows drive folder the user let this chat write in, from the
+    /// grant prompt's `y` (openspec `wsl-drive-access` D7). Never stored:
+    /// cleared on every folder change and a resume, never inherited.
+    drive_grant: Option<PathBuf>,
+    /// The draft the user accepted in the turn in flight, with its turn and
+    /// call: the Feedback form opens with it when that turn ends (D3).
+    issue_draft: Option<(u64, CallId, IssueDraft)>,
+    /// The turn that did not offer the draft tool and has not yet suggested
+    /// `/feedback`: its first failure or tool `Error` says it, once (D6).
+    feedback_hint: Option<u64>,
     /// What the model has yet to hear about a user-side answer to a batch it
     /// left behind: sent once with the next request, never stored.
     told: Vec<String>,
@@ -347,6 +494,69 @@ pub struct ChatState {
     batch_badge: Option<review::Badge>,
     /// The orphan whose review is open: `y` applies it, `n` discards it.
     orphan: Option<BatchId>,
+    /// The pane's ORCH mode (agent-orchestrator D2): off for a new pane, kept
+    /// in memory only, never saved or restored.
+    orch: bool,
+    /// The turn that went out as an orchestrator turn, while it is the last
+    /// one sent.
+    orch_turn: Option<u64>,
+    /// The pane's run, from its first event until its `Ended`.
+    orch_run: Option<RunId>,
+    /// What the workers of the run streamed, and the view open on one (S9).
+    traces: run_trace::Traces,
+    run_view: Option<run_trace::RunView>,
+    /// The transcript rows the last frame drew for the view: the keys and
+    /// the wheel page by what is on screen.
+    run_view_drawn: std::cell::Cell<Option<usize>>,
+    /// A continuation turn that came before the turn it follows was over
+    /// (S4): it starts when that turn ends. One slot is enough: turns are
+    /// serial, so a run has at most one turn to follow at a time.
+    orch_continue: Option<Continuation>,
+    /// The run whose "no worker ran" notice came before the turn it follows
+    /// was over: it shows when that turn ends well. Separate from
+    /// `orch_continue`: it never starts a turn.
+    orch_undelegated: Option<RunId>,
+    /// The user's request of the last undelegated reply, while the delegate
+    /// key can still act on it. A turn sent goes with it.
+    delegate: Option<String>,
+    /// The gate refusal the `Enter gates off` key can act on, while it can
+    /// (agent-orchestrator [W3], D24). Ends with the run it was about.
+    gate_offer: Option<GateOffer>,
+    /// The run that waits for the user's reply after a spawn gate refusal; the
+    /// next message of the pane attaches to it (W3, option B).
+    waiting_run: Option<RunId>,
+    /// The last turn ended cleanly (`Done`); false for an error, a cut-off or
+    /// an interruption. True before any turn ended.
+    last_turn_clean: bool,
+    /// The run the user cancelled with Esc or Ctrl+C: a continuation the
+    /// manager sent before it heard of the cancel must not start.
+    orch_cancelled: Option<RunId>,
+    /// Why the last turn ended in failure (a short line); `None` when it
+    /// ended cleanly or was cut off. A failed orchestrator turn is not
+    /// continued.
+    turn_failure: Option<String>,
+    /// Workers seen over (a terminal row) and not running again: an ask of
+    /// theirs that arrives late is refused. Dropped with the run.
+    ended_workers: std::collections::HashSet<WorkerKey>,
+    /// The worker row the user selected (S3), of the pane's run.
+    selected: Option<WorkerId>,
+    /// A Ctrl+C cancelled a worker: until then a second one cancels the run.
+    cancel_armed: Option<Instant>,
+    /// The failure the run waits on, until the user answers it or the run
+    /// ends.
+    orch_alert: Option<OrchAlert>,
+    /// Why the last answer to the alert did not go through.
+    orch_note: Option<OrchNote>,
+    /// The detached picker opened from the alert (`m`, `p`).
+    orch_picker: Option<FailurePicker>,
+    /// What the user picked from an alert, for the run it was picked in.
+    orch_overrides: Option<(RunId, RunOverrides)>,
+    /// The overrides before the last pick, until the run manager answers it.
+    orch_undo: Option<Option<(RunId, RunOverrides)>>,
+    /// The last turn ended with `Done`, until the poll sees the batch it left
+    /// behind (local-model-writes D1). A new turn or a cancel clears it; a
+    /// compaction run after the `Done` does not.
+    clean_end: bool,
 }
 
 impl ChatState {
@@ -359,6 +569,8 @@ impl ChatState {
             turn: 0,
             composer: Composer::new(),
             started: None,
+            wait_since: None,
+            idle_from: None,
             request_model: String::new(),
             generation: 0,
             scroll: Scroll::Follow,
@@ -375,13 +587,23 @@ impl ChatState {
             tags_edited: false,
             tag_editor: None,
             list: None,
+            folder_picker: None,
             profile: Profile::default(),
             store: store::PaneStore::new(),
             outbox: Vec::new(),
             window: None,
             fill: None,
-            tools_offered: false,
+            over_window_told: false,
+            tools_reserve: 0,
+            external_tools: 0,
+            fill_external: 0,
             request_engine: String::new(),
+            turn_usage: None,
+            usage_config: crate::core::ai::config::UsageConfig::default(),
+            cost: None,
+            session_usage: usage_view::Session::default(),
+            usage_outbox: Vec::new(),
+            side_run: None,
             closing: false,
             reprepare_prompt: false,
             approvals: approval::Approvals::default(),
@@ -392,11 +614,446 @@ impl ChatState {
             approval_mode: ApprovalMode::default(),
             auto_typed: 0,
             run_fallbacks: 0,
+            github_read: false,
+            block_why: BlockWhy::Marker,
+            github_unmarked: false,
+            github_granted: false,
+            write_granted: false,
+            drive_grant: None,
+            issue_draft: None,
+            feedback_hint: None,
             told: Vec::new(),
             told_sent: Vec::new(),
             batch_badge: None,
             orphan: None,
+            orch: false,
+            orch_turn: None,
+            orch_run: None,
+            traces: Default::default(),
+            run_view: None,
+            run_view_drawn: Default::default(),
+            orch_continue: None,
+            orch_undelegated: None,
+            delegate: None,
+            gate_offer: None,
+            waiting_run: None,
+            last_turn_clean: true,
+            orch_cancelled: None,
+            turn_failure: None,
+            ended_workers: Default::default(),
+            selected: None,
+            cancel_armed: None,
+            orch_alert: None,
+            orch_note: None,
+            orch_picker: None,
+            orch_overrides: None,
+            orch_undo: None,
+            clean_end: false,
         }
+    }
+
+    /// The pane's ORCH mode, whatever the global gate says.
+    pub fn orch(&self) -> bool {
+        self.orch
+    }
+
+    pub fn set_orch(&mut self, on: bool) {
+        self.orch = on;
+        // The offer belongs to the mode it was made in.
+        self.drop_delegate();
+    }
+
+    /// Turn `turn`, just sent, is an orchestrator turn.
+    pub fn set_orch_turn(&mut self, turn: u64) {
+        self.orch_turn = Some(turn);
+        // A notice parked for an earlier turn does not outlive it.
+        self.orch_undelegated = None;
+    }
+
+    /// Whether an orchestrator turn of this chat is still in flight.
+    pub fn orch_turn_in_flight(&self) -> bool {
+        self.phase != Phase::Idle && self.orch_turn == Some(self.turn)
+    }
+
+    /// The pane's run, from its first event until its `Ended`.
+    pub fn orch_run(&self) -> Option<RunId> {
+        self.orch_run
+    }
+
+    pub fn set_orch_run(&mut self, run: Option<RunId>) {
+        // The selection and an armed second Ctrl+C belong to the old run.
+        if self.orch_run != run {
+            self.selected = None;
+            self.cancel_armed = None;
+        }
+        // A refusal belongs to its live run: another run, or none, ends it.
+        if self.gate_offer.is_some_and(|offer| Some(offer.run) != run) {
+            self.gate_offer = None;
+        }
+        self.orch_run = run;
+        self.prune_traces();
+    }
+
+    /// The failure alert shown in the pane, until it is answered.
+    pub fn orch_alert(&self) -> Option<&OrchAlert> {
+        self.orch_alert.as_ref()
+    }
+
+    pub fn set_orch_alert(&mut self, alert: Option<OrchAlert>) {
+        self.orch_alert = alert;
+    }
+
+    /// The alert is answered, replaced or gone: its picker and note go too.
+    pub fn drop_orch_alert(&mut self) {
+        self.orch_alert = None;
+        self.orch_picker = None;
+        self.orch_note = None;
+    }
+
+    pub fn orch_note(&self) -> Option<&OrchNote> {
+        self.orch_note.as_ref()
+    }
+
+    pub fn set_orch_note(&mut self, note: Option<OrchNote>) {
+        self.orch_note = note;
+    }
+
+    pub fn orch_picker(&self) -> Option<&FailurePicker> {
+        self.orch_picker.as_ref()
+    }
+
+    pub fn orch_picker_mut(&mut self) -> Option<&mut FailurePicker> {
+        self.orch_picker.as_mut()
+    }
+
+    pub fn set_orch_picker(&mut self, picker: Option<FailurePicker>) {
+        self.orch_picker = picker;
+    }
+
+    /// The overrides of the pane's current run; none once it has ended.
+    pub fn orch_overrides(&self) -> Option<&RunOverrides> {
+        let (run, overrides) = self.orch_overrides.as_ref()?;
+        (self.orch_run == Some(*run)).then_some(overrides)
+    }
+
+    /// Records the choice for `task` in `run`'s overrides (a new run starts
+    /// from none).
+    pub fn override_task(&mut self, run: RunId, task: Task, assignment: Assignment) {
+        self.orch_undo = Some(self.orch_overrides.clone());
+        let kept = self
+            .orch_overrides
+            .take()
+            .filter(|(known, _)| *known == run);
+        let mut overrides = kept.map_or_else(RunOverrides::default, |(_, o)| o);
+        overrides.set(task, assignment);
+        self.orch_overrides = Some((run, overrides));
+    }
+
+    /// The run manager answered the last pick (a row or a halt of the run).
+    pub fn keep_override(&mut self) {
+        self.orch_undo = None;
+    }
+
+    /// The last pick was dropped by the run manager: it never reached the
+    /// run, so the overrides go back to what they were.
+    pub fn undo_override(&mut self) {
+        if let Some(before) = self.orch_undo.take() {
+            self.orch_overrides = before;
+        }
+    }
+
+    /// Holds a continuation until the turn it follows is over.
+    pub fn park_continue(&mut self, next: Continuation) {
+        self.orch_continue = Some(next);
+    }
+
+    /// Holds the undelegated notice of `run` until the turn it follows is over.
+    pub fn park_undelegated(&mut self, run: RunId) {
+        self.orch_undelegated = Some(run);
+    }
+
+    pub fn set_turn_clean(&mut self, clean: bool) {
+        self.last_turn_clean = clean;
+    }
+
+    pub fn turn_clean(&self) -> bool {
+        self.last_turn_clean
+    }
+
+    pub fn take_undelegated(&mut self) -> Option<RunId> {
+        self.orch_undelegated.take()
+    }
+
+    /// The delegate key can act on `goal`, the request nothing was delegated for.
+    pub fn offer_delegate(&mut self, goal: String) {
+        self.delegate = Some(goal);
+    }
+
+    pub fn delegate_offered(&self) -> bool {
+        self.delegate.is_some()
+    }
+
+    /// The offers and the notice parked for them end: the conversation, the
+    /// folder or the mode they were about changed.
+    pub fn drop_delegate(&mut self) {
+        self.delegate = None;
+        self.orch_undelegated = None;
+        self.gate_offer = None;
+    }
+
+    pub fn take_delegate(&mut self) -> Option<String> {
+        self.delegate.take()
+    }
+
+    /// A step gate refused: the key can lift it. A later refusal replaces
+    /// the offer.
+    pub fn offer_gates(&mut self, offer: GateOffer) {
+        self.gate_offer = Some(offer);
+    }
+
+    pub fn gate_offer(&self) -> Option<GateOffer> {
+        self.gate_offer
+    }
+
+    pub fn take_gate_offer(&mut self) -> Option<GateOffer> {
+        self.gate_offer.take()
+    }
+
+    /// The gate passed or the run is over: nothing is left to lift.
+    pub fn waiting_run(&self) -> Option<RunId> {
+        self.waiting_run
+    }
+
+    /// The run only waits for the reply: no orchestrator turn is in flight.
+    pub fn only_waits(&self) -> bool {
+        self.waiting_run.is_some() && !self.orch_turn_in_flight()
+    }
+
+    pub fn set_waiting_run(&mut self, run: Option<RunId>) {
+        self.waiting_run = run;
+    }
+
+    pub fn drop_gate_offer(&mut self) {
+        self.gate_offer = None;
+    }
+
+    /// The user's last message that is not `skip`: the request an undelegated
+    /// reply answered.
+    pub fn last_request(&self, skip: &str) -> Option<String> {
+        (self.messages())
+            .filter(|m| m.role == Role::User && m.text != skip)
+            .last()
+            .map(|m| m.text.clone())
+    }
+
+    pub fn set_turn_failure(&mut self, why: Option<String>) {
+        self.turn_failure = why;
+    }
+
+    pub fn turn_failure(&self) -> Option<&str> {
+        self.turn_failure.as_deref()
+    }
+
+    /// The user cancelled `run`: its parked continuation goes, and a later one
+    /// is refused.
+    pub fn cancel_run(&mut self, run: RunId) {
+        self.orch_continue = None;
+        self.orch_undelegated = None;
+        self.delegate = None;
+        self.gate_offer = None;
+        self.waiting_run = None;
+        self.orch_cancelled = Some(run);
+    }
+
+    pub fn run_cancelled(&self, run: RunId) -> bool {
+        self.orch_cancelled == Some(run)
+    }
+
+    pub fn take_continue(&mut self) -> Option<Continuation> {
+        self.orch_continue.take()
+    }
+
+    /// The user accepted `draft` in `turn`: it waits for the turn's end.
+    pub fn hold_issue_draft(&mut self, turn: u64, call: CallId, draft: IssueDraft) {
+        self.issue_draft = Some((turn, call, draft));
+    }
+
+    /// The host denied the call after all: its draft goes. Whether one did.
+    pub fn drop_issue_draft(&mut self, turn: u64, call: CallId) -> bool {
+        let held = matches!(&self.issue_draft, Some((t, c, _)) if (*t, *c) == (turn, call));
+        if held {
+            self.issue_draft = None;
+        }
+        held
+    }
+
+    /// Whether `turn`, just sent, may suggest `/feedback`: it does not offer
+    /// the draft tool.
+    pub fn arm_feedback_hint(&mut self, turn: u64, armed: bool) {
+        self.feedback_hint = armed.then_some(turn);
+    }
+
+    /// Whether `turn` is armed for the `/feedback` hint, once: a second
+    /// failure of the same turn says nothing more.
+    pub fn take_feedback_hint(&mut self, turn: u64) -> bool {
+        let armed = self.feedback_hint == Some(turn);
+        if armed {
+            self.feedback_hint = None;
+        }
+        armed
+    }
+
+    /// The draft held for `turn`, once. A draft of another turn is stale and
+    /// is dropped rather than opened now.
+    pub fn take_issue_draft(&mut self, turn: u64) -> Option<IssueDraft> {
+        self.issue_draft
+            .take()
+            .filter(|(held, ..)| *held == turn)
+            .map(|(_, _, draft)| draft)
+    }
+
+    /// `run` is over: its overrides, picker and notes go with it when it is
+    /// the pane's run, whether its alert is still up or not.
+    pub fn end_orch_run(&mut self, run: RunId) {
+        if self.orch_continue.as_ref().is_some_and(|c| c.run == run) {
+            self.orch_continue = None;
+        }
+        self.ended_workers.retain(|key| key.run != run);
+        if self.orch_run == Some(run) {
+            self.selected = None;
+            self.cancel_armed = None;
+        }
+        self.prune_traces();
+        let alerted = self.orch_alert.as_ref().is_some_and(|a| a.run == run);
+        if self.orch_run != Some(run) && !alerted {
+            return;
+        }
+        if self.orch_overrides.as_ref().is_some_and(|(r, _)| *r == run) {
+            self.orch_overrides = None;
+        }
+        self.drop_orch_alert();
+    }
+
+    /// The selected worker row.
+    pub fn selected_worker(&self) -> Option<WorkerId> {
+        self.selected
+    }
+
+    pub fn select_worker(&mut self, worker: Option<WorkerId>) {
+        if self.selected != worker {
+            self.selected = worker;
+            self.generation += 1;
+        }
+    }
+
+    /// Whether `entry` is the selected worker row.
+    pub(crate) fn is_selected(&self, entry: &Entry) -> bool {
+        matches!(entry, Entry::Worker(row)
+            if self.selected == Some(row.id) && self.orch_run == Some(row.run))
+    }
+
+    /// The workers of the pane's run that are queued or running, in order.
+    pub fn live_workers(&self) -> Vec<WorkerId> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Worker(row)
+                    if self.orch_run == Some(row.run)
+                        && matches!(row.status, WorkerStatus::Queued | WorkerStatus::Running) =>
+                {
+                    Some(row.id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Arms the second-Ctrl+C escalation until `until`.
+    pub fn arm_cancel(&mut self, until: Option<Instant>) {
+        self.cancel_armed = until;
+    }
+
+    /// Whether a Ctrl+C that cancelled a worker is still recent at `now`.
+    pub fn cancel_is_armed(&self, now: Instant) -> bool {
+        self.cancel_armed.is_some_and(|until| now < until)
+    }
+
+    /// Notes that `worker` is over (`true`) or runs again (`false`).
+    pub fn set_worker_over(&mut self, worker: WorkerKey, over: bool) {
+        if over {
+            self.ended_workers.insert(worker);
+        } else {
+            self.ended_workers.remove(&worker);
+        }
+    }
+
+    /// Whether `worker` was seen over and has not run since.
+    pub fn worker_is_over(&self, worker: WorkerKey) -> bool {
+        self.ended_workers.contains(&worker)
+    }
+
+    /// A worker's status changed: its row, keyed by run and worker, shows the
+    /// new state in place; a worker seen for the first time gets a row at
+    /// the end of the transcript.
+    pub fn worker_row(&mut self, row: WorkerRow) {
+        let run = row.run;
+        let shown = self.entries.iter_mut().find_map(|e| match e {
+            Entry::Worker(shown) if (shown.run, shown.id) == (row.run, row.id) => Some(shown),
+            _ => None,
+        });
+        match shown {
+            Some(shown) => *shown = row,
+            None => self.entries.push(Entry::Worker(row)),
+        }
+        self.run_usage(run);
+        self.generation += 1;
+    }
+
+    /// Refreshes the usage row of `run`, once one of its workers is done:
+    /// the sum of the workers that reported, `None` when none did. The row
+    /// moves to the end, so it stays below the rows it sums.
+    fn run_usage(&mut self, run: RunId) {
+        let rows = || {
+            self.entries.iter().filter_map(move |e| match e {
+                Entry::Worker(row) if row.run == run => Some(row),
+                _ => None,
+            })
+        };
+        if !rows().any(|row| row.status == WorkerStatus::Done) {
+            return;
+        }
+        // A worker misses a report while it runs, or when it ended having
+        // reported nothing (a refused one never ran).
+        let partial = rows().any(|row| match row.status {
+            WorkerStatus::Queued | WorkerStatus::Running => true,
+            WorkerStatus::Refused => false,
+            _ => row.usage.is_none() || row.partial,
+        });
+        let usage = rows()
+            .filter_map(|row| row.usage)
+            .reduce(engine::Usage::plus)
+            .map(|sum| engine::Usage {
+                cost_micros: sum.cost_micros.filter(|_| !partial),
+                ..sum
+            });
+        self.entries
+            .retain(|e| !matches!(e, Entry::RunUsage(shown) if shown.run == run));
+        self.entries.push(Entry::RunUsage(RunUsage {
+            run,
+            usage,
+            partial,
+        }));
+    }
+
+    /// What the external tools of the last turn weighed, in estimated tokens.
+    pub fn external_tools_tokens(&self) -> usize {
+        self.external_tools
+    }
+
+    /// A turn with the tools off stops the external servers: nothing of them
+    /// is reserved any more.
+    pub fn forget_external_tools(&mut self) {
+        self.external_tools = 0;
     }
 
     /// The context window of the engine the next turns go to, in tokens.
@@ -404,10 +1061,10 @@ impl ChatState {
         self.window = window;
     }
 
-    /// Whether the next turn offers tools, which reserves room for their
-    /// schemas in the budget.
-    pub fn set_tools_offered(&mut self, offered: bool) {
-        self.tools_offered = offered;
+    /// What the next turn's tool block and schemas weigh in tokens (0 when it
+    /// offers none), which reserves room for them in the budget.
+    pub fn set_tools_reserve(&mut self, tokens: usize) {
+        self.tools_reserve = tokens;
     }
 
     /// How full the context of the last request was, in percent, when it went
@@ -447,6 +1104,82 @@ impl ChatState {
     /// One more command was typed without a prompt in this turn.
     pub fn note_auto_typed(&mut self) {
         self.auto_typed = self.auto_typed.saturating_add(1);
+    }
+
+    /// Whether the conversation read GitHub text. Nothing lifts it.
+    pub fn github_read(&self) -> bool {
+        self.github_read
+    }
+
+    /// Whether the user granted the GitHub tools to this chat.
+    pub fn github_granted(&self) -> bool {
+        self.github_granted
+    }
+
+    pub fn set_github_granted(&mut self, granted: bool) {
+        self.github_granted = granted;
+    }
+
+    /// Whether the user turned Write on for this chat with `/write`.
+    pub fn write_granted(&self) -> bool {
+        self.write_granted
+    }
+
+    /// Only the `/write` dialog's `y` sets it (the app's key handler).
+    pub fn set_write_granted(&mut self, granted: bool) {
+        self.write_granted = granted;
+    }
+
+    /// The Windows drive folder the user let this chat write in.
+    pub fn drive_grant(&self) -> Option<&Path> {
+        self.drive_grant.as_deref()
+    }
+
+    /// Only the grant prompt's `y` sets it (the app's key handler).
+    pub fn set_drive_grant(&mut self, folder: Option<PathBuf>) {
+        self.drive_grant = folder;
+    }
+
+    /// The tokens the tool block and schemas reserve in the next turn.
+    #[cfg(test)]
+    pub fn tools_reserve(&self) -> usize {
+        self.tools_reserve
+    }
+
+    /// Why the conversation is blocked; `None` when it is not.
+    pub fn block_why(&self) -> Option<BlockWhy> {
+        self.github_read.then_some(self.block_why)
+    }
+
+    /// `gh` was started for this conversation: it is blocked from now on and
+    /// says so. `true` when this call told the user something new: the start
+    /// of the block, or GitHub text read in a conversation that was blocked
+    /// only for rows of a newer version.
+    pub fn note_github_read(&mut self) -> bool {
+        if self.github_read && self.block_why == BlockWhy::Marker {
+            return false;
+        }
+        self.github_read = true;
+        self.block_why = BlockWhy::Marker;
+        self.github_unmarked = true;
+        self.push_system_line(approval::GITHUB_BLOCK_LINE.to_owned());
+        true
+    }
+
+    /// A resumed conversation opens blocked and says why. The marker, when
+    /// there is one, is stored already.
+    pub fn adopt_github_read(&mut self, why: BlockWhy) {
+        if !self.github_read {
+            self.github_read = true;
+            self.block_why = why;
+            self.push_system_line(
+                match why {
+                    BlockWhy::Marker => approval::GITHUB_BLOCK_LINE,
+                    BlockWhy::NewerRows => approval::NEWER_BLOCK_LINE,
+                }
+                .to_owned(),
+            );
+        }
     }
 
     /// Whether `run` is paused for the rest of the turn (D23).
@@ -497,6 +1230,18 @@ impl ChatState {
         self.orphan = id;
     }
 
+    /// The turn ended with `Done`: a batch it leaves is the user's to review
+    /// at once.
+    pub fn note_clean_end(&mut self) {
+        self.clean_end = true;
+    }
+
+    /// Whether the batch the poll now sees as an orphan was left by the last
+    /// turn ending with `Done`. Asked once: the mark is gone afterwards.
+    pub fn take_clean_end(&mut self) -> bool {
+        std::mem::take(&mut self.clean_end)
+    }
+
     /// Queues a line for the model's next request (counts and paths only).
     pub fn tell(&mut self, line: String) {
         self.told.push(line);
@@ -523,7 +1268,9 @@ impl ChatState {
         &self.approvals
     }
 
+    /// The wait line names an approval, so any change of it rebuilds the lines.
     pub fn approvals_mut(&mut self) -> &mut approval::Approvals {
+        self.generation += 1;
         &mut self.approvals
     }
 
@@ -583,10 +1330,41 @@ impl ChatState {
         height - self.composer_rows(width, height)
     }
 
+    /// Whether the conversation reserves its top row for the batch badge in a
+    /// pane `width` columns wide whose composer leaves `transcript` rows: a
+    /// badge is worn, it fits, the transcript keeps at least one row and the
+    /// conversation is the view shown.
+    pub fn badge_row(&self, width: u16, transcript: u16) -> bool {
+        let Some(badge) = self.batch_badge else {
+            return false;
+        };
+        let room = usize::from(width).saturating_sub(BATCH_BADGE_ROOM);
+        transcript >= 2 && badge.text(room).is_some() && self.conversation_shown()
+    }
+
+    /// Whether the pane draws the conversation: no editor, list or review.
+    pub fn conversation_shown(&self) -> bool {
+        self.tag_editor().is_none()
+            && self.folder_picker().is_none()
+            && self.list().is_none()
+            && self.cost().is_none()
+            && self.note_editor().is_none()
+            && self.summary_draft().is_none()
+            && self.approvals().review().is_none()
+    }
+
+    /// The pane row the first transcript line is drawn at: the batch badge
+    /// owns the row above it.
+    pub fn transcript_first_row(&self, width: u16, height: u16) -> u16 {
+        u16::from(self.badge_row(width, self.transcript_rows(width, height)))
+    }
+
     /// The rows of the transcript that are really drawn in a pane `width` x
-    /// `height`: what the composer leaves, less the rows `guidance` takes.
+    /// `height`: what the composer leaves, less the batch badge row and the
+    /// rows `guidance` takes.
     pub fn viewport_rows(&self, width: u16, height: u16, guidance: Option<&str>) -> u16 {
         let transcript = self.transcript_rows(width, height);
+        let transcript = transcript - u16::from(self.badge_row(width, transcript));
         let taken = guidance.map_or(0, |text| guidance::guidance_rows(text, width, transcript));
         transcript - taken
     }
@@ -624,7 +1402,13 @@ impl ChatState {
     pub fn messages(&self) -> impl Iterator<Item = &Msg> {
         self.entries.iter().filter_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
+            Entry::System(_)
+            | Entry::Reasoning(_)
+            | Entry::Memory(_)
+            | Entry::Tool(_)
+            | Entry::Usage(_)
+            | Entry::Worker(_)
+            | Entry::RunUsage(_) => None,
         })
     }
 
@@ -645,6 +1429,40 @@ impl ChatState {
         self.scroll = scroll;
     }
 
+    /// What the last turn used, if its engine reported any. Stays until the
+    /// next send.
+    pub fn turn_usage(&self) -> Option<&usage::TurnUsage> {
+        self.turn_usage.as_ref()
+    }
+
+    /// The `/cost` overlay, while it is shown.
+    pub fn cost(&self) -> Option<&cost_view::CostView> {
+        self.cost.as_ref()
+    }
+
+    pub fn cost_mut(&mut self) -> Option<&mut cost_view::CostView> {
+        self.cost.as_mut()
+    }
+
+    /// Shows the `/cost` overlay.
+    pub fn open_cost(&mut self, view: cost_view::CostView) {
+        self.cost = Some(view);
+    }
+
+    pub fn close_cost(&mut self) {
+        self.cost = None;
+    }
+
+    /// The usage settings the next usage line follows.
+    pub fn set_usage_config(&mut self, config: crate::core::ai::config::UsageConfig) {
+        self.usage_config = config;
+    }
+
+    /// What this pane used since it opened.
+    pub fn session_usage(&self) -> &usage_view::Session {
+        &self.session_usage
+    }
+
     /// Moves with every change of the transcript; the line cache keys on it.
     pub fn generation(&self) -> u64 {
         self.generation
@@ -653,17 +1471,6 @@ impl ChatState {
     /// The id events of the turn in flight must carry.
     pub fn turn(&self) -> u64 {
         self.turn
-    }
-
-    /// The waiting text, while no byte of the answer has arrived.
-    pub fn waiting_text(&self) -> Option<&'static str> {
-        match self.phase {
-            // Reasoning counts as the first byte: its block replaces the text.
-            Phase::Waiting { .. } if self.live_reasoning().is_some() => None,
-            Phase::Waiting { slow: false } => Some(WAITING),
-            Phase::Waiting { slow: true } => Some(STILL_WAITING),
-            Phase::Idle | Phase::Streaming => None,
-        }
     }
 
     /// Where the stream is: `Thinking` from the send until the first
@@ -810,6 +1617,7 @@ impl ChatState {
             status: MsgStatus::Complete,
             engine: engine.clone(),
             model: model.clone(),
+            github_read: false,
         });
         // A user message nobody answered (cancelled while waiting, or an
         // error before any text) stays in the transcript but is not sent:
@@ -844,7 +1652,7 @@ impl ChatState {
                 self.window,
                 &system,
                 memory_text,
-                self.tools_offered,
+                self.tools_reserve,
             );
             (room, compact::context_for(&history, room))
         };
@@ -862,13 +1670,21 @@ impl ChatState {
             summarized = true;
         }
         self.compaction.cancel();
+        self.end_side_run(true);
         self.compaction.sent(room);
         let memory_text = memory.as_deref().unwrap_or_default();
+        // The app put the last reported external tools in the reserve when
+        // the turn offers tools.
+        self.fill_external = if self.tools_reserve > 0 {
+            self.external_tools
+        } else {
+            0
+        };
         self.fill = budget::fill(
             self.window,
             &system,
             memory_text,
-            self.tools_offered,
+            self.tools_reserve,
             &context.messages,
         )
         .map(|fill| ContextFill {
@@ -881,11 +1697,35 @@ impl ChatState {
         // A summary that covers what is out replaces the marker.
         let covered = summarized && self.compaction.covers(start);
         self.place_marker(oldest, context.omitted && !covered);
+        // The newest message is always sent whole: when it and the setup
+        // pass the window, say so instead of cutting silently.
+        if let Some(window) = self.window.filter(|&w| w > 0) {
+            let newest = context
+                .messages
+                .last()
+                .map_or(0, |m| budget::estimate_tokens(&m.content));
+            let setup = budget::estimate_tokens(&system)
+                + budget::estimate_tokens(memory_text)
+                + self.tools_reserve;
+            let over = setup + newest > window;
+            // Once per overflow streak: the numbers change with every send,
+            // so the kind is what is deduplicated, not the text.
+            if over && !self.over_window_told {
+                self.entries
+                    .push(Entry::System(over_window(setup + newest, window)));
+            }
+            self.over_window_told = over;
+        }
         self.turn += 1;
+        // The key acts on the reply it was offered for, not on a later one.
+        self.delegate = None;
+        self.turn_usage = None;
+        self.clean_end = false;
         self.auto_typed = 0;
         self.run_fallbacks = 0;
         self.phase = Phase::Waiting { slow: false };
         self.started = Some(now);
+        self.clock_reset();
         self.request_model = model.clone().unwrap_or_default();
         self.request_engine = engine.clone();
         self.generation += 1;
@@ -893,7 +1733,9 @@ impl ChatState {
         self.told_sent.clone_from(&told);
         SendOutcome::Sent {
             turn: self.turn,
-            request: ChatRequest {
+            request: Box::new(ChatRequest {
+                drive_grant: None,
+                cache: Default::default(),
                 families: crate::core::ai::tools::registry::FamilySet::LEGACY,
                 engine: engine.clone(),
                 model: model.clone(),
@@ -901,7 +1743,9 @@ impl ChatState {
                 memory,
                 tools: Tools::Off,
                 messages: context.messages,
-            },
+                ollama: Default::default(),
+                github_read: false,
+            }),
         }
     }
 
@@ -943,15 +1787,26 @@ impl ChatState {
             return Follow::Nothing;
         }
         if self.summarizing.is_some() {
-            return self.apply_summary(event);
+            return self.apply_summary(event, now);
         }
-        if !matches!(event, StreamEvent::ThinkingDelta(_)) {
+        if !matches!(
+            event,
+            StreamEvent::ThinkingDelta(_)
+                | StreamEvent::Usage(_)
+                | StreamEvent::Reading
+                | StreamEvent::ExternalTools(_)
+        ) {
             self.generation += 1;
         }
         // The engine answered: the model has heard the lines of the request.
         if !matches!(
             event,
-            StreamEvent::Slow | StreamEvent::Notice(_) | StreamEvent::Error(_)
+            StreamEvent::Slow
+                | StreamEvent::Reading
+                | StreamEvent::Notice(_)
+                | StreamEvent::Error(_)
+                | StreamEvent::Usage(_)
+                | StreamEvent::ExternalTools(_)
         ) {
             self.told_sent.clear();
         }
@@ -959,7 +1814,12 @@ impl ChatState {
             StreamEvent::Slow => {
                 if let Phase::Waiting { slow } = &mut self.phase {
                     *slow = true;
+                    self.clock_said_slow(now);
                 }
+                Follow::Nothing
+            }
+            StreamEvent::Reading => {
+                self.clock_read(now);
                 Follow::Nothing
             }
             StreamEvent::Notice(line) => {
@@ -967,6 +1827,27 @@ impl ChatState {
                 if !self.entries.contains(&entry) {
                     self.entries.push(entry);
                 }
+                Follow::Nothing
+            }
+            StreamEvent::Usage(usage) => {
+                let mut usage = *usage;
+                if usage.model.is_none() && !usage.multi_model && !self.request_model.is_empty() {
+                    usage.model = usage::model_id(&self.request_model);
+                }
+                match self.turn_usage.as_mut() {
+                    Some(sum) => sum.merge(&usage),
+                    None => self.turn_usage = Some(usage),
+                }
+                Follow::Nothing
+            }
+            StreamEvent::ExternalTools(tokens) => {
+                // This turn's report replaces what the send counted.
+                if let Some(context) = self.fill.as_mut() {
+                    context.fill.used =
+                        context.fill.used.saturating_sub(self.fill_external) + tokens;
+                }
+                self.fill_external = tokens;
+                self.external_tools = tokens;
                 Follow::Nothing
             }
             StreamEvent::Delta(text) => self.push_delta(&text, now),
@@ -984,6 +1865,8 @@ impl ChatState {
                 self.tool_result(id, status, summary);
                 Follow::Nothing
             }
+            // The app tracks it before `apply`, so a stale event blocks too.
+            StreamEvent::GithubStarted => Follow::Nothing,
             StreamEvent::ThinkingDelta(text) => {
                 if self.push_thinking(&text, now) {
                     self.generation += 1;
@@ -1121,7 +2004,13 @@ impl ChatState {
         }
         self.entries.iter_mut().rev().find_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
+            Entry::System(_)
+            | Entry::Reasoning(_)
+            | Entry::Memory(_)
+            | Entry::Tool(_)
+            | Entry::Usage(_)
+            | Entry::Worker(_)
+            | Entry::RunUsage(_) => None,
         })
     }
 
@@ -1135,6 +2024,29 @@ impl ChatState {
             lines.append(&mut self.told);
             self.told = lines;
         }
+        // A turn that did not end well used more than the engine reported.
+        if status != MsgStatus::Complete
+            && let Some(usage) = self.turn_usage.as_mut()
+        {
+            usage.partial = true;
+        }
+        if let Some(usage) = self.turn_usage.clone() {
+            self.session_usage
+                .add(&self.request_engine, usage_view::Run::Chat, &usage);
+            self.usage_outbox.push(usage::Pending {
+                role: "chat",
+                worker: None,
+                engine: self.request_engine.clone(),
+                usage,
+            });
+        }
+        // Read before the engine is handed to the saved answer below.
+        let usage_line = self.usage_line_for(status);
+        // A passive note, shown whether or not the usage line is on.
+        let limit_note = self
+            .turn_usage
+            .as_ref()
+            .and_then(|usage| usage::turn_note(usage, self.usage_config.turn_tokens()));
         self.collapse_reasoning(now);
         self.settle_tool_rows();
         // Only the answer text is saved: reasoning is not a message, and a
@@ -1150,15 +2062,64 @@ impl ChatState {
                 status,
                 engine: std::mem::take(&mut self.request_engine),
                 model: (!self.request_model.is_empty()).then(|| self.request_model.clone()),
+                github_read: false,
             });
         }
         if let Some(line) = line {
             self.entries.push(Entry::System(line));
         }
+        if let Some(line) = usage_line {
+            self.entries.push(Entry::Usage(line));
+        }
+        if let Some(note) = limit_note {
+            self.entries.push(Entry::System(note));
+        }
         self.phase = Phase::Idle;
         self.started = None;
+        self.clock_reset();
         self.request_model.clear();
         self.request_engine.clear();
+    }
+
+    /// What a worker turn of the run used, waiting for the store like a chat
+    /// turn's. It counts in this session; it is not a turn and raises no
+    /// per-turn note.
+    pub fn record_worker_usage(&mut self, key: WorkerKey, engine: &str, usage: usage::TurnUsage) {
+        self.session_usage
+            .add(engine, usage_view::Run::Side, &usage);
+        self.usage_outbox.push(usage::Pending {
+            role: "worker",
+            worker: Some(format!("{}.{}", key.run.0, key.worker.0)),
+            engine: engine.to_owned(),
+            usage,
+        });
+    }
+
+    /// The usage line of the turn that ends with `status`, when the setting is
+    /// on: a clean end without a record reads `no data`; an unclean end gets
+    /// one only if it has a record. The coordinator's turn of a run says so.
+    fn usage_line_for(&self, status: MsgStatus) -> Option<String> {
+        let usage = self.turn_usage.as_ref();
+        if !self.usage_config.line() || (usage.is_none() && status != MsgStatus::Complete) {
+            return None;
+        }
+        let billing = self.usage_config.billing(&self.request_engine);
+        let line = usage_view::usage_line(usage, billing);
+        Some(if self.orch_turn_in_flight() {
+            usage_view::coordinator_line(line)
+        } else {
+            line
+        })
+    }
+
+    /// The compaction or summary run ended: its usage, if it reported any,
+    /// waits for the store. `cut` when it did not end well.
+    fn end_side_run(&mut self, cut: bool) {
+        if let Some(pending) = self.side_run.take().and_then(|run| run.end(cut)) {
+            self.session_usage
+                .add(&pending.engine, usage_view::Run::Side, &pending.usage);
+            self.usage_outbox.push(pending);
+        }
     }
 
     /// Stops the turn in flight, keeping the partial answer.
@@ -1171,6 +2132,7 @@ impl ChatState {
         if self.phase == Phase::Idle {
             return Follow::Nothing;
         }
+        self.clean_end = false;
         if self.summarizing.is_some() {
             return self.cancel_summary();
         }
@@ -1188,6 +2150,12 @@ mod compact_tests;
 #[cfg(test)]
 mod context_tests;
 #[cfg(test)]
+mod folder_picker_tests;
+#[cfg(test)]
+mod folder_tests;
+#[cfg(test)]
+mod github_block_tests;
+#[cfg(test)]
 mod history_tests;
 #[cfg(test)]
 mod memory_line_tests;
@@ -1197,6 +2165,8 @@ mod memory_tests;
 mod note_tests;
 #[cfg(test)]
 mod reasoning_tests;
+#[cfg(test)]
+mod run_trace_tests;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]
@@ -1211,3 +2181,5 @@ mod tool_tests;
 mod wait_tests;
 #[cfg(test)]
 mod window_tests;
+#[cfg(test)]
+mod worker_row_tests;

@@ -696,3 +696,172 @@ async fn git_config_gets_the_path_without_project_entries() {
         "/usr/bin"
     );
 }
+
+// --- origin_url (github-tools, The repository is always origin) ---
+
+mod origin {
+    use super::*;
+
+    fn git_path() -> Option<PathBuf> {
+        ["/usr/bin/git", "/bin/git", "/usr/local/bin/git"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file())
+    }
+
+    /// Runs `git` in `dir` with a private HOME so no user config is read.
+    fn sh(dir: &Path, home: &Path, args: &[&str]) {
+        let out = Command::new(git_path().unwrap())
+            .args(args)
+            .current_dir(dir)
+            .env_clear()
+            .env("HOME", home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    }
+
+    fn repo(origin: Option<&str>) -> (tempfile::TempDir, tempfile::TempDir) {
+        let (dir, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        sh(dir.path(), home.path(), &["init", "-q", "."]);
+        if let Some(url) = origin {
+            sh(dir.path(), home.path(), &["remote", "add", "origin", url]);
+        }
+        (dir, home)
+    }
+
+    async fn url(dir: &Path, home: &Path) -> Result<Origin, Fault> {
+        origin_url(&git_path().unwrap(), dir, Some(home.as_os_str())).await
+    }
+
+    #[tokio::test]
+    async fn a_plain_repository_gives_its_raw_origin() {
+        if git_path().is_none() {
+            return;
+        }
+        let (dir, home) = repo(Some("https://github.com/o/r.git"));
+        assert!(matches!(
+            url(dir.path(), home.path()).await,
+            Ok(Origin::Url(u)) if u == "https://github.com/o/r.git"
+        ));
+        // A second value, so the first is not a constant.
+        let (dir, home) = repo(Some("git@github.com:a/b.git"));
+        assert!(matches!(
+            url(dir.path(), home.path()).await,
+            Ok(Origin::Url(u)) if u == "git@github.com:a/b.git"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_subfolder_and_a_linked_worktree_read_the_common_config() {
+        if git_path().is_none() {
+            return;
+        }
+        let (dir, home) = repo(Some("https://github.com/o/r.git"));
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        assert!(matches!(
+            url(&dir.path().join("sub"), home.path()).await,
+            Ok(Origin::Url(u)) if u.ends_with("o/r.git")
+        ));
+        sh(
+            dir.path(),
+            home.path(),
+            &["commit", "-q", "--allow-empty", "-m", "x"],
+        );
+        let other = tempfile::tempdir().unwrap();
+        let tree = other.path().join("wt");
+        sh(
+            dir.path(),
+            home.path(),
+            &["worktree", "add", "-q", tree.to_str().unwrap(), "-b", "w"],
+        );
+        assert!(matches!(
+            url(&tree, home.path()).await,
+            Ok(Origin::Url(u)) if u.ends_with("o/r.git")
+        ));
+    }
+
+    #[tokio::test]
+    async fn no_origin_is_told_apart_from_no_repository() {
+        if git_path().is_none() {
+            return;
+        }
+        // `upstream` exists, `origin` does not: it is not tried.
+        let (dir, home) = repo(Some("https://github.com/o/r.git"));
+        sh(
+            dir.path(),
+            home.path(),
+            &["remote", "rename", "origin", "upstream"],
+        );
+        assert!(matches!(
+            url(dir.path(), home.path()).await,
+            Ok(Origin::NoOrigin)
+        ));
+        let plain = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            url(plain.path(), home.path()).await,
+            Ok(Origin::NotARepo)
+        ));
+    }
+
+    async fn read(dir: &Path, home: &Path) -> GhRepo {
+        repo_of(&git_path().unwrap(), dir, Some(home.as_os_str())).await
+    }
+
+    // The one reading both the tools and `/github` use: every outcome is a
+    // distinct, named result and never a free-form message.
+    #[tokio::test]
+    async fn repo_of_names_the_repository_or_why_not() {
+        if git_path().is_none() {
+            return;
+        }
+        for (origin, name) in [
+            ("https://github.com/o/r.git", "o/r"),
+            ("git@github.com:a/b.git", "a/b"),
+        ] {
+            let (dir, home) = repo(Some(origin));
+            assert_eq!(read(dir.path(), home.path()).await.to_string(), name);
+        }
+        let (dir, home) = repo(Some("https://gitlab.com/o/r.git"));
+        assert!(matches!(
+            read(dir.path(), home.path()).await,
+            GhRepo::NotGithub
+        ));
+        let (dir, home) = repo(None);
+        assert!(matches!(
+            read(dir.path(), home.path()).await,
+            GhRepo::NoOrigin
+        ));
+        let plain = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            read(plain.path(), home.path()).await,
+            GhRepo::NoRepo
+        ));
+    }
+
+    #[tokio::test]
+    async fn insteadof_is_not_applied() {
+        if git_path().is_none() {
+            return;
+        }
+        let (dir, home) = repo(Some("https://github.com/o/r.git"));
+        sh(
+            dir.path(),
+            home.path(),
+            &[
+                "config",
+                "url.https://evil.example/.insteadOf",
+                "https://github.com/",
+            ],
+        );
+        assert!(matches!(
+            url(dir.path(), home.path()).await,
+            Ok(Origin::Url(u)) if u == "https://github.com/o/r.git"
+        ));
+    }
+}

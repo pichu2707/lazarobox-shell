@@ -24,7 +24,7 @@ fn at(base: Instant, ms: u64) -> Instant {
 
 fn sent_at(state: &mut ChatState, body: &str, now: Instant) -> (u64, ChatRequest) {
     match state.send_at(body, &ready(), "sys", now) {
-        SendOutcome::Sent { turn, request } => (turn, request),
+        SendOutcome::Sent { turn, request } => (turn, *request),
         SendOutcome::Refused => panic!("send refused"),
     }
 }
@@ -47,13 +47,13 @@ fn a_thinking_delta_before_the_answer_starts_the_block_and_replaces_the_waiting_
     let base = Instant::now();
     let mut state = chat();
     let (turn, _) = sent_at(&mut state, "hi", base);
-    assert_eq!(state.waiting_text(), Some(WAITING));
+    assert_eq!(state.waiting_text().as_deref(), Some(WAITING));
     state.apply_at(turn, thinking("Let me"), at(base, 500));
     let all = blocks(&state);
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].text(), "Let me");
     assert_eq!(all[0].state(), ReasoningState::Streaming);
-    assert_eq!(state.waiting_text(), None);
+    assert_eq!(state.waiting_text().as_deref(), None);
     state.apply_at(turn, thinking(" check"), at(base, 900));
     assert_eq!(blocks(&state)[0].text(), "Let me check");
     assert_eq!(blocks(&state).len(), 1, "one block per turn");
@@ -65,9 +65,9 @@ fn a_thinking_delta_replaces_the_loading_text_too() {
     let mut state = chat();
     let (turn, _) = sent_at(&mut state, "hi", base);
     state.apply_at(turn, StreamEvent::Slow, at(base, 3000));
-    assert_eq!(state.waiting_text(), Some(STILL_WAITING));
+    assert_eq!(state.waiting_text().as_deref(), Some(STILL_WAITING));
     state.apply_at(turn, thinking("x"), at(base, 3100));
-    assert_eq!(state.waiting_text(), None);
+    assert_eq!(state.waiting_text().as_deref(), None);
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn an_empty_thinking_delta_starts_nothing() {
     let (turn, _) = sent_at(&mut state, "hi", base);
     state.apply_at(turn, thinking(""), base);
     assert!(blocks(&state).is_empty());
-    assert_eq!(state.waiting_text(), Some(WAITING));
+    assert_eq!(state.waiting_text().as_deref(), Some(WAITING));
 }
 
 #[test]
@@ -101,6 +101,9 @@ fn the_first_answer_text_collapses_the_block_once_with_the_seconds() {
             Entry::System(_) => "System".to_owned(),
             Entry::Memory(_) => "Memory".to_owned(),
             Entry::Tool(_) => "Tool".to_owned(),
+            Entry::Usage(_) => "Usage".to_owned(),
+            Entry::Worker(_) => "Worker".to_owned(),
+            Entry::RunUsage(_) => "RunUsage".to_owned(),
         })
         .collect();
     assert_eq!(kinds, ["User", "Reasoning", "Assistant"]);

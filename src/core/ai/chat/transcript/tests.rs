@@ -49,6 +49,7 @@ fn rows(lines: &[Line]) -> Vec<String> {
                 LineKind::Hint => 'T',
                 LineKind::Tool => 'L',
                 LineKind::ToolAlert => 'X',
+                LineKind::Usage => 'G',
                 LineKind::Blank => '_',
             };
             format!("{k}|{}", l.text)
@@ -57,6 +58,7 @@ fn rows(lines: &[Line]) -> Vec<String> {
 }
 
 fn answered(state: &mut ChatState, user: &str, answer: &str) {
+    state.set_usage_config(crate::core::ai::config::UsageConfig::without_line());
     let base = Instant::now();
     let SendOutcome::Sent { turn, .. } = state.send_at(user, &ready(), "", base) else {
         panic!("refused")
@@ -571,4 +573,50 @@ fn lines_are_cached_by_width_and_generation() {
     assert!(!Arc::ptr_eq(&again, &grown), "a change rebuilds");
     assert_eq!(*grown, build(&state, 20));
     assert!(grown.len() > again.len());
+}
+
+// Spec (chat-pane, Per-answer usage line): a dim system row below the answer.
+#[test]
+fn a_usage_line_is_a_system_row_right_below_its_answer() {
+    let mut state = chat();
+    state.set_usage_config(Default::default());
+    let base = Instant::now();
+    let SendOutcome::Sent { turn, .. } = state.send_at("hi", &ready(), "", base) else {
+        panic!("refused")
+    };
+    state.apply_at(turn, StreamEvent::Delta("hello".into()), at(base, 1));
+    state.apply_at(turn, StreamEvent::Done(Finish::Stop), at(base, 2));
+    assert_eq!(
+        rows(&build(&state, 40)),
+        ["U|› hi", "_|", "A|hello", "_|", "G|• usage: no data"]
+    );
+}
+
+// Spec (chat-pane): the line is not shown after a resume.
+#[test]
+fn a_resume_does_not_keep_the_usage_line() {
+    use crate::core::ai::{chat::tags::Tags, config::Profile};
+    let mut state = chat();
+    answered_with_line(&mut state);
+    assert!(
+        state
+            .entries()
+            .iter()
+            .any(|e| matches!(e, crate::core::ai::chat::Entry::Usage(_)))
+    );
+    state.resume_into(7, Profile::Programmer, Tags::default(), Vec::new());
+    assert!(
+        state
+            .entries()
+            .iter()
+            .all(|e| !matches!(e, crate::core::ai::chat::Entry::Usage(_)))
+    );
+}
+
+fn answered_with_line(state: &mut ChatState) {
+    let base = Instant::now();
+    let SendOutcome::Sent { turn, .. } = state.send_at("hi", &ready(), "", base) else {
+        panic!("refused")
+    };
+    state.apply_at(turn, StreamEvent::Done(Finish::Stop), at(base, 2));
 }

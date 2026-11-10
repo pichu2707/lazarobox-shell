@@ -104,6 +104,11 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
                 label,
                 selected: true,
                 ..
+            }
+            | Row::Edit {
+                label,
+                selected: true,
+                ..
             } => Some(*label),
             _ => None,
         })
@@ -112,42 +117,53 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     labels[0]
 }
 
-const ORDER: [&str; 25] = [
+const SETTINGS_ORDER: [&str; 10] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
+    "Build jobs",
     "Notify",
     "Sound",
     "llama-server idle",
+    "Usage (alpha)",
     "Updates",
     "Feedback",
+];
+
+const MODELS_ORDER: [&str; 8] = [
     "Set all tasks",
     "general",
     "code",
     "chat",
     "review",
     "summarize",
-    "Profile",
-    "Context",
-    "Memory",
+    "orchestrate",
+    "Hugging Face",
+];
+
+const TOOLS_ORDER: [&str; 10] = [
     "Tools",
     "Search",
     "Write",
     "Exec",
     "Git",
     "Git write",
+    "GitHub",
+    "Issue draft",
     "Approval",
-    "Hugging Face",
+    "Orchestrator",
 ];
+
+const CHAT_ORDER: [&str; 3] = ["Profile", "Context", "Memory"];
 
 // Spec: Descriptor integrity, Sections and items are data.
 #[test]
 fn the_ai_descriptors_are_well_formed() {
-    assert_eq!(AI_SECTION.title, "AI");
-    let labels: Vec<_> = AI_SECTION.items.iter().map(|i| i.label).collect();
-    assert_eq!(labels, ORDER[8..]);
+    assert_eq!(MODELS_SECTION.title, "Models");
+    let labels: Vec<_> = MODELS_SECTION.items.iter().map(|i| i.label).collect();
+    assert_eq!(labels, MODELS_ORDER);
     let mut paths: Vec<&str> = Vec::new();
-    for (item, task) in AI_SECTION.items[1..6].iter().zip(Task::ALL) {
+    for (item, task) in MODELS_SECTION.items[1..7].iter().zip(Task::ALL) {
         match item.kind {
             ItemKind::Assign(Some(t)) => {
                 assert_eq!(t, task);
@@ -158,7 +174,7 @@ fn the_ai_descriptors_are_well_formed() {
         }
     }
     assert!(
-        matches!(AI_SECTION.items[0].kind, ItemKind::Assign(None)),
+        matches!(MODELS_SECTION.items[0].kind, ItemKind::Assign(None)),
         "Set all tasks has no task and so no key path"
     );
     let mut unique = paths.clone();
@@ -172,7 +188,8 @@ fn the_ai_descriptors_are_well_formed() {
             "ai.tasks.code",
             "ai.tasks.chat",
             "ai.tasks.review",
-            "ai.tasks.summarize"
+            "ai.tasks.summarize",
+            "ai.tasks.orchestrate"
         ]
     );
 }
@@ -180,9 +197,13 @@ fn the_ai_descriptors_are_well_formed() {
 // Spec: Task rows in order, Wrap (tab-local), Mouse row is selectable.
 #[test]
 fn navigation_visits_each_tab_in_order_and_wraps_inside_it() {
-    let (settings, ai) = ORDER.split_at(8);
     let mut m = menu(None, None, Some(machine()));
-    for (rows, tab) in [(settings, 0), (ai, 1)] {
+    for (rows, tab) in [
+        (&SETTINGS_ORDER[..], 0),
+        (&MODELS_ORDER[..], 1),
+        (&TOOLS_ORDER[..], 2),
+        (&CHAT_ORDER[..], 3),
+    ] {
         let mut visited = vec![selected_label(&m)];
         for _ in 0..rows.len() - 1 {
             press(&mut m, 'j');
@@ -284,11 +305,15 @@ pub(super) fn value_of(menu: &MenuState, label: &str) -> String {
 
 fn ai_rows(menu: &MenuState) -> Vec<(&'static str, String)> {
     let mut menu = menu.clone();
-    menu.goto("Set all tasks");
-    assert_eq!(menu.active_tab(), 1, "the AI tab");
-    menu.rows(&Config::default())
-        .iter()
-        .map(|row| match row {
+    let mut all = Vec::new();
+    for (digit, active) in [('2', 1), ('3', 2), ('5', 3)] {
+        menu.on_key(
+            &KeyEvent::new(KeyCode::Char(digit), KeyModifiers::NONE),
+            false,
+            &mut Config::default(),
+        );
+        assert_eq!(menu.active_tab(), active);
+        all.extend(menu.rows(&Config::default()).iter().map(|row| match row {
             Row::Item {
                 label,
                 value,
@@ -299,8 +324,9 @@ fn ai_rows(menu: &MenuState) -> Vec<(&'static str, String)> {
                 (*label, value.as_deref().unwrap().to_owned())
             }
             other => panic!("not an item: {other:?}"),
-        })
-        .collect()
+        }));
+    }
+    all
 }
 
 // Spec: Settings rows (AI part): six task rows and Memory, no
@@ -321,25 +347,29 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
             "chat=(default)",
             "review=(default)",
             "summarize=(default)",
-            "Profile=programmer",
-            "Context=on",
-            "Memory=off",
+            "orchestrate=(default) · not recommended",
+            "Hugging Face=not connected",
             "Tools=on",
             "Search=off",
             "Write=off",
             "Exec=off",
             "Git=off",
             "Git write=off",
+            "GitHub=off",
+            "Issue draft=on",
             "Approval=ask",
-            "Hugging Face=not connected",
+            "Orchestrator=off",
+            "Profile=programmer",
+            "Context=on",
+            "Memory=off",
         ]
     );
     assert_eq!(
         MenuState::open(&Config::default())
             .rows(&Config::default())
             .len(),
-        6,
-        "no AI section without AI: a title and five settings, no bar"
+        7,
+        "no AI section without AI: a title and six settings, no bar"
     );
 }
 

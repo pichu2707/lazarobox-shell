@@ -9,7 +9,7 @@
 //! outside the jail (`git config` only reads values), and checks that git is
 //! 2.32 or newer, as `GIT_CONFIG_GLOBAL` needs.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -19,6 +19,7 @@ use crate::core::ai::toolchain::env::scrub;
 use crate::core::ai::toolchain::{Layout, Refusal, Vars, toolchain_spec};
 use crate::core::ai::tools::allow::Program;
 use crate::core::ai::tools::git::{self as pure, GitDir, GitError, Identity};
+use crate::core::ai::tools::github::{GhRepo, slug_of};
 use crate::runtime::tools::integrity::{self, Change};
 use crate::runtime::tools::open::open_beneath;
 use crate::runtime::tools::runner::{AfterOnDrop, Done, Run, Unreported, spawn_core, watched};
@@ -51,6 +52,9 @@ pub enum Fault {
     /// place, a broad root). git must live in a system place such as
     /// `/usr/bin`: a user-installed git is refused by design.
     Spec(PathBuf),
+    /// The jail refused the root or a granted folder (a root under `/tmp`, a
+    /// broad or credential git dir): the repository place, not the binary.
+    Root,
     /// A git dir is broad, next to an execute place, not a clean path, or a
     /// repository outside the root that is not a genuine linked worktree of
     /// it (a planted `.git` file, an unreadable or oversized pointer file).
@@ -278,6 +282,15 @@ pub fn pointer_dirs(root: &Path) -> Result<Vec<PathBuf>, Fault> {
     Ok(vec![git_dir, common])
 }
 
+/// The fault of a refused jail: a root or credential place is the repository's
+/// fault, anything else is about the git binary.
+pub fn spec_fault(why: Refusal, git: &Path) -> Fault {
+    match why {
+        Refusal::Root(_) | Refusal::Never(_) => Fault::Root,
+        _ => Fault::Spec(git.to_path_buf()),
+    }
+}
+
 /// One jailed git call: a private `TMPDIR`, the cleared environment, the
 /// spawn core. `dirs` are the folders this call may reach.
 async fn jailed(
@@ -305,8 +318,7 @@ async fn jailed(
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| ctx.home.join(".config"));
     let resolve = |p: &Path| std::fs::canonicalize(p).ok();
-    let spec =
-        jail_spec(&layout, &resolve, dirs, &xdg).map_err(|_| Fault::Spec(ctx.git.clone()))?;
+    let spec = jail_spec(&layout, &resolve, dirs, &xdg).map_err(|why| spec_fault(why, &ctx.git))?;
     let env = git_env(read, &ctx.root, scratch.path(), read_verb)?;
     let args = JailArgs {
         min_abi: None,
@@ -479,6 +491,71 @@ async fn config(ctx: &Ctx, read: Read<'_>) -> Result<(Result<Identity, GitError>
         }
     }
     Ok((Identity::new(&name, &email), hooks))
+}
+
+/// What `origin_url` found in the repository's own config.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// The raw value of `remote.origin.url`.
+    Url(String),
+    /// A repository without a remote named `origin`.
+    NoOrigin,
+    /// Git exited 128: not inside a repository, or one git refuses (a foreign
+    /// owner, a broken config).
+    NotARepo,
+}
+
+/// The raw `remote.origin.url` of the repository holding `dir`, read from its
+/// own config only (`--local`): a global value is not an origin, and
+/// `git remote get-url` would apply `insteadOf`. Nothing runs but `git
+/// config`, which only reads; a linked worktree reads the common config.
+/// Without `--local`, exit 1 means both "no origin" and "no repository", so
+/// the flag is what tells them apart (exit 128 outside a repository). The
+/// message is localized, so only the exit code is read.
+pub async fn origin_url(git: &Path, dir: &Path, home: Option<&OsStr>) -> Result<Origin, Fault> {
+    let mut env: Vec<(OsString, OsString)> = vec![
+        ("LC_ALL".into(), "C".into()),
+        ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+        ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+    ];
+    env.extend(home.map(|home| ("HOME".into(), home.to_owned())));
+    let done = spawn_core(Run {
+        program: git.to_owned(),
+        argv: ["config", "--local", "-z", "--get", "remote.origin.url"]
+            .map(OsString::from)
+            .to_vec(),
+        cwd: dir.to_owned(),
+        env,
+        timeout: Duration::from_secs(10),
+    })
+    .await?;
+    let ended = &done.ended;
+    if ended.timed_out || done.capture.truncated() {
+        return Err(Fault::Preflight);
+    }
+    match ended.exit {
+        Some(0) => {
+            let bytes = done.capture.bytes();
+            let text = String::from_utf8_lossy(&bytes);
+            Ok(Origin::Url(
+                text.split('\0').next().unwrap_or("").to_owned(),
+            ))
+        }
+        Some(1) => Ok(Origin::NoOrigin),
+        Some(128) => Ok(Origin::NotARepo),
+        _ => Err(Fault::Preflight),
+    }
+}
+
+/// The GitHub repository of the folder `dir`, from its `origin`: the one
+/// reading the GitHub tools and `/github` share.
+pub async fn repo_of(git: &Path, dir: &Path, home: Option<&OsStr>) -> GhRepo {
+    match origin_url(git, dir, home).await {
+        Ok(Origin::Url(url)) => slug_of(&url).map_or(GhRepo::NotGithub, GhRepo::Found),
+        Ok(Origin::NoOrigin) => GhRepo::NoOrigin,
+        Ok(Origin::NotARepo) => GhRepo::NoRepo,
+        Err(_) => GhRepo::Unreadable,
+    }
 }
 
 /// What a status call gave.

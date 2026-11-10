@@ -1,6 +1,6 @@
 //! The tool loop on the OpenAI wire (llama.cpp) against a scripted fake
 //! server, reusing the fake of `ollama_tests`. These drive `tool_turn_with`
-//! directly, so they reach the loop while llamacpp is not in `MCP_VERIFIED`.
+//! directly; llamacpp is in `MCP_VERIFIED`, so the dispatch tests cover the live path too.
 
 // What only the Linux-only tests use is dead code elsewhere.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
@@ -8,7 +8,7 @@
 use serde_json::{Value, json};
 
 use super::{
-    ollama::{NO_TOOLS_NOTICE, Profile, tool_turn, tool_turn_with},
+    ollama::{NO_TOOLS_NOTICE, OLLAMA_NO_TOOLS_NOTICE, Profile, tool_turn, tool_turn_with},
     ollama_tests::{Lab, OK_HEAD, Step, ask, direct, fake, lab, text},
     tests::done,
     *,
@@ -59,7 +59,10 @@ async fn turn(lab: &Lab, port: u16, profile: Profile, tools: bool) -> Vec<Stream
     let drain = async {
         let mut events = Vec::new();
         while let Some(event) = rx.recv().await {
-            events.push(event);
+            // The read reports are timing, not content.
+            if event != StreamEvent::Reading {
+                events.push(event);
+            }
         }
         events
     };
@@ -144,6 +147,62 @@ async fn one_openai_round_runs_the_call_and_echoes_the_server_id() {
     );
 }
 
+// A tool call written as text gets one reminder on this wire too (#427): one
+// more request in the same turn, and the text itself is never run.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_tool_call_written_as_text_gets_one_reminder_on_the_openai_wire() {
+    let fake = fake(vec![
+        sse_text(&written("find_dir")),
+        sse_call("find_dir", "{\"query\":\"curso\"}", Some("abc")),
+        sse_text("Found it"),
+    ])
+    .await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    assert_eq!(reminders(&events), 1, "{events:?}");
+    assert_eq!(tool_calls(&events), 1, "only the real call runs");
+    assert_eq!(events.last(), Some(&done()));
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 3);
+    let messages = bodies[1]["messages"].as_array().unwrap();
+    let n = messages.len();
+    assert_eq!(messages[n - 2]["role"], "assistant");
+    assert_eq!(messages[n - 2]["content"], written("find_dir"));
+    assert!(messages[n - 2].get("tool_calls").is_none());
+    assert_eq!(messages[n - 1]["role"], "user");
+    assert_eq!(
+        messages[n - 1]["content"],
+        crate::core::ai::chat::text_call::reminder("find_dir")
+    );
+    assert!(bodies[1]["tools"].is_array(), "the reminder offers tools");
+}
+
+// Reasoning leaked into the answer after a tool round (#428): the text before
+// a bare `</think>` goes out as reasoning, the rest as the answer.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn reasoning_leaked_after_a_tool_round_is_split_on_the_openai_wire() {
+    let fake = fake(vec![
+        sse_call("find_dir", "{\"query\":\"curso\"}", Some("abc")),
+        sse_text("So the path is curso.\n</think>\n\nFound it"),
+    ])
+    .await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    let n = events.len();
+    assert_eq!(
+        events[n - 3..],
+        [
+            StreamEvent::ThinkingDelta("So the path is curso.".into()),
+            StreamEvent::Delta("Found it".into()),
+            done(),
+        ],
+        "{events:?}"
+    );
+    assert_eq!(fake.bodies().len(), 2);
+}
+
 // Rejected tools --------------------------------------------------------------
 
 fn notices(events: &[StreamEvent]) -> Vec<&str> {
@@ -185,12 +244,16 @@ fn the_openai_profile_rejects_only_4xx_and_5xx_that_name_the_jinja_flag() {
 }
 
 #[test]
-fn the_ollama_profile_keeps_the_plain_400_and_no_notice() {
+fn the_ollama_profile_keeps_the_plain_400_and_has_its_own_notice() {
     assert!(Profile::Ollama.rejected("HTTP 400: nope"));
     assert!(!Profile::Ollama.rejected("HTTP 500: tools param requires --jinja flag"));
     assert!(!Profile::Ollama.rejected("HTTP 422: tools"));
-    assert_eq!(Profile::Ollama.notice(), None);
+    assert_eq!(Profile::Ollama.notice(), Some(OLLAMA_NO_TOOLS_NOTICE));
     assert_eq!(Profile::OpenAi.notice(), Some(NO_TOOLS_NOTICE));
+    assert_eq!(
+        OLLAMA_NO_TOOLS_NOTICE,
+        "Ollama answered 400 to a request with tools: retrying without them"
+    );
 }
 
 #[tokio::test]
@@ -314,7 +377,7 @@ async fn an_in_stream_error_never_matches() {
 
 // Routing ---------------------------------------------------------------------
 
-use super::ollama_tests::{finish, next_call, pane, tool_calls};
+use super::ollama_tests::{finish, next_call, pane, reminders, tool_calls, written};
 use crate::core::ai::jail::{JailOff, JailSupport};
 
 /// The request of `ask` for another engine.
@@ -518,7 +581,7 @@ async fn tool_messages_are_not_kept_for_the_next_llamacpp_turn() {
         external: Default::default(),
         mcp: None,
     };
-    lab.chats.send(pane(1), turn, request);
+    lab.chats.send(pane(1), turn, *request);
     for event in finish(&mut lab.rx).await {
         state.apply(turn, event);
     }
@@ -655,7 +718,7 @@ async fn llamacpp_turn(lab: &mut Lab, state: &mut ChatState, text: &str) {
         external: Default::default(),
         mcp: None,
     };
-    lab.chats.send(pane(1), turn, request);
+    lab.chats.send(pane(1), turn, *request);
     for event in finish(&mut lab.rx).await {
         state.apply(turn, event);
     }
@@ -678,4 +741,93 @@ async fn the_notice_shows_once_per_pane_across_turns() {
     let mut other = ChatState::new(None);
     llamacpp_turn(&mut lab, &mut other, "hello").await;
     assert_eq!(system_lines(&other), 1, "another pane shows its own");
+}
+
+// Usage -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_timings_of_the_finish_chunk_become_one_usage_before_done() {
+    let mut finish = chunk(json!({}), Some("stop"));
+    finish["timings"] = json!({"prompt_n": 10, "cache_n": 4, "predicted_n": 20});
+    let fake = fake(vec![sse(&[chunk(json!({"content": "hi"}), None), finish])]).await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    let [StreamEvent::Delta(_), StreamEvent::Usage(usage), end] = events.as_slice() else {
+        panic!("{events:?}");
+    };
+    assert_eq!(
+        (usage.input, usage.cache_read, usage.output, usage.partial),
+        (Some(10), Some(4), Some(20), false)
+    );
+    assert_eq!((usage.cost_micros, usage.cost_source), (None, None));
+    assert_eq!(end, &done());
+}
+
+#[tokio::test]
+async fn a_server_without_timings_or_usage_gives_no_usage_event() {
+    let fake = fake(vec![sse_text("hi")]).await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    assert_eq!(events, [StreamEvent::Delta("hi".into()), done()]);
+}
+
+fn sse_call_with(finish_extra: Value) -> Step {
+    let call = json!({"index": 0, "id": "c1", "type": "function",
+        "function": {"name": "find_dir", "arguments": "{\"query\":\"curso\"}"}});
+    let mut finish = chunk(json!({}), Some("tool_calls"));
+    finish
+        .as_object_mut()
+        .unwrap()
+        .extend(finish_extra.as_object().unwrap().clone());
+    sse(&[chunk(json!({"tool_calls": [call]}), None), finish])
+}
+
+fn sse_text_with(finish_extra: Value) -> Step {
+    let mut finish = chunk(json!({}), Some("stop"));
+    finish
+        .as_object_mut()
+        .unwrap()
+        .extend(finish_extra.as_object().unwrap().clone());
+    sse(&[chunk(json!({"content": "Found it"}), None), finish])
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn timings_of_one_round_and_a_usage_object_of_the_next_are_summed() {
+    let fake = fake(vec![
+        sse_call_with(json!({"timings": {"prompt_n": 10, "cache_n": 4, "predicted_n": 20}})),
+        sse_text_with(json!({"usage": {"prompt_tokens": 5, "completion_tokens": 6}})),
+    ])
+    .await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    let usage = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::Usage(u) => Some((**u).clone()),
+            _ => None,
+        })
+        .expect("a usage event");
+    assert_eq!(
+        (usage.input, usage.output, usage.cache_read),
+        (Some(15), Some(26), Some(4))
+    );
+    assert!(!usage.partial);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_round_with_neither_timings_nor_usage_makes_the_turn_partial() {
+    let fake = fake(vec![
+        sse_call_with(json!({"timings": {"prompt_n": 10, "predicted_n": 20}})),
+        sse_text("Found it"),
+    ])
+    .await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    let partial = events.iter().find_map(|e| match e {
+        StreamEvent::Usage(u) => Some(u.partial),
+        _ => None,
+    });
+    assert_eq!(partial, Some(true), "{events:?}");
 }

@@ -16,6 +16,7 @@ pub(super) fn hint(menu: &MenuState) -> String {
 const SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
 const TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
 const PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
+const PICKER_DELETE: &str = "j/k move · Enter choose · d delete · Esc back · s save";
 const CUSTOM: &str = "type a model · Enter ok · Ctrl+U clear · Esc back";
 
 // Spec: Footer hint.
@@ -39,12 +40,14 @@ fn every_task_row_shows_the_task_hint() {
         "chat",
         "review",
         "summarize",
+        "orchestrate",
     ] {
         assert_eq!(selected_label(&m), label);
         assert_eq!(hint(&m), TASK, "{label}");
         press(&mut m, 'j');
     }
-    assert_eq!(hint(&m), SETTINGS, "wrapped to the first Settings row");
+    assert_eq!(selected_label(&m), "Hugging Face");
+    assert_eq!(hint(&m), "Enter connect · j/k move · s save · Esc cancel");
 }
 
 // Spec: Footer hints in the picker.
@@ -169,12 +172,12 @@ fn a_model_to_download_reads_download_required() {
     let found = only(&[engine("ollama", Status::Available, &["llama3:8b"], None)]);
     let mut m = menu(None, None, found);
     engine_at_level_two(&mut m, "ollama");
-    assert_eq!(hint(&m), PICKER, "the downloaded model");
+    assert_eq!(hint(&m), PICKER_DELETE, "the downloaded model");
     press(&mut m, 'j');
     assert_eq!(cursor_label(&m), "llama3.2:3b");
     assert_eq!(hint(&m), not_selectable("download required"));
     press(&mut m, 'k');
-    assert_eq!(hint(&m), PICKER, "back on an enabled row");
+    assert_eq!(hint(&m), PICKER_DELETE, "back on an enabled row");
 }
 
 // Spec: Footer on a disabled row (no models detected).

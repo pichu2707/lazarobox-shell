@@ -7,7 +7,7 @@ Finds which AI engines exist on the machine: four local model servers and four a
 ## Requirements
 
 ### Requirement: Engine catalog
-The catalog MUST be fixed and ordered as follows. Servers are probed over HTTP on `127.0.0.1` only. A server's binary name is used only for the PATH lookup and is never executed.
+The catalog MUST be fixed and ordered as follows. Servers are probed over HTTP on `127.0.0.1` only, on their catalog port (`ollama` 11434, `lmstudio` 1234, `llamacpp` 8080, `vllm` 8000) unless `[ai.servers.<id>] port` sets another one (see configuration, Server ports). A server's binary name is used only for the PATH lookup and is never executed.
 
 | id | kind | endpoint (GET) | binary on PATH |
 |---|---|---|---|
@@ -21,6 +21,11 @@ The catalog MUST be fixed and ordered as follows. Servers are probed over HTTP o
 | `opencode` | cli | none | `opencode` |
 
 `/health` MUST NOT be used to decide availability, because its `{"status":"ok"}` body is not specific to llama.cpp.
+
+#### Scenario: A configured port is probed [auto]
+- GIVEN `[ai.servers.llamacpp] port` set to the port of a fake server that lists one model owned by `llamacpp`
+- WHEN detection runs
+- THEN llamacpp is `available` with that model, and the fake recorded one `GET /v1/models`
 
 #### Scenario: Catalog integrity [auto]
 - GIVEN the catalog
@@ -285,7 +290,7 @@ The hand-written HTTP client, for detection probes, chat requests and the engram
 - THEN both are rejected
 
 ### Requirement: Concurrency and timeouts
-All 8 probes MUST run concurrently and in the background; the UI and the input MUST never wait on them. Each server probe MUST finish (success, failure or timeout) within 800 ms, covering connect, request and response; each `--version` run MUST finish or be killed within 2 s, and the codex model listing within 4 s, concurrently with codex's `--version`. The whole run therefore ends within about 4 s, and within about 2 s when codex is absent or has no listing. The UI never waits for it, because detection runs in the background. The results of a run MUST be delivered together, as ONE `Detection` containing all 8 engines, once every probe has finished; a single run never delivers partial results.
+All 8 probes MUST run concurrently and in the background; the UI and the input MUST never wait on them. Each server probe MUST finish (success, failure or timeout) within 800 ms, covering connect, request and response, and its connect MUST be given up after 200 ms: a server that listens accepts it at once, and under WSL's mirrored networking a connect to a port nothing listens on is never answered (#584); each `--version` run MUST finish or be killed within 2 s, and the codex model listing within 4 s, concurrently with codex's `--version`. The whole run therefore ends within about 4 s, and within about 2 s when codex is absent or has no listing. The UI never waits for it, because detection runs in the background. The results of a run MUST be delivered together, as ONE `Detection` containing all 8 engines, once every probe has finished; a single run never delivers partial results.
 
 #### Scenario: Hanging server [auto]
 - GIVEN `:11434` accepts the connection but never answers, and all other engines answer at once
@@ -326,17 +331,34 @@ Detection MUST start at app startup, each time the config menu opens, on the ref
 - THEN an empty `Detection` is delivered, every engine reads `unknown`, and the next trigger requests a new run (the single-flight flag is cleared)
 
 ### Requirement: Read-only and localhost-only
-Detection MUST send only `GET` requests with no body and no credentials to the 4 catalog endpoints on `127.0.0.1`. It MUST NOT connect to any other host or port. It MUST execute only `<id> --version` for the 4 CLI ids, plus, for codex only, `codex debug models` through the jail (Codex model listing), which may refresh the catalog from OpenAI with the user's own login and update codex's own cache; it never executes a server binary, and MUST NOT open any credential, token or config file of any engine. This rule describes detection: the chat requests (POST to the same loopback servers, and the text-only CLI runs) are specified in chat-engines and never happen as part of a detection run, and the engram requests (GET, POST and DELETE to the memory port, see engram-client) are never made by a detection run and never touch a catalog endpoint. The client remains bound to `127.0.0.1` for all three uses. The engram client is the only user that MAY send a credential, and only `Authorization: Bearer` on a user-confirmed `DELETE` to the memory port, from `ENGRAM_HTTP_TOKEN` in the environment.
+Detection MUST send only `GET` requests with no body and no credentials to the 4 server endpoints on `127.0.0.1`, each on its configured port (the catalog port unless `[ai.servers.<id>] port` sets another one), with one exception: for Ollama it MAY also send `POST /api/show` (see Ollama model size and tool capability). That POST carries only the model name as a JSON body, no credentials, goes to the Ollama loopback port only, and is bounded by a timeout, a body cap, a parallel call limit, a total call limit and the digest cache. Detection MUST NOT send any other POST. It MUST NOT connect to any other host or port. It MUST execute only `<id> --version` for the 4 CLI ids, plus, for codex only, `codex debug models` through the jail (Codex model listing). That run may refresh the catalog from OpenAI with the user's own login and update codex's own cache. Detection never executes a server binary, and MUST NOT open any credential, token or config file of any engine.
+
+This rule describes detection. Three other uses share the client and never happen as part of a detection run:
+- the chat requests: POST to the same loopback servers, and the text-only CLI runs, specified in chat-engines;
+- the engram requests: GET, POST and DELETE to the memory port (see engram-client), which never touch a catalog endpoint;
+- the Ollama pull of ollama-download: one `POST /api/pull` to the Ollama port, sent only after the user confirms a pull.
+
+The client remains bound to `127.0.0.1` for all four uses, and a POST is refused for any path other than the chat paths, `/api/pull` and `/api/show`. The engram client is the only user that MAY send a credential, and only `Authorization: Bearer` on a user-confirmed `DELETE` to the memory port, from `ENGRAM_HTTP_TOKEN` in the environment.
 
 #### Scenario: Traffic audit [auto]
 - GIVEN a recording fake server per endpoint
 - WHEN a full detection run completes
-- THEN each recorded request is `GET` of the catalog path with no `Authorization`/`Cookie` header and no body, and nothing else connected
+- THEN each recorded request is either a `GET` of the catalog path or a `POST /api/show` to the Ollama fake, none has an `Authorization`/`Cookie` header, every `GET` has no body, every `POST` body holds only a model name, and nothing else connected
+
+#### Scenario: Detection POSTs only api/show [auto]
+- GIVEN a recording fake Ollama with models and no chat message sent
+- WHEN detection runs
+- THEN the only `POST` path recorded is `/api/show`, only on the Ollama port, within the call limits, and no prompt is sent to any server
 
 #### Scenario: Detection stays GET-only with chat present [auto]
-- GIVEN a chat pane open and recording fake servers
+- GIVEN a chat pane open and recording fake servers, Ollama among them
 - WHEN detection runs with no message sent
-- THEN no `POST` is recorded and no prompt is sent to any server
+- THEN the only `POST` recorded is `POST /api/show` on the Ollama fake, no `POST` is recorded on any other server, and no prompt is sent to any server
+
+#### Scenario: Detection stays GET-only for the other engines [auto]
+- GIVEN recording fakes for lmstudio, llamacpp and vllm
+- WHEN detection runs
+- THEN no `POST` is recorded on any of them
 
 #### Scenario: Chat never runs during detection [auto]
 - GIVEN fake CLIs that record their argv
@@ -344,9 +366,14 @@ Detection MUST send only `GET` requests with no body and no credentials to the 4
 - THEN only `<id> --version` was executed for each CLI, except that codex was also run as `codex debug models` through the jail helper, and no other engine received any other argument
 
 #### Scenario: The shared client stays loopback-only [auto]
-- GIVEN the client asked to connect to a non-loopback host for a GET, a POST or a DELETE
+- GIVEN the client asked to connect to a non-loopback host for a GET, a POST (including `/api/show`) or a DELETE
 - WHEN the request is made
 - THEN no connection is attempted
+
+#### Scenario: Only the allowed POST paths [auto]
+- GIVEN the client asked to POST to `127.0.0.1` on `/api/delete` or `/api/push`
+- WHEN the request is made
+- THEN no connection is attempted, while `/api/chat`, `/v1/chat/completions`, `/api/pull` and `/api/show` are allowed
 
 #### Scenario: Detection never touches the memory port [auto]
 - GIVEN memory active and a recording fake on the memory port
@@ -356,12 +383,168 @@ Detection MUST send only `GET` requests with no body and no credentials to the 4
 #### Scenario: Real machine [manual]
 - GIVEN Ollama running with models, `claude`, `codex`, `gemini` installed, `opencode` only an alias, an unrelated service on `:8080`
 - WHEN detection runs
-- THEN ollama is `available · N models`, the three CLIs are `available` with versions, opencode is `not installed`, llamacpp is not `available` (the foreign service is not counted)
+- THEN ollama is `available · N models`, the three CLIs are `available` with versions, opencode is `not installed`, llamacpp is not `available` (the foreign service is not counted), and the picker opens without a visible delay
 
 ### Requirement: Documented limits
-The user documentation MUST state that custom endpoints and ports are not supported in this phase and that shell aliases are not detected (the binary must be on PATH).
+The user documentation MUST state that custom endpoints and hosts are not supported (the host is always `127.0.0.1`), how to set a server's port, and that shell aliases are not detected (the binary must be on PATH).
 
 #### Scenario: Docs mention limits [manual]
 - GIVEN the README
 - WHEN it is read
-- THEN it names both limits
+- THEN it names the limits above
+
+### Requirement: Availability copy per platform (S1 reasons, S4 copy)
+Detection MUST keep the refusal reason by platform. On Linux the existing copy is unchanged. On macOS, when `codex` or `gemini` is refused because Seatbelt is unavailable (`sandbox-exec` missing, probe failed) the text MUST say so and MUST NOT say "needs Linux"; before S4 enablement the macOS text MUST NOT claim the CLI is usable. From S4, with an Available probe, `codex` and `gemini` on macOS MUST be `available`. `claude` availability on macOS MUST NOT depend on the jail.
+
+#### Scenario: Seatbelt unavailable [auto]
+- GIVEN macOS, `codex` installed and a probe that is Unavailable
+- WHEN detection runs
+- THEN codex is not usable, the copy names the missing Seatbelt enforcement, does not say "needs Linux", and no codex process is started
+
+#### Scenario: Available after S4 [auto]
+- GIVEN macOS, an Available probe, S4 applied, `codex` and `gemini` installed
+- WHEN detection runs
+- THEN both are `available`
+
+#### Scenario: claude independent of jail [auto]
+- GIVEN macOS, an Unavailable probe and `claude` installed
+- WHEN detection runs
+- THEN claude is `available`
+
+#### Scenario: Linux copy unchanged [auto]
+- GIVEN Linux and the existing jail states
+- WHEN detection runs
+- THEN statuses and copy equal the current ones
+
+### Requirement: Codex model listing under Seatbelt (S3 mechanism, S4 on)
+On macOS the `codex debug models` listing MUST run through the same helper path as a chat turn, jailed by Seatbelt, with the same layout, scrubbed environment, timeout and output cap as on Linux. When the jail is unavailable, or the exit is a jail error (including 71), no process runs bare and codex keeps just `default`.
+
+#### Scenario: Listing runs under Seatbelt [auto]
+- GIVEN macOS, a fake `codex` and a recording pass-through helper
+- WHEN the listing runs
+- THEN the helper is called as `__jail-exec` with the codex state folder read-write and `codex debug models` after `--`
+
+#### Scenario: No Seatbelt, no listing [auto]
+- GIVEN macOS and an Unavailable probe
+- WHEN codex is detected
+- THEN codex is not started for the listing and keeps just `default`
+
+### Requirement: Owned directory on detection PATH
+Detection MUST append the owned `llama-server` bin directory as the LAST PATH entry, so any system binary found earlier wins. Without an owned install, PATH and detection MUST be byte-identical to today.
+
+#### Scenario: Owned appended last [auto]
+- GIVEN an owned install and a PATH `/usr/bin:/bin`
+- WHEN the detection PATH is built
+- THEN it is `/usr/bin:/bin:<owned bin>`
+
+#### Scenario: No owned install changes nothing [auto]
+- GIVEN no owned install
+- WHEN the detection PATH is built
+- THEN it equals the process PATH
+
+### Requirement: Runtime PATH refresh and forced re-detection
+After an install or remove the system MUST refresh the PATH snapshot used by detection and spawn and MUST force re-detection, bypassing any cache, so the engine state updates in the running session.
+
+#### Scenario: Stale snapshot refreshed [auto]
+- GIVEN a PATH snapshot taken before install
+- WHEN install completes
+- THEN the snapshot includes the owned directory and detection reports the engine
+
+#### Scenario: Forced re-detection bypasses cache [auto]
+- GIVEN a cached `not installed` result
+- WHEN install or remove completes
+- THEN detection runs again and the state reflects the new reality
+
+### Requirement: Ollama model size and tool capability
+For every model Ollama lists, detection MUST record its parameter size (from `details.parameter_size` of `GET /api/tags`) and a tri-state tool capability: `tools`, `no tools` or `unknown`. The capability MUST come from the `capabilities` list of a `POST /api/show` with body `{"model": "<name>"}` for that model, never from the `capabilities` of `/api/tags` (verified on Ollama 0.30.10: tags can omit `tools` while show reports it). `tools` means the list contains `tools`; `no tools` means the list was read and does not contain it; `unknown` means anything else (probe timeout, connection error, non-200 reply, oversized or malformed body, missing `capabilities` field as on an older Ollama, call limit reached). A failed probe MUST NOT fail the detection run, MUST NOT change the engine status or the model list, and MUST NOT delay the run beyond a fixed total bound. A size that is missing or unparsable is `unknown`. The probe MUST be bounded by a per-call timeout, a response body cap, a limit on parallel calls and a limit on total calls per run. The result MUST be cached in memory by model digest, so an unchanged model is not probed again on later runs; the cache is never written to disk.
+
+#### Scenario: Tools declared [auto]
+- GIVEN a fake Ollama listing `llama3:8b` (`8.0B`) whose `/api/show` reply has `capabilities` `["completion","tools"]`
+- WHEN a detection run completes
+- THEN the model is recorded with size 8B and capability `tools`
+
+#### Scenario: Tools not declared [auto]
+- GIVEN a fake Ollama whose `/api/show` reply for `gemma:2b` has `capabilities` `["completion"]`
+- WHEN a detection run completes
+- THEN the model is recorded with capability `no tools`
+
+#### Scenario: Old Ollama without capabilities [auto]
+- GIVEN a fake Ollama whose `/api/show` reply has no `capabilities` field
+- WHEN a detection run completes
+- THEN the model capability is `unknown` and the engine status and model list are unchanged
+
+#### Scenario: Probe timeout or failure [auto]
+- GIVEN a fake Ollama whose `/api/show` never answers for one model, returns 500 for a second and returns a malformed body for a third
+- WHEN a detection run completes
+- THEN the engine is still `available · N models`, the three capabilities are `unknown`, and the run ended within the fixed total bound
+
+#### Scenario: Oversized reply [auto]
+- GIVEN a fake Ollama whose `/api/show` reply is larger than the body cap
+- WHEN a detection run completes
+- THEN that model capability is `unknown` and no more than the cap was read
+
+#### Scenario: Call limits [auto]
+- GIVEN a fake Ollama listing more models than the total call limit
+- WHEN a detection run completes
+- THEN no more `/api/show` calls than the total limit were recorded, never more than the parallel limit at once, and the remaining models are `unknown`
+
+#### Scenario: Digest cache [auto]
+- GIVEN a completed detection run and the same models and digests on the next run
+- WHEN the next run completes
+- THEN no `/api/show` call is recorded for the unchanged digests, and a model with a new digest is probed
+
+#### Scenario: Size missing [auto]
+- GIVEN a model whose `/api/tags` entry has no `details.parameter_size`
+- WHEN a detection run completes
+- THEN its size is `unknown`
+
+### Requirement: Local llama.cpp models
+When llama-server is installed (running or not), detection MUST also list the `.gguf` model files in, in this order: `$XDG_DATA_HOME/llama.cpp/models` (default `~/.local/share/llama.cpp/models`); `$LLAMA_CACHE` (default `$XDG_CACHE_HOME/llama.cpp`, then `~/.cache/llama.cpp`); on macOS `~/Library/Caches/llama.cpp`; `$HF_HUB_CACHE`, else `$HF_HOME/hub`, else `~/.cache/huggingface/hub`. Only absolute folders count. A model file ends in `.gguf` (any letter case), is not a vision projector (`mmproj` in its name) and, of a split model `-NNNNN-of-NNNNN`, only part 1 is listed. The walk MUST NOT follow links to folders, MUST stop at 6 levels and 20 000 entries, and accepts links to files (the Hugging Face snapshots). Files are listed once, sorted by file name without letter case.
+
+#### Scenario: A Hugging Face snapshot is listed [auto]
+- GIVEN `hub/models--x/snapshots/abc/q.gguf` linking to a blob
+- WHEN detection runs with llama-server installed
+- THEN the snapshot path is listed
+
+#### Scenario: Nothing is read without llama-server [auto]
+- GIVEN llama-server not installed
+- WHEN detection runs
+- THEN no folder is read and the list is empty
+
+### Requirement: Ollama context window from the existing show probe
+Detection MUST take each Ollama model's max context window from the SAME `POST /api/show` reply that Ollama model size and tool capability already reads: the positive whole `model_info.<architecture>.context_length`. It MUST NOT make any additional call. The probe's per-call timeout, body cap, parallel and total call limits, and fixed total bound apply unchanged, and the window shares the digest cache: an unchanged digest is not probed again and keeps its window, a new digest is probed and gets its window re-read. A failed probe (timeout, connection error, non-200, oversized or malformed body, missing, zero or non-integer `context_length`, call limit reached) MUST leave that model's window unknown, never zero and never guessed, MUST NOT fail the run or change the engine status or model list, and MUST be reported when the model is used (see chat-engines, Context window). The llama.cpp window stays the `n_ctx` of `GET /props`, unchanged. Windows live in RAM only: no file, no table, and chat.db stays at schema `user_version` 3, mode 0600, untouched.
+
+#### Scenario: Window read from the same reply [auto]
+- GIVEN a fake Ollama listing `llama3:8b` whose `/api/show` reply has `capabilities` `["completion","tools"]` and `model_info` `{"llama.context_length":8192}`
+- WHEN a detection run completes
+- THEN the model has capability `tools` and window 8192, and exactly one `/api/show` was recorded for it
+
+#### Scenario: Bad reply leaves the window unknown [auto]
+- GIVEN `/api/show` answers 500, a malformed body, a body above the cap, no `context_length`, or `context_length` 0
+- WHEN a detection run completes
+- THEN that model's window is unknown, the engine is still `available · N models`, and other models keep theirs
+
+#### Scenario: Digest cache keeps and refreshes windows [auto]
+- GIVEN a completed run and a next run where one model keeps its digest and another has a new digest and a new `context_length`
+- WHEN the next run completes
+- THEN no `/api/show` is recorded for the unchanged digest, which keeps its window, and the new digest is probed and its window updated
+
+#### Scenario: Call limit leaves the rest unknown [auto]
+- GIVEN a fake Ollama listing more models than the total call limit
+- WHEN a detection run completes
+- THEN no more `/api/show` calls than the limit were recorded and the remaining models have an unknown window
+
+#### Scenario: A failed probe keeps the last known window [auto]
+- GIVEN a model whose window was read on an earlier run
+- WHEN a later run cannot read it (failed or slow probe)
+- THEN the earlier window is kept, so `num_ctx` does not change and the model is not reloaded; a new answer replaces it, and a model no longer listed drops it
+
+#### Scenario: llama.cpp unchanged [auto]
+- GIVEN a llama-server whose `/props` reports `n_ctx` 4096
+- WHEN detection runs
+- THEN its window is 4096 and no `/api/show` is sent to it
+
+#### Scenario: chat.db is untouched [auto]
+- GIVEN a fresh chat.db at `user_version` 3 with mode 0600
+- WHEN detection runs and a chat turn is sent
+- THEN chat.db is still `user_version` 3, mode 0600, with no new table, and no new file exists

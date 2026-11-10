@@ -4,32 +4,50 @@
 //! pane, turn and id.
 //!
 //! `on_tool_ask` is the single place an ask enters the app. It always opens
-//! the overlay, unless `approval::route` says the command can be typed at once
-//! (`auto`, D18) or run after a check (`run`, D21). Only a `run` is ever
-//! routed: a read and a user tool always wait for `y`.
+//! the overlay, unless `approval::answers_itself` lets a read or a search go
+//! (`run`: in the chat's root), or `approval::route` says the command can be
+//! typed at once (`auto`, D18) or run after a check (`run`, D21). A user tool
+//! and the other commands always wait for `y`.
 
 use super::*;
 use crate::core::ai::chat::{
     approval::{
-        Approval, ApprovalAsk, AutoCtx, Origin, Route, counts_toward_pause, reason_line, route,
+        Approval, ApprovalAsk, AutoCtx, DRIVE_GRANT_DENIED, GITHUB_GRANT_DENIED, Origin,
+        QUEUE_FULL, Route, TOOL_GRANT_DENIED, answers_itself, blocked_read_reason,
+        counts_toward_pause, reason_line, route,
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
 use crate::core::ai::{
     config::ApprovalMode,
-    tools::{exec::Fallback, registry::FamilySet},
+    sanitize::clean,
+    tools::{
+        exec::Fallback,
+        registry::{Family, FamilySet},
+    },
 };
 
 /// Why a call is denied without the user being asked, or when a refusal has no
 /// other reason to give. Short, and it goes back to the model.
-pub(super) const DECLINED: &str = "the user declined";
-pub(super) const CANCELLED: &str = "cancelled";
+pub const DECLINED: &str = "the user declined";
+pub const CANCELLED: &str = "cancelled";
 const TOOLS_OFF: &str = "tools are off";
+const WORKER_OVER: &str = "the worker already ended";
 const APPROVAL_CHAT_ONLY: &str = "The approval mode is for chat panes; open one with Ctrl+Space c";
+const QUEUE_FULL_NOTICE: &str = "Too many worker approvals are waiting; the last one was denied";
 const APPROVAL_TOOLS_OFF: &str = "Tools are off: there is no approval mode to change";
 const TURN_OVER: &str = "the turn is over";
 const NO_SHELL: &str = "there is no shell pane in this tab";
 const CHAT_GONE: &str = "the chat is gone";
+/// Why a draft is refused while a Feedback form holds the user's own text.
+const FORM_OPEN: &str = "a feedback form is already open";
+/// The chat line of a draft the user did not accept.
+pub(super) const NO_DRAFT: &str = "no draft issue was opened";
+
+/// The chat line that suggests `/feedback` when the turn's draft tool is not
+/// offered: after a failed turn or a tool `Error`, once per turn (D6).
+pub(super) const FEEDBACK_HINT: &str =
+    "If this looks like a lazarobox problem, type /feedback to report it";
 
 /// What a tool event says about a call that may wait for the user.
 pub(super) enum ToolEvent {
@@ -59,6 +77,7 @@ impl App {
         let (turn, call) = approval.call()?;
         Some(Effect::ToolDecision {
             pane,
+            worker: approval.ask().worker(),
             turn,
             call,
             decision,
@@ -66,8 +85,20 @@ impl App {
     }
 
     pub(super) fn deny(pane: PaneId, turn: u64, call: CallId, reason: &'static str) -> Vec<Effect> {
+        Self::deny_for(pane, None, turn, call, reason)
+    }
+
+    /// [`App::deny`] for a call of `worker`'s session.
+    pub(super) fn deny_for(
+        pane: PaneId,
+        worker: Option<WorkerKey>,
+        turn: u64,
+        call: CallId,
+        reason: &'static str,
+    ) -> Vec<Effect> {
         vec![Effect::ToolDecision {
             pane,
+            worker,
             turn,
             call,
             decision: Decision::Denied(reason),
@@ -87,11 +118,39 @@ impl App {
         // The turn is over: the runtime denies what still waits, so the prompt
         // has nothing left to answer.
         if finished {
+            // A prompt the end of the turn takes away (a timeout, an engine
+            // failure) said nothing to the user otherwise.
+            if let Some(ask) = (self.panes.get(&id).and_then(PaneState::chat_state))
+                .and_then(|chat| chat.approvals().pending())
+                .filter(|approval| {
+                    matches!(approval.ask(), ApprovalAsk::IssueDraft(_))
+                        && approval.call().is_some_and(|(t, _)| t == turn)
+                })
+                .map(|approval| approval.ask().clone())
+            {
+                self.note_ask_denied(id, &ask);
+            }
             self.withdraw_tool_approval(id, |(t, _)| t == turn);
             self.drop_run_slots(|slot| slot.chat == id && slot.turn == turn);
         }
         match event {
             Some(ToolEvent::Over(call, status)) => {
+                // A screen the turn gave up on (a timeout, a cancel) was not
+                // released: said, not dropped.
+                let waiting = (self.panes.get(&id).and_then(PaneState::chat_state))
+                    .and_then(|chat| chat.approvals().pending())
+                    .filter(|approval| approval.call() == Some((turn, call)))
+                    .map(|approval| approval.ask().clone());
+                if let Some(ask) = waiting.filter(|_| status != ToolStatus::Ok) {
+                    self.note_ask_denied(id, &ask);
+                }
+                // The host denied a call the user had accepted: nothing opens.
+                if status != ToolStatus::Ok
+                    && let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+                    && chat.drop_issue_draft(turn, call)
+                {
+                    chat.push_system_line(NO_DRAFT.to_owned());
+                }
                 self.withdraw_tool_approval(id, |key| key == (turn, call));
                 let ran = self
                     .drop_run_slots(|slot| (slot.chat, slot.turn, slot.call) == (id, turn, call));
@@ -108,7 +167,9 @@ impl App {
                 Vec::new()
             }
             Some(ToolEvent::Ask(call, ask)) if live => self.on_tool_ask(id, turn, call, ask),
-            Some(ToolEvent::Ask(call, _)) => Self::deny(id, turn, call, TURN_OVER),
+            Some(ToolEvent::Ask(call, ask)) => {
+                Self::deny_for(id, ask.worker(), turn, call, TURN_OVER)
+            }
             None => Vec::new(),
         }
     }
@@ -123,8 +184,59 @@ impl App {
         call: CallId,
         ask: ApprovalAsk,
     ) -> Vec<Effect> {
+        let worker = ask.worker();
+        // Only the user's `/github` opens the grant dialog, never a tool call.
+        if matches!(ask, ApprovalAsk::GithubGrant { .. }) {
+            return Self::deny_for(id, worker, turn, call, GITHUB_GRANT_DENIED);
+        }
+        // Only the user's `/write` opens the Write dialog, never a tool call.
+        if matches!(ask, ApprovalAsk::ToolGrant { .. }) {
+            return Self::deny_for(id, worker, turn, call, TOOL_GRANT_DENIED);
+        }
+        // Only the user's choice of a Windows drive folder opens its grant.
+        if matches!(ask, ApprovalAsk::DriveGrant { .. }) {
+            return Self::deny_for(id, worker, turn, call, DRIVE_GRANT_DENIED);
+        }
         if !self.ai.tools_enabled() {
-            return Self::deny(id, turn, call, TOOLS_OFF);
+            return Self::deny_for(id, worker, turn, call, TOOLS_OFF);
+        }
+        // A form with the user's own text is never replaced, not even asked
+        // about: the model is told and the user keeps typing.
+        if matches!(ask, ApprovalAsk::IssueDraft(_))
+            && self.menu.as_ref().is_some_and(MenuState::feedback_open)
+        {
+            return Self::deny_for(id, worker, turn, call, FORM_OPEN);
+        }
+        // The screen is read now and frozen: the mode never answers it.
+        if let ApprovalAsk::Screen {
+            pane, scrollback, ..
+        } = ask
+        {
+            return self.on_screen_ask(id, (turn, call), pane, scrollback);
+        }
+        // Announced just as its worker was cancelled: nobody could answer it.
+        let over = worker.is_some_and(|key| {
+            (self.panes.get(&id).and_then(PaneState::chat_state))
+                .is_some_and(|c| c.worker_is_over(key))
+        });
+        if over {
+            return Self::deny_for(id, worker, turn, call, WORKER_OVER);
+        }
+        // A read or a search the mode answers needs no overlay, so a pending
+        // approval does not stand in its way. A reply that lets it go is not
+        // the user's `y`.
+        let chat = self.panes.get(&id).and_then(PaneState::chat_state);
+        let mode = chat.map(ChatState::approval_mode);
+        let blocked = chat.and_then(ChatState::block_why);
+        if let Some(decision) = mode.and_then(|mode| answers_itself(&ask, mode, blocked.is_some()))
+        {
+            return vec![Effect::ToolDecision {
+                pane: id,
+                worker,
+                turn,
+                call,
+                decision,
+            }];
         }
         let target = match &ask {
             ApprovalAsk::Run { .. } => {
@@ -137,14 +249,28 @@ impl App {
                 target
             }
             // A user tool and a command are never routed by the approval mode (D18): only a
-            // `run` can be typed or run by itself. It always opens the prompt.
+            // `run` can be typed or run by itself. A read or a search the mode
+            // did not let go above opens the prompt.
             ApprovalAsk::Read { .. }
+            | ApprovalAsk::WorkerRead { .. }
             | ApprovalAsk::Search { .. }
             | ApprovalAsk::External { .. }
             | ApprovalAsk::Exec { .. }
-            | ApprovalAsk::Batch(_) => None,
+            | ApprovalAsk::GitDiff { .. }
+            | ApprovalAsk::Panes { .. }
+            | ApprovalAsk::GithubRead { .. }
+            | ApprovalAsk::GithubGrant { .. }
+            | ApprovalAsk::ToolGrant { .. }
+            | ApprovalAsk::DriveGrant { .. }
+            | ApprovalAsk::GitAdd { .. }
+            | ApprovalAsk::Commit(_)
+            | ApprovalAsk::Batch(_)
+            | ApprovalAsk::Screen { .. }
+            | ApprovalAsk::Consent { .. }
+            | ApprovalAsk::IssueDraft(_)
+            | ApprovalAsk::Folder { .. } => None,
         };
-        let mut why = None;
+        let mut why = blocked_read_reason(&ask, blocked).map(str::to_owned);
         if let (ApprovalAsk::Run { command }, Some(target)) = (&ask, target) {
             match self.auto_route(id, target, &ask, false) {
                 Route::AutoType => return self.auto_type(id, (turn, call), target, command),
@@ -155,6 +281,78 @@ impl App {
             }
         }
         self.open_prompt(id, (turn, call), target, ask, why)
+    }
+
+    /// The user's `y` on a drafted issue: the draft waits for the turn's end.
+    pub(super) fn hold_issue_draft(&mut self, id: PaneId, approval: &Approval) {
+        if let (ApprovalAsk::IssueDraft(draft), Some((turn, call)), Some(chat)) = (
+            approval.ask(),
+            approval.call(),
+            self.panes.get_mut(&id).and_then(PaneState::chat_mut),
+        ) {
+            chat.hold_issue_draft(turn, call, draft.clone());
+        }
+    }
+
+    /// Turn `turn` of chat `id` was just sent as `effect`: a plain chat turn
+    /// that does not offer the draft tool (no tools for its engine, the
+    /// master switch or the toggle off) may suggest `/feedback` (D6). An
+    /// orchestrated turn is out of the feature's scope and never does.
+    pub(super) fn arm_feedback_hint(&mut self, id: PaneId, turn: u64, effect: &Effect) {
+        let armed = matches!(effect, Effect::ChatSend { request, .. }
+            if request.tools == Tools::Off || !request.families.contains(Family::IssueDraft));
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.arm_feedback_hint(turn, armed);
+        }
+    }
+
+    /// Turn `turn` of chat `id` failed, or a tool of it ended in `Error`: a
+    /// turn armed for it suggests `/feedback`, once. A denied call is a
+    /// choice, not a failure, and never gets here.
+    pub(super) fn suggest_feedback(&mut self, id: PaneId, turn: u64) {
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+            && chat.take_feedback_hint(turn)
+        {
+            chat.push_system_line(FEEDBACK_HINT.to_owned());
+            self.dirty = true;
+        }
+    }
+
+    /// Turn `turn` of chat `id` ended, however it ended: the draft the user
+    /// accepted in it opens in the Feedback form (D3). A form with the user's
+    /// text is never replaced (nor is a mode the user is in): the chat says
+    /// so, the draft goes, and the model's `ok` stands.
+    pub(super) fn open_issue_draft(&mut self, id: PaneId, turn: u64) -> Vec<Effect> {
+        let Some(draft) = self
+            .panes
+            .get_mut(&id)
+            .and_then(PaneState::chat_mut)
+            .and_then(|chat| chat.take_issue_draft(turn))
+        else {
+            return Vec::new();
+        };
+        let mut effects = Vec::new();
+        if self.menu.is_none() && self.input == InputMode::Terminal {
+            effects = self.open_menu();
+        }
+        // A view the user is in (the warning, whose answer reads the selected
+        // row, a picker, a field, the form) keeps the menu: the form would
+        // move the selection under it.
+        match self.menu.as_mut().filter(|menu| !menu.holds_a_view()) {
+            Some(menu) => {
+                menu.open_feedback_draft(draft.kind, &draft.title, &draft.description);
+                self.dirty = true;
+            }
+            None => {
+                if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                    chat.push_system_line(format!(
+                        "draft issue not opened (a form or another view is open): {}",
+                        clean(&draft.title)
+                    ));
+                }
+            }
+        }
+        effects
     }
 
     /// Opens the approval overlay of the call for `ask`, aimed at `target`.
@@ -169,14 +367,30 @@ impl App {
         why: Option<String>,
     ) -> Vec<Effect> {
         let armed_at = (self.clock)() + ask.arm_delay();
+        let worker = ask.worker();
+        let screen_pane = match &ask {
+            ApprovalAsk::Screen { pane, .. } => Some(*pane),
+            _ => None,
+        };
         let batch = match &ask {
             ApprovalAsk::Batch(review) => Some(review.clone()),
+            ApprovalAsk::Commit(commit) => Some(commit.review().clone()),
+            ApprovalAsk::Screen {
+                review: Some(screen),
+                ..
+            } => Some(screen.review().clone()),
             _ => None,
         };
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
-            return Self::deny(id, turn, call, CHAT_GONE);
+            return Self::deny_for(id, worker, turn, call, CHAT_GONE);
         };
         match chat.approvals_mut().request_call(ask, turn, call, why) {
+            // A queued ask touches nothing of the chat: its target, delay and
+            // review belong to the shown one until it is promoted.
+            Ok(ask_id) if chat.approvals().pending().map(Approval::id) != Some(ask_id) => {
+                self.dirty = true;
+                Vec::new()
+            }
             Ok(_) => {
                 chat.set_run_target(target);
                 chat.set_armed_at(Some(armed_at));
@@ -186,7 +400,20 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
-            Err(refusal) => Self::deny(id, turn, call, refusal.reason()),
+            Err(refusal) => {
+                if refusal.reason() == QUEUE_FULL {
+                    self.notice = Some(QUEUE_FULL_NOTICE.to_owned());
+                }
+                // A screen read refused here never reaches the user's review:
+                // say so in the chat instead of failing silently.
+                if let Some(pane) = screen_pane {
+                    chat.push_system_line(format!(
+                        "screen read denied: pane {pane} ({})",
+                        refusal.reason()
+                    ));
+                }
+                Self::deny_for(id, worker, turn, call, refusal.reason())
+            }
         }
     }
 
@@ -237,6 +464,7 @@ impl App {
             paused: chat.run_paused(),
             dirty: pty.is_some_and(|pty| pty.user_dirty),
             utf8: self.utf8_locale,
+            github_read: chat.block_why(),
         };
         route(ask, Origin::Tool, chat.approval_mode(), ctx)
     }
@@ -290,10 +518,12 @@ impl App {
         };
         let mode = chat.approval_mode().cycled(true);
         chat.set_approval_mode(mode);
-        chat.push_system_line(match mode {
-            ApprovalMode::Auto => "approval: auto (commands are typed, never run)".to_owned(),
-            ApprovalMode::Run => "approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)".to_owned(),
-            ApprovalMode::Ask => "approval: ask".to_owned(),
+        let blocked = chat.block_why();
+        chat.push_system_line(match (mode, blocked) {
+            (ApprovalMode::Run, Some(why)) => why.run_line().to_owned(),
+            (ApprovalMode::Auto, _) => "approval: auto (commands are typed, never run)".to_owned(),
+            (ApprovalMode::Run, None) => "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)".to_owned(),
+            (ApprovalMode::Ask, _) => "approval: ask".to_owned(),
         });
         self.dirty = true;
         Vec::new()
@@ -352,18 +582,73 @@ impl App {
     /// Ends the pending approval of chat `id` when it belongs to a tool call
     /// that `stale` names. A confirm the user opened is never touched.
     fn withdraw_tool_approval(&mut self, id: PaneId, stale: impl Fn((u64, CallId)) -> bool) {
+        self.withdraw_where(id, |approval| approval.call().is_some_and(&stale));
+    }
+
+    /// Ends every approval of worker `key` of chat `id`, the shown one and the
+    /// queued ones: the worker was cancelled or is over. The other workers'
+    /// asks stay in their order; when the shown ask was the worker's, the
+    /// oldest one left is promoted and armed afresh. The runtime has denied
+    /// the calls under the worker's session already (`Waits::end_worker`), so
+    /// no answer is sent. The one door for a per-worker cancel (S3c). A
+    /// review the user opened on an orphan has no call and is not the
+    /// worker's: it stays.
+    pub(super) fn withdraw_worker(&mut self, id: PaneId, key: WorkerKey) {
+        self.withdraw_where(id, |approval| {
+            approval.call().is_some() && approval.ask().worker() == Some(key)
+        });
+    }
+
+    fn withdraw_where(&mut self, id: PaneId, stale: impl Fn(&Approval) -> bool) {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
+        // The asks queued behind the shown one go first: its removal would
+        // promote one of them.
+        let queued: Vec<u64> = (chat.approvals().queued())
+            .filter(|approval| stale(approval))
+            .map(Approval::id)
+            .collect();
+        for approval_id in queued {
+            chat.approvals_mut().withdraw(approval_id);
+            self.dirty = true;
+        }
         let Some(approval) = chat.approvals().pending() else {
             return;
         };
-        if approval.call().is_some_and(stale) {
+        if stale(approval) {
             let approval_id = approval.id();
             chat.approvals_mut().withdraw(approval_id);
             chat.set_run_target(None);
             self.dirty = true;
+            self.arm_promoted(id);
         }
+    }
+
+    /// A queued worker ask just became the shown one: its keys start to
+    /// answer after its own delay, as for any ask the model opens, and the
+    /// review of a batch opens for it.
+    pub(super) fn arm_promoted(&mut self, id: PaneId) {
+        let clock = (self.clock)();
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        if !chat.approvals_mut().take_promoted() {
+            return;
+        }
+        let Some(approval) = chat.approvals().pending() else {
+            return;
+        };
+        let batch = match approval.ask() {
+            ApprovalAsk::Batch(review) => Some(review.clone()),
+            _ => None,
+        };
+        chat.set_armed_at(Some(clock + approval.ask().arm_delay()));
+        chat.set_run_target(None);
+        if let Some(review) = batch {
+            self.open_review(id, review);
+        }
+        self.dirty = true;
     }
 
     /// The request of a turn just sent from chat `id` gets the tools its
@@ -371,6 +656,7 @@ impl App {
     /// saved toggles, and the chat remembers that it may hold a tool session
     /// to end.
     pub(super) fn offer_tools(&mut self, id: PaneId, request: &mut ChatRequest) {
+        let families = self.offered_families(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
@@ -383,8 +669,12 @@ impl App {
         request.families = if request.tools == Tools::Off {
             FamilySet::LEGACY
         } else {
-            self.ai.families()
+            families
         };
+        request.github_read = request.tools != Tools::Off && chat.github_read();
+        request.drive_grant = (request.tools != Tools::Off)
+            .then(|| chat.drive_grant().map(Path::to_path_buf))
+            .flatten();
         chat.set_tool_session(request.tools != Tools::Off);
     }
 
@@ -392,6 +682,15 @@ impl App {
     /// turn offered tools.
     pub(super) fn cancel_chat(&mut self, id: PaneId) -> Vec<Effect> {
         self.drop_run_slots(|slot| slot.chat == id);
+        // A turn cancelled before any run began leaves no goal behind.
+        if self
+            .panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .is_some_and(|chat| chat.orch_run().is_none())
+        {
+            self.forget_goal(id);
+        }
         let session = self
             .panes
             .get_mut(&id)

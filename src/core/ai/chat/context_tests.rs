@@ -32,7 +32,7 @@ fn exchange(state: &mut ChatState, text: &str) {
 
 fn request_of(state: &mut ChatState, text: &str) -> ChatRequest {
     match state.send(text, &ready(), SYSTEM) {
-        SendOutcome::Sent { request, .. } => request,
+        SendOutcome::Sent { request, .. } => *request,
         SendOutcome::Refused => panic!("refused"),
     }
 }

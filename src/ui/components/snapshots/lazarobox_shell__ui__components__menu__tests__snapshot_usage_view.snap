@@ -1,0 +1,22 @@
+---
+source: src/ui/components/menu.rs
+expression: shown
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Chat                           │
+│ Usage (alpha)                                              │
+│ Usage line                                              on │
+│ Usage in bar                                            on │
+│ claude billing                                subscription │
+│ codex billing                                 subscription │
+│ gemini billing                                subscription │
+│ Turn tokens                                            off │
+│ Day tokens                                             off │
+│ Day $                                                  off │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ j/k move · h/l change · Enter edit · s save · Esc back     │
+└────────────────────────────────────────────────────────────┘

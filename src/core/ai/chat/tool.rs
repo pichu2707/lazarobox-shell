@@ -50,6 +50,7 @@ impl ChatState {
         }
         if let Phase::Waiting { slow } = &mut self.phase {
             *slow = false;
+            self.clock_reset();
         }
         let row = Entry::Tool(ToolRow {
             id,

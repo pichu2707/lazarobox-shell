@@ -525,6 +525,7 @@ fn y_on_the_offer_is_ignored_while_a_hugging_face_download_runs() {
     preply(&mut p, Ok(Reply::Installed));
     p.install_arm();
     p.set_download(Some(Running {
+        source: crate::core::ai::picker::Source::HuggingFace,
         file: "m.gguf".to_owned(),
         license: "mit".to_owned(),
         done: 1,

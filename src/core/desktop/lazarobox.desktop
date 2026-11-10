@@ -3,8 +3,9 @@ Type=Application
 Name=Lazarobox
 GenericName=Terminal Workspace
 Comment=Terminal workspace with panes and tabs
-Exec=@EXEC@
-Icon=utilities-terminal
+Exec=@EXEC@@DIR_ARG@
+@PATH@
+Icon=lazarobox
 Terminal=@TERMINAL@
 Categories=Utility;
 @STARTUP_WM_CLASS@

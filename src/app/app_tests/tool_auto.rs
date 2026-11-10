@@ -68,7 +68,7 @@ fn resuming_a_conversation_resets_the_mode_to_the_config() {
     a.update(prompt_for(id));
     listed(&mut a, id, rows());
     a.ai.set_approval(ApprovalMode::Auto);
-    a.update(resumed(id, 30, "programmer"));
+    a.update_settled(resumed(id, 30, "programmer"));
     assert_eq!(chat_of(&a).approval_mode(), ApprovalMode::Auto);
 
     // And the other way: the toggled chat goes back to ask.
@@ -76,7 +76,7 @@ fn resuming_a_conversation_resets_the_mode_to_the_config() {
     set_mode(&mut a, ApprovalMode::Auto);
     a.focused_state_mut().chat_mut().unwrap().open_list();
     listed(&mut a, id, rows());
-    a.update(resumed(id, 10, "analyst"));
+    a.update_settled(resumed(id, 10, "analyst"));
     assert_eq!(chat_of(&a).approval_mode(), ApprovalMode::Ask);
 }
 
@@ -84,7 +84,7 @@ fn resuming_a_conversation_resets_the_mode_to_the_config() {
 
 use super::tool_approval::{announce, announce_now, decision, live, pending, run, shell_output};
 use crate::core::ai::chat::{
-    approval::ANOTHER_PENDING,
+    approval::{ANOTHER_PENDING, ApprovalAsk},
     engine::{CallId, Decision},
 };
 
@@ -127,6 +127,25 @@ fn ask_mode_still_prompts() {
     assert_eq!(announce(&mut a, turn, 1, run("cd x")), vec![]);
     assert!(pending(&a).is_some());
     assert_eq!(auto_typed(&a), 0);
+}
+
+// S1, S3: `auto` and `ask` keep their behaviour for the commands `run` now
+// tells apart: a search and `mkdir` are typed by `auto` and asked by `ask`.
+#[test]
+fn auto_and_ask_treat_a_search_and_mkdir_as_before() {
+    for command in ["rg foo", "git status", "mkdir x", "cargo build"] {
+        let (mut a, turn) = auto_live();
+        assert_eq!(
+            announce(&mut a, turn, 1, run(command)),
+            vec![typed(turn, 1, command.as_bytes())],
+            "{command}"
+        );
+        assert_eq!(pending(&a), None);
+        let (mut a, turn) = live();
+        assert_eq!(announce(&mut a, turn, 1, run(command)), vec![], "{command}");
+        assert_eq!(pending(&a).map(|(ask, _)| ask), Some(run(command)));
+        assert_eq!(auto_typed(&a), 0);
+    }
 }
 
 // Sent means typed, by the same function as `y`: a paste-framed multi-line
@@ -520,7 +539,7 @@ fn lines(a: &App) -> Vec<String> {
         .collect()
 }
 
-const RUN_LINE: &str = "approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)";
+const RUN_LINE: &str = "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)";
 
 // Spec (modal-input): `a` cycles ask, auto, run, ask, with one system line per
 // mode and nothing written to a PTY.
@@ -645,4 +664,138 @@ fn saving_auto_from_the_menu_leaves_a_pending_approval_alone() {
             .any(|e| matches!(e, Effect::WritePty(..) | Effect::AutoType { .. })),
         "{effects:?}"
     );
+}
+
+// agent-orchestrator / Outside read follows the mode as a chat read: in
+// `ask`, `auto` and `run`, a worker's read ask gets exactly the answer the
+// same chat read gets (the same effects, a prompt or none), and only its
+// prompt carries the worker label.
+#[test]
+fn a_worker_read_is_answered_by_the_mode_as_the_same_chat_read() {
+    use crate::core::ai::chat::approval::Reach;
+    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        for reach in [
+            Reach::Root,
+            Reach::Broad,
+            Reach::Refused,
+            Reach::Other,
+            Reach::Unshowable,
+        ] {
+            for cloud in [true, false] {
+                let path = if reach == Reach::Unshowable {
+                    ""
+                } else {
+                    "~/x/a.rs"
+                };
+                let chat = ApprovalAsk::Read {
+                    path: path.into(),
+                    reach,
+                    cloud,
+                };
+                let worker = ApprovalAsk::WorkerRead {
+                    worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+                    path: path.into(),
+                    label: "review claude>opus".into(),
+                    reach,
+                    cloud,
+                };
+                let (mut a, turn) = live();
+                set_mode(&mut a, mode);
+                let by_chat = announce(&mut a, turn, 1, chat);
+                let chat_prompts = pending(&a).is_some();
+                let (mut b, turn) = live();
+                set_mode(&mut b, mode);
+                let by_worker = announce(&mut b, turn, 1, worker.clone());
+                let case = format!("{mode:?} {reach:?} cloud={cloud}");
+                // The worker's answer is addressed to its session, the chat's
+                // is not; nothing else differs.
+                let unaddressed: Vec<_> = by_worker
+                    .iter()
+                    .cloned()
+                    .map(|mut effect| {
+                        if let Effect::ToolDecision { worker, .. } = &mut effect {
+                            assert!(worker.take().is_some(), "{case}");
+                        }
+                        effect
+                    })
+                    .collect();
+                assert_eq!(unaddressed, by_chat, "{case}");
+                let shown = pending(&b).map(|(ask, _)| ask);
+                assert_eq!(shown, chat_prompts.then_some(worker), "{case}");
+            }
+        }
+    }
+}
+
+// S7 guard: a chat read keeps its answers in every mode (chat-auto-permissions).
+#[test]
+fn a_chat_read_keeps_its_answers_in_every_mode() {
+    use crate::core::ai::chat::approval::{Reach, UNSHOWABLE};
+    for (mode, reach, cloud, prompts, decided) in [
+        (
+            ApprovalMode::Run,
+            Reach::Root,
+            true,
+            false,
+            Some(Decision::Unprompted),
+        ),
+        (ApprovalMode::Ask, Reach::Root, true, true, None),
+        (
+            ApprovalMode::Auto,
+            Reach::Other,
+            false,
+            false,
+            Some(Decision::Unprompted),
+        ),
+        (ApprovalMode::Run, Reach::Other, true, true, None),
+        // A path the guard refuses (`.env`) never prompts, in any mode (T10).
+        (
+            ApprovalMode::Ask,
+            Reach::Refused,
+            true,
+            false,
+            Some(Decision::Unprompted),
+        ),
+        (
+            ApprovalMode::Auto,
+            Reach::Refused,
+            true,
+            false,
+            Some(Decision::Unprompted),
+        ),
+        (
+            ApprovalMode::Run,
+            Reach::Unshowable,
+            false,
+            false,
+            Some(Decision::Denied(UNSHOWABLE)),
+        ),
+    ] {
+        let (mut a, turn) = live();
+        set_mode(&mut a, mode);
+        let path = if reach == Reach::Unshowable {
+            ""
+        } else {
+            "~/x/a.rs"
+        };
+        let ask = ApprovalAsk::Read {
+            path: path.into(),
+            reach,
+            cloud,
+        };
+        let effects = announce(&mut a, turn, 1, ask);
+        let case = format!("{mode:?} {reach:?} cloud={cloud}");
+        assert_eq!(pending(&a).is_some(), prompts, "{case}");
+        let want: Vec<Effect> = decided
+            .map(|decision| Effect::ToolDecision {
+                pane: id2(),
+                worker: None,
+                turn,
+                call: CallId(1),
+                decision,
+            })
+            .into_iter()
+            .collect();
+        assert_eq!(effects, want, "{case}");
+    }
 }

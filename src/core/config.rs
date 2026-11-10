@@ -6,15 +6,17 @@ use std::{
     ffi::OsString,
     fmt,
     io::{self, ErrorKind},
-    path::PathBuf,
+    num::NonZeroU16,
+    path::{Path, PathBuf},
 };
 
 use toml::{Table, Value};
 
 use super::ai::{
     self,
-    config::{AiConfig, ApprovalMode, ToolToggle},
+    config::{AiConfig, ApprovalMode, Task, ToolToggle},
 };
+pub use super::build_jobs::BuildJobs;
 
 /// Which edge of the screen a bar sits on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -49,6 +51,9 @@ pub struct Config {
     /// Whether a background check may ask crates.io for a newer version
     /// (default on; `[updates] check = false` makes no network call at all).
     pub update_check: bool,
+    /// How many compile jobs a new pane shell is told to run (`[build]
+    /// jobs`, default `auto`).
+    pub build_jobs: BuildJobs,
 }
 
 impl Default for Config {
@@ -57,6 +62,7 @@ impl Default for Config {
             bars: BarPositions::default(),
             mouse: true,
             update_check: true,
+            build_jobs: BuildJobs::Auto,
         }
     }
 }
@@ -111,24 +117,57 @@ impl ConfigEdit {
         }
     }
 
+    /// An edit of an owned orchestrator flag (`ai.orchestrator.enabled` or
+    /// `.acknowledged`). `worker_timeout_secs` is owned but never edited.
+    pub fn orchestrator_flag(key: &'static str, on: bool) -> Self {
+        Self {
+            table: ORCHESTRATOR_TABLE,
+            key,
+            value: Cow::Borrowed(if on { "true" } else { "false" }),
+        }
+    }
+
+    /// Whether the edit deletes its key instead of writing it: a cleared
+    /// `orchestrate` slot is absent from the file, not a pair of empty
+    /// strings.
+    pub fn is_removal(&self) -> bool {
+        (self.table == Task::Orchestrate.table() || (self.table == USAGE_TABLE && self.is_limit()))
+            && self.value.is_empty()
+    }
+
+    /// Whether the key is one of the usage limits, which are off when absent.
+    fn is_limit(&self) -> bool {
+        matches!(self.key, "turn_tokens" | "day_tokens" | "day_usd")
+    }
+
+    /// Whether the key is a TOML float (`ai.usage.day_usd`).
+    pub fn is_float(&self) -> bool {
+        self.table == USAGE_TABLE && self.key == "day_usd"
+    }
+
     /// Whether the key is a TOML integer (written as a number, not as a
-    /// string): `ai.servers.llamacpp.idle_minutes`.
+    /// string): `ai.servers.llamacpp.idle_minutes`, the usage token limits
+    /// and `build.jobs` (whose `auto` stays a string).
     pub fn is_integer(&self) -> bool {
-        self.table == LLAMACPP_TABLE && self.key == "idle_minutes"
+        (self.table == LLAMACPP_TABLE && self.key == "idle_minutes")
+            || (self.table == USAGE_TABLE && matches!(self.key, "turn_tokens" | "day_tokens"))
+            || (self.table == BUILD_TABLE && self.key == "jobs")
     }
 
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
     /// as a string): the root `mouse`, the memory flags, `ai.context`,
-    /// `ai.notify_sound`, `ai.tools.enabled`, the five family switches and `ai.servers.llamacpp.managed`.
-    /// Every other owned key holds a string; `ai.memory.port` is owned but
-    /// never edited.
+    /// `ai.notify_sound`, `ai.usage.line`, `ai.usage.statusline`, `ai.tools.enabled`, the six family switches,
+    /// `ai.servers.llamacpp.managed` and the orchestrator flags. Every other
+    /// owned key holds a string; `ai.memory.port` is owned but never edited.
     pub fn is_flag(&self) -> bool {
         (self.table.is_empty() && self.key == "mouse")
             || (self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged"))
             || (self.table == "ai" && matches!(self.key, "context" | "notify_sound"))
             || (self.table == TOOLS_TABLE
                 && (self.key == "enabled" || ToolToggle::ALL.iter().any(|t| t.key() == self.key)))
+            || (self.table == USAGE_TABLE && matches!(self.key, "line" | "statusline"))
             || (self.table == LLAMACPP_TABLE && self.key == "managed")
+            || (self.table == ORCHESTRATOR_TABLE && matches!(self.key, "enabled" | "acknowledged"))
     }
 }
 
@@ -137,6 +176,15 @@ pub const LLAMACPP_TABLE: &str = "ai.servers.llamacpp";
 
 /// The dotted table of the memory keys.
 pub const MEMORY_TABLE: &str = "ai.memory";
+
+/// The dotted table of the orchestrator keys.
+pub const ORCHESTRATOR_TABLE: &str = "ai.orchestrator";
+
+/// The dotted table of the usage display keys.
+pub const USAGE_TABLE: &str = "ai.usage";
+
+/// The dotted table of the billing mode of each CLI engine.
+pub const BILLING_TABLE: &str = "ai.usage.billing";
 
 /// The dotted table of the agent tools keys.
 pub const TOOLS_TABLE: &str = "ai.tools";
@@ -157,12 +205,17 @@ impl fmt::Display for ConfigError {
 pub struct Parsed {
     pub config: Config,
     pub ai: AiConfig,
+    /// `[workspace] dir`: absolute, `~` already expanded; `None` when unset
+    /// or invalid. Whether the folder exists is checked at startup.
+    pub workspace_dir: Option<PathBuf>,
     pub problems: Vec<String>,
 }
 
 impl Config {
-    /// Parses `config.toml`. Missing keys take their defaults and unknown
-    /// keys are ignored, so older builds can read newer files.
+    /// Parses `config.toml`. Missing keys take their defaults. An unknown key
+    /// inside a table lazarobox owns is ignored and noted as a problem (see
+    /// [`note_unknown_keys`]); keys outside those tables are the user's own
+    /// and are not checked.
     ///
     /// The result does not depend on the environment: the memory port default
     /// is 7437. See [`Config::parse_with_port_env`].
@@ -173,6 +226,16 @@ impl Config {
     /// Like [`Config::parse`], with the value of `ENGRAM_PORT` given: a valid
     /// one is the default memory port. Callers read the environment once.
     pub fn parse_with_port_env(text: &str, port_env: Option<&str>) -> Result<Parsed, ConfigError> {
+        Self::parse_with_home(text, port_env, None)
+    }
+
+    /// Like [`Config::parse_with_port_env`], with `$HOME` given so that a
+    /// `~` in `[workspace] dir` expands. Without it such a path is relative.
+    pub fn parse_with_home(
+        text: &str,
+        port_env: Option<&str>,
+        home: Option<&Path>,
+    ) -> Result<Parsed, ConfigError> {
         let table: Table = text.parse().map_err(|error: toml::de::Error| {
             let message = error.message().lines().next().unwrap_or_default().trim();
             ConfigError(
@@ -201,14 +264,25 @@ impl Config {
         };
         let update_check =
             read_update_check(&table, &mut problems).unwrap_or(defaults.update_check);
+        let build_jobs = read_build_jobs(&table, &mut problems).unwrap_or(defaults.build_jobs);
         let ai = ai::config::read_with_port_env(&table, &mut problems, port_env);
+        let workspace_dir = read_workspace(&table, &mut problems, home);
+        // Last, so a wrong value stays the first problem of the notice.
+        for (section, known) in OWNED_SECTIONS {
+            if let Some(Value::Table(section_table)) = table.get(section) {
+                note_unknown_keys(section_table, section, known, &mut problems);
+            }
+        }
+        ai::config::note_unknown_ai_keys(&table, &mut problems);
         Ok(Parsed {
             config: Self {
                 bars: BarPositions { statusline, tabbar },
                 mouse,
                 update_check,
+                build_jobs,
             },
             ai,
+            workspace_dir,
             problems,
         })
     }
@@ -226,48 +300,164 @@ impl Config {
         read: io::Result<String>,
         port_env: Option<&str>,
     ) -> (Self, AiConfig, Option<String>) {
+        let (config, ai, notice, _) = Self::load_with_workspace(read, port_env, None);
+        (config, ai, notice)
+    }
+
+    /// Like [`Config::load_with_ai`], and `[workspace] dir` too (`home` lets
+    /// a `~` expand).
+    pub fn load_with_workspace(
+        read: io::Result<String>,
+        port_env: Option<&str>,
+        home: Option<&Path>,
+    ) -> (Self, AiConfig, Option<String>, Option<PathBuf>) {
         let text = match read {
             Ok(text) => text,
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                return (Self::default(), AiConfig::default(), None);
+                return (Self::default(), AiConfig::default(), None, None);
             }
             Err(error) => {
-                return (
-                    Self::default(),
-                    AiConfig::default(),
-                    Some(format!("config: {error}")),
-                );
+                let notice = Some(format!("config: {error}"));
+                return (Self::default(), AiConfig::default(), notice, None);
             }
         };
-        match Self::parse_with_port_env(&text, port_env) {
+        match Self::parse_with_home(&text, port_env, home) {
             Ok(Parsed {
                 config,
                 ai,
+                workspace_dir,
                 problems,
             }) if !problems.is_empty() => {
                 let head = match problems.len() {
                     1 => "config".to_owned(),
                     n => format!("config ({n} problems)"),
                 };
-                (config, ai, Some(format!("{head}: {}", problems[0])))
+                let notice = Some(format!("{head}: {}", problems[0]));
+                (config, ai, notice, workspace_dir)
             }
-            Ok(Parsed { config, ai, .. }) if ai.memory.enabled && !ai.memory.acknowledged => (
+            Ok(Parsed {
                 config,
                 ai,
-                Some(ai::config::UNACKNOWLEDGED_NOTICE.to_owned()),
-            ),
-            Ok(Parsed { config, ai, .. }) => (config, ai, None),
+                workspace_dir,
+                ..
+            }) if ai.memory.enabled && !ai.memory.acknowledged => {
+                let notice = Some(ai::config::UNACKNOWLEDGED_NOTICE.to_owned());
+                (config, ai, notice, workspace_dir)
+            }
+            Ok(Parsed {
+                config,
+                ai,
+                workspace_dir,
+                ..
+            }) => (config, ai, None, workspace_dir),
             Err(error) => (
                 Self::default(),
                 AiConfig::default(),
                 Some(format!("config: {error}")),
+                None,
             ),
         }
     }
 }
 
+/// The top-level tables lazarobox owns besides `[ai]` (see
+/// [`ai::config::note_unknown_ai_keys`]), with the keys each one holds. The
+/// root of the file is not checked: other top-level keys and tables are the
+/// user's own.
+const OWNED_SECTIONS: [(&str, &[&str]); 5] = [
+    ("build", &["jobs"]),
+    ("statusline", &["position"]),
+    ("tabbar", &["position"]),
+    ("updates", &["check"]),
+    ("workspace", &["dir"]),
+];
+
+/// Notes `unknown key: <path>.<key>` for every key of the owned table at
+/// `path` that is not in `known`. The value is ignored. A key that is not a
+/// bare TOML key is shown quoted, with its control characters escaped, so the
+/// notice stays one plain line.
+pub(crate) fn note_unknown_keys(
+    table: &Table,
+    path: &str,
+    known: &[&str],
+    problems: &mut Vec<String>,
+) {
+    for key in table.keys().filter(|key| !known.contains(&key.as_str())) {
+        let bare = !key.is_empty()
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        if bare {
+            problems.push(format!("unknown key: {path}.{key}"));
+        } else {
+            problems.push(format!("unknown key: {path}.{key:?}"));
+        }
+    }
+}
+
+/// `workspace.dir`, or `None` (with a problem noted) when it is invalid. An
+/// empty string is unset. `~` expands against `home`.
+fn read_workspace(
+    table: &Table,
+    problems: &mut Vec<String>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    let section = match table.get("workspace")? {
+        Value::Table(section) => section,
+        _ => {
+            problems.push("workspace: expected a table".to_owned());
+            return None;
+        }
+    };
+    let Value::String(raw) = section.get("dir")? else {
+        problems.push("workspace.dir: expected a string".to_owned());
+        return None;
+    };
+    let path = match (raw.as_str(), raw.strip_prefix("~/"), home) {
+        ("", ..) => return None,
+        ("~", _, Some(home)) => home.to_path_buf(),
+        (_, Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(raw),
+    };
+    if !path.is_absolute() {
+        problems.push("workspace.dir: expected an absolute path".to_owned());
+        return None;
+    }
+    Some(path)
+}
+
 /// `updates.check`, or `None` (with a problem noted) when it is missing or
 /// invalid, so the caller falls back to the default.
+/// The table of `jobs`.
+pub const BUILD_TABLE: &str = "build";
+
+/// `build.jobs`: `"auto"` or a whole number from 1, or `None` (with a
+/// problem noted) when it is missing or invalid.
+fn read_build_jobs(table: &Table, problems: &mut Vec<String>) -> Option<BuildJobs> {
+    let section = match table.get(BUILD_TABLE)? {
+        Value::Table(section) => section,
+        _ => {
+            problems.push("build: expected a table".to_owned());
+            return None;
+        }
+    };
+    let jobs = match section.get("jobs")? {
+        Value::String(text) if text == "auto" => Some(BuildJobs::Auto),
+        Value::Integer(n) => u16::try_from(*n)
+            .ok()
+            .and_then(NonZeroU16::new)
+            .map(BuildJobs::Fixed),
+        _ => None,
+    };
+    if jobs.is_none() {
+        problems.push(format!(
+            "build.jobs: expected \"auto\" or a whole number from 1 to {}",
+            u16::MAX
+        ));
+    }
+    jobs
+}
+
 fn read_update_check(table: &Table, problems: &mut Vec<String>) -> Option<bool> {
     let section = match table.get("updates")? {
         Value::Table(section) => section,
@@ -345,6 +535,7 @@ mod tests {
             bars: bars(Bottom, Top),
             mouse: true,
             update_check: true,
+            build_jobs: BuildJobs::Auto,
         };
         assert_eq!(Config::default(), expected);
         assert_eq!(parse(""), expected);
@@ -434,14 +625,16 @@ mod tests {
 
     #[test]
     fn valid_files_have_no_problems() {
-        assert!(problems("[statusline]\nposition = \"top\"\nx = 1").is_empty());
+        assert!(problems("[statusline]\nposition = \"top\"").is_empty());
     }
 
-    // Spec: Unknown keys ignored.
+    // Spec (config-unknown-keys): unknown keys are ignored; only the one in
+    // an owned table is reported.
     #[test]
     fn unknown_keys_and_tables_are_ignored() {
-        let c = parse("theme = \"x\"\n[statusline]\nposition = \"top\"\ncolor = 1\n[other]\na = 1");
-        assert_eq!(c.bars.statusline, Top);
+        let text = "theme = \"x\"\n[statusline]\nposition = \"top\"\ncolor = 1\n[other]\na = 1";
+        assert_eq!(parse(text).bars.statusline, Top);
+        assert_eq!(problems(text), ["unknown key: statusline.color"]);
     }
 
     // Spec: Missing file, unreadable file, invalid file, mouse notice.
@@ -569,6 +762,63 @@ mod tests {
     fn a_bad_update_check_keeps_the_other_keys() {
         let c = parse("mouse = false\n[updates]\ncheck = 3");
         assert!(!c.mouse);
+    }
+
+    fn jobs(n: u16) -> BuildJobs {
+        BuildJobs::Fixed(NonZeroU16::new(n).unwrap())
+    }
+
+    #[test]
+    fn build_jobs_are_auto_by_default() {
+        assert_eq!(parse("").build_jobs, BuildJobs::Auto);
+        assert_eq!(parse("[build]\n").build_jobs, BuildJobs::Auto);
+        assert_eq!(
+            parse("[build]\njobs = \"auto\"").build_jobs,
+            BuildJobs::Auto
+        );
+    }
+
+    #[test]
+    fn build_jobs_read_a_whole_number() {
+        assert_eq!(parse("[build]\njobs = 1").build_jobs, jobs(1));
+        assert_eq!(parse("[build]\njobs = 24").build_jobs, jobs(24));
+    }
+
+    #[test]
+    fn bad_build_jobs_fall_back_to_auto_with_a_notice() {
+        let expected = "config: build.jobs: expected \"auto\" or a whole number from 1 to 65535";
+        for text in [
+            "jobs = 0",
+            "jobs = -2",
+            "jobs = 70000",
+            "jobs = \"max\"",
+            "jobs = 2.5",
+        ] {
+            let (config, notice) = Config::load(Ok(format!("[build]\n{text}\n")));
+            assert_eq!(config.build_jobs, BuildJobs::Auto, "{text}");
+            assert_eq!(notice.as_deref(), Some(expected), "{text}");
+        }
+        let (config, notice) = Config::load(Ok("build = 4\nmouse = false\n".into()));
+        assert_eq!(config.build_jobs, BuildJobs::Auto);
+        assert!(!config.mouse);
+        assert_eq!(notice.as_deref(), Some("config: build: expected a table"));
+    }
+
+    #[test]
+    fn an_unknown_build_key_is_noted() {
+        assert_eq!(problems("[build]\njob = 4"), ["unknown key: build.job"]);
+    }
+
+    #[test]
+    fn build_jobs_save_as_a_number_and_auto_as_a_string() {
+        let edit = |value: &'static str| ConfigEdit {
+            table: BUILD_TABLE,
+            key: "jobs",
+            value: value.into(),
+        };
+        assert!(edit("6").is_integer());
+        assert!(edit("auto").is_integer());
+        assert!(!edit("6").is_flag());
     }
 
     fn ai(engine: Option<&str>, model: Option<&str>) -> AiConfig {
@@ -821,6 +1071,326 @@ mod tests {
         assert_eq!(
             notice.as_deref(),
             Some("config: ai.memory: expected a table")
+        );
+    }
+
+    fn workspace(text: &str, home: Option<&str>) -> (Option<std::path::PathBuf>, Vec<String>) {
+        let parsed = Config::parse_with_home(text, None, home.map(std::path::Path::new)).unwrap();
+        (parsed.workspace_dir, parsed.problems)
+    }
+
+    // Spec (configuration): Workspace key.
+    #[test]
+    fn workspace_dir_defaults_to_unset() {
+        assert_eq!(workspace("", None), (None, vec![]));
+        assert_eq!(workspace("[workspace]\n", None), (None, vec![]));
+        assert_eq!(workspace("[workspace]\ndir = \"\"", None), (None, vec![]));
+    }
+
+    #[test]
+    fn workspace_dir_takes_absolute_and_tilde() {
+        let abs = workspace("[workspace]\ndir = \"/w/proj\"", Some("/h"));
+        assert_eq!(abs, (Some("/w/proj".into()), vec![]));
+        let tilde = workspace("[workspace]\ndir = \"~/code\"", Some("/h"));
+        assert_eq!(tilde, (Some("/h/code".into()), vec![]));
+        let alone = workspace("[workspace]\ndir = \"~\"", Some("/h"));
+        assert_eq!(alone, (Some("/h".into()), vec![]));
+    }
+
+    #[test]
+    fn workspace_dir_rejects_relative_and_wrong_types_for_that_key_only() {
+        let relative = workspace("[workspace]\ndir = \"proj\"", Some("/h"));
+        assert_eq!(
+            relative,
+            (
+                None,
+                vec!["workspace.dir: expected an absolute path".into()]
+            )
+        );
+        let no_home = workspace("[workspace]\ndir = \"~/x\"", None);
+        assert_eq!(no_home.0, None);
+        let number = workspace("[workspace]\ndir = 3", None);
+        assert_eq!(
+            number,
+            (None, vec!["workspace.dir: expected a string".into()])
+        );
+        let table = workspace("workspace = 3", None);
+        assert_eq!(table, (None, vec!["workspace: expected a table".into()]));
+    }
+
+    #[test]
+    fn workspace_ignores_unknown_keys_and_counts_problems() {
+        // Spec (config-unknown-keys): the unknown key is reported, `dir` applies.
+        let ok = workspace("[workspace]\ncolour = \"red\"\ndir = \"/w\"", None);
+        assert_eq!(
+            ok,
+            (
+                Some("/w".into()),
+                vec!["unknown key: workspace.colour".to_owned()]
+            )
+        );
+        let (_, _, notice, _) = Config::load_with_workspace(
+            Ok("[workspace]\ncolour = \"red\"\ndir = \"/w\"".into()),
+            None,
+            None,
+        );
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: unknown key: workspace.colour")
+        );
+        let (_, _, notice, dir) = Config::load_with_workspace(
+            Ok("[workspace]\ndir = 3\n[statusline]\nposition = \"middle\"".into()),
+            None,
+            None,
+        );
+        assert_eq!(dir, None);
+        assert!(notice.unwrap().starts_with("config (2 problems): "));
+    }
+    // A bad Ollama cap reaches the startup notice, whole, and the keep-alive
+    // next to it is still respected.
+    #[test]
+    fn a_bad_ollama_option_reaches_the_startup_notice() {
+        let text = "[ai.servers.ollama]\nnum_ctx_cap = \"big\"\nkeep_alive = \"5m\"\n";
+        let (_, ai, notice) = Config::load_with_ai(Ok(text.into()), None);
+        assert_eq!(
+            notice.as_deref(),
+            Some(
+                "config: ai.servers.ollama.num_ctx_cap: expected a whole number of tokens from 1024 to 1048576"
+            )
+        );
+        assert_eq!(ai.ollama_options().num_ctx_cap, 16_384);
+        assert_eq!(
+            ai.cache_options().keep_alive,
+            Some(crate::core::ai::KeepAlive::from("5m"))
+        );
+    }
+
+    // Spec (config-unknown-keys): an unknown key inside a table lazarobox
+    // owns is reported by its full path; the file still loads and the key is
+    // ignored.
+    #[test]
+    fn an_unknown_key_in_an_owned_table_is_reported_by_its_path() {
+        // (the known part, the unknown line, the reported path)
+        let cases = [
+            ("[ai]", "tols = 1", "ai.tols"),
+            ("", "[ai.tool]\nenabled = false", "ai.tool"),
+            ("[statusline]", "postion = \"top\"", "statusline.postion"),
+            ("[tabbar]", "side = \"top\"", "tabbar.side"),
+            ("[updates]", "chek = false", "updates.chek"),
+            ("[workspace]", "colour = \"red\"", "workspace.colour"),
+            ("", "[ai.tasks.cod]\nengine = \"x\"", "ai.tasks.cod"),
+            ("", "[ai.tasks.general]\nengine = \"x\"", "ai.tasks.general"),
+            ("[ai.tasks.code]", "modle = \"x\"", "ai.tasks.code.modle"),
+            ("[ai.usage]", "limit = 3", "ai.usage.limit"),
+            (
+                "[ai.usage.billing]",
+                "openai = \"per-token\"",
+                "ai.usage.billing.openai",
+            ),
+            ("[ai.tools]", "mode = \"fast\"", "ai.tools.mode"),
+            ("[ai.chat]", "compact = \"off\"", "ai.chat.compact"),
+            ("[ai.mcp]", "proxy = \"x\"", "ai.mcp.proxy"),
+            (
+                "[[ai.mcp.servers]]\nname = \"a\"\ncommand = \"a\"",
+                "timeout = 5",
+                "ai.mcp.servers[0].timeout",
+            ),
+            ("", "[ai.servers.llama]\nport = 1", "ai.servers.llama"),
+            (
+                "[ai.servers.ollama]",
+                "managed = true",
+                "ai.servers.ollama.managed",
+            ),
+            (
+                "[ai.servers.llamacpp]",
+                "modle = \"/m/q.gguf\"",
+                "ai.servers.llamacpp.modle",
+            ),
+            (
+                "[ai.memory]",
+                "endpoint = \"http://x\"",
+                "ai.memory.endpoint",
+            ),
+            (
+                "[ai.orchestrator]",
+                "notice_accepted = true",
+                "ai.orchestrator.notice_accepted",
+            ),
+        ];
+        for (known, unknown, path) in cases {
+            let text = format!("{known}\n{unknown}\n");
+            let without = Config::parse(known).unwrap();
+            let parsed = Config::parse(&text).unwrap();
+            let expected = format!("unknown key: {path}");
+            assert_eq!(parsed.problems, std::slice::from_ref(&expected), "{text:?}");
+            assert_eq!(parsed.config, without.config, "{text:?}");
+            assert_eq!(parsed.ai, without.ai, "{text:?}");
+            let (config, notice) = Config::load(Ok(text.clone()));
+            assert_eq!(config, without.config, "{text:?}");
+            assert_eq!(notice, Some(format!("config: {expected}")), "{text:?}");
+        }
+    }
+
+    // Spec (config-unknown-keys): the known keys next to an unknown one
+    // still apply, and the unknown key comes after the other problems.
+    #[test]
+    fn the_known_keys_apply_and_the_unknown_key_is_reported_last() {
+        let text = "[ai]\ntols = 1\nengine = 3\nmodel = \"m\"\n[statusline]\nposition = \"top\"";
+        let parsed = Config::parse(text).unwrap();
+        assert_eq!(
+            parsed.problems,
+            ["ai.engine: expected a string", "unknown key: ai.tols"]
+        );
+        assert_eq!(parsed.config.bars.statusline, Top);
+        assert_eq!(parsed.ai.get(Task::General).model.as_deref(), Some("m"));
+        let (_, notice) = Config::load(Ok(text.into()));
+        assert_eq!(
+            notice.as_deref(),
+            Some("config (2 problems): ai.engine: expected a string")
+        );
+    }
+
+    // Spec (config-unknown-keys): a key that is not a bare TOML key is
+    // shown quoted, its control characters escaped.
+    #[test]
+    fn an_unknown_key_that_needs_quotes_is_shown_quoted() {
+        let text = "[ai]\n\"a.b\" = 1\n\"x\\u001b[2J\" = 2\n";
+        assert_eq!(
+            problems(text),
+            ["unknown key: ai.\"a.b\"", "unknown key: ai.\"x\\u{1b}[2J\"",]
+        );
+    }
+
+    // Spec (config-unknown-keys): keys and tables outside the owned tables
+    // (the root of the file and tables lazarobox does not read) are the
+    // user's own and are not reported.
+    #[test]
+    fn keys_outside_the_owned_tables_are_not_reported() {
+        let text = "theme = \"x\"\n[custom]\nother = 1\n[custom.deep]\ny = 2\n[[plugins]]\nz = 3\n";
+        assert_eq!(problems(text), Vec::<String>::new());
+    }
+
+    // Spec (config-unknown-keys): every key lazarobox reads, the root
+    // `mouse` and llamacpp's `model` included, loads without a problem.
+    #[test]
+    fn every_known_key_loads_without_a_problem() {
+        let text = r#"
+mouse = false
+
+[statusline]
+position = "top"
+
+[tabbar]
+position = "bottom"
+
+[updates]
+check = false
+
+[workspace]
+dir = "/w"
+
+[ai]
+engine = "ollama"
+model = "llama3:8b"
+profile = "analyst"
+context = false
+notify = "bell"
+notify_sound = false
+tool_mark = "text"
+
+[ai.tasks.code]
+engine = "claude"
+model = "opus"
+
+[ai.tasks.chat]
+engine = "llamacpp"
+model = "m"
+
+[ai.tasks.review]
+engine = "codex"
+model = "o"
+
+[ai.tasks.summarize]
+engine = "ollama"
+model = "s"
+
+[ai.tasks.orchestrate]
+engine = "claude"
+model = "opus"
+
+[ai.usage]
+line = false
+statusline = false
+turn_tokens = 1000
+day_tokens = 100000
+day_usd = 2.5
+
+[ai.usage.billing]
+claude = "per-token"
+codex = "subscription"
+gemini = "per-token"
+
+[ai.tools]
+enabled = true
+approval = "auto"
+search = true
+write = true
+exec = true
+git = true
+git_write = true
+github = true
+
+[ai.chat]
+compaction = "off"
+
+[[ai.mcp.servers]]
+name = "fs"
+command = "mcp-fs"
+args = ["--x"]
+env = ["HOME"]
+enabled = false
+project = "/p"
+
+[ai.servers.ollama]
+port = 11500
+keep_alive = "30m"
+num_ctx_cap = 8192
+
+[ai.servers.lmstudio]
+port = 1235
+
+[ai.servers.llamacpp]
+port = 39080
+managed = true
+model = "/m/q.gguf"
+args = ["-ngl", "99"]
+idle_minutes = 5
+cache_prompt = true
+
+[ai.servers.vllm]
+port = 8001
+
+[ai.memory]
+enabled = true
+acknowledged = true
+save_summaries = true
+port = 7438
+
+[ai.orchestrator]
+enabled = true
+acknowledged = true
+worker_timeout_secs = 600
+max_parallel = 2
+max_workers = 8
+run_timeout_mins = 30
+max_turns = 6
+"#;
+        let parsed = Config::parse(text).unwrap();
+        assert_eq!(parsed.problems, Vec::<String>::new());
+        assert!(!parsed.config.mouse);
+        assert_eq!(
+            parsed.ai.managed().map(|server| server.model.clone()),
+            Some(PathBuf::from("/m/q.gguf"))
         );
     }
 }

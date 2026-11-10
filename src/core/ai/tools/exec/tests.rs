@@ -26,11 +26,11 @@ fn the_accept_table_runs() {
         "tree",
         "tree -d -L 2 src",
         "tree -L 2 -d",
-        "mkdir -p a/b",
-        "mkdir a",
-        "mkdir 'my dir'",
+        "rg -n a/b",
+        "rg a",
+        "rg 'my dir'",
         "cd música",
-        "mkdir año-2026",
+        "ls año-2026",
         "cd ~/dev/curso-ñandú",
         "cd 'música nueva'",
         "cd a.b_c@d%e+f:g,h=i",
@@ -39,7 +39,7 @@ fn the_accept_table_runs() {
         "cd øåæłőžĀɏ",
         "cd \"/home/u/curso rust\"",
         "ls -la \"Mis Documentos\"",
-        "mkdir \"año 2026\"",
+        "ls \"año 2026\"",
         "tree -L \"2\"",
     ] {
         assert!(runs(text), "{text:?} must run");
@@ -134,7 +134,7 @@ fn every_flag_table_row() {
         "ls -1t -r src",
         "tree -L 12",
         "tree -d",
-        "mkdir -p a b c d",
+        "ls -a a b c d",
         "pwd",
     ] {
         assert!(runs(text), "{text:?} must run");
@@ -218,16 +218,58 @@ fn the_fallback_names_the_token_and_the_reason() {
     assert_eq!(why("\"ls\" a"), "the command is quoted");
     assert_eq!(why("ls a b c d e f g h i"), "too many words");
     assert_eq!(why(""), "empty command");
-    assert_eq!(why("mkdir"), "missing argument");
+    assert_eq!(why("mkdir"), "not a safe command");
+    assert_eq!(why("grep foo"), "missing argument");
+    // L32: git is no safe command; its words fall back as at the baseline.
+    assert_eq!(why("git status"), "not a safe command");
+    assert_eq!(why("git log HEAD~1"), "~ only starts a word");
+    assert_eq!(why("ls a~b"), "~ only starts a word");
+    assert_eq!(why("ls a^b"), "character not allowed");
+}
+
+// T2b: a lone `-` is stdin for grep and rg, which would wait on the terminal.
+// It falls back for every verb, naming the dash and never its text.
+#[test]
+fn a_lone_dash_falls_back_for_every_verb() {
+    for text in [
+        "cd -",
+        "pwd -",
+        "ls -",
+        "ls -la -",
+        "tree -",
+        "tree -L 2 -",
+        "grep foo -",
+        "grep -rn foo src -",
+        "rg foo -",
+        "rg -n foo -",
+        "find -",
+        "find . -name x -",
+    ] {
+        let f = parse(text).expect_err(text);
+        assert_eq!(&text[f.at.clone()], "-", "{text}");
+        assert_eq!(f.why, "a bare dash is not a path", "{text}");
+    }
+    assert_eq!(why("rg foo '-'"), "quoted word starts with a dash");
 }
 
 fn targets(text: &str) -> Vec<(&str, Want)> {
-    parse(text).unwrap().targets().collect()
+    (parse(text).unwrap().targets())
+        .map(|t| (t.input, t.want))
+        .collect()
+}
+
+/// The targets with what the check does with them: judged against the
+/// chat's root (`confined`) and walked for the files a search reads
+/// (`searched`).
+fn roles(text: &str) -> Vec<(&str, Want, bool, bool)> {
+    (parse(text).unwrap().targets())
+        .map(|t| (t.input, t.want, t.confined, t.searched))
+        .collect()
 }
 
 #[test]
 fn targets_per_verb() {
-    use Want::{Existing, Home, New};
+    use Want::{Existing, Home};
     assert_eq!(targets("cd"), [("~", Existing)]);
     assert_eq!(targets("cd ~/x"), [("~/x", Existing)]);
     assert_eq!(targets("cd 'a b'"), [("a b", Existing)]);
@@ -240,10 +282,6 @@ fn targets_per_verb() {
             ("src", Existing)
         ]
     );
-    assert_eq!(
-        targets("mkdir \"año 2026\""),
-        [(".", Existing), ("año 2026", New)]
-    );
     assert_eq!(targets("pwd"), [(".", Existing)]);
     assert_eq!(targets("ls"), [(".", Existing)]);
     assert_eq!(
@@ -253,7 +291,148 @@ fn targets_per_verb() {
     assert_eq!(targets("tree"), [(".", Home)]);
     assert_eq!(targets("tree -d -L 2 src"), [(".", Home), ("src", Home)]);
     assert_eq!(targets("tree /etc"), [(".", Home), ("/etc", Home)]);
-    assert_eq!(targets("mkdir -p a/b"), [(".", Existing), ("a/b", New)]);
+}
+
+// S1, L22: what a command acts on is judged against the chat's root: the
+// path arguments, or the pane's directory when it names none. A search
+// reads the files below what it searches; its pattern is no path.
+#[test]
+fn targets_say_what_the_root_and_the_search_walk_judge() {
+    use Want::{Existing, Home};
+    assert_eq!(roles("cd"), [("~", Existing, true, false)]);
+    assert_eq!(roles("cd src"), [("src", Existing, true, false)]);
+    // `pwd` reads no file and goes nowhere: it runs wherever the pane is.
+    assert_eq!(roles("pwd"), [(".", Existing, false, false)]);
+    assert_eq!(roles("ls"), [(".", Existing, true, false)]);
+    assert_eq!(
+        roles("ls -la src"),
+        [
+            (".", Existing, false, false),
+            ("src", Existing, true, false)
+        ]
+    );
+    assert_eq!(roles("tree"), [(".", Home, true, false)]);
+    assert_eq!(
+        roles("tree src"),
+        [(".", Home, false, false), ("src", Home, true, false)]
+    );
+    assert_eq!(roles("rg foo"), [(".", Home, true, true)]);
+    assert_eq!(
+        roles("rg -n -A 2 'fn main' src lib"),
+        [
+            (".", Existing, false, false),
+            ("src", Home, true, true),
+            ("lib", Home, true, true)
+        ]
+    );
+    assert_eq!(
+        roles("grep -n foo a.rs"),
+        [(".", Existing, false, false), ("a.rs", Home, true, false)]
+    );
+    assert_eq!(
+        roles("grep -rn foo src"),
+        [(".", Existing, false, false), ("src", Home, true, true)]
+    );
+    // T2b: find lists the names below what it walks, so a secret root
+    // there counts like for a search.
+    assert_eq!(roles("find"), [(".", Existing, true, true)]);
+    assert_eq!(
+        roles("find src -name Cargo.toml -type f -maxdepth 2"),
+        [(".", Existing, false, false), ("src", Existing, true, true)]
+    );
+    assert_eq!(
+        roles("find ~ -maxdepth 2"),
+        [(".", Existing, false, false), ("~", Existing, true, true)]
+    );
+    // `-r` makes only grep walk: `ls -r` reverses the order.
+    assert_eq!(
+        roles("ls -r src"),
+        [
+            (".", Existing, false, false),
+            ("src", Existing, true, false)
+        ]
+    );
+    assert_eq!(
+        roles("grep -r foo src"),
+        [(".", Existing, false, false), ("src", Home, true, true)]
+    );
+}
+
+// S1: search and navigation run without a prompt in `run` (the paths are
+// judged later): grep, rg and find, with an allow-list
+// of flags.
+#[test]
+fn search_commands_parse_as_safe() {
+    for text in [
+        "rg foo",
+        "rg -n -i 'fn main' src",
+        "rg -A 2 -C 3 foo",
+        "rg -B 1 -m 10 foo src",
+        "rg -t rust --max-depth 2 foo src",
+        "rg --line-number --ignore-case --fixed-strings --no-heading foo",
+        "rg -lc foo",
+        "grep foo Cargo.toml",
+        "grep -rn foo src",
+        "grep -inwvFEHhsox -A 2 foo a b",
+        "find",
+        "find . -name Cargo.toml -type f",
+        "find src -maxdepth 2 -mindepth 1 -type d",
+        "find . -iname 'read me'",
+    ] {
+        assert!(runs(text), "{text:?} must run");
+    }
+}
+
+// S1, S3, L20: a search must never become a write or an execution, and
+// every other command asks. `mkdir` asks like any write.
+#[test]
+fn writes_executions_and_other_commands_never_parse_as_safe() {
+    for (text, reason) in [
+        ("mkdir x", "not a safe command"),
+        ("mkdir -p a/b", "not a safe command"),
+        ("cargo build", "not a safe command"),
+        ("npm test", "not a safe command"),
+        ("sh x.sh", "not a safe command"),
+        ("find . -exec rm", "flag not allowed"),
+        ("find . -execdir x", "flag not allowed"),
+        ("find . -delete", "flag not allowed"),
+        ("find . -ok rm", "flag not allowed"),
+        ("find . -okdir rm", "flag not allowed"),
+        ("find . -fprint out", "flag not allowed"),
+        ("find . -fprintf out x", "flag not allowed"),
+        ("find . -fls out", "flag not allowed"),
+        ("find -L .", "flag not allowed"),
+        ("find . -type x", "-type needs f, d or l"),
+        ("find . -name", "the flag needs a value"),
+        ("find . -name -delete", "the flag needs a value"),
+        ("rg --pre cat foo", "flag not allowed"),
+        ("rg --pre=cat foo", "flag not allowed"),
+        ("rg --pre-glob x foo", "flag not allowed"),
+        ("rg -z foo", "flag not allowed"),
+        ("rg --search-zip foo", "flag not allowed"),
+        ("rg -L foo", "flag not allowed"),
+        ("rg --follow foo", "flag not allowed"),
+        ("rg -u foo", "flag not allowed"),
+        ("rg --hidden foo", "flag not allowed"),
+        ("rg --no-ignore foo", "flag not allowed"),
+        ("rg -f list", "flag not allowed"),
+        ("rg -t --pre=cat foo", "the flag needs a value"),
+        ("rg -A x foo", "the flag needs a number"),
+        ("rg -A 1234 foo", "the flag needs a number"),
+        ("rg", "missing argument"),
+        ("grep foo", "missing argument"),
+        ("grep -r foo", "missing argument"),
+        ("grep -R foo .", "flag not allowed"),
+        ("grep -f list x", "flag not allowed"),
+        ("grep --include=x foo .", "flag not allowed"),
+        ("git", "not a safe command"),
+        ("git status", "not a safe command"),
+        ("git log --oneline", "not a safe command"),
+        ("git diff", "not a safe command"),
+        ("git push", "not a safe command"),
+    ] {
+        assert_eq!(why(text), reason, "{text:?}");
+    }
 }
 
 // Spec: checked bytes == written bytes; the API borrows, it never owns.
@@ -284,11 +463,11 @@ impl Lcg {
 #[test]
 fn accepted_text_is_a_fixed_point_of_validate() {
     const PIECES: &[&str] = &[
-        "cd", "ls", "tree", "pwd", "mkdir", " ", " ", " ", "-", "-la", "-p", "-L", "2", "~", "/",
-        "a", "b", "dir", ".", "..", "'", "'x y'", "música", "ñ", "日本", ";", "|", "$", "*", "\n",
-        "\t", "\u{202e}", "\u{200b}", "\u{00a0}", "\u{0301}", "\u{3164}", "\u{115f}", "=", "+",
-        "%", "^", "\"", "`", "\\", "'a", "\"x y\"", "\"a", "!", "#", "~/x", "a~", "\r", "\0", "'",
-        "?", "[", "&", "(", "-L 2", "--", "a=~", "a:~", "\u{5b0}", "\u{2460}", "א",
+        "cd", "ls", "tree", "pwd", "rg", " ", " ", " ", "-", "-la", "-p", "-L", "2", "~", "/", "a",
+        "b", "dir", ".", "..", "'", "'x y'", "música", "ñ", "日本", ";", "|", "$", "*", "\n", "\t",
+        "\u{202e}", "\u{200b}", "\u{00a0}", "\u{0301}", "\u{3164}", "\u{115f}", "=", "+", "%", "^",
+        "\"", "`", "\\", "'a", "\"x y\"", "\"a", "!", "#", "~/x", "a~", "\r", "\0", "'", "?", "[",
+        "&", "(", "-L 2", "--", "a=~", "a:~", "\u{5b0}", "\u{2460}", "א",
     ];
     let mut rng = Lcg(7);
     let mut accepted = 0;
@@ -436,17 +615,17 @@ fn a_quoted_word_holds_no_byte_a_shell_could_act_on() {
         "ls 'a!b'",
         "ls 'a^b'",
         "ls 'a\"b'",
-        "mkdir 'my dir; rm'",
+        "ls 'my dir; rm'",
     ] {
         assert!(!runs(text), "{text:?} must go to the prompt");
     }
     for text in [
         "ls 'my dir'",
-        "mkdir 'a b+c'",
+        "ls 'a b+c'",
         "cd 'música nueva'",
         "ls 'a.b_c@d%e:f,g=h~i-j/k'",
         "ls \"my dir\"",
-        "mkdir \"a b+c\"",
+        "ls \"a b+c\"",
         "ls \"a.b_c@d%e:f,g=h~i-j/k\" \"x y\"",
     ] {
         assert!(runs(text), "{text:?}");
@@ -470,7 +649,7 @@ fn shell_dangerous_bytes_never_run_in_any_position() {
             format!("ls a{c}"),
             format!("ls a{c}b"),
             format!("cd {c}"),
-            format!("mkdir -p {c}a"),
+            format!("rg -n {c}a"),
             format!("tree -L {c}"),
             format!("tree -L 1{c}"),
         ]
@@ -479,10 +658,10 @@ fn shell_dangerous_bytes_never_run_in_any_position() {
         .chain([
             format!("ls 'a{c}'"),
             format!("cd 'x {c}y'"),
-            format!("mkdir '{c}'"),
+            format!("rg '{c}'"),
             format!("ls \"a{c}\""),
             format!("cd \"x {c}y\""),
-            format!("mkdir \"{c}\""),
+            format!("rg \"{c}\""),
         ])
         .chain((c != "\"").then(|| format!("ls \"a{c}")))
         {
@@ -509,17 +688,17 @@ fn real_shells_split_accepted_commands_like_the_grammar() {
         "ls -1thr a b",
         "tree -d -L 2 src",
         "tree -L '2'",
-        "mkdir -p a/b",
-        "mkdir 'my dir'",
-        "mkdir 'a b+c'",
+        "rg -n a/b",
+        "rg 'my dir'",
+        "rg 'a b+c'",
         "cd música",
-        "mkdir año-2026",
+        "ls año-2026",
         "cd ~/dev/curso-ñandú",
         "ls a.b_c@d%e+f:g,h=i",
         "ls ~ ~/x",
         "cd \"/home/u/curso rust\"",
         "ls -la \"Mis Documentos\"",
-        "mkdir \"año 2026\"",
+        "rg \"año 2026\"",
         "ls \"a b\" 'c d' e",
     ];
     let mut shells = vec!["bash"];
@@ -583,4 +762,53 @@ fn the_token_of_a_quoted_word_runs_to_its_closing_quote() {
     // Text after the closing quote belongs to the token.
     assert_eq!(token("ls \"a\"b c"), "\"a\"b");
     assert_eq!(token("ls \"a\"b"), "\"a\"b");
+}
+
+// The verifier's adversarial list: none of these may run on its own.
+#[test]
+fn grammar_refuses_the_adversarial_list() {
+    let long = format!("ls {}", "a".repeat(5000));
+    for text in [
+        "find . -exec rm {} ;",
+        "find . -exec rm",
+        "find . -delete",
+        "find . -fprint out",
+        "find . -newer x",
+        "find -L .",
+        "rg --pre cat foo",
+        "rg -z foo",
+        "rg -L foo",
+        "rg -uu foo",
+        "rg --hidden foo",
+        "rg -e foo",
+        "rg -A1 foo",
+        "rg --max-depth=1 foo",
+        "rg '-x'",
+        "rg -- -x",
+        "grep -R foo .",
+        "grep -f list .",
+        "grep -e foo .",
+        "git status",
+        "git log --oneline",
+        "git diff",
+        "git -C x status",
+        "git --git-dir=x status",
+        "git -c a=b status",
+        "git -p log",
+        "git --paginate log",
+        "git log --output=x",
+        "git log --ext-diff",
+        "git log --show-signature",
+        "git log --format=x",
+        "git diff --no-index a b",
+        "cd -",
+        "cd ~root",
+        "ls \u{ff0d}la",
+        "ls \u{fe63}la",
+        "ls a\u{200b}b",
+        "rg \u{ff0d}\u{ff0d}pre foo",
+        long.as_str(),
+    ] {
+        assert!(parse(text).is_err(), "{text:?} must go to the prompt");
+    }
 }

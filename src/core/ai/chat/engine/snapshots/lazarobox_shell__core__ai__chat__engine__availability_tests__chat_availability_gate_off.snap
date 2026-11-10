@@ -1,0 +1,11 @@
+---
+source: src/core/ai/chat/engine/availability_tests.rs
+expression: "shown.join(\"\\n\")"
+---
+nothing assigned: Unassigned
+general fallback: Ready { engine: "claude", model: Some("sonnet") }
+server model listed: Ready { engine: "ollama", model: Some("llama3:8b") }
+server model missing: ModelMissing { engine: "ollama", model: "llama3:8b" }
+no jail: NoJail { engine: "gemini", reason: "the CLI jail needs Linux or macOS; on this system use claude or Ollama for chat" }
+engine down: Undetected { engine: "ollama", status: "not running" }
+still checking: Checking

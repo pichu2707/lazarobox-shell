@@ -198,6 +198,7 @@ fn summarizing(watched: bool) -> (App, u64) {
     a.ai.set_notify(NotifyMode::Bell);
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Ok(PROJECT.into()),
     }));
     let turn = match press(&mut a, "s").as_slice() {

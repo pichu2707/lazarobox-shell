@@ -5,8 +5,13 @@ use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
+use super::marks::GlyphMode;
 use super::tools::registry::{Family, FamilySet};
-use super::{CATALOG, Kind, ServerPorts};
+use super::{CATALOG, CacheOptions, KeepAlive, Kind, ServerPorts};
+use crate::core::config::note_unknown_keys;
+
+mod usage;
+pub use usage::UsageConfig;
 
 /// The fixed set of AI tasks, in display order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -16,10 +21,24 @@ pub enum Task {
     Chat,
     Review,
     Summarize,
+    /// The orchestrator role. Appended last so the slot indices of the five
+    /// original tasks hold.
+    Orchestrate,
 }
 
 impl Task {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
+        Self::General,
+        Self::Code,
+        Self::Chat,
+        Self::Review,
+        Self::Summarize,
+        Self::Orchestrate,
+    ];
+
+    /// The five tasks `Set all tasks` and its aggregate cover: `Orchestrate`
+    /// is a role with its own row, never part of the sweep.
+    pub const SET_ALL: [Self; 5] = [
         Self::General,
         Self::Code,
         Self::Chat,
@@ -35,6 +54,7 @@ impl Task {
             Self::Chat => "chat",
             Self::Review => "review",
             Self::Summarize => "summarize",
+            Self::Orchestrate => "orchestrate",
         }
     }
 
@@ -47,6 +67,7 @@ impl Task {
             Self::Chat => "ai.tasks.chat",
             Self::Review => "ai.tasks.review",
             Self::Summarize => "ai.tasks.summarize",
+            Self::Orchestrate => "ai.tasks.orchestrate",
         }
     }
 }
@@ -140,9 +161,9 @@ pub enum ApprovalMode {
     /// The command is typed into the pane without a prompt, never followed
     /// by Enter.
     Auto,
-    /// A short list of navigation commands runs at once and its output goes
-    /// to the model; every other command asks. Routes like `Auto` until the
-    /// run guards land.
+    /// Reads, searches and the navigation commands of the safe list run at
+    /// once inside the chat's folder and their output goes to the model;
+    /// every other command, and any path outside the folder, asks.
     Run,
 }
 
@@ -172,7 +193,8 @@ impl CompactionMode {
 }
 
 /// A coding-tools family switch: one boolean under `[ai.tools]`, off by
-/// default. `Read` and `Pane` have none: they are the 0.18.0 tools.
+/// default except where [`ToolToggle::default_on`] says. `Read` and `Pane`
+/// have none: they are the 0.18.0 tools.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ToolToggle {
     Search,
@@ -180,16 +202,27 @@ pub enum ToolToggle {
     Exec,
     Git,
     GitWrite,
+    Github,
+    IssueDraft,
 }
 
 impl ToolToggle {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Search,
         Self::Write,
         Self::Exec,
         Self::Git,
         Self::GitWrite,
+        Self::Github,
+        Self::IssueDraft,
     ];
+
+    /// The value of the switch when the config says nothing: off, but for
+    /// the draft of an issue, which reaches nothing without a `y` and a
+    /// Ctrl+S (D1).
+    pub fn default_on(self) -> bool {
+        matches!(self, Self::IssueDraft)
+    }
 
     /// The key under `[ai.tools]`.
     pub fn key(self) -> &'static str {
@@ -199,6 +232,8 @@ impl ToolToggle {
             Self::Exec => "exec",
             Self::Git => "git",
             Self::GitWrite => "git_write",
+            Self::Github => "github",
+            Self::IssueDraft => "issue_draft",
         }
     }
 
@@ -210,6 +245,8 @@ impl ToolToggle {
             Self::Exec => Family::Exec,
             Self::Git => Family::Git,
             Self::GitWrite => Family::GitWrite,
+            Self::Github => Family::Github,
+            Self::IssueDraft => Family::IssueDraft,
         }
     }
 }
@@ -292,6 +329,55 @@ impl MemoryConfig {
     }
 }
 
+/// The default worker deadline, in seconds.
+pub const DEFAULT_WORKER_TIMEOUT_SECS: u32 = 600;
+/// The valid range of `worker_timeout_secs`.
+const WORKER_TIMEOUT_RANGE: std::ops::RangeInclusive<i64> = 30..=3600;
+/// The defaults and valid ranges of the S3 run limits.
+pub const DEFAULT_MAX_PARALLEL: u8 = 2;
+const MAX_PARALLEL_RANGE: std::ops::RangeInclusive<i64> = 1..=4;
+pub const DEFAULT_MAX_WORKERS: u8 = 8;
+const MAX_WORKERS_RANGE: std::ops::RangeInclusive<i64> = 1..=32;
+pub const DEFAULT_RUN_TIMEOUT_MINS: u16 = 60;
+const RUN_TIMEOUT_RANGE: std::ops::RangeInclusive<i64> = 1..=480;
+/// S4: the orchestrator turns one run may take, the first included.
+pub const DEFAULT_MAX_TURNS: u8 = 6;
+const MAX_TURNS_RANGE: std::ops::RangeInclusive<i64> = 1..=24;
+
+/// The `[ai.orchestrator]` table. `enabled` is the global gate (the menu row
+/// `Orchestrator`); each chat pane still opts in on its own. Both flags are
+/// menu-owned; the timeout and the run limits are only ever hand-edited, so a
+/// save never touches them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct OrchestratorConfig {
+    pub enabled: bool,
+    /// The one-time provider notice was accepted.
+    pub acknowledged: bool,
+    pub worker_timeout_secs: u32,
+    /// Workers running at once; further spawns queue.
+    pub max_parallel: u8,
+    /// Workers one run may spawn.
+    pub max_workers: u8,
+    /// The wall clock of a run, in minutes.
+    pub run_timeout_mins: u16,
+    /// Orchestrator turns one run may take, the first included.
+    pub max_turns: u8,
+}
+
+impl Default for OrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            acknowledged: false,
+            worker_timeout_secs: DEFAULT_WORKER_TIMEOUT_SECS,
+            max_parallel: DEFAULT_MAX_PARALLEL,
+            max_workers: DEFAULT_MAX_WORKERS,
+            run_timeout_mins: DEFAULT_RUN_TIMEOUT_MINS,
+            max_turns: DEFAULT_MAX_TURNS,
+        }
+    }
+}
+
 /// One user MCP server from `[[ai.mcp.servers]]` (design D16). `env` holds
 /// variable NAMES only: the values come from lazarobox's own environment when
 /// a later slice starts the server. `project` is the absolute git root the
@@ -331,20 +417,50 @@ const MCP_ENV_NAME_MAX: usize = 64;
 /// they live under `[ai]` too.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AiConfig {
-    slots: [Assignment; 5],
+    slots: [Assignment; 6],
     profile: Profile,
     context: bool,
     notify: NotifyMode,
     notify_sound: bool,
+    tool_mark: GlyphMode,
+    usage: UsageConfig,
     tools: bool,
     approval: ApprovalMode,
     compaction: CompactionMode,
-    toggles: [bool; 5],
+    toggles: [bool; 7],
     mcp_servers: Vec<McpServer>,
     servers: ServerPorts,
     managed: Option<ManagedServer>,
     managed_options: ManagedOptions,
+    ollama: OllamaOptions,
+    cache: CacheOptions,
     pub memory: MemoryConfig,
+    pub orchestrator: OrchestratorConfig,
+}
+
+/// What lazarobox asks of Ollama on each turn, from `[ai.servers.ollama]`.
+/// The menu does not write `num_ctx_cap`. The keep-alive is not here: it is
+/// `keep_alive` of [`CacheOptions`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct OllamaOptions {
+    /// The most tokens of context to ask for (`num_ctx` is the smaller of this
+    /// and the model's own window).
+    pub num_ctx_cap: usize,
+}
+
+/// The `num_ctx` cap of Ollama unless `num_ctx_cap` is set.
+pub const DEFAULT_NUM_CTX_CAP: usize = 16_384;
+
+/// The `num_ctx_cap` values taken: below 1024 a chat has no room, above a
+/// million tokens the number is a typo.
+const NUM_CTX_CAP_RANGE: std::ops::RangeInclusive<i64> = 1_024..=1_048_576;
+
+impl Default for OllamaOptions {
+    fn default() -> Self {
+        Self {
+            num_ctx_cap: DEFAULT_NUM_CTX_CAP,
+        }
+    }
 }
 
 /// The port of a llama-server that lazarobox starts itself, unless
@@ -424,15 +540,20 @@ impl Default for AiConfig {
             context: true,
             notify: NotifyMode::Off,
             notify_sound: true,
+            tool_mark: GlyphMode::Auto,
+            usage: UsageConfig::default(),
             tools: true,
             approval: ApprovalMode::Ask,
             compaction: CompactionMode::Auto,
-            toggles: [false; 5],
+            toggles: ToolToggle::ALL.map(ToolToggle::default_on),
             mcp_servers: Vec::new(),
             servers: ServerPorts::default(),
             managed: None,
             managed_options: ManagedOptions::default(),
+            ollama: OllamaOptions::default(),
+            cache: CacheOptions::default(),
             memory: MemoryConfig::default(),
+            orchestrator: OrchestratorConfig::default(),
         }
     }
 }
@@ -473,6 +594,11 @@ impl AiConfig {
         self.notify = notify;
     }
 
+    /// `[ai] tool_mark`: how the tool badge is drawn.
+    pub fn tool_mark(&self) -> GlyphMode {
+        self.tool_mark
+    }
+
     /// Whether lazarobox plays its own sound with the desktop notification
     /// (`auto` and `desktop` modes).
     pub fn notify_sound(&self) -> bool {
@@ -481,6 +607,20 @@ impl AiConfig {
 
     pub fn set_notify_sound(&mut self, sound: bool) {
         self.notify_sound = sound;
+    }
+
+    /// What is shown about token use and how dollars are labelled
+    /// (`[ai.usage]`).
+    pub fn usage(&self) -> &UsageConfig {
+        &self.usage
+    }
+
+    pub fn set_usage(&mut self, usage: UsageConfig) {
+        self.usage = usage;
+    }
+
+    pub fn usage_mut(&mut self) -> &mut UsageConfig {
+        &mut self.usage
     }
 
     /// Whether the chat may act in the user's panes (`[ai.tools] enabled`).
@@ -534,9 +674,26 @@ impl AiConfig {
         self.managed.as_ref()
     }
 
+    /// The prompt-cache options of the local servers.
+    pub fn cache_options(&self) -> &CacheOptions {
+        &self.cache
+    }
+
     /// How lazarobox runs its llama-server.
     pub fn managed_options(&self) -> &ManagedOptions {
         &self.managed_options
+    }
+
+    /// This config with the Ollama options `ollama`.
+    #[cfg(test)]
+    pub fn with_ollama(mut self, ollama: OllamaOptions) -> Self {
+        self.ollama = ollama;
+        self
+    }
+
+    /// What lazarobox asks of Ollama on each turn.
+    pub fn ollama_options(&self) -> OllamaOptions {
+        self.ollama
     }
 
     /// Sets the idle time of the managed llama-server; 0 never stops it.
@@ -634,7 +791,10 @@ impl AiConfig {
     /// The `Set all tasks` value: the shared effective label or `(mixed)`.
     pub fn aggregate(&self) -> String {
         let first = self.effective_label(Task::General);
-        if Task::ALL.iter().all(|t| self.effective_label(*t) == first) {
+        if Task::SET_ALL
+            .iter()
+            .all(|t| self.effective_label(*t) == first)
+        {
             first
         } else {
             "(mixed)".to_owned()
@@ -734,6 +894,21 @@ fn read_notify_sound(section: &Table, problems: &mut Vec<String>) -> bool {
     }
 }
 
+/// Reads `tool_mark`: a missing key is `auto`; anything that is not an exact
+/// id falls back to `auto` with a problem.
+fn read_tool_mark(section: &Table, problems: &mut Vec<String>) -> GlyphMode {
+    match section.get("tool_mark") {
+        None => GlyphMode::Auto,
+        Some(Value::String(id)) if GlyphMode::from_id(id).is_some() => {
+            GlyphMode::from_id(id).unwrap_or_default()
+        }
+        Some(_) => {
+            problems.push("ai.tool_mark: expected \"auto\", \"emoji\" or \"text\"".to_owned());
+            GlyphMode::Auto
+        }
+    }
+}
+
 /// Reads `[ai]` (the general task, the profile and the context flag and the notify settings) and `[ai.tasks.<id>]`
 /// (the others). Each key falls back to unset on its own; `general` and
 /// unknown names under `ai.tasks` are ignored.
@@ -752,6 +927,8 @@ fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     config.context = read_context(section, problems);
     config.notify = read_notify(section, problems);
     config.notify_sound = read_notify_sound(section, problems);
+    config.tool_mark = read_tool_mark(section, problems);
+    config.usage = usage::read(section, problems);
     let tasks = match section.get("tasks") {
         None => return config,
         Some(Value::Table(tasks)) => tasks,
@@ -787,9 +964,74 @@ pub fn read_with_port_env(
     config.compaction = read_compaction(table, problems);
     config.toggles = read_toggles(table, problems);
     config.mcp_servers = read_mcp_servers(table, problems);
-    (config.servers, config.managed, config.managed_options) = read_servers(table, problems);
+    (
+        config.servers,
+        config.managed,
+        config.managed_options,
+        config.cache,
+    ) = read_servers(table, problems);
+    config.ollama = read_ollama_options(table, problems);
     config.memory = read_memory(table, problems, port_env);
+    config.orchestrator = read_orchestrator(table, problems);
     config
+}
+
+/// Reads `[ai.orchestrator]`. Each key falls back to its default on its own
+/// with a problem; unknown keys are ignored.
+fn read_orchestrator(table: &Table, problems: &mut Vec<String>) -> OrchestratorConfig {
+    let mut orch = OrchestratorConfig::default();
+    let section = match table.get("ai").and_then(Value::as_table) {
+        None => return orch,
+        Some(ai) => match ai.get("orchestrator") {
+            None => return orch,
+            Some(Value::Table(section)) => section,
+            Some(_) => {
+                problems.push("ai.orchestrator: expected a table".to_owned());
+                return orch;
+            }
+        },
+    };
+    let mut flag = |name: &str, slot: &mut bool| match section.get(name) {
+        None => {}
+        Some(Value::Boolean(on)) => *slot = *on,
+        Some(_) => problems.push(format!("ai.orchestrator.{name}: expected a boolean")),
+    };
+    flag("enabled", &mut orch.enabled);
+    flag("acknowledged", &mut orch.acknowledged);
+    match section.get("worker_timeout_secs") {
+        None => {}
+        Some(Value::Integer(n)) if WORKER_TIMEOUT_RANGE.contains(n) => {
+            orch.worker_timeout_secs = *n as u32;
+        }
+        Some(_) => problems.push(
+            "ai.orchestrator.worker_timeout_secs: expected an integer from 30 to 3600".to_owned(),
+        ),
+    }
+    let mut limit = |name: &str, range: &std::ops::RangeInclusive<i64>| match section.get(name) {
+        None => None,
+        Some(Value::Integer(n)) if range.contains(n) => Some(*n),
+        Some(_) => {
+            let (low, high) = (range.start(), range.end());
+            problems.push(format!(
+                "ai.orchestrator.{name}: expected an integer from {low} to {high}"
+            ));
+            None
+        }
+    };
+    // The ranges fit each field, so the casts cannot truncate.
+    if let Some(n) = limit("max_parallel", &MAX_PARALLEL_RANGE) {
+        orch.max_parallel = n as u8;
+    }
+    if let Some(n) = limit("max_workers", &MAX_WORKERS_RANGE) {
+        orch.max_workers = n as u8;
+    }
+    if let Some(n) = limit("run_timeout_mins", &RUN_TIMEOUT_RANGE) {
+        orch.run_timeout_mins = n as u16;
+    }
+    if let Some(n) = limit("max_turns", &MAX_TURNS_RANGE) {
+        orch.max_turns = n as u8;
+    }
+    orch
 }
 
 /// Reads `[ai.tools] enabled`: a missing table or key is `true`; a value of
@@ -865,21 +1107,21 @@ fn read_compaction(table: &Table, problems: &mut Vec<String>) -> CompactionMode 
     }
 }
 
-/// Reads the five `[ai.tools]` family switches. A missing key is off; a
+/// Reads the six `[ai.tools]` family switches. A missing key is off; a
 /// value of the wrong type is off with a problem for that key only. A
 /// non-table `ai.tools` was already reported by `read_tools`.
-fn read_toggles(table: &Table, problems: &mut Vec<String>) -> [bool; 5] {
+fn read_toggles(table: &Table, problems: &mut Vec<String>) -> [bool; 7] {
     let section = table
         .get("ai")
         .and_then(Value::as_table)
         .and_then(|ai| ai.get("tools"))
         .and_then(Value::as_table);
     ToolToggle::ALL.map(|toggle| match section.and_then(|s| s.get(toggle.key())) {
-        None => false,
+        None => toggle.default_on(),
         Some(Value::Boolean(on)) => *on,
         Some(_) => {
             problems.push(format!("ai.tools.{}: expected a boolean", toggle.key()));
-            false
+            toggle.default_on()
         }
     })
 }
@@ -1035,8 +1277,9 @@ fn string_list(value: Option<&Value>, keep: fn(&str) -> bool) -> Option<Vec<Stri
     }
 }
 
-/// Reads `[ai.servers.<id>] port` for the server engines, and `managed`,
-/// `model`, `args` and `idle_minutes` for llamacpp. A wrong port falls back on its own, with a problem:
+/// Reads `[ai.servers.<id>] port` for the server engines, `keep_alive` for
+/// ollama, and `managed`, `model`, `args`, `idle_minutes` and `cache_prompt`
+/// for llamacpp. A wrong port falls back on its own, with a problem:
 /// to the catalog port, or to [`MANAGED_PORT`] for a managed llama-server. A
 /// wrong `managed` or `model` leaves it unmanaged. Unknown ids and keys are
 /// ignored, like unknown names under `ai.tasks`. The menu writes only
@@ -1044,18 +1287,24 @@ fn string_list(value: Option<&Value>, keep: fn(&str) -> bool) -> Option<Vec<Stri
 fn read_servers(
     table: &Table,
     problems: &mut Vec<String>,
-) -> (ServerPorts, Option<ManagedServer>, ManagedOptions) {
+) -> (
+    ServerPorts,
+    Option<ManagedServer>,
+    ManagedOptions,
+    CacheOptions,
+) {
     let mut ports = ServerPorts::default();
     let mut managed = None;
     let mut options = ManagedOptions::default();
+    let mut cache = CacheOptions::default();
     let section = match table.get("ai").and_then(Value::as_table) {
-        None => return (ports, managed, options),
+        None => return (ports, managed, options, cache),
         Some(ai) => match ai.get("servers") {
-            None => return (ports, managed, options),
+            None => return (ports, managed, options, cache),
             Some(Value::Table(section)) => section,
             Some(_) => {
                 problems.push("ai.servers: expected a table".to_owned());
-                return (ports, managed, options);
+                return (ports, managed, options, cache);
             }
         },
     };
@@ -1089,12 +1338,105 @@ fn read_servers(
             fallback = managed.as_ref().map(|_| MANAGED_PORT);
             options.args = read_managed_args(server, problems);
             options.idle_minutes = read_idle_minutes(server, problems);
+            cache.cache_prompt = read_cache_prompt(server, problems);
+        }
+        if id == "ollama" {
+            cache.keep_alive = read_keep_alive(server, problems);
         }
         if let Some(port) = port.or(fallback) {
             ports = ports.with(id, port);
         }
     }
-    (ports, managed, options)
+    (ports, managed, options, cache)
+}
+
+/// `keep_alive` of `[ai.servers.ollama]`: a duration as Ollama reads it
+/// (`"30m"`, `"1h30m"`, `"-1m"`), or a whole number of seconds. Anything else
+/// is left out, with a problem, so the server default applies.
+fn read_keep_alive(server: &Table, problems: &mut Vec<String>) -> Option<KeepAlive> {
+    match server.get("keep_alive") {
+        None => None,
+        Some(Value::Integer(seconds)) => Some(KeepAlive::from(format!("{seconds}s").as_str())),
+        Some(Value::String(text)) if is_duration(text) => Some(KeepAlive::from(text.as_str())),
+        Some(_) => {
+            problems.push(
+                "ai.servers.ollama.keep_alive: expected a duration such as \"30m\" or a whole number of seconds"
+                    .to_owned(),
+            );
+            None
+        }
+    }
+}
+
+/// Whether `text` is a Go duration, the form Ollama parses: an optional
+/// sign, then numbers each followed by a unit (`ns`, `us`, `µs`, `ms`, `s`,
+/// `m`, `h`), or a bare `0`.
+fn is_duration(text: &str) -> bool {
+    let mut rest = text.strip_prefix(['-', '+']).unwrap_or(text);
+    if rest == "0" {
+        return true;
+    }
+    if rest.is_empty() {
+        return false;
+    }
+    while !rest.is_empty() {
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit() && c != '.')
+            .unwrap_or(rest.len());
+        let number = &rest[..end];
+        if number.is_empty() || number == "." || number.matches('.').count() > 1 {
+            return false;
+        }
+        rest = &rest[end..];
+        let Some(unit) = ["ns", "us", "µs", "ms", "h", "m", "s"]
+            .into_iter()
+            .find(|unit| rest.starts_with(unit))
+        else {
+            return false;
+        };
+        rest = &rest[unit.len()..];
+    }
+    true
+}
+
+/// `cache_prompt` of `[ai.servers.llamacpp]`: a boolean; anything else is
+/// left out, with a problem.
+fn read_cache_prompt(server: &Table, problems: &mut Vec<String>) -> Option<bool> {
+    match server.get("cache_prompt") {
+        None => None,
+        Some(Value::Boolean(on)) => Some(*on),
+        Some(_) => {
+            problems.push("ai.servers.llamacpp.cache_prompt: expected true or false".to_owned());
+            None
+        }
+    }
+}
+
+/// `num_ctx_cap` of `[ai.servers.ollama]`, with its fallback and problem. A broken `ai.servers` table is reported by
+/// [`read_servers`].
+fn read_ollama_options(table: &Table, problems: &mut Vec<String>) -> OllamaOptions {
+    let mut options = OllamaOptions::default();
+    let Some(server) = table
+        .get("ai")
+        .and_then(Value::as_table)
+        .and_then(|ai| ai.get("servers"))
+        .and_then(Value::as_table)
+        .and_then(|servers| servers.get("ollama"))
+        .and_then(Value::as_table)
+    else {
+        return options;
+    };
+    match server.get("num_ctx_cap") {
+        None => {}
+        Some(Value::Integer(n)) if NUM_CTX_CAP_RANGE.contains(n) => {
+            options.num_ctx_cap = *n as usize;
+        }
+        Some(_) => problems.push(
+            "ai.servers.ollama.num_ctx_cap: expected a whole number of tokens from 1024 to 1048576"
+                .to_owned(),
+        ),
+    }
+    options
 }
 
 /// `idle_minutes` of `[ai.servers.llamacpp]`: a whole number of minutes, 0
@@ -1172,6 +1514,123 @@ fn read_managed(server: &Table, problems: &mut Vec<String>) -> Option<ManagedSer
     }
 }
 
+/// Notes every unknown key under `[ai]`, a table lazarobox owns whole (see
+/// [`note_unknown_keys`]). Only tables of the right shape are walked: a
+/// wrong shape was already reported by its reader. The names here are the
+/// keys the readers above read; a key added to a reader is added here too.
+pub fn note_unknown_ai_keys(table: &Table, problems: &mut Vec<String>) {
+    let Some(Value::Table(ai)) = table.get("ai") else {
+        return;
+    };
+    fn child<'a>(parent: &'a Table, name: &str) -> Option<&'a Table> {
+        match parent.get(name) {
+            Some(Value::Table(child)) => Some(child),
+            _ => None,
+        }
+    }
+    note_unknown_keys(
+        ai,
+        "ai",
+        &[
+            "engine",
+            "model",
+            "profile",
+            "context",
+            "notify",
+            "notify_sound",
+            "tool_mark",
+            "tasks",
+            "usage",
+            "tools",
+            "chat",
+            "mcp",
+            "servers",
+            "memory",
+            "orchestrator",
+        ],
+        problems,
+    );
+    if let Some(tasks) = child(ai, "tasks") {
+        let ids: Vec<&str> = Task::ALL[1..].iter().map(|task| task.id()).collect();
+        note_unknown_keys(tasks, "ai.tasks", &ids, problems);
+        for task in &Task::ALL[1..] {
+            if let Some(section) = child(tasks, task.id()) {
+                note_unknown_keys(section, task.table(), &["engine", "model"], problems);
+            }
+        }
+    }
+    if let Some(usage) = child(ai, "usage") {
+        let known = [
+            "line",
+            "statusline",
+            "turn_tokens",
+            "day_tokens",
+            "day_usd",
+            "billing",
+        ];
+        note_unknown_keys(usage, "ai.usage", &known, problems);
+        if let Some(billing) = child(usage, "billing") {
+            note_unknown_keys(billing, "ai.usage.billing", &usage::BILLED, problems);
+        }
+    }
+    if let Some(tools) = child(ai, "tools") {
+        let mut known = vec!["enabled", "approval"];
+        known.extend(ToolToggle::ALL.map(ToolToggle::key));
+        note_unknown_keys(tools, "ai.tools", &known, problems);
+    }
+    if let Some(chat) = child(ai, "chat") {
+        note_unknown_keys(chat, "ai.chat", &["compaction"], problems);
+    }
+    if let Some(mcp) = child(ai, "mcp") {
+        note_unknown_keys(mcp, "ai.mcp", &["servers"], problems);
+        if let Some(Value::Array(entries)) = mcp.get("servers") {
+            let known = ["name", "command", "args", "env", "enabled", "project"];
+            for (index, entry) in entries.iter().enumerate() {
+                if let Value::Table(entry) = entry {
+                    let path = format!("ai.mcp.servers[{index}]");
+                    note_unknown_keys(entry, &path, &known, problems);
+                }
+            }
+        }
+    }
+    if let Some(servers) = child(ai, "servers") {
+        let ids: Vec<&str> = CATALOG
+            .iter()
+            .filter(|engine| matches!(engine.kind, Kind::Server { .. }))
+            .map(|engine| engine.id)
+            .collect();
+        note_unknown_keys(servers, "ai.servers", &ids, problems);
+        for id in ids {
+            let Some(server) = child(servers, id) else {
+                continue;
+            };
+            let own: &[&str] = match id {
+                "ollama" => &["keep_alive", "num_ctx_cap"],
+                "llamacpp" => &["managed", "model", "args", "idle_minutes", "cache_prompt"],
+                _ => &[],
+            };
+            let known: Vec<&str> = ["port"].into_iter().chain(own.iter().copied()).collect();
+            note_unknown_keys(server, &format!("ai.servers.{id}"), &known, problems);
+        }
+    }
+    if let Some(memory) = child(ai, "memory") {
+        let known = ["enabled", "acknowledged", "save_summaries", "port"];
+        note_unknown_keys(memory, "ai.memory", &known, problems);
+    }
+    if let Some(orchestrator) = child(ai, "orchestrator") {
+        let known = [
+            "enabled",
+            "acknowledged",
+            "worker_timeout_secs",
+            "max_parallel",
+            "max_workers",
+            "run_timeout_mins",
+            "max_turns",
+        ];
+        note_unknown_keys(orchestrator, "ai.orchestrator", &known, problems);
+    }
+}
+
 /// A valid port in the text of `ENGRAM_PORT`: an integer from 1 to 65535.
 fn env_port(text: Option<&str>) -> Option<u16> {
     text?.trim().parse::<u16>().ok().filter(|port| *port != 0)
@@ -1225,6 +1684,14 @@ mod tests {
         (ai, problems)
     }
 
+    /// The problems and the startup notice of the full loader, which also
+    /// reports unknown keys (`read_with_port_env` alone does not).
+    fn full_load(text: &str) -> (Vec<String>, Option<String>) {
+        let problems = crate::core::config::Config::parse(text).unwrap().problems;
+        let (_, notice) = crate::core::config::Config::load(Ok(text.to_owned()));
+        (problems, notice)
+    }
+
     fn ports_of(text: &str) -> (Vec<Option<u16>>, Vec<String>) {
         let (ai, problems) = read_text(text);
         let ports = ["ollama", "lmstudio", "llamacpp", "vllm", "claude", "nope"]
@@ -1265,6 +1732,19 @@ mod tests {
             (
                 vec![Some(11434), Some(1234), Some(8080), Some(8001), None, None],
                 vec![]
+            )
+        );
+        // Spec (config-unknown-keys): the full load reports each unknown id
+        // and key by its full path.
+        assert_eq!(
+            full_load(text),
+            (
+                vec![
+                    "unknown key: ai.servers.claude".to_owned(),
+                    "unknown key: ai.servers.nope".to_owned(),
+                    "unknown key: ai.servers.vllm.host".to_owned(),
+                ],
+                Some("config (3 problems): unknown key: ai.servers.claude".to_owned())
             )
         );
     }
@@ -1384,6 +1864,50 @@ mod tests {
         }
     }
 
+    /// The Ollama cap and problems of `text`.
+    fn ollama_of(text: &str) -> (usize, Vec<String>) {
+        let (ai, problems) = read_text(text);
+        (ai.ollama_options().num_ctx_cap, problems)
+    }
+
+    const CAP_PROBLEM: &str =
+        "ai.servers.ollama.num_ctx_cap: expected a whole number of tokens from 1024 to 1048576";
+
+    #[test]
+    fn ollama_options_default_to_a_16384_cap() {
+        assert_eq!(ollama_of(""), (16_384, vec![]));
+        assert_eq!(
+            ollama_of("[ai.servers.ollama]\nport = 11500\n"),
+            (16_384, vec![])
+        );
+    }
+
+    #[test]
+    fn ollama_options_accept_a_valid_cap() {
+        let text = "[ai.servers.ollama]\nnum_ctx_cap = 8192\n";
+        assert_eq!(ollama_of(text), (8192, vec![]));
+    }
+
+    #[test]
+    fn the_ollama_limits_are_inclusive() {
+        let low = "[ai.servers.ollama]\nnum_ctx_cap = 1024\n";
+        assert_eq!(ollama_of(low), (1_024, vec![]));
+        let top = "[ai.servers.ollama]\nnum_ctx_cap = 1048576\n";
+        assert_eq!(ollama_of(top), (1_048_576, vec![]));
+    }
+
+    #[test]
+    fn a_bad_ollama_cap_falls_back_with_the_exact_problem() {
+        for value in ["\"big\"", "0", "-1", "1.5", "1023", "1048577"] {
+            let text = format!("[ai.servers.ollama]\nnum_ctx_cap = {value}\n");
+            assert_eq!(
+                ollama_of(&text),
+                (16_384, vec![CAP_PROBLEM.to_owned()]),
+                "{value}"
+            );
+        }
+    }
+
     /// The idle stop minutes and the problems of `text`.
     fn idle_of(text: &str) -> (u32, Vec<String>) {
         let (ai, problems) = read_text(text);
@@ -1405,6 +1929,87 @@ mod tests {
         };
         assert_eq!(idle(0).idle(), None);
         assert_eq!(idle(5).idle(), Some(std::time::Duration::from_secs(300)));
+    }
+
+    /// The prompt-cache options and the problems of `text`.
+    fn cache_of(text: &str) -> (CacheOptions, Vec<String>) {
+        let (ai, problems) = read_text(text);
+        (ai.cache_options().clone(), problems)
+    }
+
+    // Issue #515: unset, nothing is sent and the servers keep their defaults.
+    #[test]
+    fn the_cache_options_are_unset_by_default() {
+        assert_eq!(cache_of(""), (CacheOptions::default(), vec![]));
+        let other_keys =
+            "[ai.servers.ollama]\nport = 11500\n[ai.servers.llamacpp]\nidle_minutes = 5\n";
+        assert_eq!(cache_of(other_keys), (CacheOptions::default(), vec![]));
+    }
+
+    // Issue #515.
+    #[test]
+    fn keep_alive_is_a_duration_or_a_number_of_seconds() {
+        let set = |v: &str| cache_of(&format!("[ai.servers.ollama]\nkeep_alive = {v}\n"));
+        let keep = |k| CacheOptions {
+            keep_alive: Some(k),
+            ..CacheOptions::default()
+        };
+        for text in ["30m", "1h30m", "-1m", "45s", "0", "2.5h"] {
+            assert_eq!(
+                set(&format!("\"{text}\"")),
+                (keep(KeepAlive::from(text)), vec![]),
+                "{text}"
+            );
+        }
+        assert_eq!(set("-1"), (keep(KeepAlive::from("-1s")), vec![]));
+        assert_eq!(set("600"), (keep(KeepAlive::from("600s")), vec![]));
+    }
+
+    // Issue #515: a wrong value is left out, so the server default applies.
+    #[test]
+    fn a_wrong_keep_alive_is_left_out_with_a_problem() {
+        let problem = "ai.servers.ollama.keep_alive: expected a duration such as \"30m\" or a whole number of seconds".to_owned();
+        for value in [
+            "\"30 minutes\"",
+            "\"m\"",
+            "\"\"",
+            "\"-1\"",
+            "1.5",
+            "true",
+            "[1]",
+        ] {
+            assert_eq!(
+                cache_of(&format!("[ai.servers.ollama]\nkeep_alive = {value}\n")),
+                (CacheOptions::default(), vec![problem.clone()]),
+                "{value}"
+            );
+        }
+    }
+
+    // Issue #515.
+    #[test]
+    fn cache_prompt_is_a_boolean() {
+        let set = |v: &str| cache_of(&format!("[ai.servers.llamacpp]\ncache_prompt = {v}\n"));
+        let cache = |on| CacheOptions {
+            cache_prompt: Some(on),
+            ..CacheOptions::default()
+        };
+        assert_eq!(set("true"), (cache(true), vec![]));
+        assert_eq!(set("false"), (cache(false), vec![]));
+        assert_eq!(
+            set("\"yes\""),
+            (
+                CacheOptions::default(),
+                vec!["ai.servers.llamacpp.cache_prompt: expected true or false".to_owned()]
+            )
+        );
+    }
+
+    // Issue #515: each key belongs to its own server.
+    #[test]
+    fn each_cache_option_is_read_only_under_its_server() {
+        let swapped = "[ai.servers.llamacpp]\nkeep_alive = \"30m\"\n[ai.servers.ollama]\ncache_prompt = true\n";
+        assert_eq!(cache_of(swapped), (CacheOptions::default(), vec![]));
     }
 
     // Spec S8: the menu steps through 5, 15, 30 minutes and never; a value
@@ -1615,7 +2220,17 @@ mod tests {
     #[test]
     fn the_task_set_is_fixed_ordered_and_unique() {
         let ids: Vec<&str> = Task::ALL.iter().map(|t| t.id()).collect();
-        assert_eq!(ids, ["general", "code", "chat", "review", "summarize"]);
+        assert_eq!(
+            ids,
+            [
+                "general",
+                "code",
+                "chat",
+                "review",
+                "summarize",
+                "orchestrate"
+            ]
+        );
         let tables: Vec<&str> = Task::ALL.iter().map(|t| t.table()).collect();
         assert_eq!(
             tables,
@@ -1624,7 +2239,8 @@ mod tests {
                 "ai.tasks.code",
                 "ai.tasks.chat",
                 "ai.tasks.review",
-                "ai.tasks.summarize"
+                "ai.tasks.summarize",
+                "ai.tasks.orchestrate"
             ]
         );
     }
@@ -1821,6 +2437,13 @@ mod tests {
                     [ai.tasks.poetry]\nengine = \"claude\"\nmodel = 4\n\
                     [ai]\nengine = \"ollama\"\n";
         assert_eq!(read_text(text), (ai(Some("ollama"), None), vec![]));
+        // Spec (config-unknown-keys): both tables are reported as unknown keys.
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(text.into()), None);
+        assert_eq!(ai.get(Task::General).engine.as_deref(), Some("ollama"));
+        assert_eq!(
+            notice.as_deref(),
+            Some("config (2 problems): unknown key: ai.tasks.general")
+        );
     }
 
     // Spec: Unknown task engine kept.
@@ -2102,6 +2725,14 @@ mod tests {
     fn unknown_memory_keys_are_ignored() {
         let text = "[ai.memory]\nendpoint = \"http://x\"\nenabled = true\n";
         assert_eq!(memory_of(text, None), (mem(true, false, 7437), vec![]));
+        // Spec (config-unknown-keys): the full load reports the unknown key.
+        assert_eq!(
+            full_load(text),
+            (
+                vec!["unknown key: ai.memory.endpoint".to_owned()],
+                Some("config: unknown key: ai.memory.endpoint".to_owned())
+            )
+        );
     }
 
     // Tasks and memory are independent.
@@ -2211,6 +2842,44 @@ mod tests {
     }
 
     #[test]
+    fn tool_mark_defaults_to_automatic_and_reads_each_value() {
+        assert_eq!(AiConfig::default().tool_mark(), GlyphMode::Auto);
+        for (value, want) in [
+            ("auto", GlyphMode::Auto),
+            ("emoji", GlyphMode::Emoji),
+            ("text", GlyphMode::Text),
+        ] {
+            let (config, problems) = read_text(&format!("[ai]\ntool_mark = \"{value}\"\n"));
+            assert_eq!(config.tool_mark(), want, "{value}");
+            assert_eq!(problems, Vec::<String>::new(), "{value}");
+        }
+        let (config, problems) = read_text("[ai]\ncontext = true\n");
+        assert_eq!(config.tool_mark(), GlyphMode::Auto);
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn a_bad_tool_mark_falls_back_to_automatic_with_the_exact_problem() {
+        for value in [
+            "\"Text\"",
+            "\"\"",
+            "\"tools\"",
+            "true",
+            "1",
+            "[1]",
+            "{ a = 1 }",
+        ] {
+            let (config, problems) = read_text(&format!("[ai]\ntool_mark = {value}\n"));
+            assert_eq!(config.tool_mark(), GlyphMode::Auto, "{value}");
+            assert_eq!(
+                problems,
+                vec!["ai.tool_mark: expected \"auto\", \"emoji\" or \"text\"".to_owned()],
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
     fn notify_sound_defaults_to_true_and_reads_a_boolean() {
         assert!(AiConfig::default().notify_sound());
         for (text, want) in [
@@ -2246,6 +2915,23 @@ mod tests {
             assert!(config.tools_enabled(), "{text:?}");
             assert!(problems.is_empty(), "{text:?}");
         }
+    }
+
+    // Spec (configuration, Tools key): Unknown keys ignored. `enabled`
+    // applies, and the full load reports the unknown key.
+    #[test]
+    fn unknown_tools_keys_are_ignored() {
+        let text = "[ai.tools]\nmode = \"fast\"\nenabled = true\n";
+        let (config, problems) = read_text(text);
+        assert!(config.tools_enabled());
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(
+            full_load(text),
+            (
+                vec!["unknown key: ai.tools.mode".to_owned()],
+                Some("config: unknown key: ai.tools.mode".to_owned())
+            )
+        );
     }
 
     #[test]
@@ -2372,16 +3058,48 @@ mod tests {
         );
     }
 
-    // Spec (configuration): the five family toggles, default and parse.
+    // Spec (configuration): the family toggles, default and parse: off, but
+    // for the draft of an issue (D1).
     #[test]
     fn family_toggles_default_to_off_without_a_notice() {
         for text in ["", "[ai]\n", "[ai.tools]\n", "[ai.tools]\nother = 1\n"] {
             let (config, problems) = read_text(text);
             for toggle in ToolToggle::ALL {
-                assert!(!config.toggle(toggle), "{text:?} {toggle:?}");
+                let on = toggle == ToolToggle::IssueDraft;
+                assert_eq!(config.toggle(toggle), on, "{text:?} {toggle:?}");
             }
             assert!(problems.is_empty(), "{text:?}");
         }
+    }
+
+    // Spec (configuration, issue_draft): on by default; the key turns it off;
+    // a wrong type falls back to the default with the usual notice.
+    #[test]
+    fn the_issue_draft_toggle_is_on_until_the_file_says_off() {
+        assert!(AiConfig::default().toggle(ToolToggle::IssueDraft));
+        let (config, problems) = read_text("[ai.tools]\nissue_draft = false\n");
+        assert!(problems.is_empty());
+        assert!(!config.toggle(ToolToggle::IssueDraft));
+        assert_eq!(config.families(), FamilySet::LEGACY, "off is the old list");
+        let (config, problems) = read_text("[ai.tools]\nissue_draft = \"no\"\n");
+        assert!(config.toggle(ToolToggle::IssueDraft));
+        assert_eq!(
+            problems,
+            vec!["ai.tools.issue_draft: expected a boolean".to_owned()]
+        );
+    }
+
+    // Spec (configuration, D1): the master switch off offers no draft tool.
+    #[test]
+    fn the_master_switch_off_offers_no_issue_draft() {
+        let (mut config, _) = read_text("[ai.tools]\nenabled = false\n");
+        assert!(config.toggle(ToolToggle::IssueDraft), "the key is kept");
+        assert_eq!(config.families(), FamilySet::LEGACY);
+        config.set_tools_enabled(true);
+        assert_eq!(
+            config.families(),
+            FamilySet::LEGACY.with(Family::IssueDraft)
+        );
     }
 
     #[test]
@@ -2391,10 +3109,84 @@ mod tests {
             .into_iter()
             .filter(|t| config.toggle(*t))
             .collect();
-        assert_eq!(on, vec![ToolToggle::Write, ToolToggle::Exec]);
+        assert_eq!(
+            on,
+            vec![ToolToggle::Write, ToolToggle::Exec, ToolToggle::IssueDraft]
+        );
         assert!(problems.is_empty());
         let keys: Vec<_> = ToolToggle::ALL.into_iter().map(ToolToggle::key).collect();
-        assert_eq!(keys, ["search", "write", "exec", "git", "git_write"]);
+        assert_eq!(
+            keys,
+            [
+                "search",
+                "write",
+                "exec",
+                "git",
+                "git_write",
+                "github",
+                "issue_draft"
+            ]
+        );
+    }
+
+    // Spec (configuration, GitHub on): the key turns on its own toggle only,
+    // and a wrong type reports the key like the others.
+    #[test]
+    fn the_github_toggle_is_its_own_key() {
+        let (config, problems) = read_text("[ai.tools]\ngithub = true\n");
+        let on: Vec<_> = ToolToggle::ALL
+            .into_iter()
+            .filter(|t| config.toggle(*t))
+            .collect();
+        assert_eq!(on, vec![ToolToggle::Github, ToolToggle::IssueDraft]);
+        assert!(problems.is_empty());
+        assert_eq!(
+            config.families(),
+            FamilySet::LEGACY
+                .with(Family::Github)
+                .with(Family::IssueDraft),
+            "only the GitHub family is added"
+        );
+        let (config, problems) = read_text("[ai.tools]\ngithub = \"yes\"\nwrite = true\n");
+        assert!(!config.toggle(ToolToggle::Github) && config.toggle(ToolToggle::Write));
+        assert_eq!(
+            problems,
+            vec!["ai.tools.github: expected a boolean".to_owned()]
+        );
+    }
+
+    // Spec (configuration, Old file with no key): a file written before the
+    // GitHub toggle existed reads it as off, with no problem, and the other
+    // keys keep their values.
+    #[test]
+    fn an_old_file_with_no_github_key_reads_it_as_off() {
+        let (config, problems) =
+            read_text("[ai.tools]\nenabled = true\nsearch = true\ngit_write = true\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(!config.toggle(ToolToggle::Github));
+        assert!(config.toggle(ToolToggle::Search) && config.toggle(ToolToggle::GitWrite));
+        assert!(!config.families().contains(Family::Github));
+        // Triangulation: the same file with the key offers it.
+        let (config, _) = read_text("[ai.tools]\nenabled = true\nsearch = true\ngithub = true\n");
+        assert!(config.families().contains(Family::Github));
+    }
+
+    // Spec (configuration, enabled=false with github=true): the master switch
+    // wins; the saved key is kept for when tools come back on.
+    #[test]
+    fn the_master_switch_off_offers_nothing_even_with_github_on() {
+        let (mut config, problems) = read_text("[ai.tools]\nenabled = false\ngithub = true\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(!config.tools_enabled());
+        assert!(config.toggle(ToolToggle::Github), "the key is kept");
+        assert_eq!(config.families(), FamilySet::LEGACY);
+        config.set_tools_enabled(true);
+        assert_eq!(
+            config.families(),
+            FamilySet::LEGACY
+                .with(Family::Github)
+                .with(Family::IssueDraft)
+        );
     }
 
     #[test]
@@ -2444,14 +3236,25 @@ mod tests {
     }
 
     #[test]
+    fn the_default_family_set_is_the_legacy_one_plus_the_issue_draft() {
+        assert_eq!(
+            AiConfig::default().families(),
+            FamilySet::LEGACY.with(Family::IssueDraft)
+        );
+    }
+
+    #[test]
     fn no_toggle_on_is_the_legacy_family_set() {
-        assert_eq!(AiConfig::default().families(), FamilySet::LEGACY);
+        let mut config = AiConfig::default();
+        config.set_toggle(ToolToggle::IssueDraft, false);
+        assert_eq!(config.families(), FamilySet::LEGACY);
     }
 
     #[test]
     fn each_toggle_adds_exactly_its_family_to_the_legacy_set() {
         for toggle in ToolToggle::ALL {
             let mut config = AiConfig::default();
+            config.set_toggle(ToolToggle::IssueDraft, false);
             config.set_toggle(toggle, true);
             let set = config.families();
             assert_eq!(set, FamilySet::LEGACY.with(toggle.family()), "{toggle:?}");
@@ -2586,6 +3389,28 @@ mod tests {
         docs.project = Some("/home/u/p".into());
         docs.enabled = false;
         assert_eq!(servers, vec![fs, docs]);
+        // Spec (config-unknown-keys): the full load reports the entry's
+        // unknown key.
+        assert_eq!(
+            full_load(text).0,
+            ["unknown key: ai.mcp.servers[1].timeout"]
+        );
+    }
+
+    // Spec (configuration, MCP server lists): Unknown keys ignored. The
+    // valid keys apply, the entry is kept, and the full load reports the
+    // unknown key.
+    #[test]
+    fn unknown_mcp_entry_keys_are_ignored() {
+        let text = "[[ai.mcp.servers]]\nname = \"fs\"\ncommand = \"mcp-fs\"\ntimeout = 5\n";
+        assert_eq!(mcp_of(text), (vec![server("fs", "mcp-fs")], Vec::new()));
+        assert_eq!(
+            full_load(text),
+            (
+                vec!["unknown key: ai.mcp.servers[0].timeout".to_owned()],
+                Some("config: unknown key: ai.mcp.servers[0].timeout".to_owned())
+            )
+        );
     }
 
     #[test]
@@ -2782,5 +3607,185 @@ mod tests {
         for shown in ["fs", "/home/u/p", "enabled: true", "args: 1", "env: 2"] {
             assert!(text.contains(shown), "{text}");
         }
+    }
+
+    // Spec (ai-task-models): Task set integrity; Set all covers five tasks.
+    #[test]
+    fn orchestrate_is_the_sixth_task_and_set_all_stays_at_five() {
+        assert_eq!(Task::Orchestrate as usize, 5);
+        assert_eq!(Task::Orchestrate.table(), "ai.tasks.orchestrate");
+        assert_eq!(Task::SET_ALL, Task::ALL[..5]);
+    }
+
+    // Spec (configuration): Slot parsed, Absent means unassigned.
+    #[test]
+    fn the_orchestrate_slot_is_parsed_and_absent_means_unassigned() {
+        let (config, problems) =
+            read_text("[ai.tasks.orchestrate]\nengine = \"claude\"\nmodel = \"opus\"\n");
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(config.get(Task::Orchestrate), &asg("claude", "opus"),);
+        assert_eq!(config.get(Task::Code), &Assignment::default());
+        let (config, _) = read_text("[ai]\nengine = \"codex\"\nmodel = \"default\"\n");
+        assert_eq!(config.get(Task::Orchestrate), &Assignment::default());
+        assert_eq!(
+            config.resolve(Task::Orchestrate),
+            (asg("codex", "default"), true)
+        );
+        assert_eq!(config.label(Task::Orchestrate), "(default)");
+    }
+
+    // Spec (ai-task-models): the aggregate ignores `orchestrate`.
+    #[test]
+    fn the_aggregate_ignores_orchestrate() {
+        let config = cfg(&[
+            (Task::General, Some("claude"), Some("opus")),
+            (Task::Orchestrate, Some("codex"), Some("default")),
+        ]);
+        assert_eq!(config.aggregate(), "claude › opus");
+    }
+
+    // Spec (configuration): Defaults.
+    #[test]
+    fn the_orchestrator_defaults() {
+        for text in ["", "[ai]\n", "[ai.orchestrator]\n"] {
+            let (config, problems) = read_text(text);
+            assert_eq!(
+                config.orchestrator,
+                OrchestratorConfig::default(),
+                "{text:?}"
+            );
+            assert_eq!(problems, Vec::<String>::new(), "{text:?}");
+        }
+        let defaults = OrchestratorConfig::default();
+        assert!(!defaults.enabled);
+        assert!(!defaults.acknowledged);
+        assert_eq!(defaults.worker_timeout_secs, 600);
+    }
+
+    #[test]
+    fn the_orchestrator_keys_are_read() {
+        let (config, problems) = read_text(
+            "[ai.orchestrator]\nenabled = true\nacknowledged = true\nworker_timeout_secs = 30\n",
+        );
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(
+            config.orchestrator,
+            OrchestratorConfig {
+                enabled: true,
+                acknowledged: true,
+                worker_timeout_secs: 30,
+                ..OrchestratorConfig::default()
+            }
+        );
+        let (config, _) = read_text("[ai.orchestrator]\nworker_timeout_secs = 3600\n");
+        assert_eq!(config.orchestrator.worker_timeout_secs, 3600);
+    }
+
+    // Spec (configuration): the S3 run limits, their defaults and ranges.
+    #[test]
+    fn the_run_limits_are_read_with_their_ranges() {
+        let defaults = OrchestratorConfig::default();
+        assert_eq!(
+            (
+                defaults.max_parallel,
+                defaults.max_workers,
+                defaults.run_timeout_mins
+            ),
+            (2, 8, 60)
+        );
+        let (config, problems) = read_text(
+            "[ai.orchestrator]\nmax_parallel = 4\nmax_workers = 32\nrun_timeout_mins = 480\n",
+        );
+        assert_eq!(problems, Vec::<String>::new());
+        let orch = config.orchestrator;
+        assert_eq!(
+            (orch.max_parallel, orch.max_workers, orch.run_timeout_mins),
+            (4, 32, 480)
+        );
+        let bad = [
+            ("max_parallel", "0", "1 to 4"),
+            ("max_parallel", "5", "1 to 4"),
+            ("max_workers", "33", "1 to 32"),
+            ("run_timeout_mins", "481", "1 to 480"),
+            ("run_timeout_mins", "\"60\"", "1 to 480"),
+            ("max_turns", "0", "1 to 24"),
+            ("max_turns", "25", "1 to 24"),
+            ("max_turns", "\"6\"", "1 to 24"),
+        ];
+        for (key, value, range) in bad {
+            let text = format!("[ai.orchestrator]\nenabled = true\n{key} = {value}\n");
+            let (config, problems) = read_text(&text);
+            assert_eq!(
+                config.orchestrator,
+                OrchestratorConfig {
+                    enabled: true,
+                    ..OrchestratorConfig::default()
+                },
+                "{key}"
+            );
+            assert_eq!(
+                problems,
+                [format!(
+                    "ai.orchestrator.{key}: expected an integer from {range}"
+                )],
+                "{key} = {value}"
+            );
+        }
+    }
+
+    // Spec (configuration): S4 `max_turns`, default 6, range 1 to 24.
+    #[test]
+    fn max_turns_is_read_with_its_range() {
+        assert_eq!(OrchestratorConfig::default().max_turns, 6);
+        let (config, problems) = read_text("[ai.orchestrator]\nmax_turns = 24\n");
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(config.orchestrator.max_turns, 24);
+    }
+
+    // S5 (config freeze, 2026-10-29): the key is `acknowledged`, as in
+    // `[ai.memory]`; the chain-only `notice_accepted` never shipped and is not
+    // read (an unknown key, ignored).
+    #[test]
+    fn the_old_notice_key_is_not_an_alias() {
+        let (config, problems) = read_text("[ai.orchestrator]\nnotice_accepted = true\n");
+        assert_eq!(config.orchestrator, OrchestratorConfig::default());
+        assert_eq!(problems, Vec::<String>::new());
+    }
+
+    // Spec (configuration): Bad value falls back, other keys stay.
+    #[test]
+    fn a_bad_orchestrator_value_falls_back_on_its_own() {
+        for bad in ["29", "3601", "0", "-5", "\"600\"", "true", "1.5"] {
+            let text = format!("[ai.orchestrator]\nenabled = true\nworker_timeout_secs = {bad}\n");
+            let (config, problems) = read_text(&text);
+            assert!(config.orchestrator.enabled, "{bad}");
+            assert_eq!(config.orchestrator.worker_timeout_secs, 600, "{bad}");
+            assert_eq!(
+                problems,
+                ["ai.orchestrator.worker_timeout_secs: expected an integer from 30 to 3600"],
+                "{bad}"
+            );
+        }
+        let (config, problems) =
+            read_text("[ai.orchestrator]\nenabled = \"yes\"\nacknowledged = 1\n");
+        assert_eq!(config.orchestrator, OrchestratorConfig::default());
+        assert_eq!(
+            problems,
+            [
+                "ai.orchestrator.enabled: expected a boolean",
+                "ai.orchestrator.acknowledged: expected a boolean"
+            ]
+        );
+        let (config, problems) = read_text("[ai]\norchestrator = 3\n");
+        assert_eq!(config.orchestrator, OrchestratorConfig::default());
+        assert_eq!(problems, ["ai.orchestrator: expected a table"]);
+    }
+
+    // Spec (configuration): Older build ignores keys; unknown keys ignored.
+    #[test]
+    fn unknown_orchestrator_keys_are_ignored() {
+        let (config, problems) = read_text("[ai.orchestrator]\nmax_helpers = 3\nfuture = 1\n");
+        assert_eq!(config.orchestrator, OrchestratorConfig::default());
+        assert_eq!(problems, Vec::<String>::new());
     }
 }

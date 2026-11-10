@@ -10,6 +10,7 @@ use crate::{
 };
 use components::{
     chat::ChatView,
+    link_list::LinkListPopup,
     menu::MenuPopup,
     scroll_badge::ScrollBadge,
     separators::SeparatorView,
@@ -69,22 +70,31 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
             PaneView::Chat(chat) => {
                 let guidance = app.chat_guidance(id);
                 let approval = app.approval_prompt(id);
+                let marks = (id == focused).then(|| app.chat_copy_marks()).flatten();
+                let folder = app.chat_folder_label(id);
                 let chat_view = ChatView::new(chat, theme)
+                    .folder(folder.as_deref())
                     .now(app.now())
                     .guidance(guidance.as_deref())
-                    .approval(approval.as_ref());
-                // The composer owns the real cursor of a focused chat; MENU
+                    .quiet_guidance(app.guidance_is_hint(id))
+                    .approval(approval.as_ref())
+                    .orchestrating(app.orchestrating(id))
+                    .copy(marks);
+                // The composer owns the real cursor of a focused chat, and the
+                // COPY cursor on the transcript replaces it in chat COPY. MENU
                 // hides it like it hides a shell's.
-                // Chat COPY scrolls the transcript and edits nothing: no cursor.
-                let cursor = (id == focused
-                    && app.menu().is_none()
-                    && !matches!(app.input(), InputMode::ChatCopy(_)))
-                .then(|| chat_view.cursor(area))
-                .flatten();
+                let chat_copy = matches!(app.input(), InputMode::ChatCopy(_));
+                let cursor =
+                    (id == focused && app.menu().is_none() && (!chat_copy || marks.is_some()))
+                        .then(|| chat_view.cursor(area))
+                        .flatten();
                 let review = chat_view.review_shown();
                 frame.render_widget(chat_view, area);
                 // The review hides the transcript the badge speaks of.
-                if !review && let Some(offset) = app.scrolled_by(id) {
+                if !review
+                    && chat.run_view().is_none()
+                    && let Some(offset) = app.scrolled_by(id)
+                {
                     frame.render_widget(ScrollBadge::new(offset, theme), area);
                 }
                 if let Some(position) = cursor {
@@ -112,6 +122,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
                 _ => cursor_position(pane, area),
             };
             if app.menu().is_none()
+                && app.link_list().is_none()
                 && let Some(position) = position
             {
                 frame.set_cursor_position(position);
@@ -134,9 +145,11 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         .map(|(stream, others)| ThinkingView::new(stream, others, app.anim_frame(), app.now()));
     let right = app.status_right();
     let download = app.status_download();
+    let usage = app.status_usage();
     let plain = |path| {
         StatusLine::input(theme, app.input(), path, &right)
             .chat(app.focused_is_chat())
+            .usage(usage.as_deref())
             .memory(app.status_memory())
             .context(app.status_context())
             .update(app.status_update())
@@ -151,9 +164,13 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let path = app.status_path(line("").path_budget(status.width));
     frame.render_widget(line(&path), status);
 
+    if let Some(list) = app.link_list() {
+        frame.render_widget(LinkListPopup::new(list, theme), frame.area());
+    }
+
     // The menu popup goes over everything else.
     if let Some(menu) = app.menu() {
-        let popup = MenuPopup::new(menu, app.config(), theme);
+        let popup = MenuPopup::new(menu, app.config(), theme).with_glyph(app.tool_glyph());
         frame.render_widget(popup, frame.area());
     }
 }
@@ -267,7 +284,7 @@ mod tests {
     }
 
     fn press(app: &mut App, c: char, mods: KeyModifiers) {
-        app.update(AppEvent::Key(KeyEvent::new(KeyCode::Char(c), mods)));
+        app.update_settled(AppEvent::Key(KeyEvent::new(KeyCode::Char(c), mods)));
     }
 
     /// Two panes side by side (`w v`); the new right pane has the focus.
@@ -879,14 +896,15 @@ mod tests {
     // Spec: tabs: Bar forced with one tab (render); the popup is drawn last.
     #[test]
     fn menu_popup_is_drawn_over_the_panes_after_the_bars() {
-        // 25 rows: the popup with its AI section is 23 rows high, centred.
-        let app = menu_app(64, 25);
-        let (buf, _) = draw_at(&app, 64, 25);
+        // 27 rows: the popup with its AI section is 18 rows high, so it is
+        // centred from row 4.
+        let app = menu_app(64, 27);
+        let (buf, _) = draw_at(&app, 64, 27);
         assert!(row(&buf, 0).contains(" 1 "), "{:?}", row(&buf, 0));
-        assert!(row(&buf, 1).contains(" Menu "), "{:?}", row(&buf, 1));
-        assert!(row(&buf, 24).contains("MENU"), "{:?}", row(&buf, 24));
+        assert!(row(&buf, 4).contains(" Menu "), "{:?}", row(&buf, 4));
+        assert!(row(&buf, 26).contains("MENU"), "{:?}", row(&buf, 26));
         insta::assert_snapshot!(
-            (0..25)
+            (0..27)
                 .map(|y| row(&buf, y).trim_end().to_string())
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -895,15 +913,15 @@ mod tests {
 
     #[test]
     fn a_known_update_marks_the_statusline_and_the_menu_note_fits_a_real_frame() {
-        let mut app = App::new(80, 25).with_update(Some("0.16.0".into()));
+        let mut app = App::new(80, 27).with_update(Some("0.16.0".into()));
         let line = status(&app);
         assert!(line.contains("update 0.16.0"), "{line:?}");
         insta::assert_snapshot!("update_statusline", line.trim_end());
 
         press(&mut app, ' ', KeyModifiers::CONTROL);
         press(&mut app, 'm', KeyModifiers::NONE);
-        let (buf, _) = draw_at(&app, 80, 25);
-        let frame = (0..25)
+        let (buf, _) = draw_at(&app, 80, 27);
+        let frame = (0..27)
             .map(|y| row(&buf, y).trim_end().to_string())
             .collect::<Vec<_>>()
             .join("\n");

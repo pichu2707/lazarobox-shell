@@ -10,7 +10,10 @@ use ratatui::{
 use super::tab_bar::{cells, clip};
 use crate::{
     core::{
-        ai::picker::{Mark, NOT_IN_LIST},
+        ai::{
+            marks::{ToolGlyph, badge_text},
+            picker::{Mark, NOT_IN_LIST},
+        },
         config::Config,
         menu::{CAUTION_ROWS, Footer, MenuState, NOTE_ROWS, Row, popup_layout},
     },
@@ -22,6 +25,7 @@ pub struct MenuPopup<'a> {
     menu: &'a MenuState,
     config: &'a Config,
     theme: &'a LazaroboxTheme,
+    glyph: ToolGlyph,
 }
 
 impl<'a> MenuPopup<'a> {
@@ -30,13 +34,20 @@ impl<'a> MenuPopup<'a> {
             menu,
             config,
             theme,
+            glyph: ToolGlyph::default(),
         }
+    }
+
+    /// How the tool badge is drawn; decided once by the runtime.
+    pub fn with_glyph(mut self, glyph: ToolGlyph) -> Self {
+        self.glyph = glyph;
+        self
     }
 }
 
 const FALLBACK: &str = "MENU · s save · Esc cancel";
-/// The hint at the right of the tab bar: the key that switches tabs.
-const TAB_HINT: &str = "⇥ Tab";
+/// The hint at the right of the tab bar: the keys that switch tabs.
+const TAB_HINT: &str = "⇥ Tab · 1-5";
 /// The one line shown instead of the privacy warning on a tiny terminal. It
 /// offers no choice: the menu declines every key then (informed consent).
 const FALLBACK_WARNING: &str = "Enlarge the terminal to read the privacy note";
@@ -85,32 +96,72 @@ impl MenuPopup<'_> {
                 let text = format!(" {label}{}{value} ", " ".repeat(gap));
                 (text, self.row_style(selected, enabled))
             }
+            &Row::Edit {
+                label,
+                ref value,
+                selected,
+            } => {
+                // The label stays whole when the value fits beside it; if not,
+                // the value wins: `Edit` and the value's tail after a `…`.
+                let (label, value) = if cells(label) + cells(value) + 4 <= width {
+                    (label, value.clone())
+                } else {
+                    let room = width.saturating_sub(cells(EDIT_LABEL) + 4);
+                    (EDIT_LABEL, tail(value, room))
+                };
+                let gap = width
+                    .saturating_sub(cells(label) + cells(&value) + 2)
+                    .max(1);
+                let text = format!(" {label}{}{value} ", " ".repeat(gap));
+                (text, self.row_style(selected, true))
+            }
             Row::Pick {
                 label,
                 mark,
                 selected,
                 enabled,
                 current,
+                tools,
             } => {
-                // A long mark (an engine status with a reason) gives way to
-                // the label, but never below half of the row, and the `●`
-                // of the current row stays. A very narrow popup keeps the
-                // old rule: the label gives way and the mark stays whole.
+                // A long engine status gives way to a short label (an engine
+                // name stays whole, with its badge and `●`). Any other
+                // mark, or a status next to a label over half of the row, keeps
+                // half of the row at least; below
+                // CLIP_MARK_FROM only a status is clipped, other marks stay whole.
                 let dot = if *current { " ●" } else { "" };
+                let raw_mark = mark;
                 let mark = mark_text(mark);
-                let mark_cap = width
-                    .saturating_sub(cells(label) + 1 + cells(dot) + 1)
-                    .max(width / 2);
-                let mark = if width >= CLIP_MARK_FROM && cells(mark) > mark_cap {
+                let badge = tools.map_or("", |t| badge_text(t, self.glyph));
+                let badge_cells = if badge.is_empty() {
+                    0
+                } else {
+                    cells(badge) + 1
+                };
+                let mark_cap =
+                    width.saturating_sub(cells(label) + 1 + badge_cells + cells(dot) + 1);
+                let is_status = matches!(raw_mark, Mark::Status(_));
+                let mark_cap = if is_status && cells(label) <= width / 2 {
+                    mark_cap
+                } else {
+                    mark_cap.max(width / 2)
+                };
+                let clips = width >= CLIP_MARK_FROM || is_status;
+                let mark = if clips && cells(mark) > mark_cap {
                     clip(mark, mark_cap)
                 } else {
                     mark.to_owned()
                 };
-                let tail = match (mark.as_str(), current) {
-                    ("", false) => String::new(),
-                    ("", true) => dot.to_owned(),
-                    (mark, _) => format!(" {mark}{dot}"),
+                let badge = if badge.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {badge}")
                 };
+                let mark = if mark.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {mark}")
+                };
+                let tail = format!("{mark}{badge}{dot}");
                 let room = width.saturating_sub(cells(&tail) + 1);
                 let label = if cells(label) > room {
                     clip(label, room)
@@ -158,21 +209,37 @@ fn mark_text(mark: &Mark) -> &str {
 /// The row width from which a long picker mark is clipped to keep its label.
 const CLIP_MARK_FROM: usize = 40;
 
-/// Suffix of a task-row value that must survive clipping.
+/// Suffixes of a task-row value that must survive clipping, outermost last.
 const REQUIRED_MARK: &str = " · download required";
+const NOT_RECOMMENDED_MARK: &str = " · not recommended";
 
-/// `value` within `room` cells: a long model name is clipped, its
-/// ` · download required` mark is kept whole.
+/// The label a limit being typed gives way to when its value needs the room.
+const EDIT_LABEL: &str = "Edit";
+
+/// The last `room` cells of `value`, with a `…` in front when it was cut.
+fn tail(value: &str, room: usize) -> String {
+    if cells(value) <= room {
+        return value.to_owned();
+    }
+    let keep: Vec<char> = value.chars().rev().take(room.saturating_sub(1)).collect();
+    format!("…{}", keep.into_iter().rev().collect::<String>())
+}
+
+/// `value` within `room` cells: a long model name is clipped, its trailing
+/// ` · download required` and ` · not recommended` marks are kept whole.
 fn fit(value: &str, room: usize) -> String {
     if cells(value) <= room {
         return value.to_owned();
     }
-    match value.strip_suffix(REQUIRED_MARK) {
-        Some(head) if room > cells(REQUIRED_MARK) => {
-            format!("{}{REQUIRED_MARK}", clip(head, room - cells(REQUIRED_MARK)))
-        }
-        _ => clip(value, room),
+    let mut head = value;
+    for mark in [NOT_RECOMMENDED_MARK, REQUIRED_MARK] {
+        head = head.strip_suffix(mark).unwrap_or(head);
     }
+    let marks = &value[head.len()..];
+    if marks.is_empty() || room <= cells(marks) {
+        return clip(value, room);
+    }
+    format!("{}{marks}", clip(head, room - cells(marks)))
 }
 
 /// The tab bar of the menu as styled segments for `width` inner cells: each
@@ -415,7 +482,7 @@ mod tests {
     // Spec: Settings rows; Footer hint.
     #[test]
     fn snapshot_settings_popup_at_the_wanted_size() {
-        insta::assert_snapshot!(text(&draw(51, 9, &fresh())));
+        insta::assert_snapshot!(text(&draw(51, 10, &fresh())));
     }
 
     #[test]
@@ -426,12 +493,12 @@ mod tests {
     // Spec: the blank row is dropped first on a short height.
     #[test]
     fn snapshot_short_height_drops_the_blank_row() {
-        insta::assert_snapshot!(text(&draw(51, 9, &fresh())));
+        insta::assert_snapshot!(text(&draw(51, 10, &fresh())));
     }
 
     #[test]
     fn selected_row_is_reversed_and_the_others_are_not() {
-        let buf = draw(51, 9, &fresh());
+        let buf = draw(51, 10, &fresh());
         let reversed = |y| buf[(2, y)].modifier.contains(Modifier::REVERSED);
         assert!(!reversed(1));
         assert!(reversed(2));
@@ -440,7 +507,7 @@ mod tests {
 
     #[test]
     fn the_mouse_row_is_drawn_like_the_other_settings() {
-        let buf = draw(51, 9, &fresh());
+        let buf = draw(51, 10, &fresh());
         let theme = LazaroboxTheme::default();
         assert_ne!(buf[(2, 4)].fg, theme.text_muted);
         assert_eq!(buf[(2, 4)].fg, buf[(2, 3)].fg);
@@ -451,7 +518,7 @@ mod tests {
     fn snapshot_error_replaces_the_hint_and_is_clipped() {
         let mut menu = fresh();
         menu.set_error("config.toml: statusline is not a table; fix it before saving".into());
-        let buf = draw(51, 9, &menu);
+        let buf = draw(51, 10, &menu);
         assert!(!text(&buf).contains("j/k move"));
         insta::assert_snapshot!(text(&buf));
     }
@@ -477,11 +544,11 @@ mod tests {
     }
 
     #[test]
-    fn exactly_24_by_9_shows_the_full_popup() {
-        let buf = draw(24, 9, &fresh());
+    fn exactly_24_by_10_shows_the_full_popup() {
+        let buf = draw(24, 10, &fresh());
         assert!(text(&buf).contains("Settings"));
         assert!(!text(&buf).contains("MENU"));
-        let below = draw(23, 9, &fresh());
+        let below = draw(23, 10, &fresh());
         assert!(!text(&below).contains("Settings"));
         assert!(text(&below).contains("MENU"));
     }
@@ -687,6 +754,8 @@ mod tests {
     }
 
     mod install;
+    mod model_delete;
+    mod tool_badge;
 
     #[test]
     fn snapshot_level_one_lists_the_engines() {
@@ -698,10 +767,12 @@ mod tests {
         let mut menu = picker_of("general", 0);
         press(&mut menu, &[KeyCode::Enter]);
         let top = draw(62, POPUP_H, &menu);
-        press(&mut menu, &[KeyCode::Char('k')]);
+        // Up wraps to the `download from Ollama…` row, then the last
+        // curated row, which is disabled.
+        press(&mut menu, &[KeyCode::Char('k'), KeyCode::Char('k')]);
         let buf = draw(62, POPUP_H, &menu);
         let shown = text(&buf);
-        assert!(shown.contains("18/18"), "{shown}");
+        assert!(shown.contains("18/19"), "{shown}");
         assert!(
             shown.contains("download required · not selectable"),
             "{shown}"
@@ -714,7 +785,11 @@ mod tests {
     #[test]
     fn the_cursor_on_a_disabled_row_is_muted_and_reversed() {
         let mut menu = picker_of("general", 0);
-        press(&mut menu, &[KeyCode::Enter, KeyCode::Char('k')]);
+        // Past the `download from Ollama…` row, onto the last curated one.
+        press(
+            &mut menu,
+            &[KeyCode::Enter, KeyCode::Char('k'), KeyCode::Char('k')],
+        );
         let buf = draw(62, POPUP_H, &menu);
         let theme = LazaroboxTheme::default();
         let y = (0..POPUP_H)
@@ -843,7 +918,7 @@ mod tests {
                     let start = match row {
                         Row::Title(t) | Row::Text(t) => format!(" {t}"),
                         Row::Field(t) => format!(" {t}"),
-                        Row::Item { label, .. } => format!(" {label}"),
+                        Row::Item { label, .. } | Row::Edit { label, .. } => format!(" {label}"),
                         Row::Pick { label, .. } => format!(" {label}"),
                     };
                     let drawn: String = (inner.x..inner.x + inner.width)
@@ -926,6 +1001,37 @@ mod tests {
         tab_key(&mut menu);
         let shown = text(&draw(62, POPUP_H, &menu));
         assert!(shown.contains("· download required"), "{shown}");
+        assert!(shown.contains("…"), "{shown}");
+    }
+
+    fn orchestrating(model: &str) -> MenuState {
+        let mut saved = AiConfig::general(Some("claude"), Some("opus"));
+        saved.set(
+            Task::Orchestrate,
+            Assignment {
+                engine: Some("ollama".to_owned()),
+                model: Some(model.to_owned()),
+            },
+        );
+        let mut menu = fresh().with_ai(saved, Some(machine()));
+        tab_key(&mut menu);
+        menu
+    }
+
+    // Spec (ai-task-models): Ollama marked not recommended on its row only.
+    #[test]
+    fn snapshot_orchestrate_row_marks_a_server_engine() {
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &orchestrating("llama3:8b"))));
+    }
+
+    #[test]
+    fn a_long_orchestrate_model_is_clipped_and_keeps_both_marks() {
+        let long = "qwen2.5-coder:32b-instruct-q4_K_M";
+        let shown = text(&draw(62, POPUP_H, &orchestrating(long)));
+        assert!(
+            shown.contains("· download required · not recommended"),
+            "{shown}"
+        );
         assert!(shown.contains("…"), "{shown}");
     }
 
@@ -1171,6 +1277,7 @@ mod tests {
                     diagnostics: crate::core::ai::Diagnostics {
                         models: models.filter(|_| e.id == "codex").map(str::to_owned),
                         jail: jail.filter(|_| e.id == "codex").map(str::to_owned),
+                        ..Default::default()
                     },
                 })
                 .collect(),
@@ -1206,10 +1313,29 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_engine_row_says_why_codex_has_no_jail() {
+    fn snapshot_engine_row_refuses_codex_and_says_why() {
         let menu = codex_engines_level(codex_degraded(None, Some("Landlock ABI 2, needs 3+")));
         let shown = text(&draw(62, POPUP_H, &menu));
-        assert!(shown.contains("no jail: Landlock"), "{shown}");
+        assert!(shown.contains("refused · Landlock"), "{shown}");
+        assert!(!shown.contains("available"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    #[test]
+    fn snapshot_engine_row_names_the_install_layout_after_the_version() {
+        let mut detection = codex_degraded(None, None);
+        for s in &mut detection.engines {
+            if s.id == "codex" {
+                s.version = Some("0.153.4".to_owned());
+                s.diagnostics.install =
+                    Some(crate::core::ai::codex_install::CodexInstall::Standalone);
+            }
+        }
+        let shown = text(&draw(62, POPUP_H, &codex_engines_level(detection)));
+        assert!(
+            shown.contains("codex available · 0.153.4 · standalone"),
+            "{shown}"
+        );
         insta::assert_snapshot!(shown);
     }
 
@@ -1222,10 +1348,7 @@ mod tests {
             .into_iter()
             .find(|l| l.contains("codex"))
             .unwrap();
-        assert!(
-            row.starts_with("│ codex available · no jail: a-very-long"),
-            "{row}"
-        );
+        assert!(row.starts_with("│ codex refused · a-very-long"), "{row}");
         assert!(row.contains('…') && row.ends_with("●│"), "{row}");
         assert_eq!(cells(&row), 62);
     }
@@ -1254,15 +1377,13 @@ mod tests {
         ];
         let mut whys: Vec<String> = reasons.iter().map(|r| r.short(home)).collect();
         whys.push(JailOff::NoBackend.short_required());
-        // claude on macOS (see `jail_note_on`).
-        whys.push("uses macOS Keychain".to_owned());
         for why in whys {
             let menu = codex_engines_level(codex_degraded(None, Some(&why)));
             let row = lines(&draw(62, POPUP_H, &menu))
                 .into_iter()
                 .find(|l| l.contains("codex"))
                 .unwrap();
-            assert!(row.contains(&format!("no jail: {why} ●")), "{why}: {row}");
+            assert!(row.contains(&format!("refused · {why} ●")), "{why}: {row}");
         }
     }
 
@@ -1431,16 +1552,112 @@ mod tests {
     }
 
     fn sub_levels() -> Vec<MenuState> {
-        vec![picker_of("code", 0), models_view(), custom_view(), warned()]
+        vec![
+            picker_of("code", 0),
+            models_view(),
+            custom_view(),
+            warned(),
+            usage_view(),
+        ]
+    }
+
+    /// The usage view, opened from its row of Settings.
+    fn usage_view() -> MenuState {
+        let mut menu = ai_tab();
+        goto(&mut menu, "Usage (alpha)");
+        press(&mut menu, &[KeyCode::Enter]);
+        menu
+    }
+
+    // Spec (ai-cost config-menu): the view keeps the fixed popup, names its
+    // keys in the footer and shows the toggles and the three CLI billings.
+    #[test]
+    fn snapshot_usage_view() {
+        let shown = text(&draw(62, POPUP_H, &usage_view()));
+        assert!(
+            shown.contains("j/k move · h/l change · Enter edit · s save · Esc back"),
+            "{shown}"
+        );
+        insta::assert_snapshot!(shown);
+    }
+
+    #[test]
+    fn snapshot_usage_view_at_the_smallest_popup() {
+        insta::assert_snapshot!(text(&draw(MIN_WIDTH, MIN_HEIGHT, &usage_view())));
+    }
+
+    // The edit keeps its value, the cursor and the `Esc` of the hint visible
+    // at the smallest popup.
+    #[test]
+    fn snapshot_usage_limit_edit_at_the_smallest_popup() {
+        let mut menu = usage_view();
+        goto_usage_row(&mut menu, "Turn tokens");
+        press(&mut menu, &[KeyCode::Enter]);
+        for c in "123456789012".chars() {
+            press(&mut menu, &[KeyCode::Char(c)]);
+        }
+        let shown = text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu));
+        assert!(shown.contains("123456789012_"), "{shown}");
+        assert!(shown.contains("Esc"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    // S-3: with room, the limit keeps its name while it is typed.
+    #[test]
+    fn snapshot_usage_limit_edit_keeps_its_label_with_room() {
+        let mut menu = usage_view();
+        goto_usage_row(&mut menu, "Turn tokens");
+        press(&mut menu, &[KeyCode::Enter]);
+        for c in "4000".chars() {
+            press(&mut menu, &[KeyCode::Char(c)]);
+        }
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(shown.contains("Turn tokens"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    // S-4: a stored value too long for the row is clipped from the left, so
+    // the cursor and the tail stay visible.
+    #[test]
+    fn snapshot_usage_limit_edit_of_the_largest_dollar_value_at_the_smallest_popup() {
+        let mut ai = AiConfig::general(Some("ollama"), Some("model1:7b"));
+        ai.usage_mut().set_day_usd_micros(Some(u64::MAX));
+        let mut menu = fresh().with_ai(ai, Some(rich()));
+        tab_key(&mut menu);
+        goto(&mut menu, "Usage (alpha)");
+        press(&mut menu, &[KeyCode::Enter]);
+        goto_usage_row(&mut menu, "Day $");
+        press(&mut menu, &[KeyCode::Enter]);
+        let shown = text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu));
+        assert!(shown.contains("…") && shown.contains("551615_"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    fn goto_usage_row(menu: &mut MenuState, label: &str) {
+        for _ in 0..8 {
+            let on = menu
+                .rows(&Config::default())
+                .into_iter()
+                .any(|r| matches!(r, Row::Item { label: l, selected: true, .. } if l == label));
+            if on {
+                return;
+            }
+            press(menu, &[KeyCode::Char('j')]);
+        }
+        panic!("no row {label}");
     }
 
     #[test]
     fn the_bar_is_body_row_zero_with_the_hint_on_a_normal_terminal() {
         for menu in [mixed(), ai_tab()] {
             let l = lines(&draw(62, POPUP_H, &menu));
-            assert!(l[1].starts_with("│ Settings │ AI "), "{}", l[1]);
             assert!(
-                l[1].ends_with("⇥ Tab │"),
+                l[1].starts_with("│ Settings │ Models │ Tools │ Chat "),
+                "{}",
+                l[1]
+            );
+            assert!(
+                l[1].ends_with("⇥ Tab · 1-5 │"),
                 "hint one column from the edge: {}",
                 l[1]
             );
@@ -1455,17 +1672,17 @@ mod tests {
         assert_eq!(settings[(2, 1)].fg, theme.bg_base);
         assert!(settings[(2, 1)].modifier.contains(Modifier::BOLD));
         assert!(!settings[(2, 1)].modifier.contains(Modifier::REVERSED));
-        assert_ne!(settings[(13, 1)].bg, theme.primary_cyan, "AI is idle");
+        assert_ne!(settings[(13, 1)].bg, theme.primary_cyan, "Models is idle");
         let ai = draw(62, POPUP_H, &ai_tab());
         assert_ne!(ai[(2, 1)].bg, theme.primary_cyan);
-        assert_eq!(ai[(13, 1)].bg, theme.primary_cyan, "AI is active");
+        assert_eq!(ai[(13, 1)].bg, theme.primary_cyan, "Models is active");
     }
 
     #[test]
     fn the_hint_is_absent_over_every_sub_level_and_the_bar_stays() {
         for menu in sub_levels() {
             let l = lines(&draw(62, POPUP_H, &menu));
-            assert!(l[1].starts_with("│ Settings │ AI "), "{}", l[1]);
+            assert!(l[1].starts_with("│ Settings │ Models "), "{}", l[1]);
             assert!(!l[1].contains('⇥'), "{}", l[1]);
         }
     }
@@ -1479,12 +1696,12 @@ mod tests {
             settings[2]
         );
         assert!(
-            !settings[2..].iter().any(|l| l.starts_with("│ AI")),
+            !settings[2..].iter().any(|l| l.starts_with("│ Models")),
             "{settings:?}"
         );
         let ai = lines(&draw(62, POPUP_H, &ai_tab()));
         assert!(ai[2].starts_with("│ Set all tasks"), "{}", ai[2]);
-        assert!(ai[11].starts_with("│ Tools"), "{}", ai[11]);
+        assert!(ai[9].starts_with("│ Hugging Face"), "{}", ai[9]);
     }
 
     // Spec (config-menu): the caution line of a family that can change files
@@ -1496,9 +1713,28 @@ mod tests {
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
     }
 
+    // Spec (config-menu, GitHub row): drawn whole at 80 columns, and the row
+    // itself is plain ASCII so a `linux` console draws it as it is.
+    #[test]
+    fn snapshot_github_row_at_80_columns() {
+        let mut menu = ai_tab();
+        goto(&mut menu, "GitHub");
+        let buf = draw(80, POPUP_H, &menu);
+        insta::assert_snapshot!(text(&buf));
+        let rows = lines(&buf);
+        let row = rows.iter().find(|l| l.contains("GitHub")).unwrap();
+        let inner = row.trim().trim_matches('\u{2502}');
+        assert!(inner.is_ascii(), "{row:?}");
+        assert!(inner.trim_end().ends_with("off"), "{row:?}");
+        assert_eq!(rows.iter().filter(|l| l.contains("Can change")).count(), 0);
+        let hint = "Reads issues and PRs; locks auto-run in that chat";
+        assert_eq!(rows.iter().filter(|l| l.contains(hint)).count(), 1);
+    }
+
     #[test]
     fn the_caution_shows_only_on_the_risky_family_rows_and_keeps_the_size() {
         let caution = "Can change files or run code";
+        let hint = "Reads issues and PRs; locks auto-run in that chat";
         let mut sizes = Vec::new();
         for (label, shown) in [
             ("Search", false),
@@ -1506,12 +1742,18 @@ mod tests {
             ("Exec", true),
             ("Git", false),
             ("Git write", true),
+            ("GitHub", false),
             ("Tools", false),
         ] {
             let mut menu = ai_tab();
             goto(&mut menu, label);
             let l = lines(&draw(62, POPUP_H, &menu));
             assert_eq!(l.iter().any(|row| row.contains(caution)), shown, "{label}");
+            assert_eq!(
+                l.iter().any(|row| row.contains(hint)),
+                label == "GitHub",
+                "{label}"
+            );
             sizes.push(l.len());
         }
         sizes.dedup();
@@ -1520,23 +1762,28 @@ mod tests {
 
     #[test]
     fn titles_are_still_drawn_for_a_single_tab() {
-        let shown = lines(&draw(51, 9, &fresh()));
+        let shown = lines(&draw(51, 10, &fresh()));
         assert!(shown[1].starts_with("│ Settings"), "{}", shown[1]);
         assert!(!shown[1].contains("│ Settings │"), "no bar: {}", shown[1]);
     }
 
     #[test]
-    fn the_popup_is_twenty_three_rows_on_both_tabs_and_in_every_sub_level() {
-        assert_eq!(POPUP_H, 23);
+    fn the_popup_is_eighteen_rows_on_every_tab_and_in_every_sub_level() {
+        assert_eq!(POPUP_H, 18);
         let mut views = vec![mixed(), ai_tab(), with_update()];
+        for digit in ['3', '5'] {
+            let mut menu = mixed();
+            press(&mut menu, &[KeyCode::Char(digit)]);
+            views.push(menu);
+        }
         views.extend(sub_levels());
         for menu in &views {
-            let l = lines(&draw(80, 24, menu));
+            let l = lines(&draw(80, 26, menu));
             let border: Vec<usize> = (0..l.len())
                 .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
                 .collect();
             assert_eq!(border.len(), 2);
-            assert_eq!(border[1] - border[0] + 1, 23);
+            assert_eq!(border[1] - border[0] + 1, 18);
         }
     }
 
@@ -1544,21 +1791,21 @@ mod tests {
     fn the_update_note_sits_in_the_last_two_body_rows_of_settings_only() {
         let l = lines(&draw(62, POPUP_H, &with_update()));
         assert!(
-            l[18].contains("lazarobox 0.16.0 is available."),
+            l[13].contains("lazarobox 0.16.0 is available."),
             "{}",
-            l[18]
+            l[13]
         );
         assert!(
-            l[19].contains("Go to Updates and press Enter."),
+            l[14].contains("Go to Updates and press Enter."),
             "{}",
-            l[19]
+            l[14]
         );
         assert_eq!(
-            l[20].trim_matches(|c| c == '│' || c == ' '),
+            l[15].trim_matches(|c| c == '│' || c == ' '),
             "",
             "blank row"
         );
-        assert!(l[21].contains("s save"), "footer: {}", l[21]);
+        assert!(l[16].contains("s save"), "footer: {}", l[16]);
         let mut menu = with_update();
         tab_key(&mut menu);
         let shown = text(&draw(62, POPUP_H, &menu));
@@ -1577,10 +1824,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::UntrustedCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[18]), "lazarobox cannot update itself here. Run:");
-        assert_eq!(body(&l[19]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[13]), "lazarobox cannot update itself here. Run:");
+        assert_eq!(body(&l[14]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[21]),
+            body(&l[16]),
             "Enter or y copies it \u{b7} Rust folder is too open"
         );
     }
@@ -1592,10 +1839,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::NoCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[18]), "Install Rust first (rustup.rs), then run:");
-        assert_eq!(body(&l[19]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[13]), "Install Rust first (rustup.rs), then run:");
+        assert_eq!(body(&l[14]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[21]),
+            body(&l[16]),
             "Enter or y copies it \u{b7} Rust is not installed"
         );
     }
@@ -1622,16 +1869,94 @@ mod tests {
     }
 
     #[test]
-    fn at_24_columns_the_star_drops_the_hint_and_the_plain_label_keeps_it() {
+    fn at_24_columns_the_bar_shows_only_the_active_tab_without_the_hint() {
         let starred = lines(&draw(24, MIN_HEIGHT, &with_update()));
-        assert!(
-            starred[1].starts_with("│ Settings* │ AI "),
-            "{}",
-            starred[1]
-        );
+        assert!(starred[1].contains("‹ Settings* ›"), "{}", starred[1]);
         assert!(!starred[1].contains('⇥'), "{}", starred[1]);
         let plain = lines(&draw(24, MIN_HEIGHT, &mixed()));
-        assert!(plain[1].contains("⇥ Tab"), "{}", plain[1]);
+        assert!(plain[1].contains("‹ Settings ›"), "{}", plain[1]);
+        assert!(!plain[1].contains('⇥'), "{}", plain[1]);
+        let mut models = mixed();
+        press(&mut models, &[KeyCode::Tab]);
+        let models = lines(&draw(24, MIN_HEIGHT, &models));
+        assert!(models[1].contains("‹ Models ›"), "{}", models[1]);
+    }
+
+    /// The bar of `width` columns, drawn from the real menu (popup width is
+    /// the terminal width up to 62).
+    fn bar(width: u16, menu: &MenuState) -> String {
+        lines(&draw(width, POPUP_H, menu))[1]
+            .trim_matches('│')
+            .to_owned()
+    }
+
+    // Spec: Thresholds of the four-tab bar.
+    #[test]
+    fn the_four_tab_bar_degrades_at_its_thresholds() {
+        let menu = mixed();
+        let whole = " Settings │ Models │ Tools │ Chat ";
+        assert!(bar(49, &menu).contains(whole) && bar(49, &menu).contains("⇥ Tab · 1-5"));
+        assert!(bar(48, &menu).contains(whole) && !bar(48, &menu).contains('⇥'));
+        assert!(bar(36, &menu).contains(whole) && !bar(36, &menu).contains('⇥'));
+        assert!(!bar(35, &menu).contains("Models │"));
+        assert!(bar(35, &menu).contains(" ‹ Settings › "));
+    }
+
+    // Spec: Thresholds of the five-tab bar, and five tabs with an update.
+    #[test]
+    fn the_five_tab_bar_degrades_at_its_thresholds() {
+        let theme = LazaroboxTheme::default();
+        let labels = ["Settings", "Models", "Tools", "Connectors", "Chat"];
+        let line = |w: usize, hint: bool, labels: &[&str]| {
+            tab_line(labels, 1, w, hint.then_some(TAB_HINT), &theme)
+                .iter()
+                .map(|(t, _)| t.as_str())
+                .collect::<String>()
+        };
+        let whole = " Settings │ Models │ Tools │ Connectors │ Chat ";
+        assert_eq!(cells(whole), 47);
+        assert_eq!(
+            line(60, true, &labels),
+            format!("{whole}{}⇥ Tab · 1-5 ", " ")
+        );
+        assert_eq!(line(47, true, &labels), whole, "49 columns: no hint");
+        assert_eq!(line(46, true, &labels), " ‹ Models › ", "48 columns");
+        let starred = ["Settings*", "Models", "Tools", "Connectors", "Chat"];
+        let out = line(60, true, &starred);
+        assert!(!out.contains('⇥'), "an update drops the hint: {out}");
+        assert!(out.contains("Settings* │"), "{out}");
+    }
+
+    #[test]
+    fn the_hint_names_the_jump_range_of_the_tab_table() {
+        assert_eq!(menu::TAB_COUNT, 5);
+        assert!(TAB_HINT.ends_with(&format!("1-{}", menu::TAB_COUNT)));
+    }
+
+    #[test]
+    fn the_smallest_full_popup_is_24_by_17_and_the_zero_size_is_empty() {
+        assert_eq!(MIN_HEIGHT, 17);
+        for digit in ['1', '2', '3', '5'] {
+            let mut menu = mixed();
+            press(&mut menu, &[KeyCode::Char(digit)]);
+            let shown = text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu));
+            assert!(!shown.contains("MENU"), "tab {digit}: {shown}");
+        }
+        assert!(text(&draw(0, 0, &mixed())).is_empty());
+    }
+
+    // Spec: Hidden Connectors shows a notice, in the footer, until the next key.
+    #[test]
+    fn snapshot_the_hidden_connectors_notice_replaces_the_footer() {
+        let mut menu = ai_tab();
+        goto(&mut menu, "code");
+        press(&mut menu, &[KeyCode::Char('4')]);
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(shown.contains("No connectors yet"), "{shown}");
+        insta::assert_snapshot!(shown);
+        press(&mut menu, &[KeyCode::Char('j')]);
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(!shown.contains("No connectors yet"), "{shown}");
     }
 
     #[test]
@@ -1640,7 +1965,7 @@ mod tests {
         let border: Vec<usize> = (0..l.len())
             .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
             .collect();
-        assert_eq!(border[1] - border[0] + 1, 10, "6 rows and the chrome");
+        assert_eq!(border[1] - border[0] + 1, 11, "7 rows and the chrome");
     }
 
     #[test]
@@ -1682,7 +2007,8 @@ mod tests {
                 .position(|l| l.contains(label))
                 .unwrap_or_else(|| panic!("no {label}"))
         };
-        assert!(at("Approval") < at("Hugging Face"));
+        assert!(at("orchestrate") < at("Hugging Face"));
+        assert!(!shown.contains("Approval"), "Approval lives on Tools");
         let row = shown.lines().nth(at("Hugging Face")).unwrap();
         assert!(row.contains("not connected"), "{row}");
         insta::assert_snapshot!(shown);
@@ -1736,7 +2062,8 @@ mod tests {
     // popup.
     #[test]
     fn the_run_value_shows_and_the_popup_keeps_its_height() {
-        let ask = ai_tab();
+        let mut ask = ai_tab();
+        ask.goto("Approval");
         let mut run = ai_tab();
         run.goto("Approval");
         press(&mut run, &[KeyCode::Char('l'), KeyCode::Char('l')]);

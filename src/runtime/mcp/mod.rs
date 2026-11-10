@@ -44,7 +44,7 @@ use std::{
 use futures::future::BoxFuture;
 
 use crate::core::ai::tools::Call;
-pub use session::{Hub, Started};
+pub use session::{Hub, HubKey, Started};
 
 /// What the host made of one tool call: the text for the model and whether it
 /// is an error.

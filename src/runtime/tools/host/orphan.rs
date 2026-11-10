@@ -6,7 +6,7 @@
 
 use std::{
     collections::HashMap,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, TryLockError},
 };
 
@@ -15,7 +15,7 @@ use crate::{
     core::{
         ai::{
             chat::review::{Badge, BatchEvent, BatchReview, ReviewDoc, TOO_LARGE, closed_notice},
-            tools::stage::{BatchId, StageKey},
+            tools::stage::{BatchId, StageKey, State},
         },
         layout::PaneId,
     },
@@ -30,10 +30,10 @@ pub const GONE: &str = "that batch is no longer there";
 pub const LIVE: &str = "a turn of this chat is still running";
 
 impl ToolHost {
-    /// Drops the batch of `key` because its pane closed. How many entries were
+    /// Drops every batch of `pane` because it closed. How many entries were
     /// lost; `None` when there was nothing worth a notice.
-    pub fn close_batch(&self, key: StageKey) -> Option<usize> {
-        lock(&self.stages).discard_key(key)
+    pub fn close_batch(&self, pane: PaneId) -> Option<usize> {
+        lock(&self.stages).discard_pane(pane)
     }
 
     /// What the panes show of their batches (see `Stages::badges`). It never
@@ -47,15 +47,26 @@ impl ToolHost {
         }
     }
 
-    /// The orphan of `key` for the user to review. A batch the turn never
-    /// proposed is sealed now, so the model can no longer add to it.
-    /// `turn_live`: a turn of the chat still runs, so the batch is its own.
+    /// Whether the batch of `key` holds entries and was never proposed: its
+    /// writer is gone or still staging, and nobody asked the user yet. Each
+    /// writer of a run has its own key, so a sibling's files or proposal never
+    /// change the answer.
+    pub fn unproposed(&self, key: StageKey) -> bool {
+        lock(&self.stages)
+            .batch(key)
+            .is_some_and(|batch| batch.state() == State::Staging && !batch.entries().is_empty())
+    }
+
+    /// The oldest orphan of `pane` for the user to review, one batch at a
+    /// time. A batch the turn never proposed is sealed now, so the model can
+    /// no longer add to it. `turn_live`: a turn of the chat still runs, so
+    /// the batches are its own.
     pub fn review_batch(
         &self,
-        key: StageKey,
+        pane: PaneId,
         turn_live: bool,
     ) -> Option<(BatchId, Arc<BatchReview>)> {
-        let (id, review) = lock(&self.stages).review(key, turn_live).ok()?;
+        let (id, review) = lock(&self.stages).review_pane(pane, turn_live).ok()?;
         Some((id, Arc::new(review)))
     }
 
@@ -63,12 +74,21 @@ impl ToolHost {
     /// boundary, so it refuses what the user could not have approved: a batch
     /// of a pane whose turn is live, or one that is not reviewable. A drifted
     /// or refused batch stays for the user to discard, and the model is told
-    /// only when the batch is closed.
-    pub fn apply_batch(&self, id: BatchId, turn_live: bool) -> BatchEvent {
+    /// only when the batch is closed. `drive_grant` is the Windows drive
+    /// folder the chat may write in now (openspec `wsl-drive-access`): an
+    /// entry on a drive outside it is refused again here.
+    pub fn apply_batch(
+        &self,
+        id: BatchId,
+        turn_live: bool,
+        drive_grant: Option<PathBuf>,
+    ) -> BatchEvent {
         if turn_live {
             return refused(LIVE);
         }
-        let Ok(roots) = load_roots(&self.env(Path::new("/"))) else {
+        let mut env = self.env(Path::new("/"));
+        env.drive_grant = drive_grant;
+        let Ok(roots) = load_roots(&env) else {
             return gone();
         };
         let mut stages = lock(&self.stages);

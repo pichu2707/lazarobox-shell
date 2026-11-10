@@ -1,0 +1,22 @@
+---
+source: src/ui/components/menu.rs
+expression: text(&buf)
+---
+         ┌ Menu ──────────────────────────────────────────────────────┐         
+         │ Settings │ Models │ Tools │ Chat               ⇥ Tab · 1-5 │         
+         │ Tools                                                   on │         
+         │ Search                                                 off │         
+         │ Write                                                  off │         
+         │ Exec                                                   off │         
+         │ Git                                                    off │         
+         │ Git write                                              off │         
+         │ GitHub                                                 off │         
+         │ Issue draft                                             on │         
+         │ Approval                                               ask │         
+         │ Orchestrator                                           off │         
+         │                                                            │         
+         │                                                            │         
+         │ Reads issues and PRs; locks auto-run in that chat          │         
+         │                                                            │         
+         │ j/k move · h/l change · s save · Esc cancel                │         
+         └────────────────────────────────────────────────────────────┘

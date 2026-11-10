@@ -216,6 +216,7 @@ mod tests {
         let (fake, link, mut rx) = start(happy()).await;
         link.send(MemCmd::Resolve {
             pane: pane(),
+            epoch: 0,
             cwd: "/tmp/a b&c".into(),
         });
         link.send(MemCmd::Save {
@@ -229,6 +230,7 @@ mod tests {
         });
         link.send(MemCmd::Context {
             pane: pane(),
+            epoch: 0,
             project: "widget".into(),
         });
         link.send(MemCmd::Delete {
@@ -296,6 +298,7 @@ mod tests {
         let (fake, link, mut rx) = start(happy()).await;
         link.send(MemCmd::Resolve {
             pane: pane(),
+            epoch: 0,
             cwd: "/tmp/a".into(),
         });
         link.send(MemCmd::Save {
@@ -319,6 +322,47 @@ mod tests {
         assert!(got.iter().any(
             |r| matches!(r, MemReply::Saved { topic_key, .. } if topic_key == "chat/12/summary")
         ));
+    }
+
+    // Spec (engram-client, Topic-key upsert): a handoff saved twice under its
+    // run key reaches the wire with the same key both times, so engram
+    // updates one note; the key family is the run's, not the chat's.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_repeated_handoff_save_carries_the_same_run_key() {
+        let (fake, link, mut rx) = start(happy()).await;
+        link.send(MemCmd::Resolve {
+            pane: pane(),
+            epoch: 0,
+            cwd: "/tmp/a".into(),
+        });
+        for id in [1, 2] {
+            link.send(MemCmd::Save {
+                pane: pane(),
+                id: SaveId(id),
+                session: None,
+                project: "widget".into(),
+                cwd: "/tmp/a".into(),
+                note: note(),
+                topic_key: Some("orchestra/7/worker/2".into()),
+            });
+        }
+        // Health, project, two saves.
+        let got = replies(&mut rx, 4).await;
+        link.shutdown(Duration::from_secs(1)).await;
+        let keys: Vec<_> = fake
+            .requests()
+            .into_iter()
+            .filter(|r| r.target == "/observations")
+            .map(|r| r.json().unwrap()["topic_key"].clone())
+            .collect();
+        assert_eq!(keys, ["orchestra/7/worker/2", "orchestra/7/worker/2"]);
+        assert_eq!(
+            got.iter()
+                .filter(|r| matches!(r, MemReply::Saved { topic_key, .. } if topic_key == "orchestra/7/worker/2"))
+                .count(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -390,6 +434,7 @@ mod tests {
         let (fake, link, mut rx) = start(routes).await;
         link.send(MemCmd::Resolve {
             pane: pane(),
+            epoch: 0,
             cwd: "/tmp".into(),
         });
         let got = replies(&mut rx, 2).await;

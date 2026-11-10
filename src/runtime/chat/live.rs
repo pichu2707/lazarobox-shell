@@ -9,7 +9,10 @@ use std::{
 };
 
 use super::Managed;
-use crate::core::ai::ServerPorts;
+use crate::core::ai::{
+    CacheOptions, ServerPorts, catalog::same_model, chat::engine::ChatRequest,
+    config::OllamaOptions, window::ollama_num_ctx,
+};
 
 #[derive(Clone, Default)]
 pub struct LiveServers(Arc<RwLock<State>>);
@@ -20,6 +23,12 @@ struct State {
     managed: Option<Arc<Managed>>,
     /// How long the managed server may sit unused; `None` never stops it.
     idle: Option<Duration>,
+    /// The context cap every Ollama turn carries.
+    ollama: OllamaOptions,
+    /// The own window of each Ollama model detection has read, by name.
+    windows: Vec<(String, usize)>,
+    /// The prompt-cache options every turn carries.
+    cache: CacheOptions,
 }
 
 impl LiveServers {
@@ -28,6 +37,9 @@ impl LiveServers {
             ports,
             managed,
             idle: None,
+            ollama: OllamaOptions::default(),
+            windows: Vec::new(),
+            cache: CacheOptions::default(),
         })))
     }
 
@@ -50,9 +62,70 @@ impl LiveServers {
             .clone()
     }
 
+    /// Sets the prompt-cache options every turn carries.
+    pub fn set_cache(&self, cache: CacheOptions) {
+        self.0.write().unwrap_or_else(PoisonError::into_inner).cache = cache;
+    }
+
+    /// The prompt-cache options of the config.
+    pub fn cache(&self) -> CacheOptions {
+        let state = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        state.cache.clone()
+    }
+
     /// Sets how long the managed server may sit unused; `None` never stops it.
     pub fn set_idle(&self, idle: Option<Duration>) {
         self.0.write().unwrap_or_else(PoisonError::into_inner).idle = idle;
+    }
+
+    /// Points the engines at other ports (tests move a fake server).
+    #[cfg(test)]
+    pub fn set_ports(&self, ports: ServerPorts) {
+        self.0.write().unwrap_or_else(PoisonError::into_inner).ports = ports;
+    }
+
+    /// Sets the context cap of Ollama turns.
+    pub fn set_ollama(&self, options: OllamaOptions) {
+        self.0
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ollama = options;
+    }
+
+    /// The Ollama windows known now, by listed name.
+    pub fn ollama_windows(&self) -> Vec<(String, usize)> {
+        self.0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .windows
+            .clone()
+    }
+
+    /// Replaces the known Ollama windows: what the last detection read, with
+    /// the ones a failed probe could not read carried over.
+    pub fn set_ollama_windows(&self, windows: Vec<(String, usize)>) {
+        self.0
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .windows = windows;
+    }
+
+    /// Puts the Ollama window on `request` when it is an Ollama turn: the
+    /// same value for chat, compaction, summary and worker turns, so the
+    /// model is never reloaded because of them. Other engines are untouched.
+    pub fn stamp(&self, request: &mut ChatRequest) {
+        if request.engine != "ollama" {
+            return;
+        }
+        let state = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        let max = request.model.as_deref().and_then(|model| {
+            state
+                .windows
+                .iter()
+                .find(|(name, _)| same_model("ollama", name, model))
+                .map(|(_, window)| *window)
+        });
+        request.ollama.num_ctx = ollama_num_ctx(max, state.ollama.num_ctx_cap);
     }
 
     /// Stops the managed server when it was unused for the idle time up to
@@ -81,6 +154,88 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::core::ai::chat::engine::{OllamaWire, Tools};
+
+    fn request(engine: &str, model: &str) -> ChatRequest {
+        ChatRequest {
+            drive_grant: None,
+            engine: engine.into(),
+            model: Some(model.into()),
+            system: String::new(),
+            memory: None,
+            messages: Vec::new(),
+            tools: Tools::Off,
+            families: crate::core::ai::tools::registry::FamilySet::LEGACY,
+            ollama: OllamaWire::default(),
+            github_read: false,
+            cache: CacheOptions::default(),
+        }
+    }
+
+    fn live() -> LiveServers {
+        let live = LiveServers::default();
+        live.set_ollama(OllamaOptions {
+            num_ctx_cap: 16_384,
+        });
+        live.set_ollama_windows(vec![
+            ("big:8b".into(), 131_072),
+            ("tiny:latest".into(), 4_096),
+        ]);
+        live
+    }
+
+    #[test]
+    fn an_ollama_turn_gets_the_capped_window() {
+        let live = live();
+        let mut req = request("ollama", "big:8b");
+        live.stamp(&mut req);
+        assert_eq!(
+            req.ollama,
+            OllamaWire {
+                num_ctx: Some(16_384)
+            }
+        );
+        let mut small = request("ollama", "tiny");
+        live.stamp(&mut small);
+        assert_eq!(small.ollama.num_ctx, Some(4_096), "the :latest tag matches");
+    }
+
+    #[test]
+    fn an_unknown_window_stamps_no_context() {
+        let mut req = request("ollama", "mystery:1b");
+        live().stamp(&mut req);
+        assert_eq!(req.ollama, OllamaWire::default());
+    }
+
+    #[test]
+    fn the_stamp_is_the_same_on_every_turn_and_follows_the_cap() {
+        let live = live();
+        // Chat, compaction and a worker turn: three requests of one model.
+        let mut turns = [
+            request("ollama", "big:8b"),
+            request("ollama", "big:8b"),
+            request("ollama", "big:8b"),
+        ];
+        for turn in &mut turns {
+            live.stamp(turn);
+        }
+        let want = OllamaWire {
+            num_ctx: Some(16_384),
+        };
+        assert!(turns.iter().all(|t| t.ollama == want), "{turns:?}");
+        live.set_ollama(OllamaOptions { num_ctx_cap: 8_192 });
+        live.stamp(&mut turns[0]);
+        assert_eq!(turns[0].ollama.num_ctx, Some(8_192));
+    }
+
+    #[test]
+    fn other_engines_are_never_stamped() {
+        for engine in ["llamacpp", "lmstudio", "vllm", "claude", "codex", "gemini"] {
+            let mut req = request(engine, "big:8b");
+            live().stamp(&mut req);
+            assert_eq!(req.ollama, OllamaWire::default(), "{engine}");
+        }
+    }
 
     fn server(model: &str, port: u16) -> Arc<Managed> {
         Arc::new(Managed::new("".into(), PathBuf::from(model), port, None))

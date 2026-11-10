@@ -1,0 +1,14 @@
+---
+source: src/ui/components/chat/run_view_tests.rs
+expression: "draw(&chat, None, 50, 10)"
+---
+worker 1 · review codex>gpt-5 running
+line 17
+line 18
+line 19
+line 20
+line 21
+line 22
+line 23
+line 24
+scrolled · End follows · Esc/q close

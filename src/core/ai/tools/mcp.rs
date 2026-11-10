@@ -252,6 +252,13 @@ pub fn refusal_text(error: ToolError) -> &'static str {
         ToolError::WrongType => "argument must be a string",
         ToolError::ExtraArgument => "unexpected argument",
         ToolError::TooLong => "argument too long",
+        ToolError::PaneRange => "pane must be a pane number from list_panes",
+        ToolError::ScrollbackRange => "scrollback must be 1 to 200",
+        ToolError::DraftKind => "kind must be idea or bug",
+        ToolError::DraftEmpty => "title and description must not be empty",
+        ToolError::DraftTitleLong => "title must be at most 120 characters",
+        ToolError::DraftTitleLines => "title must be one line",
+        ToolError::DraftBodyLong => "description must be at most 2000 characters",
     }
 }
 
@@ -628,6 +635,33 @@ mod tests {
         ));
     }
 
+    // A worker or orchestrator shim never lists `read_pane` and refuses a
+    // forged call as an unknown tool: no Call reaches the host, so no ask.
+    #[test]
+    fn a_worker_or_orchestrator_shim_hides_and_refuses_read_pane() {
+        use crate::core::ai::{
+            orchestra::Toolset,
+            tools::{registry::Family, registry_with},
+        };
+        let init = request(
+            json!(0),
+            "initialize",
+            json!({"protocolVersion": "2025-06-18", "capabilities": {}}),
+        );
+        for toolset in [Toolset::ReadOnly, Toolset::Code, Toolset::Orchestrator] {
+            let set = toolset.families();
+            assert!(!set.contains(Family::Pane), "{toolset:?}");
+            let mut server = Server::new(registry_with(&[], set)).with_families(set);
+            reply(server.handle(&init));
+            let listed = reply(server.handle(&request(json!(1), "tools/list", json!({}))));
+            assert!(!listed.to_string().contains("read_pane"), "{toolset:?}");
+            let params = json!({"name": "read_pane", "arguments": {"pane": 2}});
+            let out = reply(server.handle(&request(json!(2), "tools/call", params)));
+            assert_eq!(out["result"]["isError"], true, "{toolset:?}");
+            assert_eq!(out["result"]["content"][0]["text"], "unknown tool");
+        }
+    }
+
     #[test]
     fn tools_call_hands_a_validated_call_to_the_host() {
         let mut server = initialized("2025-06-18");
@@ -971,7 +1005,7 @@ mod tests {
             }
         );
         let listed = reply(server.handle(&request(json!(6), "tools/list", json!({}))));
-        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 5);
+        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 7);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod link_list;
 pub mod menu;
 pub mod review;
 #[cfg(test)]

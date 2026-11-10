@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     io,
     panic::{AssertUnwindSafe, catch_unwind},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc as std_mpsc,
     thread::{self, JoinHandle},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -14,7 +14,7 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use tokio::sync::mpsc;
 
-use super::{StoreError, open};
+use super::{StoreError, ensure_usage, open, runs};
 use crate::core::{
     ai::{
         chat::{
@@ -25,7 +25,10 @@ use crate::core::{
                 StoredMessage, bounded_error,
             },
             tags::Tags,
+            usage::TurnUsage,
+            usage_view::UsageRow,
         },
+        config::Profile,
         sanitize::clean,
     },
     layout::PaneId,
@@ -39,6 +42,9 @@ pub const THREAD_NAME: &str = "chat-store";
 
 /// The longest conversation title, in characters.
 const TITLE_MAX: usize = 80;
+
+/// Usage rows older than this many days are removed.
+const USAGE_DAYS: i64 = 90;
 
 /// The longest note title kept in a link row, in characters (the engram client
 /// accepts 120).
@@ -54,6 +60,8 @@ pub(crate) struct Worker {
     /// The conversation each pane created, so an append that names only its
     /// pane lands in the right place. Pane ids are never reused.
     created: HashMap<PaneId, i64>,
+    /// Why the prune on open failed, until the next usage reply says so.
+    usage_problem: Option<String>,
 }
 
 impl Worker {
@@ -65,6 +73,7 @@ impl Worker {
             conn: None,
             failing: false,
             created: HashMap::new(),
+            usage_problem: None,
         }
     }
 
@@ -72,7 +81,16 @@ impl Worker {
     fn conn(&mut self) -> Result<&mut Connection, String> {
         if self.conn.is_none() {
             let opened = match self.opener.take() {
-                Some(open) => open().map_err(|err| bounded_error(&err.to_string())),
+                Some(open) => open()
+                    .map(|mut conn| {
+                        // Old usage goes when the store opens; a failure waits
+                        // for the next usage reply.
+                        if let Err(err) = prune_usage(&mut conn, now()) {
+                            self.usage_problem = Some(usage_reason(&err).to_owned());
+                        }
+                        conn
+                    })
+                    .map_err(|err| bounded_error(&err.to_string())),
                 None => Err(bounded_error("store not available")),
             };
             self.conn = Some(opened);
@@ -96,6 +114,7 @@ impl Worker {
                 extras,
                 first,
                 origin,
+                folder,
                 open,
             } => {
                 // The pane may have sent before its list answered.
@@ -107,8 +126,13 @@ impl Worker {
                     Ok(conn) => conn,
                     Err(reason) => return Some(StoreReply::Unavailable { pane, reason }),
                 };
+                // The column is open-ended since schema 3: the known profiles
+                // are checked here, before anything is written.
+                if Profile::from_id(&profile).is_none() {
+                    return Some(self.failure(pane));
+                }
                 let tags = Tags::new(tag, extras);
-                let made = create(conn, &profile, &tags, &first, &open);
+                let made = create(conn, &profile, &tags, &first, folder.as_deref(), &open);
                 Some(match made {
                     Ok((conversation, created_at, gone)) => {
                         self.failing = false;
@@ -142,16 +166,24 @@ impl Worker {
                     Err(_) => Some(self.failure(pane)),
                 }
             }
+            StoreCmd::MarkGithubRead { pane, conversation } => {
+                let conversation = conversation.or_else(|| self.created.get(&pane).copied())?;
+                let conn = self.conn().ok()?;
+                match mark_github_read(conn, conversation) {
+                    Ok(()) => None,
+                    Err(_) => Some(self.failure(pane)),
+                }
+            }
             StoreCmd::LinkSession {
                 pane,
                 conversation,
                 session_id,
                 project,
+                replace,
             } => {
-                let reply = self
-                    .conn()
-                    .ok()
-                    .and_then(|conn| link_session(conn, conversation, &session_id, &project).ok());
+                let reply = self.conn().ok().and_then(|conn| {
+                    link_session(conn, conversation, (&session_id, &project), replace).ok()
+                });
                 Some(match reply {
                     Some((session_id, project)) => StoreReply::SessionLinked {
                         pane,
@@ -211,6 +243,68 @@ impl Worker {
                     None => StoreReply::TagsFailed { pane },
                 })
             }
+            StoreCmd::SetFolder {
+                pane,
+                conversation,
+                folder,
+            } => {
+                let conversation = conversation.or_else(|| self.created.get(&pane).copied())?;
+                if let Ok(conn) = self.conn() {
+                    // A failed write only means a resume asks again.
+                    let _ = replace_folder(conn, conversation, &folder);
+                }
+                None
+            }
+            StoreCmd::RecordUsage {
+                pane,
+                conversation,
+                engine,
+                role,
+                worker,
+                usage,
+            } => {
+                let conversation = conversation.or_else(|| self.created.get(&pane).copied());
+                let earlier = self.usage_problem.take();
+                let saved = match self.conn() {
+                    Ok(conn) => record_usage(
+                        conn,
+                        conversation,
+                        (&engine, &role, worker.as_deref()),
+                        &usage,
+                    ),
+                    Err(reason) => Err(reason),
+                };
+                Some(match saved {
+                    Ok((read, pruned)) => day_reply(pane, read, pruned.or(earlier)),
+                    Err(reason) => day_reply(pane, Err(String::new()), Some(reason)),
+                })
+            }
+            // Opening the store may prune old usage, as for any command; the
+            // read adds nothing and runs no DDL.
+            StoreCmd::UsageToday { pane } => {
+                let read = match self.conn() {
+                    Ok(conn) => day_figures(conn, now()),
+                    Err(reason) => Err(reason),
+                };
+                Some(day_reply(pane, read, None))
+            }
+            StoreCmd::UsageReport { pane, conversation } => {
+                let conversation = conversation.or_else(|| self.created.get(&pane).copied());
+                let rows = self
+                    .conn()
+                    .ok()
+                    .and_then(|conn| usage_report(conn, conversation, now()).ok());
+                Some(StoreReply::UsageReport { pane, rows })
+            }
+            StoreCmd::RecentFolders { pane, limit } => Some(StoreReply::RecentFolders {
+                pane,
+                // A store that cannot be read has no recent folders.
+                folders: self
+                    .conn()
+                    .ok()
+                    .and_then(|conn| recent_folders(conn, limit).ok())
+                    .unwrap_or_default(),
+            }),
             StoreCmd::List { pane, origin } => {
                 // The walk to the repository root is filesystem IO: it is
                 // done here, not on the UI thread.
@@ -235,16 +329,46 @@ impl Worker {
                         extras,
                         messages,
                         session,
-                    }) => StoreReply::Resumed {
-                        pane,
-                        conversation,
-                        profile,
-                        tag,
-                        extras,
-                        messages,
-                        session,
-                    },
+                        folder,
+                        skipped,
+                        github_read,
+                    }) => {
+                        // The pane now follows another conversation: what it
+                        // created before must not link its later usage.
+                        self.created.remove(&pane);
+                        StoreReply::Resumed {
+                            pane,
+                            conversation,
+                            profile,
+                            tag,
+                            extras,
+                            messages,
+                            session,
+                            folder,
+                            skipped,
+                            github_read,
+                        }
+                    }
                     None => StoreReply::ResumeFailed { pane },
+                })
+            }
+            StoreCmd::SaveRun { pane, run } => {
+                let saved = self.conn().ok().is_some_and(|conn| {
+                    runs::save_run(conn, &run, runs::Owner::this_process(), now()).is_ok()
+                });
+                (!saved).then_some(StoreReply::RunsFailed { pane, saving: true })
+            }
+            StoreCmd::RecoverRuns { pane } => {
+                let found = self.conn().ok().and_then(|conn| {
+                    runs::recover_runs(conn, runs::Owner::this_process(), runs::pid_alive, now())
+                        .ok()
+                });
+                Some(match found {
+                    Some(runs) => StoreReply::RunsRecovered { pane, runs },
+                    None => StoreReply::RunsFailed {
+                        pane,
+                        saving: false,
+                    },
                 })
             }
             StoreCmd::Delete { pane, conversation } => {
@@ -288,13 +412,22 @@ impl Worker {
     ) -> Option<StoreReply> {
         let (pane, on_panic) = match &cmd {
             StoreCmd::Create { pane, .. } => (*pane, Panicked::Create),
-            StoreCmd::Append { pane, .. } => (*pane, Panicked::Append),
+            StoreCmd::Append { pane, .. } | StoreCmd::MarkGithubRead { pane, .. } => {
+                (*pane, Panicked::Append)
+            }
             StoreCmd::LinkSession { pane, .. } => (*pane, Panicked::Link(LinkKind::Session)),
             StoreCmd::LinkNote { pane, .. } => (*pane, Panicked::Link(LinkKind::Note)),
             StoreCmd::List { pane, .. } => (*pane, Panicked::List),
             StoreCmd::Resume { pane, .. } => (*pane, Panicked::Resume),
             StoreCmd::Delete { pane, .. } => (*pane, Panicked::Delete),
             StoreCmd::SetTags { pane, .. } => (*pane, Panicked::SetTags),
+            StoreCmd::SetFolder { pane, .. } => (*pane, Panicked::SetFolder),
+            StoreCmd::RecentFolders { pane, .. } => (*pane, Panicked::Recent),
+            StoreCmd::RecordUsage { pane, .. } => (*pane, Panicked::Usage),
+            StoreCmd::UsageToday { pane } => (*pane, Panicked::Today),
+            StoreCmd::UsageReport { pane, .. } => (*pane, Panicked::Report),
+            StoreCmd::SaveRun { pane, .. } => (*pane, Panicked::Runs(true)),
+            StoreCmd::RecoverRuns { pane } => (*pane, Panicked::Runs(false)),
             StoreCmd::Quit => return None,
         };
         match catch_unwind(AssertUnwindSafe(|| run(self, cmd))) {
@@ -307,7 +440,16 @@ impl Worker {
                 // left a transaction open, leaves it in an unknown state.
                 let keep = matches!(
                     on_panic,
-                    Panicked::Link(_) | Panicked::Resume | Panicked::Delete | Panicked::SetTags
+                    Panicked::Link(_)
+                        | Panicked::Resume
+                        | Panicked::Delete
+                        | Panicked::SetTags
+                        | Panicked::SetFolder
+                        | Panicked::Recent
+                        | Panicked::Usage
+                        | Panicked::Today
+                        | Panicked::Report
+                        | Panicked::Runs(_)
                 ) && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
                 if !keep {
                     self.conn = Some(Err(reason.clone()));
@@ -321,6 +463,20 @@ impl Worker {
                     Panicked::Resume => StoreReply::ResumeFailed { pane },
                     Panicked::Delete => StoreReply::DeleteFailed { pane },
                     Panicked::SetTags => StoreReply::TagsFailed { pane },
+                    Panicked::SetFolder => return None,
+                    Panicked::Runs(saving) => StoreReply::RunsFailed { pane, saving },
+                    Panicked::Recent => StoreReply::RecentFolders {
+                        pane,
+                        folders: Vec::new(),
+                    },
+                    Panicked::Report => StoreReply::UsageReport { pane, rows: None },
+                    // A fixed reason: panic text can quote anything.
+                    // A fixed reason, and a read problem: the write notice is
+                    // not spent on a read.
+                    Panicked::Today => day_reply(pane, Err("internal error".to_owned()), None),
+                    Panicked::Usage => {
+                        day_reply(pane, Err(String::new()), Some("internal error".to_owned()))
+                    }
                 })
             }
         }
@@ -335,6 +491,7 @@ impl Worker {
 
 /// What a command that panicked is answered with.
 enum Panicked {
+    Today,
     Create,
     Append,
     Link(LinkKind),
@@ -342,6 +499,12 @@ enum Panicked {
     Resume,
     Delete,
     SetTags,
+    SetFolder,
+    Recent,
+    Usage,
+    Report,
+    /// A run command; `true` when it was a save.
+    Runs(bool),
 }
 
 /// The message of a panic payload, or a generic line.
@@ -358,6 +521,272 @@ fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// A short reason for a failed usage statement. It names the kind of failure
+/// and never quotes the raw error, which can hold text or a path.
+fn usage_reason(err: &rusqlite::Error) -> &'static str {
+    use rusqlite::ErrorCode::{
+        DatabaseBusy, DatabaseCorrupt, DatabaseLocked, DiskFull, NotADatabase, PermissionDenied,
+        ReadOnly, SystemIoFailure,
+    };
+    match err.sqlite_error_code() {
+        Some(DatabaseBusy | DatabaseLocked) => "database busy",
+        Some(DiskFull) => "disk full",
+        Some(ReadOnly | PermissionDenied) => "database read-only",
+        Some(DatabaseCorrupt | NotADatabase) => "database damaged",
+        Some(SystemIoFailure) => "disk error",
+        _ => "database error",
+    }
+}
+
+/// Removes usage rows older than [`USAGE_DAYS`] days: a range delete on the
+/// timestamp index. Conversations are not touched, and neither is a row
+/// stamped after `at` (a clock set back). Returns how many rows went.
+fn prune_usage(conn: &mut Connection, at: i64) -> Result<usize, rusqlite::Error> {
+    ensure_usage(conn)?;
+    // A clock behind the newest row cannot be trusted: nothing goes then. A
+    // clock that jumped forward can still prune early.
+    conn.execute(
+        "DELETE FROM turn_usage WHERE ts < ?1
+         AND (SELECT COALESCE(MAX(ts), 0) FROM turn_usage) <= ?2",
+        [at.saturating_sub(USAGE_DAYS * 86_400), at],
+    )
+}
+
+/// The most one stored count can hold, so a day's SUM cannot overflow.
+const COUNT_CAP: u64 = 1_000_000_000_000_000;
+
+fn count_of(n: Option<u64>) -> Option<i64> {
+    n.map(|n| i64::try_from(n.min(COUNT_CAP)).unwrap_or(i64::MAX))
+}
+
+/// Today's figures: the known tokens (input plus output of the records that
+/// have both; `None` when there are none) and the dollars per engine.
+type DayFigures = (Option<u64>, Vec<(String, u64)>);
+
+/// The model stored for a run that used several.
+const MIXED_MODEL: &str = "mixed";
+
+/// Stores one usage row, prunes, and returns today's figures (empty when that
+/// read failed: the row is stored all the same) plus the reason a prune
+/// failed, if it did (the row is kept then).
+fn record_usage(
+    conn: &mut Connection,
+    conversation: Option<i64>,
+    (engine, role, worker): (&str, &str, Option<&str>),
+    usage: &TurnUsage,
+) -> Result<(DayRead, Option<String>), String> {
+    let at = now();
+    ensure_usage(conn).map_err(|err| usage_reason(&err).to_owned())?;
+    // A run that used several models names none of them: it is stored as
+    // `mixed`, so `/cost` can tell it from a model nobody reported (NULL).
+    let model = match (&usage.model, usage.multi_model) {
+        (None, true) => Some(MIXED_MODEL),
+        (model, _) => model.as_deref(),
+    };
+    // The subselect leaves the link NULL for a conversation that is gone.
+    conn.execute(
+        "INSERT INTO turn_usage(ts, conversation_id, engine, model, role, worker, input, output,
+             cache_read, cache_write, reasoning, cost_micros, cost_source, duration_ms, partial,
+             prefill_ms, load_ms)
+         VALUES (?1, (SELECT id FROM conversations WHERE id = ?2), ?3, ?4, ?5, ?15, ?6, ?7, ?8,
+             ?9, ?10, ?11, ?12, ?13, ?14, ?16, ?17)",
+        rusqlite::params![
+            at,
+            conversation,
+            engine,
+            model,
+            role,
+            count_of(usage.input),
+            count_of(usage.output),
+            count_of(usage.cache_read),
+            count_of(usage.cache_write),
+            count_of(usage.reasoning),
+            count_of(usage.cost_micros),
+            usage.cost_source.map(|c| c.id()),
+            count_of(usage.duration_ms),
+            usage.partial,
+            worker,
+            count_of(usage.prefill_ms),
+            count_of(usage.load_ms),
+        ],
+    )
+    .map_err(|err| usage_reason(&err).to_owned())?;
+    let pruned = prune_usage(conn, at)
+        .err()
+        .map(|err| usage_reason(&err).to_owned());
+    Ok((day_figures(conn, at), pruned))
+}
+
+/// Today's figures and the second they stop being today's, or why the day
+/// could not be read (a fixed reason, free of text and paths).
+type DayRead = Result<(DayFigures, i64), String>;
+
+/// The reply to a usage command: the figures when the day was read, the
+/// reason when it was not, and the reason a write failed, if it did.
+fn day_reply(pane: PaneId, read: DayRead, problem: Option<String>) -> StoreReply {
+    let (figures, read_problem) = match read {
+        Ok((figures, until)) => (Some((figures, until)), None),
+        Err(reason) => (None, (!reason.is_empty()).then_some(reason)),
+    };
+    let ((today, cost), until) = figures.map_or(((None, Vec::new()), None), |(f, u)| (f, Some(u)));
+    StoreReply::UsageRecorded {
+        pane,
+        today,
+        cost,
+        until,
+        read_problem,
+        problem,
+    }
+}
+
+/// The figures of the local day of `at`, read without DDL: a store without
+/// the table has none. A read that fails is an error, never "no data".
+fn day_figures(conn: &Connection, at: i64) -> DayRead {
+    const SAME_DAY: &str =
+        "date(ts, 'unixepoch', 'localtime') = date(?1, 'unixepoch', 'localtime')";
+    let read = |err: rusqlite::Error| usage_reason(&err).to_owned();
+    let until: i64 = conn
+        .query_row(
+            "SELECT CAST(strftime('%s', date(?1, 'unixepoch', 'localtime', '+1 day'), 'utc')
+                         AS INTEGER)",
+            [at],
+            |r| r.get(0),
+        )
+        .map_err(read)?;
+    // A zone with no midnight on a DST day can answer a moment in the past.
+    let until = until.max(at.saturating_add(1));
+    let present: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'turn_usage')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(read)?;
+    if !present {
+        return Ok(((None, Vec::new()), until));
+    }
+    let today: Option<i64> = conn
+        .query_row(
+            &format!("SELECT SUM(input + output) FROM turn_usage WHERE {SAME_DAY}"),
+            [at],
+            |r| r.get(0),
+        )
+        .map_err(read)?;
+    let cost = conn
+        .prepare(&format!(
+            "SELECT engine, SUM(cost_micros) FROM turn_usage
+             WHERE cost_micros IS NOT NULL AND {SAME_DAY} GROUP BY engine ORDER BY engine"
+        ))
+        .and_then(|mut q| {
+            q.query_map([at], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(read)?;
+    let cost = cost
+        .into_iter()
+        .filter_map(|(engine, micros)| Some((engine, u64::try_from(micros).ok()?)))
+        .collect();
+    Ok(((today.and_then(|t| u64::try_from(t).ok()), cost), until))
+}
+
+/// The usage records folded for `/cost`: by local day (days before `at`),
+/// engine and model, with the rows of `conversation` kept apart. A missing
+/// count stays NULL (`None`), never 0; a row is partial when a record was or
+/// lacked its input or output.
+/// The three prefill columns of the report. A file whose `turn_usage` has no
+/// prefill columns yet (nothing has written since the upgrade) reports NULLs
+/// and a gap per record, so the rest of `/cost` still shows. A record counts
+/// only with an input and, for the OpenAI-compatible engines (whose `input`
+/// is the fresh part of the prompt), a cache figure to rebuild the full prompt.
+fn prefill_sql(conn: &Connection) -> rusqlite::Result<String> {
+    let present: bool = conn.query_row(
+        "SELECT COUNT(*) = 2 FROM pragma_table_info('turn_usage')
+         WHERE name IN ('prefill_ms', 'load_ms')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !present {
+        return Ok("NULL, NULL, COUNT(*)".to_owned());
+    }
+    let ok = "input IS NOT NULL AND prefill_ms IS NOT NULL
+         AND (engine NOT IN ('llamacpp', 'lmstudio', 'vllm') OR cache_read IS NOT NULL)";
+    Ok(format!(
+        "SUM(CASE WHEN {ok} THEN prefill_ms END),
+         SUM(CASE WHEN {ok} THEN input + COALESCE(cache_read, 0) END),
+         COUNT(*) - COUNT(CASE WHEN {ok} THEN 1 END)"
+    ))
+}
+
+fn usage_report(
+    conn: &Connection,
+    conversation: Option<i64>,
+    at: i64,
+) -> Result<Vec<UsageRow>, rusqlite::Error> {
+    // Reading never runs DDL: a store without the table has no usage.
+    let present: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'turn_usage')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !present {
+        return Ok(Vec::new());
+    }
+    let prefill = prefill_sql(conn)?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT MAX(0, CAST(julianday(date(?1, 'unixepoch', 'localtime'))
+                      - julianday(date(ts, 'unixepoch', 'localtime')) AS INTEGER)) AS day,
+                engine, model, COALESCE(conversation_id = ?2, 0) AS mine,
+                COALESCE(SUM(role = 'chat'), 0), COUNT(*), COUNT(cost_micros),
+                SUM(input), SUM(output), SUM(cache_read), SUM(cost_micros),
+                SUM(CASE WHEN input IS NOT NULL AND output IS NOT NULL
+                         THEN input + output END),
+                MAX(partial OR input IS NULL OR output IS NULL),
+                COALESCE(SUM(role = 'worker'), 0),
+                SUM(CASE WHEN role = 'worker' AND input IS NOT NULL AND output IS NOT NULL
+                         THEN input + output END),
+                COALESCE(MAX(role = 'worker'
+                             AND (partial OR input IS NULL OR output IS NULL)), 0),
+                SUM(CASE WHEN input IS NOT NULL AND cache_read IS NOT NULL
+                          AND (engine <> 'claude' OR cache_write IS NOT NULL)
+                         THEN cache_read END),
+                SUM(CASE WHEN input IS NOT NULL AND cache_read IS NOT NULL
+                          AND (engine <> 'claude' OR cache_write IS NOT NULL)
+                         THEN input + cache_read + COALESCE(cache_write, 0) END),
+                COUNT(*) - COUNT(CASE WHEN input IS NOT NULL AND cache_read IS NOT NULL
+                          AND (engine <> 'claude' OR cache_write IS NOT NULL) THEN 1 END),
+                {prefill}
+         FROM turn_usage GROUP BY day, engine, model, mine ORDER BY day, engine, model",
+    ))?;
+    let count = |v: Option<i64>| v.and_then(|n| u64::try_from(n).ok());
+    let rows = stmt.query_map(rusqlite::params![at, conversation], |r| {
+        Ok(UsageRow {
+            days_ago: u32::try_from(r.get::<_, i64>(0)?).unwrap_or(u32::MAX),
+            engine: r.get(1)?,
+            model: r.get(2)?,
+            in_chat: r.get(3)?,
+            turns: count(Some(r.get(4)?)).unwrap_or(0),
+            records: count(Some(r.get(5)?)).unwrap_or(0),
+            costed: count(Some(r.get(6)?)).unwrap_or(0),
+            input: count(r.get(7)?),
+            output: count(r.get(8)?),
+            cache_read: count(r.get(9)?),
+            cost_micros: count(r.get(10)?),
+            total: count(r.get(11)?),
+            partial: r.get(12)?,
+            workers: count(Some(r.get(13)?)).unwrap_or(0),
+            worker_total: count(r.get(14)?),
+            worker_partial: r.get(15)?,
+            cache_hit: count(r.get(16)?),
+            cache_base: count(r.get(17)?),
+            cache_gap: count(r.get(18)?).unwrap_or(0),
+            prefill_ms: count(r.get(19)?),
+            prefill_tokens: count(r.get(20)?),
+            prefill_gap: count(Some(r.get(21)?)).unwrap_or(0),
+        })
+    })?;
+    rows.collect()
 }
 
 /// The first non-empty line of the first message, cut to `TITLE_MAX` characters.
@@ -386,6 +815,7 @@ fn create(
     profile: &str,
     tags: &Tags,
     first: &StoredMessage,
+    folder: Option<&Path>,
     open: &[i64],
 ) -> Result<(i64, i64, Evicted), rusqlite::Error> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -425,9 +855,14 @@ fn create(
     let text = clean(&first.text);
     let stamp = now();
     tx.execute(
-        "INSERT INTO conversations(created_at, updated_at, profile, title)
-         VALUES (?1, ?1, ?2, ?3)",
-        (stamp, profile, title_of(&text)),
+        "INSERT INTO conversations(created_at, updated_at, profile, title, folder)
+         VALUES (?1, ?1, ?2, ?3, ?4)",
+        (
+            stamp,
+            profile,
+            title_of(&text),
+            folder.and_then(Path::to_str),
+        ),
     )?;
     let id = tx.last_insert_rowid();
     insert_tags(&tx, id, tags)?;
@@ -482,6 +917,37 @@ fn replace_tags(
     Ok(stamp)
 }
 
+/// Replaces the folder of a conversation and bumps its last activity. A
+/// conversation that does not exist is an error. A path that is not UTF-8 is
+/// stored as `NULL` (a resume then asks).
+fn replace_folder(
+    conn: &mut Connection,
+    conversation: i64,
+    folder: &Path,
+) -> Result<(), rusqlite::Error> {
+    let touched = conn.execute(
+        "UPDATE conversations SET folder = ?2, updated_at = ?3 WHERE id = ?1",
+        (conversation, folder.to_str(), now()),
+    )?;
+    if touched == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    Ok(())
+}
+
+/// The folders conversations were kept under, each once, the most recently
+/// used first. Read-only.
+fn recent_folders(conn: &mut Connection, limit: usize) -> Result<Vec<PathBuf>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT folder FROM conversations WHERE folder IS NOT NULL
+         GROUP BY folder ORDER BY MAX(updated_at) DESC, folder LIMIT ?1",
+    )?;
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    stmt.query_map([limit], |r| r.get::<_, String>(0))?
+        .map(|folder| folder.map(PathBuf::from))
+        .collect()
+}
+
 /// Appends a message and bumps the conversation's last activity.
 fn append(
     conn: &mut Connection,
@@ -514,16 +980,28 @@ fn is_session_id(id: &str) -> bool {
 fn link_session(
     conn: &mut Connection,
     conversation: i64,
-    session_id: &str,
-    project: &str,
+    (session_id, project): (&str, &str),
+    replace: bool,
 ) -> Result<(String, String), rusqlite::Error> {
     if !is_session_id(session_id) {
         return Err(rusqlite::Error::InvalidParameterName("session id".into()));
     }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // The stored pair wins (a resume) unless the conversation changed project.
+    let (verb, tail) = if replace {
+        (
+            "INSERT",
+            "ON CONFLICT(conversation_id) DO UPDATE
+             SET session_id = excluded.session_id, project = excluded.project",
+        )
+    } else {
+        ("INSERT OR IGNORE", "")
+    };
     tx.execute(
-        "INSERT OR IGNORE INTO memory_sessions(conversation_id, session_id, project)
-         VALUES (?1, ?2, ?3)",
+        &format!(
+            "{verb} INTO memory_sessions(conversation_id, session_id, project)
+             VALUES (?1, ?2, ?3) {tail}"
+        ),
         (conversation, session_id, clean(project)),
     )?;
     let stored = tx.query_row(
@@ -618,6 +1096,12 @@ struct Resumed {
     messages: Vec<Msg>,
     /// The engram `(session id, project)` pair of its notes, if it has one.
     session: Option<(String, String)>,
+    /// The folder it was kept under, when one was stored.
+    folder: Option<PathBuf>,
+    /// Rows left out for a role this build does not know.
+    skipped: usize,
+    /// The conversation holds the marker of a GitHub read.
+    github_read: bool,
 }
 
 /// The profile, tags and messages of a conversation, in order.
@@ -625,6 +1109,11 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
     let tx = conn.transaction()?;
     let profile: String = tx.query_row(
         "SELECT profile FROM conversations WHERE id = ?1",
+        [conversation],
+        |r| r.get(0),
+    )?;
+    let folder: Option<String> = tx.query_row(
+        "SELECT folder FROM conversations WHERE id = ?1",
         [conversation],
         |r| r.get(0),
     )?;
@@ -639,27 +1128,40 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
         .prepare("SELECT tag FROM tags WHERE conversation_id = ?1 AND is_project = 0 ORDER BY tag")?
         .query_map([conversation], |r| r.get(0))?
         .collect::<Result<Vec<String>, _>>()?;
-    let messages = tx
-        .prepare(
+    // Role and status are open-ended since schema 3. A row of a role this
+    // build does not know (a newer one wrote it) is left out and counted rather
+    // than shown as the assistant's; an unknown status reads as a cut message.
+    let mut skipped = 0;
+    let mut github_read = false;
+    let mut messages = Vec::new();
+    {
+        let mut stmt = tx.prepare(
             "SELECT role, content, status FROM messages
              WHERE conversation_id = ?1 ORDER BY seq",
-        )?
-        .query_map([conversation], |r| {
-            let role: String = r.get(0)?;
+        )?;
+        let mut rows = stmt.query([conversation])?;
+        while let Some(r) = rows.next()? {
+            let role = match r.get::<_, String>(0)?.as_str() {
+                "user" => Role::User,
+                "assistant" => Role::Assistant,
+                // The marker is a flag of the conversation, not a message.
+                MARKER_ROLE => {
+                    github_read = true;
+                    continue;
+                }
+                _ => {
+                    skipped += 1;
+                    continue;
+                }
+            };
             let status: String = r.get(2)?;
-            Ok(Msg {
-                role: if role == "user" {
-                    Role::User
-                } else {
-                    Role::Assistant
-                },
+            messages.push(Msg {
+                role,
                 text: r.get(1)?,
-                // The column is constrained to the known names; an unknown one
-                // reads as a cut message rather than a finished one.
                 status: MsgStatus::from_name(&status).unwrap_or(MsgStatus::Interrupted),
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+            });
+        }
+    }
     // A read only: the resume never writes a link.
     let session = tx
         .query_row(
@@ -674,6 +1176,9 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
         extras,
         messages,
         session,
+        folder: folder.map(PathBuf::from),
+        skipped,
+        github_read,
     })
 }
 
@@ -701,6 +1206,24 @@ fn delete(conn: &mut Connection, conversation: i64) -> Result<Vec<NoteRow>, rusq
     Ok(notes)
 }
 
+/// The role of the row that marks a conversation as blocked. No schema change:
+/// the column is open-ended since schema 3, and a build that does not know the
+/// role skips the row on a resume.
+const MARKER_ROLE: &str = "github_read";
+
+/// Stores the marker row of `conversation` unless it has one. A conversation
+/// that does not exist is an error (the foreign key refuses the row).
+fn mark_github_read(conn: &Connection, conversation: i64) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO messages(conversation_id, seq, role, content, engine, model, status, created_at)
+         SELECT ?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conversation_id = ?1),
+                ?2, '', '', NULL, 'complete', ?3
+         WHERE NOT EXISTS (SELECT 1 FROM messages WHERE conversation_id = ?1 AND role = ?2)",
+        (conversation, MARKER_ROLE, now()),
+    )?;
+    Ok(())
+}
+
 fn insert_message(
     tx: &rusqlite::Transaction<'_>,
     conversation: i64,
@@ -712,6 +1235,11 @@ fn insert_message(
         Role::User => "user",
         Role::Assistant => "assistant",
     };
+    // The marker goes in the row's own transaction, so a later row is never
+    // stored without it.
+    if message.github_read {
+        mark_github_read(tx, conversation)?;
+    }
     tx.execute(
         "INSERT INTO messages(conversation_id, seq, role, content, engine, model, status, created_at)
          VALUES (?1,
@@ -757,6 +1285,18 @@ impl StoreHandle {
             StoreCmd::Resume { pane, .. } => StoreReply::ResumeFailed { pane },
             StoreCmd::Delete { pane, .. } => StoreReply::DeleteFailed { pane },
             StoreCmd::SetTags { pane, .. } => StoreReply::TagsFailed { pane },
+            StoreCmd::RecentFolders { pane, .. } => StoreReply::RecentFolders {
+                pane,
+                folders: Vec::new(),
+            },
+            StoreCmd::RecordUsage { pane, .. } => day_reply(pane, Err(String::new()), Some(reason)),
+            StoreCmd::UsageToday { pane } => day_reply(pane, Err(reason), None),
+            StoreCmd::UsageReport { pane, .. } => StoreReply::UsageReport { pane, rows: None },
+            StoreCmd::SaveRun { pane, .. } => StoreReply::RunsFailed { pane, saving: true },
+            StoreCmd::RecoverRuns { pane } => StoreReply::RunsFailed {
+                pane,
+                saving: false,
+            },
             _ => return,
         };
         let _ = self.replies.try_send(reply);

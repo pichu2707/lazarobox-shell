@@ -1,0 +1,19 @@
+---
+source: src/ui/components/chat/cost_tests.rs
+assertion_line: 287
+expression: shown
+---
+AI usage (alpha)
+prefill today: llamacpp 3.0
+ms/1k tok · lmstudio 12.0
+ms/1k tok · ollama 1.0 ms/1k
+tok · vllm 8.0 ms/1k tok ·
+partial
+prefill last 7 days: llamacpp
+3.0 ms/1k tok · lmstudio 12.0
+ms/1k tok · ollama 1.0 ms/1k
+tok · vllm 8.0 ms/1k tok ·
+partial
+
+
+Esc close · ↑↓ scroll

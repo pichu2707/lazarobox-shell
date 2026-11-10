@@ -8,13 +8,25 @@
 
 use std::path::PathBuf;
 
-use super::{Msg, MsgStatus, engine::Role, tags::Tags};
-use crate::core::{ai::sanitize::clean, layout::PaneId};
+use super::{Msg, MsgStatus, engine::Role, tags::Tags, usage::TurnUsage, usage_view::UsageRow};
+use crate::core::{
+    ai::{orchestra::record::RunRecord, sanitize::clean},
+    layout::PaneId,
+};
 
 /// The most conversations the store keeps.
 pub const RETENTION_LIMIT: usize = 200;
 /// System line for a new conversation that made the store evict the oldest.
 pub const EVICTED_LINE: &str = "oldest conversation removed (limit 200)";
+/// System line for a resumed conversation whose stored profile this build does
+/// not know.
+pub const UNKNOWN_PROFILE_LINE: &str =
+    "saved profile is unknown to this version; keeping the current one";
+/// System line for messages a resume left out because this build does not
+/// know their role.
+pub fn skipped_line(count: usize) -> String {
+    format!("{count} saved message(s) from a newer version are not shown")
+}
 /// System line for a write that failed in the middle of a session.
 pub const SAVE_FAILED_LINE: &str = "could not save conversation";
 /// System line for a conversation another pane deleted while this one has it
@@ -22,6 +34,10 @@ pub const SAVE_FAILED_LINE: &str = "could not save conversation";
 pub const DELETED_LINE: &str = "conversation deleted; new messages are not saved";
 /// System line when tags are edited on a conversation that is not saving.
 pub const TAGS_NOT_SAVED_LINE: &str = "tags kept in this pane only: history is not saving";
+/// Start of the notice shown, once per run, when a usage row is lost.
+pub const USAGE_NOT_SAVED: &str = "Usage not saved: ";
+/// Prefix of the notice for a day of usage the store could not read.
+pub const USAGE_NOT_READ: &str = "Usage not read: ";
 /// Start of the system line shown when the store cannot be used.
 pub const UNAVAILABLE_PREFIX: &str = "history unavailable: ";
 /// The longest error text shown to the user, in characters.
@@ -38,6 +54,9 @@ pub struct StoredMessage {
     pub status: MsgStatus,
     pub engine: String,
     pub model: Option<String>,
+    /// The conversation read GitHub text: the row is stored together with the
+    /// marker that keeps the auto-run block across a resume.
+    pub github_read: bool,
 }
 
 /// A request to the store thread.
@@ -55,6 +74,8 @@ pub enum StoreCmd {
         /// The cwd the chat was opened from: when `tag` is not known yet (the
         /// list has not answered), the store thread resolves it from here.
         origin: Option<PathBuf>,
+        /// The chat folder, kept with the conversation for a resume.
+        folder: Option<PathBuf>,
         open: Vec<i64>,
     },
     /// Adds a message. `conversation` is `None` while the pane does not know
@@ -65,6 +86,13 @@ pub enum StoreCmd {
         conversation: Option<i64>,
         message: StoredMessage,
     },
+    /// Stores the marker row of a conversation that read GitHub text, once.
+    /// `conversation` is `None` while the pane does not know its id yet (as
+    /// for `Append`). Silent on success; a failure is a failed write.
+    MarkGithubRead {
+        pane: PaneId,
+        conversation: Option<i64>,
+    },
     /// Reads or sets the engram session of a conversation: the stored id is
     /// answered with its project when there is one (a resume), else
     /// `session_id` and `project` are stored.
@@ -74,6 +102,9 @@ pub enum StoreCmd {
         conversation: i64,
         session_id: String,
         project: String,
+        /// The conversation moved to another project (a folder change): the
+        /// stored pair is replaced instead of kept.
+        replace: bool,
     },
     /// Records that `conversation` wrote the note `(project, topic_key)`. The
     /// row is upserted, so the last writer owns it. Only ids and the title are
@@ -95,6 +126,18 @@ pub enum StoreCmd {
         conversation: Option<i64>,
         tags: Tags,
     },
+    /// Replaces the folder a conversation is kept under and bumps its last
+    /// activity. `conversation` is `None` while the pane does not know its id
+    /// yet (as for `Append`). Silent: a lost write only means a resume asks.
+    SetFolder {
+        pane: PaneId,
+        conversation: Option<i64>,
+        folder: PathBuf,
+    },
+    /// The folders conversations were kept under, newest activity first, at
+    /// most `limit`. Read-only. Answered with `RecentFolders`; a store that
+    /// cannot be read answers an empty list.
+    RecentFolders { pane: PaneId, limit: usize },
     /// The conversations of the store, newest last activity first, and the
     /// project tag of `origin` (resolved on the store thread: it walks the
     /// filesystem). Answered with `Listed`, `ListFailed`, or `Unavailable`.
@@ -108,6 +151,37 @@ pub enum StoreCmd {
     /// with `Deleted` (carrying the note rows the delete took with it), or
     /// `DeleteFailed`.
     Delete { pane: PaneId, conversation: i64 },
+    /// Stores the usage of one turn (or one compaction or summary run, named
+    /// by `role`). `conversation` is `None` while the pane does not know its
+    /// id yet (as for `Append`); a conversation that is gone stores the row
+    /// unlinked. Counts, ids and a timestamp only: never text. Answered with
+    /// `UsageRecorded`, always: a lost row is never silent.
+    RecordUsage {
+        pane: PaneId,
+        conversation: Option<i64>,
+        engine: String,
+        role: String,
+        /// `<run>.<worker>` for a `worker` record.
+        worker: Option<String>,
+        usage: Box<TurnUsage>,
+    },
+    /// Reads the stored usage for `/cost`: every record, folded by local day,
+    /// engine and model, with the rows of `conversation` flagged. Read-only.
+    /// Answered with `UsageReport`, always.
+    UsageReport {
+        pane: PaneId,
+        conversation: Option<i64>,
+    },
+    /// Reads today's figures (the status segment) without writing anything.
+    /// Answered with `UsageRecorded` (`problem` is `None`), always.
+    UsageToday { pane: PaneId },
+    /// Stores an orchestrator run with its workers, replacing what the store
+    /// holds under the same id (S9). Silent on success; a failure is answered
+    /// with `RunsFailed`.
+    SaveRun { pane: PaneId, run: Box<RunRecord> },
+    /// Marks the live runs whose process is gone as interrupted and answers
+    /// with them and the ones still interrupted from before (S9): `RunsRecovered`, or `RunsFailed`. Nothing is started.
+    RecoverRuns { pane: PaneId },
     /// Finish what is queued and stop.
     Quit,
 }
@@ -216,6 +290,15 @@ pub enum StoreReply {
         extras: Vec<String>,
         messages: Vec<Msg>,
         session: Option<(String, String)>,
+        /// The folder the conversation was kept under; `None` for one stored
+        /// before the column existed.
+        folder: Option<PathBuf>,
+        /// Stored messages of a role this build does not know (written by a
+        /// newer one): left out, so they never show as someone else's words.
+        skipped: usize,
+        /// The conversation holds the marker of a GitHub read: it opens
+        /// blocked (pane-execution, Auto-run block).
+        github_read: bool,
     },
     ResumeFailed {
         pane: PaneId,
@@ -241,6 +324,48 @@ pub enum StoreReply {
     },
     TagsFailed {
         pane: PaneId,
+    },
+    /// The answer to `RecordUsage`. `today` is the known tokens of the local
+    /// day (input plus output of the records that have both), `None` when the
+    /// day has no known total or the row was not stored. `cost` is the
+    /// dollars the engines reported today, summed per engine (the app keeps
+    /// the per-token ones). `problem` is a short reason,
+    /// free of text and paths, for a write, migration or prune that failed.
+    UsageRecorded {
+        pane: PaneId,
+        today: Option<u64>,
+        cost: Vec<(String, u64)>,
+        /// When the figures stop being today's: the next local midnight, in
+        /// seconds since the Unix epoch. `None` when the day could not be
+        /// read (see `read_problem`): the figures then say nothing.
+        until: Option<i64>,
+        /// A short reason, free of text and paths, for a day that could not
+        /// be read. The row (if any) is stored all the same.
+        read_problem: Option<String>,
+        problem: Option<String>,
+    },
+    /// The answer to `UsageReport`. `rows` is `None` when the store could not
+    /// be read.
+    UsageReport {
+        pane: PaneId,
+        rows: Option<Vec<UsageRow>>,
+    },
+    /// The answer to `RecentFolders`: each folder once, newest first.
+    RecentFolders {
+        pane: PaneId,
+        folders: Vec<PathBuf>,
+    },
+    /// The runs a restart found live and marked interrupted, newest first
+    /// (empty for most starts).
+    RunsRecovered {
+        pane: PaneId,
+        runs: Vec<RunRecord>,
+    },
+    /// A run could not be stored (`saving`) or the stored runs could not be
+    /// read. The chat history is unaffected.
+    RunsFailed {
+        pane: PaneId,
+        saving: bool,
     },
 }
 
@@ -309,6 +434,8 @@ pub struct NewConversation {
     pub tag: Option<String>,
     pub extras: Vec<String>,
     pub origin: Option<PathBuf>,
+    /// The chat folder at the time of the first save.
+    pub folder: Option<PathBuf>,
     /// Conversations open in any pane, which retention must skip.
     pub open: Vec<i64>,
 }
@@ -367,6 +494,7 @@ impl PaneStore {
                     extras: new.extras.clone(),
                     first: message,
                     origin: new.origin.clone(),
+                    folder: new.folder.clone(),
                     open: new.open.clone(),
                 })
             }
@@ -398,6 +526,34 @@ impl PaneStore {
             pane,
             conversation,
             tags,
+        })
+    }
+
+    /// The command that stores the GitHub marker now, if the conversation can
+    /// take it. A conversation not created yet marks itself through its first
+    /// message; one being created is named by its pane.
+    pub fn mark_github_read(&self, pane: PaneId) -> Option<StoreCmd> {
+        let conversation = match self.link {
+            Link::Fresh | Link::Detached => return None,
+            Link::Creating => None,
+            Link::Open(id) => Some(id),
+        };
+        Some(StoreCmd::MarkGithubRead { pane, conversation })
+    }
+
+    /// The command that stores `folder` now. A conversation not created yet
+    /// keeps it for its `Create`; one being created is named by its pane; a
+    /// detached one stores nothing.
+    pub fn set_folder(&self, pane: PaneId, folder: PathBuf) -> Option<StoreCmd> {
+        let conversation = match self.link {
+            Link::Fresh | Link::Detached => return None,
+            Link::Creating => None,
+            Link::Open(id) => Some(id),
+        };
+        Some(StoreCmd::SetFolder {
+            pane,
+            conversation,
+            folder,
         })
     }
 

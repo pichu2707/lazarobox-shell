@@ -2,7 +2,7 @@
 source: src/ui/components/review_tests.rs
 expression: "flat(&draw(&mut chat, at(0), 60, 14))"
 ---
-1 file, +30 -0 · seen 24/33 · 9 remaining · y locked
+1 file, +30 -0 · seen 24/33 · 9 remaining · ↓ to unlock y
 +row 9
 +row 10
 +row 11
@@ -15,4 +15,4 @@ expression: "flat(&draw(&mut chat, at(0), 60, 14))"
 +row 18
 +row 19
 +row 20
-n reject · y locked · ↑↓ PgUp PgDn scroll
+n reject · y after scrolling · ↑↓ PgUp PgDn scroll

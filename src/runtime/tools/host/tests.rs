@@ -16,12 +16,15 @@ use tokio::{
 
 use super::*;
 use crate::{
-    core::{ai::chat::approval::ApprovalAsk, layout::PaneId},
+    core::{
+        ai::chat::approval::{ApprovalAsk, Reach},
+        layout::PaneId,
+    },
     runtime::mcp::Hub,
 };
 
 /// A temp HOME with a directory to find and a file to read.
-fn fixture() -> (tempfile::TempDir, PathBuf, Arc<ToolHost>) {
+pub(super) fn fixture() -> (tempfile::TempDir, PathBuf, Arc<ToolHost>) {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().canonicalize().unwrap().join("home");
     std::fs::create_dir_all(home.join("dev/curso-rust")).unwrap();
@@ -30,7 +33,7 @@ fn fixture() -> (tempfile::TempDir, PathBuf, Arc<ToolHost>) {
     (dir, home, host)
 }
 
-fn scope(locality: Locality, home: &Path) -> (TurnScope, mpsc::Receiver<StreamEvent>) {
+pub(super) fn scope(locality: Locality, home: &Path) -> (TurnScope, mpsc::Receiver<StreamEvent>) {
     let (tx, rx) = mpsc::channel(32);
     (TurnScope::new(tx, locality, home.to_path_buf()), rx)
 }
@@ -42,7 +45,7 @@ pub(super) fn events(rx: &mut mpsc::Receiver<StreamEvent>) -> Vec<StreamEvent> {
 /// Answers every ask the same way and remembers what it was asked.
 pub(super) struct Scripted {
     answer: Decision,
-    asked: Mutex<Vec<ApprovalAsk>>,
+    pub(super) asked: Mutex<Vec<ApprovalAsk>>,
 }
 
 impl Scripted {
@@ -77,13 +80,13 @@ fn find(query: &str) -> Call {
     }
 }
 
-fn run_cmd(command: &str) -> Call {
+pub(super) fn run_cmd(command: &str) -> Call {
     Call::RunInPane {
         command: command.into(),
     }
 }
 
-fn read(path: &str) -> Call {
+pub(super) fn read(path: &str) -> Call {
     Call::ReadFile {
         path: path.into(),
         lines: None,
@@ -183,7 +186,9 @@ async fn a_cloud_read_asks_first_and_is_denied_without_an_approver() {
     assert_eq!(
         ask,
         Some(ApprovalAsk::Read {
-            path: home.join("note.txt").to_str().unwrap().into()
+            path: home.join("note.txt").to_str().unwrap().into(),
+            reach: Reach::Broad,
+            cloud: true,
         })
     );
     assert_eq!(status, ToolStatus::Denied);
@@ -256,7 +261,8 @@ async fn a_cloud_grep_runs_only_after_the_answer_is_sent() {
             *approver.asked.lock().unwrap(),
             vec![ApprovalAsk::Search {
                 pattern: "hello from".into(),
-                dir: ".".into()
+                dir: ".".into(),
+                reach: Reach::Broad,
             }]
         );
         let (_, _, status, _) = pair(&events(&mut rx));
@@ -291,7 +297,8 @@ async fn a_cloud_grep_nobody_approves_is_denied_and_reads_nothing() {
         ask,
         Some(ApprovalAsk::Search {
             pattern: "hello from".into(),
-            dir: ".".into()
+            dir: ".".into(),
+            reach: Reach::Broad,
         })
     );
     assert_eq!(status, ToolStatus::Denied);
@@ -776,7 +783,8 @@ async fn with_search_on_glob_and_grep_run_end_to_end_and_a_cloud_grep_asks() {
         *approver.asked.lock().unwrap(),
         vec![ApprovalAsk::Search {
             pattern: "hello from".into(),
-            dir: "dev/curso-rust".into()
+            dir: "dev/curso-rust".into(),
+            reach: Reach::Broad,
         }]
     );
     assert_eq!(pair(&events(&mut rx)).2, ToolStatus::Ok);
@@ -921,9 +929,37 @@ async fn a_relative_cloud_read_asks_with_the_path_resolved_against_the_origin() 
     let want = home.join("note.txt").to_str().unwrap().to_owned();
     assert_eq!(
         *approver.asked.lock().unwrap(),
-        [ApprovalAsk::Read { path: want }]
+        [ApprovalAsk::Read {
+            path: want,
+            reach: Reach::Broad,
+            cloud: true,
+        }]
     );
     let _ = events(&mut rx);
+}
+
+// A reply of `Unprompted` is taken only where the host's own ask said the read
+// stays in the root: one for a read outside the root, or for a search of a
+// root too broad to confine (HOME), is denied and reads nothing.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn an_unprompted_answer_the_ask_did_not_allow_is_denied_and_reads_nothing() {
+    let (_dir, home, host) = fixture();
+    for (origin, call) in [
+        (home.join("dev/curso-rust"), read("~/note.txt")),
+        (home.clone(), read("~/note.txt")),
+        (home.clone(), grep("hello from", None)),
+    ] {
+        let (mut scope, mut rx) = scope(Locality::Cloud, &origin);
+        let approver = Scripted::new(Decision::Unprompted);
+        scope.approver = approver.clone();
+        let out = host.dispatch(scope).call(call.clone()).await;
+        assert_eq!(out.text, format!("denied: {NOT_APPROVED}"), "{call:?}");
+        assert_eq!(approver.asked.lock().unwrap().len(), 1);
+        let (_, _, status, _) = pair(&events(&mut rx));
+        assert_eq!(status, ToolStatus::Denied);
+    }
 }
 
 // -- the real approver (2e-2): the app's answers, keyed by pane, turn and call --
@@ -1001,7 +1037,9 @@ mod answered {
         assert_eq!(
             ask,
             Some(ApprovalAsk::Read {
-                path: path.to_str().unwrap().into()
+                path: path.to_str().unwrap().into(),
+                reach: Reach::Broad,
+                cloud: true,
             })
         );
         std::fs::write(&path, "written after the prompt").unwrap();

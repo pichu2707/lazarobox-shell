@@ -5,6 +5,7 @@
 //! spawn core is `runner.rs`.
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
     ffi::{OsStr, OsString},
     fs,
@@ -34,7 +35,7 @@ use crate::{
             allow::{self, Program, RunError, RunRequest, parse_run},
             label,
             mcp::refusal_text,
-            paths::{REFUSED, plain_relative},
+            paths::{REFUSED, SecretRoots, plain_relative},
             run::RunOutcome,
             stage::{StageKey, State},
         },
@@ -52,7 +53,8 @@ use crate::{
 
 /// The refusal of a run on a system with no Landlock jail (design D18).
 pub(super) const NO_JAIL: &str = "commands need the Linux sandbox (Landlock ABI 3+)";
-const PROPOSE_FIRST: &str = "staged changes are not proposed: propose them first";
+/// Says how to go on, so a small model retries after proposing (#439).
+const PROPOSE_FIRST: &str = "staged changes are not proposed: propose them first with propose_batch, then call this tool again";
 const IN_REVIEW: &str = "a batch is waiting for the user's review";
 /// Text the prompt could not show exactly as it will run.
 const UNSHOWABLE: &str = "command cannot be shown safely";
@@ -79,6 +81,8 @@ pub(super) struct Exec {
     pub(super) helper: Option<PathBuf>,
     /// The environment the child's own is rebuilt from.
     pub(super) read: Reader,
+    /// What `[build] jobs` says now: the next run gets it.
+    pub(super) build_env: Mutex<Vec<(OsString, OsString)>>,
     /// Changes of runs that were dropped before they ended, by chat.
     pub(super) sinks: Mutex<HashMap<StageKey, Unreported>>,
 }
@@ -91,6 +95,7 @@ impl Exec {
             jail: Box::new(crate::runtime::jail::probe),
             helper: std::env::current_exe().and_then(fs::canonicalize).ok(),
             read: Arc::new(|name| std::env::var_os(name)),
+            build_env: Mutex::default(),
             sinks: Mutex::default(),
         }
     }
@@ -103,7 +108,23 @@ impl Exec {
         sinks.entry(key).or_default().clone()
     }
 
-    fn jailed(&self) -> bool {
+    /// What `[build] jobs` says from now on.
+    pub(super) fn set_build_env(&self, env: [(String, String); 2]) {
+        *self
+            .build_env
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) =
+            env.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+    }
+
+    /// The job variables of the next run.
+    pub(super) fn build_env(&self) -> Vec<(OsString, OsString)> {
+        (self.build_env.lock())
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(super) fn jailed(&self) -> bool {
         (self.jail)().runs_commands()
     }
 }
@@ -132,28 +153,24 @@ pub(super) struct Pin {
 
 /// Judges a call. The checks come in the order of the spec; the first refusal
 /// is the text the model gets.
-pub(super) async fn plan(
-    host: &ToolHost,
-    scope: &TurnScope,
-    call: &Call,
-) -> Result<Plan, &'static str> {
+pub(super) async fn plan(host: &ToolHost, scope: &TurnScope, call: &Call) -> Result<Plan, String> {
     let (Some(key), Call::RunCommand { args }) = (scope.stage_key, call) else {
-        return Err(refusal_text(ToolError::UnknownTool));
+        return Err(refusal_text(ToolError::UnknownTool).into());
     };
     if !host.exec.jailed() {
-        return Err(NO_JAIL);
+        return Err(NO_JAIL.into());
     }
-    let (env, origin, args) = (host.env(&scope.origin), scope.origin.clone(), args.clone());
+    let (env, origin, args) = (host.scope_env(scope), scope.origin.clone(), args.clone());
     let stages = host.stages.clone();
     let judged = tokio::task::spawn_blocking(move || {
         let found = inspect(&env, &origin, &args)?;
         staged(&stages, key)?;
-        Ok::<_, &'static str>(found)
+        Ok::<_, Cow<'static, str>>(found)
     })
     .await
     .map_err(|_| COULD_NOT)??;
     if host.exec.gate.is_busy(key) {
-        return Err(CHAT_BUSY);
+        return Err(CHAT_BUSY.into());
     }
     let (request, root, cwd, pin) = judged;
     Ok(Plan {
@@ -222,20 +239,55 @@ pub(super) fn earlier_note(changes: &[Change]) -> Option<String> {
     Some(clip(&line, EARLIER_COLUMNS))
 }
 
+/// The refusal of a command or git verb when the chat's folder is HOME, a
+/// folder above it or `/`. It is about the folder, not a path, and fixed, so
+/// it leaks nothing about excluded paths, and it stops a model from retrying.
+const BROAD: &str = "path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>";
+
+/// The chat origin as a root a command or a git verb may use: absolute, a real
+/// folder, not HOME, not a place the path guard refuses and, on a Windows
+/// drive, the folder the user granted (openspec `wsl-drive-access` D10) and
+/// never a broad one.
+pub(super) fn root_of(
+    env: &ToolEnv,
+    origin: &Path,
+) -> Result<(SecretRoots, PathBuf), Cow<'static, str>> {
+    let roots = load_roots(env).map_err(|_| REFUSED)?;
+    let root = origin
+        .is_absolute()
+        .then(|| fs::canonicalize(origin).ok())
+        .flatten()
+        .filter(|root| root.is_dir())
+        .ok_or(REFUSED)?;
+    if roots.home().starts_with(&root) {
+        return Err(BROAD.into());
+    }
+    if roots.on_drive(&root) {
+        if roots.drives().is_broad(&root) {
+            return Err(format!(
+                "{REFUSED}: the chat's folder is {}, where commands cannot run; ask the user to run /cd <project folder>",
+                super::files::chat_folder(env)
+            )
+            .into());
+        }
+        if !roots.granted_root(&root) {
+            return Err(super::files::ungranted_text(env).into());
+        }
+    }
+    if !roots.judge_real(&root) {
+        return Err(REFUSED.into());
+    }
+    Ok((roots, root))
+}
+
 /// The root policy of the chat origin, the folder, the allow-list and what the
 /// prompt can show. Reads the disk.
 fn inspect(
     env: &ToolEnv,
     origin: &Path,
     args: &Value,
-) -> Result<(RunRequest, PathBuf, PathBuf, Option<Pin>), &'static str> {
-    let roots = load_roots(env).map_err(|_| REFUSED)?;
-    let root = origin
-        .is_absolute()
-        .then(|| fs::canonicalize(origin).ok())
-        .flatten()
-        .filter(|root| root.is_dir() && root != roots.home() && roots.judge_real(root))
-        .ok_or(REFUSED)?;
+) -> Result<(RunRequest, PathBuf, PathBuf, Option<Pin>), Cow<'static, str>> {
+    let (roots, root) = root_of(env, origin)?;
     let rel = match args["cwd"].as_str() {
         Some(text) => plain_relative(text).ok_or(REFUSED)?,
         None => PathBuf::new(),
@@ -248,7 +300,7 @@ fn inspect(
     // A manager walks up to a parent `package.json` that nothing here would
     // show or pin, so a script runs only from the folder that has its own.
     if package.missing && runs_scripts(args) {
-        return Err(NO_PACKAGE);
+        return Err(NO_PACKAGE.into());
     }
     let request = parse_run(args, &package.names()).map_err(|why| match why {
         RunError::Shape(shape) => refusal_text(shape),
@@ -259,14 +311,17 @@ fn inspect(
         .iter()
         .any(|arg| clean(arg) != *arg || arg.chars().any(char::is_control))
     {
-        return Err(UNSHOWABLE);
+        return Err(UNSHOWABLE.into());
     }
     let pin = pin(&request, &package);
     Ok((request, root, cwd, pin))
 }
 
 /// A command runs against the disk, never against staged content.
-fn staged(stages: &Arc<std::sync::Mutex<Stages>>, key: StageKey) -> Result<(), &'static str> {
+pub(super) fn staged(
+    stages: &Arc<std::sync::Mutex<Stages>>,
+    key: StageKey,
+) -> Result<(), &'static str> {
     match lock(stages).batch(key).map(|batch| batch.state()) {
         Some(State::Staging) => Err(PROPOSE_FIRST),
         Some(State::Proposed) => Err(IN_REVIEW),
@@ -390,7 +445,7 @@ pub(super) async fn run(
     };
     let plan = match plan(host, scope, call).await {
         Ok(plan) => plan,
-        Err(why) => return fail(why),
+        Err(why) => return fail(&why),
     };
     // The disk may have changed while the prompt was open.
     if plan.pin != asked {
@@ -422,9 +477,12 @@ async fn go(
     let job = {
         let (read, unreported) = (read.clone(), unreported.clone());
         let home = host.home.clone();
-        tokio::task::spawn_blocking(move || job(&*read, home, parent, plan, helper, unreported))
-            .await
-            .map_err(|_| COULD_NOT)??
+        let build_env = host.exec.build_env();
+        tokio::task::spawn_blocking(move || {
+            job(&*read, home, parent, plan, helper, build_env, unreported)
+        })
+        .await
+        .map_err(|_| COULD_NOT)??
     };
     // What the run changed is told on every path, an error included: the
     // watched places are read whatever the program did, and a run that is
@@ -463,7 +521,7 @@ fn failed(why: &str, changes: Vec<Change>, nonce: &str) -> (Outcome, ToolStatus,
 }
 
 /// Where the private temp folders go: `$XDG_RUNTIME_DIR`, else the data folder.
-fn scratch_parent(host: &ToolHost) -> Option<PathBuf> {
+pub(super) fn scratch_parent(host: &ToolHost) -> Option<PathBuf> {
     let absolute = |path: OsString| Some(PathBuf::from(path)).filter(|p| p.is_absolute());
     if let Some(runtime) = (host.exec.read)("XDG_RUNTIME_DIR").and_then(absolute) {
         return Some(runtime.join("lazarobox-run"));
@@ -483,6 +541,7 @@ fn job(
     parent: Option<PathBuf>,
     plan: Plan,
     helper: PathBuf,
+    build_env: Vec<(OsString, OsString)>,
     unreported: Unreported,
 ) -> Result<Job, &'static str> {
     let canonical = |path: OsString| fs::canonicalize(path).ok();
@@ -517,6 +576,7 @@ fn job(
         cwd: plan.cwd,
         scratch,
         timeout: plan.request.timeout,
+        build_env,
         unreported,
     })
 }

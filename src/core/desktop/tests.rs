@@ -35,26 +35,31 @@ const BIN: &str = "/home/u/.cargo/bin/lazarobox-shell";
 
 fn plan_for(name: &str) -> Plan {
     let choice = pick(None, None, &[Box::leak(name.to_string().into_boxed_str())]);
-    plan_install(&choice, Path::new(BIN)).unwrap()
+    plan_install(&choice, Path::new(BIN), None, false).unwrap()
 }
 
 #[test]
 fn parses_the_three_forms() {
     assert_eq!(
         parse_args(&os(&[])),
-        Ok(Options::Install { terminal: None })
+        Ok(Options::Install {
+            terminal: None,
+            dir: None
+        })
     );
     assert_eq!(parse_args(&os(&["--uninstall"])), Ok(Options::Uninstall));
     assert_eq!(
         parse_args(&os(&["--terminal", "foot"])),
         Ok(Options::Install {
-            terminal: Some("foot".into())
+            terminal: Some("foot".into()),
+            dir: None
         })
     );
     assert_eq!(
         parse_args(&os(&["--terminal=foot"])),
         Ok(Options::Install {
-            terminal: Some("foot".into())
+            terminal: Some("foot".into()),
+            dir: None
         })
     );
     assert_eq!(parse_args(&os(&["--help"])), Ok(Options::Help));
@@ -149,6 +154,7 @@ fn flag_accepts_an_absolute_path_and_keys_on_its_basename() {
             path: PathBuf::from("/usr/bin/alacritty"),
             known: true,
             source: Source::Flag,
+            runs: None,
         }
     );
 }
@@ -202,7 +208,7 @@ fn startup_wm_class_only_when_the_terminal_sets_the_class() {
 #[test]
 fn unknown_terminal_uses_dash_e_and_says_so() {
     let choice = pick(Some("mytty"), None, &["mytty"]);
-    let plan = plan_install(&choice, Path::new(BIN)).unwrap();
+    let plan = plan_install(&choice, Path::new(BIN), None, false).unwrap();
     assert_eq!(plan.exec, format!("/usr/bin/mytty -e {BIN}"));
     assert!(plan.notes.iter().any(|n| n.contains("no launch syntax")));
     assert!(!plan.contents.contains("StartupWMClass"));
@@ -210,7 +216,7 @@ fn unknown_terminal_uses_dash_e_and_says_so() {
 
 #[test]
 fn fallback_runs_the_binary_in_a_desktop_chosen_terminal() {
-    let plan = plan_install(&Choice::Fallback, Path::new(BIN)).unwrap();
+    let plan = plan_install(&Choice::Fallback, Path::new(BIN), None, false).unwrap();
     assert_eq!(plan.exec, BIN);
     assert!(plan.contents.contains("Terminal=true\n"));
     assert!(plan.contents.contains(&format!("Exec={BIN}\n")));
@@ -218,17 +224,181 @@ fn fallback_runs_the_binary_in_a_desktop_chosen_terminal() {
 }
 
 #[test]
-fn kitty_gets_no_compatibility_notice_and_others_do() {
-    assert!(plan_for("kitty").notes.is_empty());
+fn a_recorded_terminal_says_it_has_a_record() {
+    let notes = plan_for("kitty").notes;
+    assert_eq!(notes, vec![terminal_notice(Some("kitty"))]);
+    assert!(notes[0].contains("kitty has a record"), "{notes:?}");
+    assert!(notes[0].contains(RECORDS_URL), "{notes:?}");
     assert!(
-        plan_for("foot")
-            .notes
-            .contains(&NON_KITTY_NOTICE.to_string())
+        RECORDS_URL
+            .starts_with("https://github.com/pichu2707/lazarobox-shell/tree/main/docs/terminals")
     );
-    let fallback = plan_install(&Choice::Fallback, Path::new(BIN)).unwrap();
-    assert!(fallback.notes.contains(&NON_KITTY_NOTICE.to_string()));
+    assert!(!notes[0].contains("under docs/terminals/"), "{notes:?}");
 }
 
+#[test]
+fn an_unrecorded_terminal_is_untested_and_still_launches() {
+    let plan = plan_for("foot");
+    let note = terminal_notice(Some("foot"));
+    assert!(note.contains(&format!("foot has no test record yet; see {RECORDS_URL}")));
+    assert!(plan.notes.contains(&note));
+    assert!(plan.contents.contains("Exec=/usr/bin/foot "));
+    let fallback = plan_install(&Choice::Fallback, Path::new(BIN), None, false).unwrap();
+    assert!(fallback.notes.contains(&terminal_notice(None)));
+    assert!(terminal_notice(None).contains(&format!("no test record yet; see {RECORDS_URL}")));
+}
+
+#[test]
+fn no_notice_says_tested_in_kitty() {
+    for name in ["kitty", "foot", "mytty"] {
+        assert!(!terminal_notice(Some(name)).contains("tested in Kitty"));
+    }
+    assert!(!terminal_notice(None).contains("tested in Kitty"));
+}
+
+#[test]
+fn recorded_terminals_are_kitty_and_zutty_and_each_has_a_folder() {
+    assert_eq!(RECORDED_TERMINALS, ["kitty", "zutty"]);
+    let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/terminals");
+    for name in RECORDED_TERMINALS {
+        assert!(docs.join(name).is_dir(), "missing docs/terminals/{name}/");
+    }
+}
+
+fn wsl_plan(wsl: bool) -> Plan {
+    let choice = pick(None, None, &["kitty"]);
+    plan_install(&choice, Path::new(BIN), None, wsl).unwrap()
+}
+
+#[test]
+fn wsl_writes_the_same_entry_with_the_wsl_notes() {
+    let (linux, wsl) = (wsl_plan(false), wsl_plan(true));
+    assert_eq!(wsl.contents, linux.contents);
+    assert_eq!(wsl.exec, linux.exec);
+    let extra: Vec<_> = wsl
+        .notes
+        .iter()
+        .filter(|n| !linux.notes.contains(n))
+        .collect();
+    let text = extra
+        .iter()
+        .map(|n| n.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("may not appear in the Windows Start menu"),
+        "{text}"
+    );
+    assert!(text.contains("Linux GUI terminal"), "{text}");
+    assert!(text.contains("otherwise"), "{text}");
+}
+
+#[test]
+fn outside_wsl_the_notes_are_unchanged() {
+    let linux = wsl_plan(false);
+    assert_eq!(linux.notes, vec![terminal_notice(Some("kitty"))]);
+    assert!(!linux.notes.iter().any(|n| n.contains("WSL")));
+}
+
+fn auto_choice(env: Option<&str>, names: &[&'static str]) -> Choice {
+    pick(None, env, names)
+}
+
+fn entries(env: Option<&str>, names: &[&'static str], xte: Option<&str>) -> Vec<Entry> {
+    let automatic = auto_choice(env, names);
+    picker_choices(env, &path_with(names), xte.map(PathBuf::from), &automatic)
+}
+
+fn entry_names(entries: &[Entry]) -> Vec<&str> {
+    entries.iter().map(|e| e.name.as_str()).collect()
+}
+
+#[test]
+fn picker_lists_only_installed_terminals_without_duplicates() {
+    let list = entries(Some("foot"), &["kitty", "foot", "konsole"], None);
+    // $TERMINAL first, then the known order; `foot` appears once.
+    assert_eq!(entry_names(&list), ["foot", "kitty", "konsole"]);
+    assert_eq!(list[0].path, PathBuf::from("/usr/bin/foot"));
+    assert!(!entry_names(&list).contains(&"alacritty"));
+}
+
+#[test]
+fn picker_adds_the_env_terminal_and_the_resolved_alternative() {
+    let list = entries(
+        Some("mytty"),
+        &["mytty", "x-terminal-emulator"],
+        Some("/usr/bin/konsole"),
+    );
+    assert_eq!(
+        entry_names(&list),
+        ["mytty", "x-terminal-emulator", "konsole"]
+    );
+    // The target is already on PATH: not listed twice.
+    let dup = entries(
+        None,
+        &["konsole", "x-terminal-emulator"],
+        Some("/usr/bin/konsole"),
+    );
+    assert_eq!(entry_names(&dup), ["konsole", "x-terminal-emulator"]);
+    // A target with no launch syntax is not offered.
+    let odd = entries(
+        None,
+        &["x-terminal-emulator"],
+        Some("/usr/bin/gnome-terminal.wrapper"),
+    );
+    assert_eq!(entry_names(&odd), ["x-terminal-emulator"]);
+}
+
+#[test]
+fn picker_marks_tested_terminals_and_the_automatic_default() {
+    let list = entries(None, &["foot", "kitty"], None);
+    let tested: Vec<_> = list.iter().map(|e| (e.name.as_str(), e.tested)).collect();
+    assert_eq!(tested, [("kitty", true), ("foot", false)]);
+    let defaults: Vec<_> = list.iter().map(|e| e.default).collect();
+    assert_eq!(defaults, [true, false]);
+    // xdg-terminal-exec beats the known order, and is the default then.
+    let xdg = entries(None, &["kitty", "xdg-terminal-exec"], None);
+    assert_eq!(entry_names(&xdg), ["xdg-terminal-exec", "kitty"]);
+    assert!(xdg[0].default && !xdg[1].default);
+}
+
+#[test]
+fn picker_has_no_choices_when_nothing_is_installed() {
+    assert!(entries(Some("ghost"), &[], None).is_empty());
+}
+
+fn sample() -> Vec<Entry> {
+    entries(None, &["kitty", "foot", "konsole"], None)
+}
+
+#[test]
+fn empty_input_picks_the_default() {
+    assert_eq!(parse_choice(Some("\n"), &sample()), Parsed::Pick(0));
+    let list = entries(Some("konsole"), &["kitty", "konsole"], None);
+    assert!(list[0].default);
+    assert_eq!(parse_choice(Some(""), &list), Parsed::Pick(0));
+}
+
+#[test]
+fn a_number_picks_that_entry() {
+    assert_eq!(parse_choice(Some("2\n"), &sample()), Parsed::Pick(1));
+    assert_eq!(parse_choice(Some(" 3 \n"), &sample()), Parsed::Pick(2));
+}
+
+#[test]
+fn invalid_input_retries_with_a_notice() {
+    for bad in ["0", "4", "9", "abc", "  x ", "-1", "1 2"] {
+        match parse_choice(Some(bad), &sample()) {
+            Parsed::Retry(notice) => assert!(notice.contains("not valid"), "{bad}: {notice}"),
+            other => panic!("{bad}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn eof_cancels() {
+    assert_eq!(parse_choice(None, &sample()), Parsed::Cancel);
+}
 #[test]
 fn rendered_file_is_a_complete_desktop_entry() {
     let contents = plan_for("kitty").contents;
@@ -260,7 +430,7 @@ fn reserved_characters_and_relative_paths_are_refused() {
     ] {
         assert!(validate_path(Path::new(bad)).is_err(), "{bad}");
         assert!(
-            plan_install(&Choice::Fallback, Path::new(bad)).is_err(),
+            plan_install(&Choice::Fallback, Path::new(bad), None, false).is_err(),
             "{bad}"
         );
     }
@@ -274,8 +444,9 @@ fn unsafe_terminal_path_is_refused_too() {
         path: PathBuf::from("/opt/my kitty/kitty"),
         known: true,
         source: Source::Flag,
+        runs: None,
     };
-    assert!(plan_install(&choice, Path::new(BIN)).is_err());
+    assert!(plan_install(&choice, Path::new(BIN), None, false).is_err());
 }
 
 #[test]
@@ -299,7 +470,7 @@ fn build_artefact_paths_are_detected_by_component() {
 #[test]
 fn a_build_artefact_binary_gets_a_cargo_clean_note() {
     let bin = Path::new("/src/lazarobox-shell/target/debug/lazarobox-shell");
-    let plan = plan_install(&Choice::Fallback, bin).unwrap();
+    let plan = plan_install(&Choice::Fallback, bin, None, false).unwrap();
     assert!(plan.notes.iter().any(|n| n.contains("cargo clean")));
     assert!(
         !plan_for("kitty")
@@ -313,10 +484,241 @@ fn a_build_artefact_binary_gets_a_cargo_clean_note() {
 fn placeholders_in_a_path_are_not_rewritten() {
     let choice = pick(None, None, &["kitty"]);
     let bin = Path::new("/opt/@TERMINAL@/@EXEC@/lazarobox-shell");
-    let plan = plan_install(&choice, bin).unwrap();
+    let plan = plan_install(&choice, bin, None, false).unwrap();
     assert!(plan.contents.contains(&format!(
         "Exec=/usr/bin/kitty --class lazarobox --title Lazarobox {}\n",
         bin.display()
     )));
     assert!(plan.contents.contains("Terminal=false\n"));
+}
+
+fn with_dir(dir: &str) -> Plan {
+    let choice = pick(None, None, &["kitty"]);
+    plan_install(&choice, Path::new(BIN), Some(Path::new(dir)), false).unwrap()
+}
+
+// Spec (start-dir): install-desktop --dir.
+#[test]
+fn parses_the_dir_flag_in_both_forms() {
+    let want = Ok(Options::Install {
+        terminal: None,
+        dir: Some("/w/proj".into()),
+    });
+    assert_eq!(parse_args(&os(&["--dir", "/w/proj"])), want);
+    assert_eq!(parse_args(&os(&["--dir=/w/proj"])), want);
+    assert!(parse_args(&os(&["--dir"])).is_err());
+    assert!(parse_args(&os(&["--dir="])).is_err());
+    assert!(parse_args(&os(&["--uninstall", "--dir", "/w"])).is_err());
+}
+
+#[test]
+fn a_dir_writes_path_and_the_exec_argument() {
+    let plan = with_dir("/w/proj");
+    assert!(
+        plan.contents.contains("\nPath=/w/proj\n"),
+        "{}",
+        plan.contents
+    );
+    let exec =
+        format!("Exec=/usr/bin/kitty --class lazarobox --title Lazarobox {BIN} --dir=/w/proj\n");
+    assert!(plan.contents.contains(&exec), "{}", plan.contents);
+    let without = plan_for("kitty");
+    let terminal = |c: &str| {
+        c.lines()
+            .find(|l| l.starts_with("Terminal="))
+            .map(String::from)
+    };
+    assert_eq!(terminal(&plan.contents), terminal(&without.contents));
+}
+
+#[test]
+fn without_a_dir_neither_path_nor_the_argument_is_written() {
+    let plan = plan_for("kitty");
+    assert!(!plan.contents.contains("Path="));
+    assert!(!plan.contents.contains("--dir"));
+    assert!(!plan.contents.contains('@'));
+}
+
+#[test]
+fn the_fallback_launcher_also_carries_the_dir() {
+    let plan = plan_install(
+        &Choice::Fallback,
+        Path::new(BIN),
+        Some(Path::new("/w/proj")),
+        false,
+    )
+    .unwrap();
+    assert!(
+        plan.contents
+            .contains(&format!("Exec={BIN} --dir=/w/proj\n"))
+    );
+    assert!(plan.contents.contains("Path=/w/proj\n"));
+}
+
+#[test]
+fn a_dir_with_spaces_keeps_the_path_verbatim_and_quotes_the_argument() {
+    let plan = with_dir("/w/my proj");
+    assert!(plan.contents.contains("\nPath=/w/my proj\n"));
+    assert!(
+        plan.contents
+            .contains(&format!("{BIN} \"--dir=/w/my proj\"\n"))
+    );
+}
+
+#[test]
+fn backslashes_and_a_leading_space_are_escaped_and_controls_refused() {
+    let plan = with_dir("/w/a\\b");
+    assert!(
+        plan.contents.contains("\nPath=/w/a\\\\b\n"),
+        "{}",
+        plan.contents
+    );
+    let choice = pick(None, None, &["kitty"]);
+    let relative_space = plan_install(&choice, Path::new(BIN), Some(Path::new(" /w")), false);
+    assert!(relative_space.is_err(), "a relative path is refused");
+    for bad in ["/w/a\nb", "/w/a\tb", "/w/a\u{7f}b"] {
+        let result = plan_install(&choice, Path::new(BIN), Some(Path::new(bad)), false);
+        assert!(result.is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn a_dir_in_the_exec_line_escapes_percent_and_dollar() {
+    let plan = with_dir("/w/50%$x");
+    assert!(
+        plan.contents.contains("\"--dir=/w/50%%\\\\$x\""),
+        "{}",
+        plan.contents
+    );
+}
+
+#[test]
+fn a_dir_with_edge_whitespace_is_refused() {
+    let choice = pick(None, None, &["kitty"]);
+    for bad in ["/w/proj ", "/w/proj\u{a0}", "/w/proj\u{3000}"] {
+        let result = plan_install(&choice, Path::new(BIN), Some(Path::new(bad)), false);
+        assert!(result.is_err(), "{bad:?}");
+    }
+    assert!(plan_install(&choice, Path::new(BIN), Some(Path::new("/w/a b")), false).is_ok());
+}
+
+#[test]
+fn a_non_utf8_dir_value_has_its_own_message() {
+    use std::os::unix::ffi::OsStringExt;
+    let bad = OsString::from_vec(vec![b'/', 0xff]);
+    let args = vec![OsString::from("--dir"), bad];
+    assert_eq!(
+        parse_args(&args),
+        Err("--dir: folder name is not valid UTF-8".to_string())
+    );
+}
+
+#[test]
+fn dir_before_uninstall_is_refused_too() {
+    assert!(parse_args(&os(&["--dir", "/w", "--uninstall"])).is_err());
+}
+
+#[test]
+fn picker_skips_entries_that_cannot_be_written_to_exec() {
+    let lookup = |cmd: &str| match cmd {
+        "kitty" => Some(PathBuf::from("/opt/my apps/kitty")),
+        "foot" => Some(PathBuf::from("/usr/bin/foot")),
+        _ => None,
+    };
+    let automatic = pick(None, None, &["foot"]);
+    let list = picker_choices(None, &lookup, None, &automatic);
+    assert_eq!(entry_names(&list), ["foot"]);
+    assert!(list[0].default);
+}
+
+#[test]
+fn is_wsl_lives_next_to_the_launcher() {
+    assert!(is_wsl(Some("Ubuntu"), None));
+    assert!(is_wsl(None, Some("5.15-microsoft-standard-WSL2")));
+    assert!(!is_wsl(None, Some("6.8.0-generic")));
+}
+
+// Issue #487: `x-terminal-emulator` is judged by the terminal it resolves to.
+#[test]
+fn picker_judges_the_alternative_by_the_terminal_it_resolves_to() {
+    let tested = |target: Option<&str>| {
+        let list = entries(None, &["x-terminal-emulator"], target);
+        let entry = list.iter().find(|e| e.name == "x-terminal-emulator");
+        entry.unwrap().tested
+    };
+    assert!(tested(Some("/usr/bin/zutty")));
+    assert!(tested(Some("/usr/bin/kitty")));
+    assert!(!tested(Some("/usr/bin/foot")));
+    assert!(!tested(Some("/usr/bin/x-terminal-emulator")));
+    assert!(!tested(None));
+}
+
+fn alternative_running(runs: Option<&str>) -> Plan {
+    let choice = Choice::Terminal {
+        name: "x-terminal-emulator".into(),
+        path: PathBuf::from("/usr/bin/x-terminal-emulator"),
+        known: true,
+        source: Source::Flag,
+        runs: runs.map(str::to_owned),
+    };
+    plan_install(&choice, Path::new(BIN), None, false).unwrap()
+}
+
+// Issue #487: the note names the terminal, and `Exec` keeps the link.
+#[test]
+fn the_note_of_the_alternative_names_the_recorded_terminal_it_runs() {
+    let plan = alternative_running(Some("zutty"));
+    assert_eq!(
+        plan.notes,
+        vec![format!(
+            "x-terminal-emulator resolves to zutty, which has a record: {RECORDS_URL}"
+        )]
+    );
+    assert!(
+        plan.contents
+            .contains("Exec=/usr/bin/x-terminal-emulator -e ")
+    );
+    for runs in [Some("foot"), Some("x-terminal-emulator"), None] {
+        assert_eq!(
+            alternative_running(runs).notes,
+            vec![terminal_notice(Some("x-terminal-emulator"))],
+            "{runs:?}"
+        );
+    }
+}
+
+#[test]
+fn the_launcher_names_the_themed_icon_it_installs() {
+    let plan = plan_for("kitty");
+    assert!(
+        plan.contents.contains("\nIcon=lazarobox\n"),
+        "{}",
+        plan.contents
+    );
+    assert!(!plan.contents.contains("utilities-terminal"));
+}
+
+#[test]
+fn icons_are_hicolor_apps_files_named_after_the_icon() {
+    let paths: Vec<&str> = ICONS.iter().map(|(path, _)| *path).collect();
+    assert_eq!(
+        paths,
+        [
+            "icons/hicolor/256x256/apps/lazarobox.png",
+            "icons/hicolor/128x128/apps/lazarobox.png",
+            "icons/hicolor/48x48/apps/lazarobox.png",
+            "icons/hicolor/32x32/apps/lazarobox.png",
+            "icons/hicolor/16x16/apps/lazarobox.png",
+            "icons/hicolor/scalable/apps/lazarobox.svg",
+        ]
+    );
+    for (path, bytes) in ICONS {
+        let png = path.ends_with(".png");
+        assert!(!bytes.is_empty(), "{path} is empty");
+        assert_eq!(png, bytes.starts_with(b"\x89PNG"), "{path}");
+        assert_eq!(
+            !png,
+            bytes.starts_with(b"<svg") || bytes.starts_with(b"<?xml")
+        );
+    }
 }

@@ -1,0 +1,15 @@
+---
+source: src/ui/components/chat/folder_tests.rs
+assertion_line: 94
+expression: "text(&draw(&with_rows(picking(), Vec::new()), 60, 10))"
+---
+Choose the chat folder
+no suggestions: type a path
+
+
+
+
+
+
+›
+↵ open · Tab complete · Esc keep this folder

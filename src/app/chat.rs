@@ -1,16 +1,122 @@
 //! The live chat pane: opening it, its key table, yank, scrolling and the
 //! engine check before a send.
 
+use super::run_view::CLOSE_FIRST;
 use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
+    adapters::tools_reserve_tokens,
     engine::{Availability, Tools, availability, tools_for},
+    folder::{Command, Purpose, parse_command},
     guidance::guidance,
     memory::MemBadge,
     prompts::Resolved,
     streams::StreamInfo,
+    usage_view::{Billing, today_segment},
     yank,
 };
+use crate::core::ai::window::ollama_num_ctx;
+
+/// What the last store answer said about the local day: the status segment's
+/// figures. They come from the store thread, so drawing never reads SQLite.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct UsageToday {
+    pub(super) tokens: Option<u64>,
+    /// Dollars the engines reported today, per engine.
+    pub(super) cost: Vec<(String, u64)>,
+    /// The wall-clock second they stop being today's (the next local midnight).
+    pub(super) until: i64,
+}
+
+/// The day thresholds that show a note (usage limits).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum DayNote {
+    Tokens,
+    Spend,
+}
+
+/// Millionths of a dollar the engines in `per-token` mode reported; none for
+/// subscription and local engines, which never count toward a limit.
+pub(super) fn per_token_spend(
+    usage: &crate::core::ai::config::UsageConfig,
+    cost: &[(String, u64)],
+) -> Option<u64> {
+    cost.iter()
+        .filter(|(engine, _)| usage.billing(engine) == Some(Billing::PerToken))
+        .map(|(_, micros)| *micros)
+        .reduce(u64::saturating_add)
+        .filter(|micros| *micros > 0)
+}
+
+/// A read in flight that nobody answers is given up on after this long.
+const READ_TIMEOUT_SECS: i64 = 30;
+/// A failed read, or an answer already out of date, waits this long.
+const READ_RETRY_SECS: i64 = 60;
+/// A wall clock that moves by more than this between two events was set.
+const CLOCK_JUMP_SECS: i64 = 3600;
+
+/// The bookkeeping of the reads of today's figures, in wall-clock seconds.
+#[derive(Default)]
+pub(super) struct UsageRead {
+    /// When the read in flight was asked.
+    pending_since: Option<i64>,
+    /// No new read is asked before this second.
+    next: i64,
+    /// The wall clock at the last event, to notice a jump.
+    seen: Option<i64>,
+    /// The last read failed.
+    failed: bool,
+    /// The `Usage not read` notice was shown since the last good read.
+    told: bool,
+}
+
+impl UsageRead {
+    /// An answer to a read arrived: `until` is the end of the day it read.
+    pub(super) fn answered(&mut self, now: i64, until: Option<i64>, failed: bool) {
+        self.pending_since = None;
+        self.failed = failed;
+        if failed {
+            self.next = now.saturating_add(READ_RETRY_SECS);
+        } else if let Some(until) = until {
+            self.told = false;
+            // An end already past (a zone with no midnight that day) is not
+            // read again at once.
+            self.next = if until > now {
+                until
+            } else {
+                now.saturating_add(READ_RETRY_SECS)
+            };
+        }
+    }
+
+    /// Whether the notice is still to be told, marking it told.
+    pub(super) fn tell(&mut self) -> bool {
+        !std::mem::replace(&mut self.told, true)
+    }
+
+    /// Whether a read is due at `now` (and `wanted`), marking it asked. The
+    /// clock is watched either way.
+    fn due(&mut self, now: i64, wanted: bool) -> bool {
+        let jumped = self.seen.is_some_and(|s| (now - s).abs() > CLOCK_JUMP_SECS);
+        self.seen = Some(now);
+        if jumped {
+            self.next = 0;
+        }
+        if let Some(since) = self.pending_since {
+            if (now - since).abs() < READ_TIMEOUT_SECS {
+                return false;
+            }
+            self.pending_since = None;
+        }
+        if !wanted || now < self.next {
+            return false;
+        }
+        self.pending_since = Some(now);
+        true
+    }
+}
+/// Alt and Ctrl together.
+const ALT_CONTROL: KeyModifiers = KeyModifiers::ALT.union(KeyModifiers::CONTROL);
 
 impl App {
     /// `Prefix c`: a chat pane as a right split of the focused pane, opened
@@ -19,29 +125,21 @@ impl App {
     pub(super) fn open_chat_pane(&mut self) -> Vec<Effect> {
         let origin = self.focused_state().effective_cwd().map(Path::to_path_buf);
         let before = self.panes.len();
-        let chat = self.new_chat_state(origin);
+        let chat = self.new_chat_state(origin.clone());
         let mut effects = self.split_with(Axis::X, NewPane::Chat(Box::new(chat)));
         if self.panes.len() > before {
             effects.extend(self.request_detection());
-            effects.extend(self.begin_memory(self.tab().focus));
-            self.show_server_offer();
-            effects.push(Effect::PreparePrompt {
-                pane: self.tab().focus,
-                profile: self.ai.profile(),
-                origin: self
-                    .focused_state()
-                    .chat_state()
-                    .and_then(|c| c.origin_cwd().map(Path::to_path_buf)),
-                context: self.ai.context(),
-            });
-            if self.history {
-                let pane = self.tab().focus;
-                let origin = self
-                    .panes
-                    .get(&pane)
-                    .and_then(PaneState::chat_state)
-                    .and_then(|chat| chat.origin_cwd().map(Path::to_path_buf));
-                effects.push(Effect::Store(StoreCmd::List { pane, origin }));
+            // Detection needs no folder. The rest waits until the folder is
+            // settled: a broad or unknown one asks the user first.
+            let pane = self.tab().focus;
+            self.opening.insert(pane);
+            match origin {
+                Some(path) => effects.push(Effect::ProbeFolder {
+                    pane,
+                    path,
+                    purpose: Purpose::Open,
+                }),
+                None => effects.extend(self.open_folder_picker(pane, None)),
             }
         }
         effects
@@ -86,6 +184,50 @@ impl App {
         self.focused_state().chat_state().map(ChatState::mem_badge)
     }
 
+    /// The usage segment for the statusline (` · today: 1234 tok`): only over
+    /// a focused chat, with the setting on, and once the store has answered.
+    /// Dollars are the spend of the engines in `per-token` mode.
+    pub fn status_usage(&self) -> Option<String> {
+        let usage = self.ai.usage();
+        if !usage.statusline() {
+            return None;
+        }
+        self.focused_state().chat_state()?;
+        // Yesterday's figure is never shown; when the read that would replace
+        // it failed, the segment says it does not know.
+        let Some(today) = self
+            .usage_today
+            .as_ref()
+            .filter(|today| (self.wall)() < today.until)
+        else {
+            return self.usage_read.failed.then(|| "today: ?".to_owned());
+        };
+        Some(today_segment(
+            today.tokens,
+            per_token_spend(usage, &today.cost),
+        ))
+    }
+
+    /// Asks the store thread for today's figures when they are missing or no
+    /// longer today's: the first time a chat is focused with history on, and
+    /// again after the local midnight. One read at a time, and a failed one
+    /// waits a minute. Nothing here touches SQLite.
+    pub(super) fn usage_read_effects(&mut self) -> Vec<Effect> {
+        let now = (self.wall)();
+        let focus = self.tab().focus;
+        let wanted = self.history
+            && self.ai.usage().statusline()
+            && self
+                .panes
+                .get(&focus)
+                .and_then(PaneState::chat_state)
+                .is_some();
+        if !self.usage_read.due(now, wanted) {
+            return Vec::new();
+        }
+        vec![Effect::Store(StoreCmd::UsageToday { pane: focus })]
+    }
+
     /// How full the focused chat's context was at its last send, in percent.
     pub fn status_context(&self) -> Option<u8> {
         let Availability::Ready { engine, model } = self.chat_availability() else {
@@ -118,41 +260,94 @@ impl App {
     }
 
     /// A key in TERMINAL with a chat pane focused. Nothing here reaches a
-    /// PTY, and a key the table does not list is swallowed. A held key keeps
-    /// editing and scrolling but never sends, cancels, yanks or toggles.
+    /// PTY, and a key the table does not list is swallowed. `repeat` marks a
+    /// held key, a Repeat or the same key again within the hold window (see
+    /// `Hold`): it keeps editing and scrolling but never sends, cancels,
+    /// yanks, toggles, saves or answers. Ctrl+H is Backspace in every field.
     pub(super) fn on_chat_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
+        let key = backspace_alias(key);
         let id = self.tab().focus;
         // A pending approval takes every key first.
         if self.has_approval(id) {
             return self.on_approval_key(id, key, repeat);
         }
+        // The folder comes first: the picker takes every key, and a chat
+        // still probing its folder takes none.
+        if self.picker_open(id) {
+            return self.on_picker_key(id, &key, repeat);
+        }
+        if self.folder_pending(id) {
+            return Vec::new();
+        }
+        // A worker's transcript is the whole conversation view: it takes the
+        // keys the offer, the notice and the alert would (they are hidden).
+        if self.run_view_open(id) {
+            return self.on_run_view_key(id, &key, repeat);
+        }
         // The `engram serve` question, when it is on screen, takes the key. It
         // is drawn in the conversation view only, so a list does not give up
-        // its keys to a question it hides.
+        // its keys to a question it hides. A held key never answers it.
+        let offered = if repeat {
+            KeyEvent {
+                kind: KeyEventKind::Repeat,
+                ..key
+            }
+        } else {
+            key
+        };
         if !self.memory_view_open(id)
             && !self.tag_editor_open(id)
             && !self.list_open(id)
-            && let Some(effects) = self.answer_server_offer(key)
+            && !self.cost_open(id)
+            && let Some(effects) = self.answer_server_offer(offered)
+        {
+            return effects;
+        }
+        // The provider notice of the orchestrator, likewise, and only while
+        // the composer is empty: a key typed into a message never answers it.
+        if !self.memory_view_open(id)
+            && !self.tag_editor_open(id)
+            && !self.list_open(id)
+            && let Some(effects) = self.answer_orch_notice(id, &key, repeat)
         {
             return effects;
         }
         let mods = key.modifiers;
         let plain = mods - KeyModifiers::SHIFT == KeyModifiers::NONE;
-        let debounced = matches!(
-            (key.code, mods),
-            (KeyCode::Esc, KeyModifiers::NONE)
-                | (
-                    KeyCode::Char('c' | 'y' | 'b' | 'r' | 's' | 'g'),
-                    KeyModifiers::CONTROL
-                )
-        );
-        // A held key arrives as Repeat (Kitty) or as Presses close together.
-        let repeat = if debounced {
-            self.held_chat_key_dropped(&key, repeat)
-        } else {
-            self.held_chat_key = None;
-            repeat
-        };
+        // The failure alert of the pane's run, in the conversation view only:
+        // after the debounce, so a held Esc answers it once.
+        if !self.memory_view_open(id)
+            && !self.tag_editor_open(id)
+            && !self.note_editor_open(id)
+            && !self.summary_draft_open(id)
+            && !self.list_open(id)
+            && let Some(effects) = self.answer_orch_alert(id, &key, repeat)
+        {
+            return effects;
+        }
+        // The gates line, then the delegate line, in the conversation view
+        // only, after the notice and the alert (D24): one meaning for Enter at
+        // a time. A pending override hides the delegate line.
+        if !self.memory_view_open(id)
+            && !self.tag_editor_open(id)
+            && !self.note_editor_open(id)
+            && !self.summary_draft_open(id)
+            && !self.list_open(id)
+            && !self.cost_open(id)
+            && let Some(effects) = self.answer_gates_off(id, &key, repeat)
+        {
+            return effects;
+        }
+        if !self.memory_view_open(id)
+            && !self.tag_editor_open(id)
+            && !self.note_editor_open(id)
+            && !self.summary_draft_open(id)
+            && !self.list_open(id)
+            && !self.cost_open(id)
+            && let Some(effects) = self.answer_delegate(id, &key, repeat)
+        {
+            return effects;
+        }
         // The tag editor is drawn first, so it takes the keys first.
         if self.tag_editor_open(id) {
             return self.on_tag_key(id, &key, repeat);
@@ -168,13 +363,21 @@ impl App {
         if self.list_open(id) {
             return self.on_list_key(id, &key, repeat);
         }
+        if self.cost_open(id) {
+            return self.on_cost_key(id, &key);
+        }
         let one_shot = |effects: fn(&mut App, PaneId) -> Vec<Effect>, app: &mut App| {
             if repeat { Vec::new() } else { effects(app, id) }
         };
         match (key.code, mods) {
             (KeyCode::Enter, KeyModifiers::NONE) => one_shot(App::chat_submit, self),
-            (KeyCode::Esc, KeyModifiers::NONE) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                one_shot(App::chat_cancel_key, self)
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => one_shot(App::chat_ctrl_c, self),
+            (KeyCode::Esc, KeyModifiers::NONE) => one_shot(App::chat_cancel_key, self),
+            (KeyCode::Down, KeyModifiers::ALT) => {
+                one_shot(|app, id| app.select_worker(id, true), self)
+            }
+            (KeyCode::Up, KeyModifiers::ALT) => {
+                one_shot(|app, id| app.select_worker(id, false), self)
             }
             (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
                 one_shot(|app, _| app.chat_yank(false), self)
@@ -186,11 +389,15 @@ impl App {
                 one_shot(|app, _| app.chat_toggle_reasoning(), self)
             }
             (KeyCode::Char('g'), KeyModifiers::CONTROL) => one_shot(App::chat_review_orphan, self),
+            (KeyCode::Char('o'), KeyModifiers::CONTROL) => one_shot(App::chat_toggle_orch, self),
             (KeyCode::PageUp, KeyModifiers::NONE) => self.chat_page(true),
             (KeyCode::PageDown, KeyModifiers::NONE) => self.chat_page(false),
-            (KeyCode::Enter, KeyModifiers::ALT) | (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
-                self.edit_composer(|c| c.newline())
-            }
+            // Alt+Ctrl+J is what crossterm reports for ESC LF, how zutty sends
+            // Alt+Enter once modifyOtherKeys is off.
+            (KeyCode::Enter, KeyModifiers::ALT)
+            | (KeyCode::Char('j'), KeyModifiers::CONTROL)
+            | (KeyCode::Char('j'), ALT_CONTROL) => self.edit_composer(|c| c.newline()),
+            (KeyCode::Tab, KeyModifiers::NONE) => one_shot(App::cd_complete, self),
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => self.edit_composer(|c| c.clear()),
             (KeyCode::Char(ch), _) if plain => self.edit_composer(|c| c.insert(ch)),
             (KeyCode::Backspace, _) if plain => self.edit_composer(|c| c.backspace()),
@@ -203,38 +410,34 @@ impl App {
         }
     }
 
-    /// Whether `key`, a debounced one-shot chat key, is part of a hold: a
-    /// Repeat, or the same key again within `HELD_EXIT_WINDOW` of the last
-    /// such event (every event of the hold renews the window).
-    fn held_chat_key_dropped(&mut self, key: &KeyEvent, repeat: bool) -> bool {
-        let now = (self.clock)();
-        let held = self.held_chat_key.is_some_and(|h| {
-            h.code == key.code
-                && h.modifiers == key.modifiers
-                && now.saturating_duration_since(h.last) <= HELD_EXIT_WINDOW
-        });
-        self.held_chat_key = Some(HeldExit {
-            code: key.code,
-            modifiers: key.modifiers,
-            last: now,
-        });
-        repeat || held
-    }
-
     /// A paste into the focused chat's composer.
     pub(super) fn chat_paste(&mut self, text: &str) {
         let id = self.tab().focus;
         // A paste never answers an approval and never lands in the composer
         // while one waits.
         if self.has_approval(id) {
+            self.notify_unless_busy(true, super::run::ANSWER_FIRST);
+            return;
+        }
+        if self.picker_open(id) {
+            self.picker_paste(id, text);
+            return;
+        }
+        // The composer is hidden under a worker's transcript.
+        if self.run_view_open(id) {
+            self.notice = Some(CLOSE_FIRST.to_owned());
+            return;
+        }
+        // A chat that waits for its folder takes no text either.
+        if self.folder_pending(id) {
             return;
         }
         if self.tag_editor_open(id) {
             self.tag_paste(id, text);
             return;
         }
-        // The list takes keys only: a paste is not one.
-        if self.list_open(id) {
+        // The list and the cost view take keys only: a paste is not one.
+        if self.list_open(id) || self.cost_open(id) {
             return;
         }
         if self.note_editor_open(id) {
@@ -282,23 +485,72 @@ impl App {
     /// cannot be used. `None` while it is ready or the pane is busy.
     pub fn chat_guidance(&self, id: PaneId) -> Option<String> {
         let chat = self.panes.get(&id)?.chat_state()?;
-        if let Some(prompt) = self.server_offer_prompt(id) {
-            return Some(prompt);
+        // Everything a key would answer is on screen, in the order the keys
+        // answer: the `engram serve` offer, then the run's notice and alert,
+        // whatever the phase.
+        match (self.server_offer_prompt(id), self.orch_guidance(id)) {
+            (Some(offer), Some(orch)) => return Some(format!("{offer} | {orch}")),
+            (Some(text), None) | (None, Some(text)) => return Some(text),
+            (None, None) => {}
         }
         if chat.phase() != Phase::Idle {
             return None;
         }
-        guidance(&self.chat_availability())
+        self.orch_refusal(id)
+            .or_else(|| guidance(&self.turn_availability(id)))
+            .or_else(|| self.delegate_line(id))
+            .or_else(|| self.github_hint(id))
+            .or_else(|| self.toggle_hint(id))
+    }
+
+    /// `/feedback`: clears the composer and opens the Feedback form with
+    /// `words`. Nothing leaves before the Ctrl+S of the form.
+    fn feedback_submit(&mut self, id: PaneId, words: &str) -> Vec<Effect> {
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.composer_mut().clear();
+        }
+        let effects = self.open_menu();
+        if let Some(menu) = self.menu.as_mut() {
+            menu.open_feedback(words);
+        }
+        self.dirty = true;
+        effects
     }
 
     /// Enter: sends the composer text to the engine, checked again now. With
     /// the first detection still running the send waits for its result.
-    fn chat_submit(&mut self, id: PaneId) -> Vec<Effect> {
-        let availability = self.chat_availability();
+    pub(super) fn chat_submit(&mut self, id: PaneId) -> Vec<Effect> {
+        let availability = self.turn_availability(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
-        let text = chat.composer().text();
+        let mut text = chat.composer().text();
+        // `/cd` is the user's own command: it never reaches the engine, and
+        // works whatever the engine state.
+        match parse_command(&text) {
+            Command::Cd(arg) => return self.cd_submit(id, &arg),
+            Command::Cost => return self.cost_submit(id),
+            Command::CostArgs => {
+                self.cost_refused(id);
+                return Vec::new();
+            }
+            Command::Github => return self.github_submit(id),
+            Command::GithubArgs => {
+                self.github_refused(id);
+                return Vec::new();
+            }
+            Command::Write => return self.write_submit(id),
+            Command::WriteArgs => {
+                self.write_refused(id);
+                return Vec::new();
+            }
+            Command::Feedback(words) => return self.feedback_submit(id, &words),
+            Command::Escaped(unescaped) => text = unescaped,
+            Command::Plain => {}
+        }
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
         if availability == Availability::Checking || chat.prompt().is_none() {
             if !text.trim().is_empty() {
                 self.drop_parked_send(id);
@@ -311,7 +563,52 @@ impl App {
 
     /// Sends `text` from pane `id` and clears its composer when it went.
     /// Nothing goes before the conversation's prompt is prepared.
-    fn send_text(&mut self, id: PaneId, text: &str, availability: &Availability) -> Vec<Effect> {
+    pub(super) fn send_text(
+        &mut self,
+        id: PaneId,
+        text: &str,
+        availability: &Availability,
+    ) -> Vec<Effect> {
+        // A run that waits for the user's reply takes it as its next turn (W3,
+        // option B): the reply attaches to it instead of starting a new run.
+        let waiting = (self.orchestrating(id))
+            .then(|| self.panes.get(&id)?.chat_state()?.waiting_run())
+            .flatten();
+        let effects = self.send_with(id, text, availability, waiting);
+        if waiting.is_some()
+            && !effects.is_empty()
+            && let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+        {
+            chat.composer_mut().clear();
+            chat.set_waiting_run(None);
+        }
+        effects
+    }
+
+    /// Tells on the status line, once per model, that `model` has no known
+    /// window and characters rule its turns. The model counts as told only
+    /// when the line is really set, and a notice already showing is never
+    /// replaced: the next send tries again.
+    pub(super) fn announce_unknown_window(&mut self, model: String) {
+        if self.notice.is_none() && self.unknown_windows.insert(model.clone()) {
+            self.notice = Some(format!("window unknown for {model}: 12k chars"));
+        }
+    }
+
+    /// `send_text`, or with `attach` the continuation turn of that open run
+    /// (S4): the composer holds the user's own draft, so it is left alone.
+    pub(super) fn send_with(
+        &mut self,
+        id: PaneId,
+        text: &str,
+        availability: &Availability,
+        attach: Option<RunId>,
+    ) -> Vec<Effect> {
+        // An orchestrator turn that could not offer its tools does not go;
+        // the pane shows why.
+        if self.orch_refusal(id).is_some() {
+            return Vec::new();
+        }
         // Memory off means no engram text leaves, whatever the chat holds.
         if !self.ai.memory.active() {
             self.forget_memory(id);
@@ -323,36 +620,64 @@ impl App {
             return Vec::new();
         };
         // The engine's own window sizes the turn; unknown keeps the char caps.
+        // For Ollama it is the `num_ctx` the request carries: the model's
+        // window held to the user's cap, through the function the runtime
+        // stamps the body with.
+        let cap = self.ai.ollama_options().num_ctx_cap;
+        let mut unknown = None;
         let window = match availability {
+            Availability::Ready { engine, model } if engine == "ollama" => {
+                let max = model
+                    .as_deref()
+                    .and_then(|m| self.engines.as_ref()?.model_window(engine, m));
+                if max.is_none() {
+                    unknown = model.clone();
+                }
+                ollama_num_ctx(max, cap)
+            }
             Availability::Ready { engine, .. } => {
                 self.engines.as_ref().and_then(|d| d.window(engine))
             }
             _ => None,
         };
+        let families = self.offered_families(id);
+        self.tell_github_hint(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
         chat.set_window(window);
-        // The tool schemas weigh on the budget only when the turn offers them.
+        // The tool block and schemas weigh on the budget only when the turn
+        // offers them, for the families it offers.
         let tools = match availability {
             Availability::Ready { engine, .. } => {
                 tools_for(engine, self.ai.tools_enabled(), None, self.tool_engines) != Tools::Off
             }
             _ => false,
         };
-        chat.set_tools_offered(tools);
+        // The external tools weigh what the runtime reported for the last
+        // turn (#556); a turn without tools stops their servers.
+        if tools {
+            let external = chat.external_tools_tokens();
+            chat.set_tools_reserve(tools_reserve_tokens(families) + external);
+        } else {
+            chat.forget_external_tools();
+            chat.set_tools_reserve(0);
+        }
         match chat.send(text, availability, &system) {
             SendOutcome::Sent { turn, mut request } => {
-                chat.composer_mut().clear();
+                if attach.is_none() {
+                    chat.composer_mut().clear();
+                }
+                if let Some(model) = unknown {
+                    self.announce_unknown_window(model);
+                }
                 self.offer_tools(id, &mut request);
                 self.hide_server_offer(id);
                 // The conversation is saved before the engine starts.
                 let mut effects = self.store_effects(id);
-                effects.push(Effect::ChatSend {
-                    pane: id,
-                    turn,
-                    request,
-                });
+                let effect = self.turn_effect(id, turn, *request, attach);
+                self.arm_feedback_hint(id, turn, &effect);
+                effects.push(effect);
                 effects
             }
             SendOutcome::Refused => Vec::new(),
@@ -362,13 +687,12 @@ impl App {
     /// The first detection or a conversation's prompt arrived: the sends that
     /// waited for them go now, those still missing one of them keep waiting.
     pub(super) fn run_waiting_sends(&mut self) -> Vec<Effect> {
-        let availability = self.chat_availability();
         // A send whose pane is gone is dropped here, not kept.
         let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiting_sends)
             .into_iter()
             .filter(|(id, _)| self.panes.contains_key(id))
             .partition(|(id, _)| {
-                availability != Availability::Checking
+                self.turn_availability(*id) != Availability::Checking
                     // A note editor or summary draft owns the conversation
                     // until it closes: the send goes then.
                     && !self.memory_view_open(*id)
@@ -381,7 +705,10 @@ impl App {
         self.waiting_sends = waiting;
         ready
             .into_iter()
-            .flat_map(|(id, text)| self.send_text(id, &text, &availability))
+            .flat_map(|(id, text)| {
+                let availability = self.turn_availability(id);
+                self.send_text(id, &text, &availability)
+            })
             .collect()
     }
 
@@ -398,24 +725,49 @@ impl App {
         self.on_prompt_for(id, resolved)
     }
 
-    /// Esc and Ctrl+C: stop the stream and drop a parked send, or do nothing
-    /// when idle.
+    /// Esc and Ctrl+C: stop the stream and drop a parked send, and end the
+    /// pane's orchestrator run; do nothing when idle with no run.
     pub(super) fn chat_cancel_key(&mut self, id: PaneId) -> Vec<Effect> {
         self.drop_parked_send(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        // The line of a cancelled turn follows the settings of now: a menu
+        // save may have changed them since the last event of the turn.
+        chat.set_usage_config(self.ai.usage().clone());
+        let turn = chat.turn();
         let follow = chat.cancel();
+        // A run outlives its turn: Ctrl+C ends it too, which answers its
+        // failure alert.
+        let run = chat.orch_run().is_some();
+        if chat.waiting_run().is_some() {
+            chat.push_system_line(
+                "run no longer waits for your reply: the run was cancelled".to_owned(),
+            );
+        }
+        if let Some(live) = chat.orch_run() {
+            chat.cancel_run(live);
+        }
+        // A cancel ends the turn and its run: so it does the refusal of a
+        // gate. An idle pane with no run keeps its offer.
+        if run || follow == Follow::CancelEngine {
+            chat.drop_gate_offer();
+        }
+        chat.drop_orch_alert();
         // The partial answer is saved as cancelled.
         let mut effects = self.store_effects(id);
         if follow == Follow::CancelEngine {
             effects.extend(self.cancel_chat(id));
+            effects.extend(self.open_issue_draft(id, turn));
+        } else if run {
+            effects.push(Effect::ChatCancel(id));
         }
         effects
     }
 
-    /// Ctrl+Y (the last answer) and Ctrl+B (its last code block).
-    fn chat_yank(&mut self, code_block: bool) -> Vec<Effect> {
+    /// Ctrl+Y (the last answer) and Ctrl+B (its last code block), from the
+    /// composer or chat COPY.
+    pub(super) fn chat_yank(&mut self, code_block: bool) -> Vec<Effect> {
         let Some(chat) = self.focused_state().chat_state() else {
             return Vec::new();
         };
@@ -428,19 +780,7 @@ impl App {
             self.notice = Some("Nothing to copy".to_string());
             return Vec::new();
         };
-        match osc52(&text) {
-            Ok(sequence) => {
-                self.notice = Some(match text.chars().count() {
-                    1 => "Copied 1 character".to_string(),
-                    n => format!("Copied {n} characters"),
-                });
-                vec![Effect::SetClipboard(sequence)]
-            }
-            Err(TooLarge) => {
-                self.notice = Some("Selection too large to copy".to_string());
-                Vec::new()
-            }
-        }
+        self.copy_to_clipboard(&text)
     }
 
     /// The transcript rows really drawn in chat `id`: the pane less its

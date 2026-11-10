@@ -39,6 +39,7 @@ fn ready_chat() -> App {
     let mut a = with_answer(true, "We use Axum.");
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Ok(PROJECT.into()),
     }));
     a.take_dirty();
@@ -161,6 +162,7 @@ fn without_an_answer_there_is_nothing_to_summarize() {
     press(&mut a, "c");
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Ok(PROJECT.into()),
     }));
     assert_eq!(press(&mut a, "s"), vec![]);
@@ -193,6 +195,7 @@ fn first_answer_streaming() -> App {
     ));
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Ok(PROJECT.into()),
     }));
     type_text(&mut a, "q");
@@ -221,6 +224,7 @@ fn memory_off_shows_only_its_notice() {
 fn memory_not_ready_shows_why_and_sends_no_request() {
     let mut a = with_answer(true, "x");
     a.update(AppEvent::Memory(MemReply::Unavailable {
+        epoch: None,
         pane: Some(chat_id()),
         reason: Reason::NotRunning,
     }));
@@ -565,6 +569,7 @@ fn a_summary_alone_links_the_new_session_once_the_conversation_exists() {
                 conversation: 7,
                 session_id: SESSION.into(),
                 project: PROJECT.into(),
+                replace: false,
             }),
             end_summary("alone"),
             Effect::BatchClose(chat_id()),
@@ -762,4 +767,12 @@ fn a_parked_send_goes_when_the_note_is_saved() {
     assert_eq!(sends(&effects), 0, "{effects:?}");
     let effects = a.update(saved_reply(&a, SESSION, 1, "chat/decision/a", "A"));
     assert_eq!(sends(&effects), 1, "{effects:?}");
+}
+
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_summary_draft() {
+    let mut a = with_draft("abc");
+    a.update(ctrl('h'));
+    assert_eq!(draft_text(&a), "ab");
 }

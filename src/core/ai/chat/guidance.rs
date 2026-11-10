@@ -1,6 +1,7 @@
 //! The text a chat pane shows when its engine cannot be used yet.
 
 use super::{adapters, engine::Availability, wrap::wrap_words};
+use crate::core::ai::orchestra::steps::{Gate, Step};
 
 /// The rows `text` takes above the composer in a transcript area `width`
 /// wide and `height` high: its wrapped lines, never more than the area has.
@@ -11,6 +12,67 @@ pub fn guidance_rows(text: &str, width: u16, height: u16) -> u16 {
     }
     let rows = wrap_words(text, usize::from(width)).len();
     u16::try_from(rows).unwrap_or(u16::MAX).min(height)
+}
+
+/// The hint that suggests `/github` in `cols` columns, ASCII and one line:
+/// first with the repository, then without it, then shorter, and at the
+/// narrowest the bare command. The word `/github` is never cut.
+pub fn github_hint(repo: &str, cols: usize) -> String {
+    let forms = [
+        format!("Type /github to let this chat read {repo}'s issues and PRs"),
+        "Type /github to let this chat read this repo's issues and PRs".to_owned(),
+        "Type /github to read this repo's issues and PRs".to_owned(),
+        "Type /github for GitHub issues".to_owned(),
+    ];
+    forms
+        .into_iter()
+        .find(|form| form.chars().count() <= cols)
+        .unwrap_or_else(|| "/github".to_owned())
+}
+
+/// The notice that no worker ran, in `cols` columns, ASCII and one line with
+/// two columns of margin: the full form, then a shorter one. It names no key:
+/// the keys are named by [`delegate_hint`], only while they can act.
+pub fn undelegated_hint(cols: usize) -> String {
+    let full = "no worker ran, nothing written";
+    let form = if full.len() + 2 <= cols {
+        full
+    } else {
+        "no worker ran"
+    };
+    form.to_owned()
+}
+
+/// The line offered while the delegate key can act, in `cols` columns, ASCII
+/// and one line with two columns of margin. The keys come first and stay
+/// whole; the explanation and then Esc go as the width shrinks.
+pub fn delegate_hint(cols: usize) -> String {
+    let forms = [
+        "Enter delegate | Esc dismiss | no worker ran, nothing written",
+        "Enter delegate | Esc dismiss | no worker ran",
+        "Enter delegate | no worker ran",
+    ];
+    forms
+        .into_iter()
+        .find(|form| form.len() + 2 <= cols)
+        .unwrap_or("Enter delegate")
+        .to_owned()
+}
+
+/// The line offered while `Enter gates off` can act (W3, D24), in `cols`
+/// columns, ASCII and one line with two columns of margin. The key comes first
+/// and stays whole; the step and then the gate go as the width shrinks.
+pub fn gates_hint(cols: usize, gate: Gate, step: Step) -> String {
+    let gate = gate.label();
+    let forms = [
+        format!("Enter gates off | {gate} gate: step {}", step.label()),
+        format!("Enter gates off | {gate} gate"),
+    ];
+    let last = "Enter gates off".to_owned();
+    forms
+        .into_iter()
+        .find(|form| form.len() + 2 <= cols)
+        .unwrap_or(last)
 }
 
 /// The guidance for `availability`, or `None` when the engine is ready.
@@ -28,6 +90,9 @@ pub fn guidance(availability: &Availability) -> Option<String> {
         Availability::Unsupported { engine } => format!("{engine}: not supported in chat yet"),
         Availability::NoJail { engine, reason } => {
             format!("{engine}: not available on this system yet: {reason}")
+        }
+        Availability::Refused { engine, reason } => {
+            format!("{engine}: the jail refuses to start it: {reason}")
         }
         Availability::GatedOff { engine } => format!("{engine}: gated off"),
         Availability::Outdated { engine, version } => format!(
@@ -49,6 +114,108 @@ pub fn guidance(availability: &Availability) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Spec (chat-pane, Hint at 80 columns and TERM=linux): one line, the word
+    // `/github` never cut, the repository dropped before anything else, ASCII.
+    #[test]
+    fn the_github_hint_drops_the_repository_name_before_it_cuts_the_command() {
+        const LONG: &str = "owner/a-fairly-long-repository-name";
+        assert_eq!(
+            github_hint("o/r", 80),
+            "Type /github to let this chat read o/r's issues and PRs"
+        );
+        // The long name does not fit one line: the name goes first.
+        assert_eq!(
+            github_hint(LONG, 80),
+            "Type /github to let this chat read this repo's issues and PRs"
+        );
+        for cols in [80_usize, 60, 50, 40, 30, 20, 10, 7] {
+            for repo in ["o/r", LONG] {
+                let text = github_hint(repo, cols);
+                assert!(text.is_ascii(), "{text:?}");
+                assert!(text.contains("/github"), "{cols}: {text:?}");
+                assert!(text.chars().count() <= cols, "{cols}: {text:?}");
+            }
+        }
+        // Narrower still: the shorter forms keep the command whole.
+        assert_eq!(
+            github_hint(LONG, 47),
+            "Type /github to read this repo's issues and PRs"
+        );
+        assert_eq!(github_hint(LONG, 30), "Type /github for GitHub issues");
+        assert_eq!(github_hint(LONG, 7), "/github");
+    }
+
+    // Spec (chat-pane, Worker-flow notices are transcript notices): ASCII,
+    // two columns of margin so the line never wraps, shorter at narrow widths.
+    // No key is named: PR4 adds the key text with the keys.
+    #[test]
+    fn the_undelegated_hint_has_a_form_for_each_width() {
+        let full = "no worker ran, nothing written";
+        let short = "no worker ran";
+        assert_eq!(undelegated_hint(200), full);
+        assert_eq!(undelegated_hint(full.len() + 2), full);
+        assert_eq!(undelegated_hint(full.len() + 1), short);
+        assert_eq!(undelegated_hint(short.len() + 2), short);
+        assert_eq!(undelegated_hint(3), short);
+        for cols in 1..=80 {
+            let text = undelegated_hint(cols);
+            assert!(text.is_ascii() && !text.contains("Enter"));
+        }
+    }
+
+    // D27: the keys come first, shorter forms by width, ASCII, two columns of
+    // margin, and the Enter key is never cut.
+    #[test]
+    fn the_delegate_hint_puts_the_keys_first_with_a_form_for_each_width() {
+        let full = "Enter delegate | Esc dismiss | no worker ran, nothing written";
+        assert_eq!(delegate_hint(200), full);
+        assert_eq!(delegate_hint(full.len() + 2), full);
+        assert_eq!(
+            delegate_hint(full.len() + 1),
+            "Enter delegate | Esc dismiss | no worker ran"
+        );
+        assert_eq!(
+            delegate_hint(48),
+            "Enter delegate | Esc dismiss | no worker ran"
+        );
+        assert_eq!(delegate_hint(40), "Enter delegate | no worker ran");
+        assert_eq!(delegate_hint(20), "Enter delegate");
+        assert_eq!(delegate_hint(3), "Enter delegate");
+        for cols in 1..=80 {
+            let text = delegate_hint(cols);
+            assert!(text.is_ascii() && text.starts_with("Enter delegate"));
+        }
+    }
+
+    // D24: the key first, the gate and then the step shed by width, ASCII, two
+    // columns of margin.
+    #[test]
+    fn the_gates_hint_names_the_key_in_a_form_for_each_width() {
+        let full = "Enter gates off | spawn gate: step explore";
+        assert_eq!(gates_hint(200, Gate::Spawn, Step::Explore), full);
+        assert_eq!(gates_hint(full.len() + 2, Gate::Spawn, Step::Explore), full);
+        assert_eq!(
+            gates_hint(full.len() + 1, Gate::Spawn, Step::Explore),
+            "Enter gates off | spawn gate"
+        );
+        assert_eq!(
+            gates_hint(60, Gate::Finish, Step::Implement),
+            "Enter gates off | finish gate: step implement"
+        );
+        assert_eq!(
+            gates_hint(10, Gate::Spawn, Step::Explore),
+            "Enter gates off"
+        );
+        for cols in 1..=90 {
+            let text = gates_hint(cols, Gate::Finish, Step::Implement);
+            assert!(text.is_ascii() && text.starts_with("Enter gates off"));
+            assert!(
+                text.len() + 2 <= cols || text == "Enter gates off",
+                "{cols}: {text}"
+            );
+        }
+    }
 
     #[test]
     fn guidance_rows_are_the_wrapped_lines_capped_by_the_area() {
@@ -109,6 +276,18 @@ mod tests {
         .unwrap();
         assert!(text.contains("opencode"), "{text}");
         assert!(text.contains("not supported in chat yet"), "{text}");
+    }
+
+    #[test]
+    fn a_refused_layout_is_the_exact_line() {
+        assert_eq!(
+            guidance(&Availability::Refused {
+                engine: s("codex"),
+                reason: s("codex (standalone) cannot be isolated"),
+            })
+            .as_deref(),
+            Some("codex: the jail refuses to start it: codex (standalone) cannot be isolated")
+        );
     }
 
     #[test]

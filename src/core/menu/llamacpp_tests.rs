@@ -80,7 +80,7 @@ fn choosing_a_local_model_turns_the_managed_server_on() {
 fn the_saved_table_reads_back_as_managed_and_keeps_its_other_keys() {
     let mut m = menu(None, None, stopped_llamacpp(&["/m/my model.gguf"]));
     choose_first_model(&mut m);
-    let before = "[ai.servers.llamacpp]\nport = 39080 # mine\n";
+    let before = "[ai.servers.llamacpp]\nport = 39080 # mine\ncache_prompt = true\n";
     let text = apply_edit(Some(before), &m.edits(&Config::default())).unwrap();
     assert!(text.contains("port = 39080 # mine"), "{text}");
     assert!(text.contains("managed = true"), "{text}");
@@ -93,6 +93,7 @@ fn the_saved_table_reads_back_as_managed_and_keeps_its_other_keys() {
         Some(PathBuf::from("/m/my model.gguf"))
     );
     assert_eq!(ai.servers().port("llamacpp"), Some(39080));
+    assert_eq!(ai.cache_options().cache_prompt, Some(true));
 }
 
 #[test]

@@ -11,7 +11,11 @@ In TERMINAL every key except the prefix MUST be delivered to the focused pane. F
 
 Key events of kind Release MUST be ignored in every mode. Repeat MUST be handled like Press in TERMINAL, COPY, RESIZE and in MENU for navigation and cycling keys only; it MUST be ignored for Enter and Esc in MENU, for `v`, `V`, `y`, Esc, `q` and `i` in COPY, and in decision states (PREFIX, group pending, and all confirmations) so a held key never selects an action, confirms, toggles a selection, yanks or exits. On a chat pane Repeat is handled like Press for editing and scrolling keys, and ignored for Enter (send), Esc and Ctrl+C (cancel), Ctrl+Y and Ctrl+B (yank).
 
-A key whose Press left COPY (`q`, `i`, Esc, or `y` after a successful yank) MUST NOT leak into TERMINAL: its Repeat events MUST be dropped until its Release or any other Press arrives. Because terminals that report no event types (the default: no keyboard enhancement flags are pushed) deliver OS auto-repeat as repeated Press events, a Press of the identical key (same code and modifiers) MUST also be dropped when it arrives within 500 ms of the exit or of the previous dropped one, so a long hold keeps being dropped. Any other Press, a Release of that key, a paste, or a gap over 500 ms ends the debounce. A yank that leaves COPY open (selection over the cap, or no text) does not start it. Tradeoff: a deliberate retype of the exit key within 500 ms of leaving COPY is dropped too.
+A held key MUST act once wherever only a Press may act. Terminals that report no event types (the default: no keyboard enhancement flags are pushed) deliver OS auto-repeat as repeated Press events, so a Press of the identical key (same code and modifiers) that arrives within 500 ms of the previous key event (inclusive; every event of the hold renews the window) is part of the hold. Any other key, a Release of that key, a paste, or a gap over 500 ms ends the hold. MENU, every confirmation and the chat pane (the conversation view, approval prompts, the batch and commit reviews, the `engram serve` offer, the conversation list and the tag, note and summary editors) MUST handle a Press that is part of a hold like a Repeat: a held key never saves, cancels, discards, sends, yanks, toggles or answers more than once, and a key held from before a prompt opened never answers it once it arms: a prompt arms 800 ms after it opened, later than the usual OS initial repeat delay (X11 660 ms, KDE 600 ms), so the first repeat, which comes past the hold window and reads as a new press, still finds it unarmed. An OS repeat delay over 800 ms can answer it once. Typing and navigation keys act on every Press as before. Shell panes, PREFIX, group pending and COPY keep the Repeat rule above. Tradeoff: a deliberate second press of the same decision key within 500 ms of the first is dropped too (press it again after a pause).
+
+A key whose Press left COPY (`q`, `i`, Esc, or `y` after a successful yank), closed MENU, answered a confirmation or left RESIZE MUST NOT leak into TERMINAL: while it is held (its Repeat events, or its Presses within the hold window) it MUST be dropped, until its Release, any other Press, a paste, or a gap over 500 ms. A yank that leaves COPY open (selection over the cap, or no text) does not start it. Tradeoff: a deliberate retype of that key within 500 ms is dropped too.
+
+Ctrl+H MUST act as Backspace in every text field: the chat composer, the note, summary and tag editors, and the menu's text fields (the `custom…` model field, the Hugging Face search and token fields, the Feedback form). Terminals that send `^H` (0x08) for Backspace report it as Ctrl+H. A shell pane MUST still receive the 0x08 byte as it came.
 
 #### Scenario: Passthrough
 - GIVEN TERMINAL
@@ -22,6 +26,26 @@ A key whose Press left COPY (`q`, `i`, Esc, or `y` after a successful yank) MUST
 - GIVEN PREFIX, group pending, or any confirmation
 - WHEN a Repeat event arrives
 - THEN no action is dispatched and the state is unchanged
+
+#### Scenario: A held decision key acts once [auto]
+- GIVEN a terminal that sends a held key as Presses, and a tool approval prompt that arms 800 ms after it opened
+- WHEN `y`, `n` or Esc arrives as a Press every 50 ms from the moment the prompt opened, for 1 s
+- THEN none of them answers the prompt, and a new Press more than 500 ms after the last one answers it
+
+#### Scenario: The first OS repeat does not answer a prompt [auto]
+- GIVEN a tool approval prompt that opened at t0, and a key held from t0+100 ms with an OS initial repeat delay of 660 ms
+- WHEN `y`, `n` or Esc arrives as a Press at t0+100 ms, then at t0+760 ms and every 25 ms after it until t0+1500 ms
+- THEN none of them answers the prompt
+
+#### Scenario: A held Esc backs out of a picker once [auto]
+- GIVEN MENU at the model level of a task picker
+- WHEN Esc arrives as a Press at 0, 100, 200 and 300 ms
+- THEN the picker goes back one level only and the menu stays open, so its draft is not discarded
+
+#### Scenario: Ctrl+H is Backspace in a text field [auto]
+- GIVEN the chat composer, a note, summary or tag editor, or a text field of the menu, holding `ab`
+- WHEN Ctrl+H is pressed
+- THEN the field holds `a`; on a shell pane Ctrl+H writes `[0x08]` to the PTY
 
 #### Scenario: Release ignored
 - GIVEN any mode
@@ -100,28 +124,56 @@ A key whose Press left COPY (`q`, `i`, Esc, or `y` after a successful yank) MUST
 - THEN `a` and Backspace edit the composer like Press, and Enter, Ctrl+Y, Ctrl+B and Ctrl+R do nothing
 
 ### Requirement: Prefix key
-Ctrl+Space (reported as NUL 0x00) MUST enter PREFIX without writing to the PTY. The prefix key and the action table MUST be data, not hard-coded branches. Pressing Ctrl+Space again in PREFIX writes a literal NUL to the focused pane. Esc or an unmapped key in PREFIX returns to TERMINAL, swallowed.
-(Previously: flat action table; same cancel and literal behavior, now addressed to the focused pane)
+Ctrl+Space (reported as NUL 0x00) and Ctrl+] (reported as 0x1D) MUST each enter PREFIX without writing to the PTY. Both keys are fixed; neither is configurable. The prefix keys and the action table MUST be data, not hard-coded branches. Pressing a prefix key again in PREFIX MUST write that key's own literal byte to the focused shell pane (Ctrl+Space writes NUL 0x00, Ctrl+] writes 0x1D) and return to TERMINAL. Pressing the other prefix key in PREFIX does the same: it writes its own literal byte. Esc or an unmapped key in PREFIX returns to TERMINAL, swallowed. When the focused pane is not a shell pane, a repeated prefix key MUST write nothing and MUST show a notice; it MUST NOT be ignored silently.
 
 #### Scenario: Enter PREFIX
 - GIVEN TERMINAL
 - WHEN Ctrl+Space is pressed
+- THEN mode is PREFIX and no WritePty is emitted (the root which-key hint appears in the statusline while PREFIX is pending, and the group hint once a group such as `w` is pending; see statusline)
+
+#### Scenario: Enter PREFIX with the alias [auto]
+- GIVEN TERMINAL
+- WHEN Ctrl+] (0x1D) is pressed
 - THEN mode is PREFIX and no WritePty is emitted
 
 #### Scenario: Literal prefix
-- GIVEN PREFIX
+- GIVEN PREFIX entered with Ctrl+Space
 - WHEN Ctrl+Space is pressed again
 - THEN WritePty `[0x00]` to the focused pane is emitted and mode is TERMINAL
+
+#### Scenario: Literal alias [auto]
+- GIVEN PREFIX entered with Ctrl+]
+- WHEN Ctrl+] is pressed again
+- THEN WritePty `[0x1D]` to the focused pane is emitted and mode is TERMINAL
+
+#### Scenario: Other prefix key inside PREFIX [auto]
+- GIVEN PREFIX entered with Ctrl+]
+- WHEN Ctrl+Space is pressed
+- THEN WritePty `[0x00]` to the focused pane is emitted and mode is TERMINAL
+- AND the same holds with the keys swapped (`[0x1D]`)
+
+#### Scenario: Literal prefix on a chat pane [auto]
+- GIVEN PREFIX with a chat pane focused
+- WHEN Ctrl+Space or Ctrl+] is pressed
+- THEN no WritePty is emitted, mode is TERMINAL and a notice is shown
 
 #### Scenario: Cancel/unknown
 - GIVEN PREFIX
 - WHEN Esc or an unmapped key (e.g. `z`) is pressed
 - THEN mode is TERMINAL and the key is swallowed (no WritePty)
 
-#### Scenario: Real terminal reports NUL [manual, Kitty]
-- GIVEN Kitty
-- WHEN Ctrl+Space is pressed
-- THEN PREFIX is entered and nothing is written to the PTY (the root which-key hint appears in the statusline while PREFIX is pending, and the group hint once a group such as `w` is pending; see statusline)
+#### Scenario: Alias drives the whole tree [auto]
+- GIVEN TERMINAL
+- WHEN Ctrl+] then `w` then `v` are pressed
+- THEN the pane splits right, exactly as with Ctrl+Space
+
+#### Scenario: Real terminal reports the prefix [manual, terminal records]
+- GIVEN a terminal that has a record under `docs/terminals/`
+- WHEN Ctrl+] is pressed (and Ctrl+Space, where the terminal delivers it)
+- THEN PREFIX is entered and nothing is written to the PTY (the root which-key hint appears in the statusline while PREFIX is pending; see statusline)
+- AND the result is written in the terminal's record (see terminal-compatibility)
+
+The row of the binding table for the prefix MUST read: `Ctrl+Space` / `Ctrl+]`: send the prefix key itself: a NUL byte (0x00) / 0x1D to the focused shell pane (see Prefix key).
 
 ### Requirement: Quit confirmation
 `q` in PREFIX MUST enter a confirmation state shown as "Quit? (y/n)" (the same prompt as the quit variants of `w q` and `t c`). `y` MUST emit Quit; any other key (n, Esc, other) MUST return to TERMINAL, swallowed. Only lowercase `y` with no modifiers confirms; `Y` (Shift or Caps Lock) declines. Quit MUST shut down all panes of all tabs.
@@ -200,7 +252,17 @@ After the prefix, the key table MUST be a tree: leaf bindings and groups `w` (la
 | `[` | enter COPY |
 | `m` | open the config menu (enter MENU) |
 | `c` | open a chat pane (split right) |
+| `n` | save a note of the chat (see Save-note prefix key) |
+| `o` | expand or collapse the memory block (see Memory keys) |
+| `s` | the end-of-conversation summary (see Memory keys) |
+| `T` | edit the tags of the conversation (see Chat pane input) |
+| `e` | run the last shell code block of the chat in a pane (confirm; see pane-commands) |
+| `u` | list the links the focused pane shows (LINKS; see below) |
+| `a` | cycle the chat's approval mode `ask`, `auto`, `run` (see agent-tools) |
 | `q` | quit (confirm) |
+| Ctrl+Space | send the prefix key itself: a NUL byte (0x00) to the focused shell pane (see Prefix key) |
+
+`n`, `o`, `s`, `T`, `e` and `a` are root leaves left out of the key hint (the root hint is already 79 columns wide); on a pane that is not a chat they only show a notice.
 
 The root of the prefix tree also contains the leaf bindings `m` with description `menu`, entering MENU, and `c` with description `chat`, opening a chat pane; the root key hint therefore includes `m menu` and `c chat`, in that table order, before `q quit`. The pinned list of root hint entries changes from `w t g b [ m q` to `w t g b [ m c q`.
 
@@ -361,8 +423,21 @@ Any change of focused pane or active tab MUST exit COPY (the pane being left ret
 - WHEN another pane's shell exits
 - THEN mode is still RESIZE
 
+### Requirement: LINKS mode
+`u` in PREFIX MUST list the distinct `http` and `https` links the focused pane shows, in reading order, a link shown twice listed where it was last seen, with the newest selected. When there are more links than keys the newest MUST stay. In LINKS, `1` to `9` and then letters open their row, Enter opens the selected row, `y` copies it, `j`/`k` and the arrows move the selection, and Esc or Ctrl+C close the list. Opening, copying or closing returns to TERMINAL. A held key MUST NOT pick a row. No key reaches a PTY. The list MUST work with `mouse` off.
+
+#### Scenario: No links [auto]
+- GIVEN a focused pane that shows no link
+- WHEN `u` is pressed in PREFIX
+- THEN the mode returns to TERMINAL and the notice says `No links in this pane`
+
+#### Scenario: A row's key opens it [auto]
+- GIVEN the list of a pane with two links
+- WHEN `2` is pressed
+- THEN the second link is opened, or copied when there is no opener, and the mode returns to TERMINAL
+
 ### Requirement: MENU mode
-`m` in PREFIX MUST enter MENU. MENU is a sticky mode that swallows input: the keys defined by the config-menu spec act, every other key (including Ctrl+Space) is swallowed with no WritePty, and the mode stays MENU until Enter saves successfully or Esc cancels. MENU MUST be entered only from TERMINAL through the prefix; `m` inside a group, in COPY, RESIZE or a confirmation MUST NOT open it. Press and Repeat are handled for navigation and cycling keys (Repeat on Enter and Esc MUST be ignored so a held key cannot save or cancel repeatedly); Release is ignored. Paste events MUST NOT reach any PTY in MENU. A focus or active-tab change MUST NOT leave MENU.
+`m` in PREFIX MUST enter MENU. MENU is a sticky mode that swallows input: the keys defined by the config-menu spec act, every other key (including Ctrl+Space) is swallowed with no WritePty, and the mode stays MENU until Enter saves successfully or Esc cancels. MENU MUST be entered only from TERMINAL through the prefix; `m` inside a group, in COPY, RESIZE or a confirmation MUST NOT open it. Press and Repeat are handled for navigation and cycling keys (Repeat on Enter and Esc MUST be ignored so a held key cannot save or cancel repeatedly, and so MUST a Press that is part of a hold, see TERMINAL mode); Release is ignored. Paste events MUST NOT reach any PTY in MENU. A focus or active-tab change MUST NOT leave MENU.
 
 #### Scenario: Enter MENU [auto]
 - GIVEN PREFIX
@@ -403,9 +478,13 @@ In TERMINAL, with a chat pane focused and the conversation view shown, keys MUST
 | Ctrl+B | yank the last code block of the last assistant answer (see chat-pane) |
 | PageUp, PageDown | scroll the transcript |
 | Ctrl+R | expand or collapse the most recent reasoning block (see chat-pane) |
+| Ctrl+G | open the review of an orphan write batch (the badge `orphan N · Ctrl+G` names it) |
+| Ctrl+H | Backspace (see TERMINAL mode) |
+| Alt+Down, Alt+Up | with the orchestrator gate on, select the next or previous live worker of the run (see Cancel keys for workers); with the gate off, swallowed |
+| Ctrl+O | with the orchestrator gate on, toggle the pane's ORCH mode (see ORCH toggle key); with the gate off, swallowed like an unlisted key |
 | Ctrl+Space | enter PREFIX as in any pane |
 
-The tag editor (see chat-history) is opened by the prefix key `T` (`Ctrl+Space T`, capital), not by a direct Ctrl+letter chord: new chat keys live behind the prefix (user rule 2026-10-13), and `t` is already the TAB group. `T` MUST be a root leaf of the prefix table, left out of the key hint like `o` and `s`, and on a shell pane it MUST only show a notice.
+The tag editor (see chat-history) is opened by the prefix key `T` (`Ctrl+Space T`, capital), not by a direct Ctrl+letter chord: new chat keys live behind the prefix (user rule 2026-10-13), and `t` is already the TAB group. The direct chat chords allowed as exceptions to that rule are Ctrl+G (orphan batch review: a direct shortcut on purpose, user decision 2026-10-29; the orphan badge names it, it only acts when an orphan batch exists, and its review still needs full coverage and the arm delay before anything is applied) and Ctrl+O (ORCH toggle); any other new chat key still lives behind the prefix. `T` MUST be a root leaf of the prefix table, left out of the key hint like `o` and `s`, and on a shell pane it MUST only show a notice.
 
 Ctrl+C on a chat pane MUST NEVER emit Quit or a WritePty, whether a stream is running or not. Pressing Ctrl+Space twice MUST swallow the second press (no NUL is inserted in the composer). While the conversation list, the tag editor or the delete confirmation is shown, keys act as defined in chat-history, with the same swallow rule. The key bindings are defaults for design to confirm; Ctrl+R (R for reasoning) is a proposed default chosen in the style of Ctrl+Y, Ctrl+B and Ctrl+T, and is an open question until confirmed on a real terminal (manual check M8).
 
@@ -457,8 +536,8 @@ Ctrl+C on a chat pane MUST NEVER emit Quit or a WritePty, whether a stream is ru
 
 #### Scenario: Keys in the list view [auto]
 - GIVEN the conversation list shown in a chat pane
-- WHEN `j`, `d` and `y` are pressed
-- THEN the cursor moves, the delete confirmation shows and `y` confirms it, and nothing is typed into a composer
+- WHEN `j`, Delete and Enter are pressed
+- THEN the cursor moves, the delete confirmation shows and Enter confirms it, and nothing is typed into a composer
 
 #### Scenario: Real keys in Kitty [manual, Kitty]
 - GIVEN the app in Kitty with a chat pane focused
@@ -473,7 +552,7 @@ In TERMINAL, with a chat pane focused and the conversation view shown, no key is
 | Ctrl+Space then `s` | request the end-of-conversation summary (see chat-memory). A root leaf of the prefix table, left out of the hint (the root hint is already 79 columns and a longer one would clip `q quit` at 80); on a pane that is not a chat it shows `The summary is for chat panes; open one with Ctrl+Space c` |
 | Ctrl+Space then `o` | expand or collapse the memory block (see chat-memory); it never touches the reasoning block, which stays on Ctrl+R. A root leaf of the prefix table, left out of the hint; on a pane that is not a chat it shows `The memory line is for chat panes; open one with Ctrl+Space c` |
 
-Ctrl+N, Ctrl+O and Ctrl+E are NOT bound: in a chat pane they are swallowed as any other unbound key. With memory off or not ready, `Prefix s` only shows its notices and `Prefix o` does nothing when no memory line exists. These keys MUST NEVER reach a PTY and MUST NOT type anything into the composer. In the conversation list, the tag editor and the delete confirmation they do nothing.
+Ctrl+N and Ctrl+E are NOT bound: in a chat pane they are swallowed as any other unbound key. Ctrl+O is bound only as the ORCH toggle while the orchestrator gate is on (see ORCH toggle key); with the gate off it is swallowed as any other unbound key, as before. With memory off or not ready, `Prefix s` only shows its notices and `Prefix o` does nothing when no memory line exists. These keys MUST NEVER reach a PTY and MUST NOT type anything into the composer. In the conversation list, the tag editor and the delete confirmation they do nothing.
 
 #### Scenario: Prefix n opens the editor [auto]
 - GIVEN a conversation with an answer and a ready memory
@@ -496,7 +575,7 @@ Ctrl+N, Ctrl+O and Ctrl+E are NOT bound: in a chat pane they are swallowed as an
 - THEN the memory line expands first and the reasoning block expands second, each only on its own key
 
 #### Scenario: Unbound Ctrl keys ignored [auto]
-- GIVEN a focused chat pane
+- GIVEN a focused chat pane and the orchestrator gate off
 - WHEN Ctrl+E and Ctrl+O are pressed, and as Repeat events
 - THEN nothing happens and no effect is emitted
 
@@ -649,6 +728,33 @@ Repeat MUST be handled like Press for `j`, `k`, Ctrl+d and Ctrl+u and ignored fo
 - WHEN `v`, `y` and `h` are pressed
 - THEN they select, yank and move as before
 
+### Requirement: Esc per view
+Esc means a different thing in each view; this table documents the meanings 1.0 keeps (user decision 2026-10-29: no behavior change). A held Esc acts once in every view below except a shell pane (see TERMINAL mode).
+
+| View | Esc |
+|---|---|
+| TERMINAL, shell pane | sent to the program (0x1b) |
+| PREFIX, group pending | cancels; the key is swallowed |
+| quit, close-pane and close-tab confirmations | declines, like any key but `y` |
+| RESIZE | leaves to TERMINAL |
+| COPY, chat COPY | clears the selection; with none, leaves COPY |
+| MENU, top level | cancels: the unsaved draft is discarded and the menu closes |
+| MENU, task picker, install wizard, Hugging Face screens | goes back one level (from the Hugging Face popular list, to its search field) |
+| MENU, Hugging Face token field | closes the field; a token check in flight is cancelled and nothing is saved |
+| MENU, Feedback form | closes the form, back to its row (also after a send) |
+| chat, conversation view | cancels the running stream; with none, does nothing |
+| chat, tool approval and `Prefix e` confirmation | declines, once the prompt is armed |
+| chat, batch and commit review | rejects, once the review delay is over (an orphan batch is discarded) |
+| chat, `engram serve` offer | later, like `n` |
+| chat, conversation list | starts a new conversation, like `n` |
+| chat, tag editor and summary draft | discards the edit |
+| chat, note editor | closes it without saving |
+
+#### Scenario: Esc backs out one step in the menu [auto]
+- GIVEN MENU in a task picker at the model level
+- WHEN Esc is pressed
+- THEN the picker goes back to the engine level and the menu stays open
+
 ### Requirement: Mouse events by mode
 Mouse wheel events MUST be handled only in TERMINAL and COPY (see mouse-input); in every other mode they are ignored and no state changes. A wheel event MUST NEVER change the mode, and in COPY it MUST NEVER exit COPY. Click and drag events are never handled.
 
@@ -666,3 +772,276 @@ Mouse wheel events MUST be handled only in TERMINAL and COPY (see mouse-input); 
 - GIVEN PREFIX
 - WHEN a wheel event arrives
 - THEN nothing happens and the mode is still PREFIX
+
+### Requirement: The quit prompt names what still runs
+Opening "Quit? (y/n)" (from `q`, or `w q` / `t c` when they quit) MUST ask the runtime what still runs in the panes. A job is a process group of a pane's session (closed panes included) other than its shell's own group. While the prompt is open and jobs run, the statusline MUST read `Quit? still running: <names> (y/n)`: at most three names, each cut to 24 columns, then `+N more`; when that does not fit, fewer names, then `Quit? N still running (y/n)`, then the plain prompt. An answer that arrives after the prompt closed MUST be ignored. Lazarobox MUST NOT signal those jobs. After lazarobox quits and restores the terminal, the jobs still running MUST be written to stderr, one per line with their process group, after a short settle so jobs ending on their hangup are not named.
+
+#### Scenario: The prompt names the jobs
+- GIVEN a pane that started `sleep 77 &` and `npm run dev &`
+- WHEN `q` is pressed in PREFIX
+- THEN the statusline reads "Quit? still running: sleep 77, npm run dev (y/n)" and `y` emits Quit
+
+#### Scenario: Nothing runs
+- GIVEN no job besides the pane shells
+- WHEN `q` is pressed in PREFIX
+- THEN the statusline reads "Quit? (y/n)"
+
+#### Scenario: Narrow statusline
+- GIVEN two jobs and a 40-column terminal
+- WHEN `q` is pressed in PREFIX
+- THEN the statusline reads "Quit? 2 still running (y/n)"
+
+#### Scenario: exit in the last pane
+- GIVEN the only pane started `sleep 77 &`
+- WHEN its shell exits and lazarobox quits
+- THEN stderr reads "lazarobox-shell: still running from your panes:" and "  sleep 77 (process group <pgid>)", and `sleep 77` keeps running
+
+### Requirement: The quit prompt names a shared llama-server that is answering
+When "Quit? (y/n)" opens, lazarobox MUST also ask, in the background, whether the managed llama-server it started is answering a request that is none of its own turns (another lazarobox that uses it: `GET /slots` shows more slots processing than its turns in progress). When it is, the prompt MUST name it after the jobs, once, as `llama-server (shared)`, in the same list and with the same limits as the jobs (see The quit prompt names what still runs), whatever arrives first. A server it only uses (started by another lazarobox or by hand), one that is not running, or one whose `/slots` does not answer, is never named. An answer that arrives after the prompt closed MUST be dropped. Tabs and panes of one lazarobox share its server, so they never count.
+
+#### Scenario: Another lazarobox is being answered [auto]
+- GIVEN a pane that started `sleep 77 &`, and the managed server answering another lazarobox
+- WHEN `q` is pressed in PREFIX
+- THEN the statusline reads "Quit? still running: sleep 77, llama-server (shared) (y/n)" and `y` emits Quit
+
+#### Scenario: Only our own turn [auto]
+- GIVEN the managed server answering one request, which is a turn of this lazarobox
+- WHEN the runtime is asked
+- THEN the server is not named
+
+#### Scenario: Two lazarobox [manual]
+- GIVEN two lazarobox, the second using the first one's llama-server, with a reply streaming in the second
+- WHEN `q` is pressed in the first
+- THEN its prompt names `llama-server (shared)`; with no reply streaming, it does not
+
+### Requirement: Run-in-pane binding
+The root of the prefix table MUST gain a leaf for the run-in-pane action of pane-commands, with a non-empty description, on the letter `e`, which collides with no existing root key or group. It MUST be left out of the root key hint if the hint would exceed 80 columns, as `o`, `s` and `T` are. On a focused chat pane showing the conversation view it MUST open the pending confirm of pane-commands; on a shell pane, on a chat list or editor view, and with tools off it MUST only show a notice and emit nothing. It MUST NEVER write to a PTY by itself.
+
+#### Scenario: Leaf in the table [auto]
+- GIVEN the prefix table
+- WHEN it is validated
+- THEN the leaf exists at the root with a non-empty description, no duplicate key exists and the root hint is at most 80 columns
+
+#### Scenario: Opens the confirm [auto]
+- GIVEN PREFIX on a chat pane whose last answer has a bash block
+- WHEN the binding is pressed
+- THEN a pending confirm exists, mode is TERMINAL and no WritePty is emitted
+
+#### Scenario: Shell pane and other views [auto]
+- GIVEN PREFIX on a shell pane, and on a chat pane showing the conversation list
+- WHEN the binding is pressed
+- THEN only a notice appears and no effect is emitted
+
+#### Scenario: Inside a group does nothing special [auto]
+- GIVEN group `w` pending, or COPY, or RESIZE
+- WHEN the binding letter is pressed
+- THEN no confirm opens
+
+### Requirement: Approval mode binding
+The root of the prefix table MUST gain a leaf on the letter `a` that cycles the approval mode of the focused chat pane, `ask`, `auto`, `run`, back to `ask` (see agent-tools, Chat approval mode), with a non-empty description, left out of the root key hint like `e`. No direct Ctrl+letter key is added and `run` has no key of its own. Entering `run` needs no extra confirmation. On a focused chat pane in any chat view it MUST advance the mode and add a system line naming the new mode and what it does (see chat-pane), also while an approval is pending (which stays pending). On a shell pane, and with tools off, it MUST only show a notice and change nothing. It MUST NEVER write to a PTY.
+
+#### Scenario: Leaf in the table [auto]
+- GIVEN the prefix table
+- WHEN it is validated
+- THEN `a` exists only at the root with a non-empty description, no duplicate key exists and the root hint is unchanged and at most 80 columns
+
+#### Scenario: Cycles the focused chat [auto]
+- GIVEN PREFIX on a chat pane in `ask`
+- WHEN `a` is pressed, then PREFIX and `a` again, then PREFIX and `a` a third time
+- THEN the mode is `auto`, then `run`, then `ask`, mode is TERMINAL after each and no effect writes to a PTY
+
+#### Scenario: No confirmation to enter run [auto]
+- GIVEN a chat in `auto`
+- WHEN PREFIX and `a` are pressed
+- THEN the mode is `run` at once, with a system line, and no prompt or modal opens
+
+#### Scenario: Pending approval survives the cycle [auto]
+- GIVEN a chat with a pending `run_in_pane` confirm
+- WHEN `a` is pressed until the mode is `run`
+- THEN the confirm is still pending and nothing is written
+
+#### Scenario: Shell pane and tools off [auto]
+- GIVEN PREFIX on a shell pane, and in another run tools off on a chat pane
+- WHEN `a` is pressed
+- THEN only a notice appears and no mode changes
+
+#### Scenario: Inside a group [auto]
+- GIVEN group `w` pending, or COPY, or RESIZE
+- WHEN `a` is pressed
+- THEN no mode changes
+
+### Requirement: Approval keys
+While a chat pane has a pending approval (pane command or tool call) and is focused in TERMINAL, keys MUST act as follows and every other key MUST be swallowed (no composer edit, no WritePty, no Quit):
+
+| Key | Effect |
+|---|---|
+| `y` (unmodified, lowercase, Press) | approve |
+| `n`, Esc | decline |
+| `p` (unmodified, pane command only) | move the target pane to the next shell pane |
+| Ctrl+C | cancel the stream and deny the approval; never Quit |
+| Ctrl+Space | enter PREFIX as in any pane |
+
+Any other key, `Y`, and `y` with a modifier MUST NOT approve; they are swallowed (the prompt stays). Only `n` and Esc decline. The approval is per-chat state routed before the chat key table; it is not an `InputMode` variant, so it survives focus and tab changes. Repeat and Release MUST NOT answer. A paste MUST NOT answer and MUST NOT be inserted into the composer while the approval is pending. While MENU is open no key reaches the approval. In the other modes (PREFIX, COPY, RESIZE) the approval is not answered and stays pending.
+
+#### Scenario: y approves, n and Esc decline [auto]
+- GIVEN a pending pane-command approval
+- WHEN `y`, and in other runs `n` and Esc, are pressed
+- THEN `y` emits one WritePty to the target and the others emit none; the approval is closed each time
+
+#### Scenario: Not approving keys [auto]
+- GIVEN a pending approval
+- WHEN `Y`, Enter, Space, Ctrl+y and Alt+y are pressed
+- THEN no WritePty is emitted and the approval is still pending
+
+#### Scenario: Repeat and Release [auto]
+- GIVEN a pending approval
+- WHEN Repeat and Release events for `y` arrive
+- THEN nothing is answered
+
+#### Scenario: Paste does not answer [auto]
+- GIVEN a pending approval and the composer holding `draft`
+- WHEN a paste of `y` arrives
+- THEN the approval is pending and the composer still holds `draft`
+
+#### Scenario: Cycle changes only the target [auto]
+- GIVEN a pending approval with shell panes 1 and 2
+- WHEN the cycle key is pressed
+- THEN the target changes and no WritePty is emitted
+
+#### Scenario: Ctrl+C denies, never quits [auto]
+- GIVEN a streaming chat with a pending approval
+- WHEN Ctrl+C is pressed
+- THEN a ChatCancel effect is emitted, the approval is denied, and no Quit or WritePty is emitted
+
+#### Scenario: Keys swallowed [auto]
+- GIVEN a pending approval
+- WHEN `a`, Tab and F5 are pressed
+- THEN nothing changes, the composer is untouched and no WritePty is emitted
+
+#### Scenario: Prefix still works [auto]
+- GIVEN a pending approval
+- WHEN `Ctrl+Space` then `w` then `v` are pressed
+- THEN a split is made and the approval is still pending
+
+#### Scenario: MENU shields the approval [auto]
+- GIVEN a pending approval and MENU opened with `Ctrl+Space m`
+- WHEN `y` is pressed
+- THEN the menu handles `y` as an unlisted key and the approval is unanswered
+
+#### Scenario: Real keys in Kitty [manual, Kitty]
+- GIVEN a chat with a pending confirm in Kitty
+- WHEN the user presses `p`, `y`, and then (in another run) `n`
+- THEN each key behaves as listed and none is intercepted by the terminal
+
+### Requirement: Pane removal and the pending approval
+A pending approval is not cancelled by the removal of a pane other than its chat pane and its target pane. If the target pane is removed, `y` MUST be refused with a notice and the cycle key stays usable (see pane-commands); if the chat pane is removed the approval ends denied. This is the exception to "Any pane removal while a confirmation is pending MUST cancel it" of Close confirmations, which keeps applying to the close-pane, close-tab and quit confirmations.
+
+#### Scenario: Other pane removed [auto]
+- GIVEN a pending approval on pane 2 and a third pane is closed
+- WHEN `y` is pressed
+- THEN the write goes to pane 2
+
+#### Scenario: Target removed [auto]
+- GIVEN a pending approval on pane 2 and pane 2 exits
+- WHEN `y` is pressed
+- THEN no WritePty is emitted and a notice says the pane is gone
+
+#### Scenario: Close prompts still cancel on removal [auto]
+- GIVEN "Close pane? (y/n)" pending and a pane removal
+- WHEN `y` is pressed afterwards
+- THEN no pane is closed, as before
+
+### Requirement: Notice keys [S1]
+In a chat pane the provider notice MUST accept with Enter only and dismiss with Esc; `y` does not answer it and is typed into the composer like any letter (user decision, 2026-10-29). These keys apply only while the notice is shown and MUST NOT reach any PTY. A key typed as part of a message MUST NOT answer it: the notice takes a key only while the composer is empty (as the `engram serve` offer); with text in the composer every key goes to the composer and its usual action, so an Enter that sends a message never accepts it (key audit, 2026-10-29: of the two guards, S1e-1b picks the empty composer). A held key (Repeat) does not answer it. There is no run-start scope prompt and so no scope keys (user decision, 2026-10-29).
+
+#### Scenario: Notice keys [auto]
+- GIVEN the notice shown and an empty composer
+- WHEN Enter is pressed (or Esc)
+- THEN it is accepted (or dismissed without accepting)
+
+#### Scenario: `y` does not accept [auto]
+- GIVEN the notice shown and an empty composer
+- WHEN `y` is pressed
+- THEN `y` is typed into the composer, and the notice is still shown and not accepted
+
+#### Scenario: Typed Enter does not accept [auto]
+- GIVEN the notice shown and the composer holding `hello`
+- WHEN Enter is pressed
+- THEN Enter acts on the composer as it does without the notice, and the notice is still shown and not accepted
+
+### Requirement: ORCH toggle key [S1]
+In a chat pane, Ctrl+O MUST toggle the pane's ORCH mode when the global orchestrator gate is on, as a one-shot key (a held key does not toggle again, like the other debounced chat keys). Ctrl+O is not bound in the chat key table today (bound: Enter, Esc, Ctrl+C, Ctrl+Y, Ctrl+B, Ctrl+R, Ctrl+J, Alt+Enter, Ctrl+U, PageUp, PageDown, and on main Ctrl+G, the orphan batch review of coding-tools) and MUST NOT shadow any of them. It MUST be handled before the key can reach a PTY and be shown in the chat footer hint while the gate is on. With the gate off it does nothing.
+
+#### Scenario: Ctrl+O toggles [auto]
+- GIVEN the gate on and a chat pane with ORCH off
+- WHEN Ctrl+O is pressed, then pressed again
+- THEN the mode is on, then off
+
+#### Scenario: Held key toggles once [auto]
+- GIVEN the gate on and ORCH off
+- WHEN Ctrl+O arrives as a Repeat
+- THEN the mode does not change
+
+#### Scenario: Existing keys unchanged [auto]
+- GIVEN the chat key table
+- WHEN Ctrl+C, Ctrl+Y, Ctrl+B, Ctrl+R, Ctrl+J and Ctrl+U are pressed
+- THEN each behaves as before this change
+
+### Requirement: Failure alert keys [S1, S2]
+While a failure alert is shown: `r` MUST retry, `c` or Esc MUST cancel the run; [S2] `m` MUST open the picker at model level (change model) and `p` at engine level (change provider). Other keys MUST NOT answer the alert. The letter keys (`r`, `c`, and [S2] `m`, `p`) MUST act only while the composer is empty or after an arm delay (as approvals), so text being typed cannot pick an option (key audit, 2026-10-29). An approval prompt, if any, keeps its own keys and is answered by user key events only.
+
+#### Scenario: Retry key [auto]
+- GIVEN a failure alert
+- WHEN `r` is pressed
+- THEN the worker is relaunched from scratch, with the previous error appended to its prompt
+
+#### Scenario: Cancel keys [auto]
+- GIVEN a failure alert
+- WHEN `c` is pressed (or Esc)
+- THEN the run is cancelled
+
+#### Scenario: Change keys [S2, auto]
+- GIVEN a failure alert
+- WHEN `m` is pressed, then Esc, then `p`
+- THEN the model picker opens, the alert returns, then the engine picker opens
+
+### Requirement: Cancel keys for workers [S1, S3]
+Ctrl+C with no worker selected MUST cancel the orchestrator turn and all workers of the run (existing chat cancel). [S3] With the gate on, Alt+Down and Alt+Up MUST select the next or previous worker of the run that is queued or running (wrapping; a notice says so when there is none), the selected row MUST be drawn with its own prefix, and the selection MUST end with its worker and with its run. With a worker selected, the first Ctrl+C MUST cancel only that worker and show the notice `Ctrl+C again cancels the run`; a second Ctrl+C within about two seconds MUST cancel the turn and the whole run as Ctrl+C with no selection does. A held key MUST NOT escalate. Esc keeps cancelling the turn and the whole run. The footer hint MUST name these keys while a run has a worker that has not ended and no alert or notice needs the line. With the gate off none of this applies and Ctrl+C is the chat cancel (user decision, 2026-10-31: escalating Ctrl+C replaces a dedicated key).
+
+#### Scenario: Ctrl+C [auto]
+- GIVEN a run with two workers and none selected
+- WHEN Ctrl+C is pressed
+- THEN the turn and both workers are cancelled
+
+#### Scenario: Cancel the selected worker [S3, auto]
+- GIVEN a run with two workers and worker 1 selected
+- WHEN Ctrl+C is pressed
+- THEN worker 1 is cancelled, worker 2 keeps running and the notice `Ctrl+C again cancels the run` is shown
+
+#### Scenario: Second Ctrl+C cancels the run [S3, auto]
+- GIVEN worker 1 was just cancelled with Ctrl+C and worker 2 is selected
+- WHEN Ctrl+C is pressed again within two seconds
+- THEN the turn and the whole run are cancelled
+
+#### Scenario: A late Ctrl+C starts over [S3, auto]
+- GIVEN worker 1 was cancelled with Ctrl+C more than two seconds ago and worker 2 is selected
+- WHEN Ctrl+C is pressed
+- THEN only worker 2 is cancelled
+
+### Requirement: Worker transcript key [S9]
+In a chat pane, `Ctrl+Space W` (capital, as `T`: `w` is the window group; user decision pending review, S9 9.1b) MUST open a full-pane, read-only, scrollable transcript of the selected worker (see Cancel keys for workers) when the global orchestrator gate is on. It is a root leaf of the prefix table, left out of the hint (the root hint is full) and bound nowhere else. It MUST say why it does nothing, never fail silently: `Select a worker with Alt+Up/Down` with no worker selected, `The orchestrator is off; enable it in the menu (Ctrl+Space m)` with the gate off, `The worker transcript is for chat panes; open one with Ctrl+Space c` on another pane and `Close this view first` while another view of the chat is open. While the transcript is open Esc or `q` close it (Esc then does not cancel the run), Up/Down/`k`/`j`, PageUp/PageDown, Home/`g` and End/`G` scroll it (End follows the new output again), Ctrl+C keeps its cancel meaning and every other key is swallowed: nothing reaches the composer or a PTY. An approval prompt keeps its place at the bottom and its own keys, answered before the transcript's; a failure alert closes the transcript; `Prefix T`, `n`, `s` and `e` refuse with `Close the worker transcript first (Esc)`. The footer hint of a selected worker names the key.
+
+#### Scenario: The key opens the transcript [S9, auto]
+- GIVEN the gate on, a run with two workers and worker 1 selected
+- WHEN Ctrl+Space then `W` are pressed
+- THEN the transcript of worker 1 fills the pane, with its status in the title, and Esc closes it back to the chat
+
+#### Scenario: No worker selected [S9, auto]
+- GIVEN the gate on and no worker selected
+- WHEN Ctrl+Space then `W` are pressed
+- THEN no view opens and the notice `Select a worker with Alt+Up/Down` is shown
+
+#### Scenario: An approval stays answerable [S9, auto]
+- GIVEN the transcript open
+- WHEN an approval prompt arrives
+- THEN the prompt is shown under the transcript and `y` answers it, while `q` does not close the view

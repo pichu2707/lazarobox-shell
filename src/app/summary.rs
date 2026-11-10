@@ -79,7 +79,12 @@ impl App {
                     return Vec::new();
                 }
                 chat.start_resolving_at(false, now);
-                return vec![Effect::Memory(MemCmd::Resolve { pane: id, cwd })];
+                let epoch = chat.memory_epoch();
+                return vec![Effect::Memory(MemCmd::Resolve {
+                    pane: id,
+                    cwd,
+                    epoch,
+                })];
             }
         }
         if let Some(reason) = guidance(&availability) {

@@ -26,7 +26,7 @@ fn the_cursor_stays_on_a_row_that_became_disabled() {
     assert_eq!(cursor_label(&m), "llama3:8b");
     let draft = m.ai_draft();
     m.set_engines(ollama(&["x:1", "y:2"]));
-    assert_eq!(title(&m), "Model for code (ollama) 3/13");
+    assert_eq!(title(&m), "Model for code (ollama) 3/14");
     assert_eq!(cursor_label(&m), "llama3:8b");
     let rows = m.rows(&Config::default());
     assert!(

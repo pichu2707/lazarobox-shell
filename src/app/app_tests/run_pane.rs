@@ -258,6 +258,7 @@ fn p_cycles_the_target_with_wrap_and_writes_nothing() {
     let mut seen = vec![chat(&a, chat_id).run_target().unwrap()];
     let mut labels = vec![label(&a, chat_id)];
     for _ in 0..3 {
+        let_go();
         assert_eq!(a.update(key('p')), vec![]);
         seen.push(chat(&a, chat_id).run_target().unwrap());
         labels.push(label(&a, chat_id));

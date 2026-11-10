@@ -73,7 +73,21 @@ fn lab() -> Lab {
         fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
     }
     fs::create_dir_all(&lab.data).unwrap();
+    seed_logins(&lab.home);
     lab
+}
+
+/// A codex and a gemini login in `home`, so a turn raises no login notice.
+fn seed_logins(home: &Path) {
+    fs::create_dir_all(home.join(".codex")).unwrap();
+    fs::write(home.join(".codex/auth.json"), "{}").unwrap();
+    fs::create_dir_all(home.join(".gemini")).unwrap();
+    fs::write(home.join(".gemini/oauth_creds.json"), "{}").unwrap();
+    fs::write(
+        home.join(".gemini/settings.json"),
+        r#"{"security":{"auth":{"selectedType":"oauth-personal"}}}"#,
+    )
+    .unwrap();
 }
 
 fn script(path: &Path, rec: &Path, body: &str) {
@@ -109,9 +123,12 @@ impl Lab {
                 total: Duration::from_secs(30),
                 slow: Duration::from_secs(20),
                 quiet: None,
+                report_reads: false,
             },
             grace: Duration::from_secs(2),
             codex_home: None,
+            gemini_home: None,
+            noticed: Default::default(),
             shim: None,
             inject: Vec::new(),
         }
@@ -139,6 +156,8 @@ fn jail_on() -> JailSupport {
 
 fn request() -> ChatRequest {
     ChatRequest {
+        drive_grant: None,
+        cache: Default::default(),
         families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "claude".into(),
         model: Some("sonnet".into()),
@@ -149,6 +168,8 @@ fn request() -> ChatRequest {
             role: Role::User,
             content: "hi".into(),
         }],
+        ollama: Default::default(),
+        github_read: false,
     }
 }
 
@@ -471,6 +492,26 @@ async fn the_cli_sees_neither_agents_nor_outer_claude_state_but_keeps_its_settin
     assert!(has("HOME") && has("PATH"));
 }
 
+// Spec (chat-engines, API keys survive the scrub): with the three provider
+// key variables set, the environment a turn (a chat's or a worker's: both
+// run through this command) is built with holds all three.
+#[tokio::test]
+async fn the_provider_api_keys_survive_the_scrub() {
+    let lab = lab();
+    lab.claude(GOOD);
+    let mut env = lab.env();
+    let keys = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"];
+    for name in keys {
+        env.inject.push((name.into(), "k".into()));
+    }
+    run(env, request()).await;
+    let dump = lab.recorded("env");
+    for name in keys {
+        let line = format!("{name}=k");
+        assert!(dump.lines().any(|l| l == line), "{name} must be kept");
+    }
+}
+
 #[tokio::test]
 async fn a_failing_cli_shows_the_last_stderr_line_sanitized() {
     let lab = lab();
@@ -738,7 +779,6 @@ async fn codex_home_is_the_state_folder_when_set_and_dot_codex_otherwise() {
             .collect()
     };
 
-    fs::create_dir(lab.home.join(".codex")).unwrap();
     run_job(&env, codex_job(&["exec", "-"])).await;
     assert!(rw(&lab).contains(&lab.home.join(".codex").to_str().unwrap().to_owned()));
 
@@ -825,6 +865,7 @@ async fn credential_files_are_never_opened() {
     fifo(lab.home.join(".claude.json"));
     fifo(lab.home.join(".claude/.credentials.json"));
     fifo(lab.home.join(".ssh/id_ed25519"));
+    fs::remove_file(lab.home.join(".codex/auth.json")).unwrap();
     fifo(lab.home.join(".codex/auth.json"));
     let helper = lab.helper("while [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"");
     let mut env = lab.env();
@@ -1462,10 +1503,59 @@ fn an_interpreter_in_a_group_or_world_writable_folder_is_not_trusted() {
     fs::set_permissions(&ok, fs::Permissions::from_mode(0o757)).unwrap();
     let real = fs::canonicalize(&ok).unwrap();
     let writable = Untrusted::Writable {
-        path: real.clone(),
-        yours: true,
+        paths: vec![real.clone()],
+        foreign: vec![],
+        cause: WriteCause::Others,
     };
     assert_eq!(interpreter_trust(&ok), Err((real, writable)));
+}
+
+// Issue #496: the rule stays strict. A default `cargo install` under umask 002
+// (folder and binary 0775) is refused, and the refusal lists both paths and
+// the group as the cause, so that one chmod fixes it.
+#[test]
+fn a_umask_002_install_is_refused_naming_both_paths_and_the_group() {
+    let lab = lab();
+    let base = lab.bin.parent().unwrap().to_owned();
+    let file = exe_in(&base.join("cargo-bin"), "lazarobox-shell", 0o775);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o775)).unwrap();
+    let real = fs::canonicalize(&file).unwrap();
+    let dir = real.parent().unwrap().to_owned();
+    let writable = Untrusted::Writable {
+        paths: vec![dir, real.clone()],
+        foreign: vec![],
+        cause: WriteCause::Group,
+    };
+    assert_eq!(interpreter_trust(&file), Err((real.clone(), writable)));
+    // Only the folder, only the file, and the file with others' write.
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    let Err((_, Untrusted::Writable { paths, cause, .. })) = interpreter_trust(&file) else {
+        panic!("the folder is group-writable");
+    };
+    assert_eq!(
+        (paths, cause),
+        (vec![real.parent().unwrap().to_owned()], WriteCause::Group)
+    );
+    fs::set_permissions(real.parent().unwrap(), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o766)).unwrap();
+    let Err((_, Untrusted::Writable { paths, cause, .. })) = interpreter_trust(&file) else {
+        panic!("the file is writable");
+    };
+    assert_eq!((paths, cause), (vec![real], WriteCause::GroupAndOthers));
+}
+
+#[test]
+fn a_file_that_cannot_be_inspected_is_unchecked_not_writable() {
+    let p = Path::new("/x/shim");
+    for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::NotFound] {
+        assert_eq!(
+            judge(p, Err(io::Error::from(kind))),
+            Err(Untrusted::Unchecked {
+                path: p.to_path_buf(),
+                kind
+            })
+        );
+    }
 }
 
 #[test]
@@ -1640,8 +1730,9 @@ fn an_untrusted_sibling_falls_back_to_a_trusted_interpreter_on_path_or_nothing()
         Err(JailRefusal::UntrustedInterpreter {
             path: fs::canonicalize(sibling_dir.join("fakenode")).unwrap(),
             why: Untrusted::Writable {
-                path: fs::canonicalize(&sibling_dir).unwrap(),
-                yours: true,
+                paths: vec![fs::canonicalize(&sibling_dir).unwrap()],
+                foreign: vec![],
+                cause: WriteCause::GroupAndOthers,
             },
         })
     );
@@ -1664,8 +1755,8 @@ async fn a_cli_whose_only_interpreter_is_untrusted_is_not_started() {
     let events = run_job(&env, codex_job(&["exec", "-"])).await;
     let reason = jail_reason(&events);
     assert!(
-        reason.contains("is writable by group or others")
-            && reason.contains("; run: chmod go-w -- '"),
+        reason.contains("is writable by its group or others")
+            && reason.contains("; run: chmod go-w "),
         "{reason}"
     );
     assert!(!lab.rec.join("helper_called").exists());
@@ -2131,6 +2222,23 @@ fn with_shim(lab: &Lab, mut env: CliEnv, shim: &str) -> CliEnv {
 
 const OFF_NOTICE: &str = "tools are off for this turn: they could not be set up";
 
+/// The notice of a turn that goes on without tools: the generic line, or, when
+/// the trust check refused a path others (or a group) can write, the cause and
+/// the fix (issue #496). `cause` is the wording expected after `tools are off: `.
+fn assert_off_notice(event: &StreamEvent, cause: bool) {
+    let StreamEvent::Notice(text) = event else {
+        panic!("{event:?}");
+    };
+    if cause {
+        assert!(text.starts_with("tools are off: "), "{text}");
+        assert!(text.contains(" writable by "), "{text}");
+        assert!(text.contains("; run: chmod "), "{text}");
+        assert!(!text.contains("could not be set up"), "{text}");
+    } else {
+        assert_eq!(text, OFF_NOTICE);
+    }
+}
+
 #[tokio::test]
 async fn a_wired_claude_gets_the_config_the_flags_the_timeout_and_the_jail_grant() {
     let lab = lab();
@@ -2324,11 +2432,7 @@ async fn assert_untrusted_shim_falls_back(lab: &Lab, shim: &Path) {
     );
     let env = with_shim(lab, lab.env(), shim.to_str().unwrap());
     let events = run_job(&env, claude_job(lab, true)).await;
-    assert_eq!(
-        events[0],
-        StreamEvent::Notice(OFF_NOTICE.into()),
-        "{events:?}"
-    );
+    assert_off_notice(&events[0], true);
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
     assert_eq!(lab.args(), ["-p", "--strict-mcp-config", "--safe-mode"]);
     let helper = lab.recorded("helper_args");
@@ -2656,7 +2760,7 @@ async fn a_wired_codex_gets_the_overrides_and_the_jail_grant_and_the_token_only_
 
 /// A codex turn that fell back to text: it ran bare of the tools, said so, and
 /// ended its session once.
-async fn assert_codex_text_fallback(lab: &Lab, env: &CliEnv) {
+async fn assert_codex_text_fallback(lab: &Lab, env: &CliEnv, cause: bool) {
     script(
         &lab.bin.join("codex"),
         &lab.rec,
@@ -2665,11 +2769,7 @@ async fn assert_codex_text_fallback(lab: &Lab, env: &CliEnv) {
     let mut job = wired_codex_job(lab);
     let count = counted(&mut job);
     let events = run_job(env, job).await;
-    assert_eq!(
-        events[0],
-        StreamEvent::Notice(OFF_NOTICE.into()),
-        "{events:?}"
-    );
+    assert_off_notice(&events[0], cause);
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
     assert_eq!(count.load(Ordering::SeqCst), 1, "Unwire exactly once");
     assert!(
@@ -2687,7 +2787,7 @@ async fn a_shim_the_jail_refuses_retries_codex_without_the_tools() {
     let lab = lab();
     let shim = shim_in_ssh(&lab);
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    assert_codex_text_fallback(&lab, &env).await;
+    assert_codex_text_fallback(&lab, &env, false).await;
     let helper = lab.recorded("helper_args");
     assert!(
         !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
@@ -2702,7 +2802,7 @@ async fn an_untrusted_shim_runs_codex_as_text_with_the_notice() {
     fs::write(&shim, "").unwrap();
     fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    assert_codex_text_fallback(&lab, &env).await;
+    assert_codex_text_fallback(&lab, &env, true).await;
     let helper = lab.recorded("helper_args");
     assert!(
         !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
@@ -2766,6 +2866,7 @@ pwd -P > "$REC/cwd"
 env > "$REC/env"
 cat > /dev/null
 if [ -e "$TMPDIR/work" ]; then echo yes > "$REC/work_during"; fi
+[ -f ./.env ] && echo yes > "$REC/work_env"
 if [ -e .gemini/settings.json ]; then
   cp .gemini/settings.json "$REC/settings_copy"
   { stat -c %a .gemini/settings.json 2>/dev/null || stat -f %Lp .gemini/settings.json; } > "$REC/settings_mode"
@@ -2861,6 +2962,11 @@ async fn a_wired_gemini_runs_in_a_private_work_folder_with_the_settings_and_the_
         ]
     );
     assert_eq!(args[5], "--policy");
+    assert_eq!(
+        lab.recorded("work_env").trim(),
+        "yes",
+        "the work folder holds the private .env"
+    );
     assert!(args[6].ends_with("/gemini-policy.toml"), "{args:?}");
     let n = args.len();
     assert_eq!(n, 9, "{args:?}");
@@ -2939,7 +3045,7 @@ async fn the_turns_token_is_not_shown_from_a_gemini_stderr_tail() {
 /// A gemini turn that fell back to text: it ran in the shared empty folder
 /// with the pinned argv and nothing of the wiring, said so, and ended its
 /// session once.
-async fn assert_gemini_text_fallback(lab: &Lab, env: &CliEnv) {
+async fn assert_gemini_text_fallback(lab: &Lab, env: &CliEnv, cause: bool) {
     script(
         &lab.bin.join("gemini"),
         &lab.rec,
@@ -2948,11 +3054,7 @@ async fn assert_gemini_text_fallback(lab: &Lab, env: &CliEnv) {
     let mut job = wired_gemini_job(lab);
     let count = counted(&mut job);
     let events = run_job(env, job).await;
-    assert_eq!(
-        events[0],
-        StreamEvent::Notice(OFF_NOTICE.into()),
-        "{events:?}"
-    );
+    assert_off_notice(&events[0], cause);
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
     assert_eq!(count.load(Ordering::SeqCst), 1, "Unwire exactly once");
     let args = lab.args();
@@ -2963,10 +3065,9 @@ async fn assert_gemini_text_fallback(lab: &Lab, env: &CliEnv) {
             || a.contains("gemini-mcp-policy")),
         "{args:?}"
     );
-    assert_eq!(
-        Path::new(lab.recorded("cwd").trim()),
-        lab.data.join("cli-cwd")
-    );
+    // Text only: the turn's own empty folder (it holds only the private
+    // `.env`), never the work folder with the tools' settings.
+    assert!(Path::new(lab.recorded("cwd").trim()).ends_with("gemini-cwd"));
     assert_eq!(lab.recorded("work_during"), "");
     assert_eq!(lab.recorded("settings_copy"), "");
     assert!(!lab.recorded("env").contains(TOKEN));
@@ -2978,7 +3079,7 @@ async fn a_shim_the_jail_refuses_retries_gemini_without_the_tools() {
     let lab = lab();
     let shim = shim_in_ssh(&lab);
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    assert_gemini_text_fallback(&lab, &env).await;
+    assert_gemini_text_fallback(&lab, &env, false).await;
     let helper = lab.recorded("helper_args");
     assert!(
         !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
@@ -2993,7 +3094,7 @@ async fn an_untrusted_shim_runs_gemini_as_text_with_the_notice() {
     fs::write(&shim, "").unwrap();
     fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    assert_gemini_text_fallback(&lab, &env).await;
+    assert_gemini_text_fallback(&lab, &env, true).await;
 }
 
 #[tokio::test]
@@ -3311,6 +3412,22 @@ fn the_jail_note_of_another_system_points_codex_and_gemini_to_claude_only() {
 }
 
 #[test]
+fn the_full_jail_note_keeps_the_short_one_and_adds_what_to_do() {
+    let mut env = lab().env();
+    env.jail = JailSupport::Unavailable(JailOff::NoBackend);
+    let bin = Path::new("/bin/true");
+    let note = jail_note_with(Os::Macos, &env, Cli::Codex, bin).unwrap();
+    assert_eq!(note.short, "Linux/macOS only · use claude");
+    assert_eq!(
+        note.full,
+        "the CLI jail needs Linux or macOS; on this system use claude or Ollama for chat"
+    );
+    // claude on macOS is never jailed: one reason, short and full.
+    let keychain = jail_note_with(Os::Macos, &env, Cli::Claude, bin).unwrap();
+    assert_eq!(keychain.short, keychain.full);
+}
+
+#[test]
 fn macos_adds_env_and_the_homebrew_openssl_config_to_the_layout() {
     let head = b"#!/usr/bin/env node\n";
     let node = Path::new("/opt/homebrew/Cellar/node/26.8.1/bin/node");
@@ -3329,4 +3446,1046 @@ fn linux_gets_no_os_grants() {
     let head = b"#!/usr/bin/env node\n";
     let node = Path::new("/opt/homebrew/Cellar/node/26.8.1/bin/node");
     assert_eq!(os_grants(Os::Linux, head, Some(node)), (vec![], vec![]));
+}
+
+#[tokio::test]
+async fn a_umask_002_shim_gets_a_notice_naming_both_paths_and_the_fix() {
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let dir = lab.bin.join("shimdir");
+    fs::create_dir(&dir).unwrap();
+    let shim = dir.join("lazarobox-shell");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o775)).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&env, claude_job(&lab, true)).await;
+    let StreamEvent::Notice(text) = &events[0] else {
+        panic!("{events:?}");
+    };
+    let (dir, shim) = (
+        fs::canonicalize(&dir).unwrap(),
+        fs::canonicalize(&shim).unwrap(),
+    );
+    let expected = format!(
+        "tools are off: {} and {} are writable by its group \
+         (install with umask 022 to keep it); run: chmod g-w '{}' '{}'",
+        dir.display(),
+        shim.display(),
+        dir.display(),
+        shim.display()
+    );
+    assert_eq!(text, &expected);
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+}
+
+/// What the fake codex and gemini record about the home they were given.
+const CODEX_HOME_PROBE: &str = r#"
+cat > "$REC/stdin"
+printf '%s' "$CODEX_HOME" > "$REC/home"
+printf '%s' "$TMPDIR" > "$REC/tmpdir"
+{ stat -c %a "$CODEX_HOME" 2>/dev/null || stat -f %Lp "$CODEX_HOME"; } > "$REC/modes"
+ls -A "$CODEX_HOME" > "$REC/listing"
+readlink "$CODEX_HOME/auth.json" > "$REC/auth_link"
+cat "$CODEX_HOME/auth.json" > "$REC/auth_read"
+printf '%s\n' '{"type":"thread.started","thread_id":"t"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{}}'
+"#;
+
+const GEMINI_HOME_PROBE: &str = r#"
+cat > "$REC/stdin"
+printf '%s' "$GEMINI_CLI_HOME" > "$REC/home"
+printf '%s' "$TMPDIR" > "$REC/tmpdir"
+printf '%s' "${GEMINI_SYSTEM_MD-unset}" > "$REC/system_md"
+for d in "$GEMINI_CLI_HOME" "$GEMINI_CLI_HOME/.gemini"; do
+  { stat -c %a "$d" 2>/dev/null || stat -f %Lp "$d"; } >> "$REC/modes"
+done
+pwd -P > "$REC/cwd_seen"
+cat "$GEMINI_CLI_HOME/.gemini/.env" > "$REC/env_home" 2>/dev/null
+cat ./.env > "$REC/env_cwd" 2>/dev/null
+{ stat -c %a "$GEMINI_CLI_HOME/.gemini/.env" 2>/dev/null || stat -f %Lp "$GEMINI_CLI_HOME/.gemini/.env" 2>/dev/null; } > "$REC/env_mode"
+[ -L "$GEMINI_CLI_HOME/.gemini/.env" ] && echo link > "$REC/env_is_link"
+ls -A "$GEMINI_CLI_HOME/.gemini" > "$REC/listing"
+cat "$GEMINI_CLI_HOME/.gemini/settings.json" > "$REC/settings"
+readlink "$GEMINI_CLI_HOME/.gemini/oauth_creds.json" > "$REC/oauth_link"
+printf '%s\n' '{"type":"init","session_id":"s","model":"m"}'
+printf '%s\n' '{"type":"message","role":"assistant","content":"ok","delta":true}'
+printf '%s\n' '{"type":"result","status":"success"}'
+"#;
+
+/// A codex chat turn that may run bare (the fake CLI has no jail around it).
+fn layered_codex() -> Job {
+    Job {
+        jail: JailPolicy::Layered,
+        ..codex_job(&["exec", "-"])
+    }
+}
+
+/// The user's codex folder with global instructions, a skill, a config and a login.
+fn user_codex_folder(dir: &Path) {
+    fs::create_dir_all(dir.join("skills/mine")).unwrap();
+    fs::write(dir.join("AGENTS.md"), "CANARY-INSTRUCTIONS").unwrap();
+    fs::write(dir.join("config.toml"), "model = \"canary\"").unwrap();
+    fs::write(dir.join("skills/mine/SKILL.md"), "CANARY-SKILL").unwrap();
+    fs::write(dir.join("auth.json"), "CANARY-LOGIN").unwrap();
+}
+
+#[tokio::test]
+async fn codex_runs_in_a_private_home_that_holds_only_a_link_to_the_login() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    let real = lab.home.join(".codex");
+    user_codex_folder(&real);
+    let events = run_job(&lab.env(), layered_codex()).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+
+    let home = lab.recorded("home");
+    let tmpdir = lab.recorded("tmpdir");
+    assert!(
+        Path::new(&home).starts_with(&tmpdir) && !Path::new(&home).starts_with(&real),
+        "{home} must be inside the turn folder {tmpdir}"
+    );
+    assert_eq!(lab.recorded("listing").trim(), "auth.json");
+    assert_eq!(
+        lab.recorded("auth_link").trim(),
+        real.join("auth.json").to_str().unwrap()
+    );
+    assert_eq!(lab.recorded("auth_read"), "CANARY-LOGIN");
+    // The user's own files are untouched, and the private home is wiped.
+    assert_eq!(
+        fs::read_to_string(real.join("auth.json")).unwrap(),
+        "CANARY-LOGIN"
+    );
+    assert!(real.join("AGENTS.md").exists());
+    assert!(!Path::new(&home).exists());
+}
+
+#[tokio::test]
+async fn codex_takes_its_login_from_codex_home_when_that_is_set() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    let custom = lab.home.join("custom-codex");
+    user_codex_folder(&custom);
+    let mut env = lab.env();
+    env.codex_home = Some(custom.clone());
+    run_job(&env, layered_codex()).await;
+    assert_eq!(lab.recorded("listing").trim(), "auth.json");
+    assert_eq!(
+        lab.recorded("auth_link").trim(),
+        custom.join("auth.json").to_str().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn codex_without_a_login_file_still_gets_an_empty_private_home() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    fs::remove_file(lab.home.join(".codex/auth.json")).unwrap();
+    fs::write(lab.home.join(".codex/AGENTS.md"), "CANARY-INSTRUCTIONS").unwrap();
+    run_job(&lab.env(), layered_codex()).await;
+    assert!(Path::new(&lab.recorded("home")).starts_with(lab.recorded("tmpdir")));
+    assert_eq!(lab.recorded("listing"), "");
+}
+
+/// The user's gemini folder with global instructions, a skill, rich settings
+/// and an OAuth login.
+fn user_gemini_folder(dir: &Path) {
+    fs::create_dir_all(dir.join("skills/mine")).unwrap();
+    fs::write(dir.join("GEMINI.md"), "CANARY-INSTRUCTIONS").unwrap();
+    fs::write(dir.join("skills/mine/SKILL.md"), "CANARY-SKILL").unwrap();
+    fs::write(dir.join("system.md"), "CANARY-SYSTEM").unwrap();
+    fs::write(dir.join("oauth_creds.json"), "CANARY-LOGIN").unwrap();
+    fs::write(
+        dir.join("settings.json"),
+        r#"{"security":{"auth":{"selectedType":"oauth-personal"}},"mcpServers":{"x":{}},"context":{"fileName":"CANARY.md"}}"#,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn gemini_runs_in_a_private_home_with_only_its_auth_choice_and_login_links() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    let real = lab.home.join(".gemini");
+    user_gemini_folder(&real);
+    let events = run_job(&lab.env(), gemini_job(JailPolicy::Layered)).await;
+    assert!(
+        events.contains(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+
+    let home = lab.recorded("home");
+    assert!(
+        Path::new(&home).starts_with(lab.recorded("tmpdir"))
+            && !Path::new(&home).starts_with(&real),
+        "{home}"
+    );
+    let listing = lab.recorded("listing");
+    let mut names: Vec<&str> = listing.lines().collect();
+    names.sort_unstable();
+    assert_eq!(names, [".env", "oauth_creds.json", "settings.json"]);
+    assert_eq!(
+        lab.recorded("oauth_link").trim(),
+        real.join("oauth_creds.json").to_str().unwrap()
+    );
+    let settings: serde_json::Value = serde_json::from_str(&lab.recorded("settings")).unwrap();
+    assert_eq!(
+        settings,
+        serde_json::json!({"security": {"auth": {"selectedType": "oauth-personal"}}, "context": {"memoryBoundaryMarkers": []}})
+    );
+    assert!(real.join("GEMINI.md").exists() && real.join("skills").exists());
+}
+
+#[tokio::test]
+async fn gemini_without_a_user_folder_still_gets_a_private_home_and_no_system_prompt_file() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    fs::remove_dir_all(lab.home.join(".gemini")).unwrap();
+    let mut env = lab.env();
+    env.inject.push(("GEMINI_API_KEY".into(), "key".into()));
+    env.inject
+        .push(("GEMINI_SYSTEM_MD".into(), "/home/u/system.md".into()));
+    run_job(&env, gemini_job(JailPolicy::Layered)).await;
+    assert!(Path::new(&lab.recorded("home")).starts_with(lab.recorded("tmpdir")));
+    assert_eq!(lab.recorded("listing"), ".env\nsettings.json\n");
+    assert_eq!(lab.recorded("system_md"), "unset");
+}
+
+/// A gemini turn on `lab`, with the notices it sent.
+async fn gemini_notices(lab: &Lab, env: &CliEnv) -> Vec<String> {
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    login_notices(&run_job(env, gemini_job(JailPolicy::Layered)).await)
+}
+
+fn login_notices(events: &[StreamEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Notice(text) => Some(text.clone()),
+            _ => None,
+        })
+        // The fake CLI runs bare: its jail line comes first.
+        .map(|text| match text.split_once("the jail was not probed") {
+            Some((_, rest)) => rest.trim_start_matches("; ").to_owned(),
+            None => text,
+        })
+        .filter(|text| !text.is_empty())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_private_home_folders_are_private() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    run_job(&lab.env(), layered_codex()).await;
+    assert_eq!(lab.recorded("modes").trim(), "700");
+    fs::remove_file(lab.rec.join("modes")).unwrap();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    run_job(&lab.env(), gemini_job(JailPolicy::Layered)).await;
+    assert_eq!(
+        lab.recorded("modes").lines().collect::<Vec<_>>(),
+        ["700", "700"]
+    );
+}
+
+#[tokio::test]
+async fn a_codex_without_a_login_says_so_before_the_turn() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    fs::remove_file(lab.home.join(".codex/auth.json")).unwrap();
+    let events = run_job(&lab.env(), layered_codex()).await;
+    assert_eq!(
+        login_notices(&events),
+        ["codex has no login at ~/.codex/auth.json; run codex login"]
+    );
+    let first_delta = events
+        .iter()
+        .position(|e| matches!(e, StreamEvent::Delta(_)));
+    let notice = events
+        .iter()
+        .position(|e| matches!(e, StreamEvent::Notice(_)));
+    assert!(notice < first_delta, "{events:?}");
+}
+
+#[tokio::test]
+async fn a_codex_with_a_login_raises_no_notice() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    assert!(login_notices(&run_job(&lab.env(), layered_codex()).await).is_empty());
+}
+
+#[tokio::test]
+async fn a_gemini_with_no_login_file_and_no_variable_says_so() {
+    let lab = lab();
+    fs::remove_file(lab.home.join(".gemini/oauth_creds.json")).unwrap();
+    let said = gemini_notices(&lab, &lab.env()).await;
+    // The process may hold a key of its own; the injected one is the control.
+    let has_process_key = std::env::vars_os()
+        .any(|(k, _)| k == "GEMINI_API_KEY" || k.as_encoded_bytes().starts_with(b"GOOGLE_"));
+    if !has_process_key {
+        assert_eq!(
+            said,
+            [
+                "gemini has no login in ~/.gemini and no GEMINI_API_KEY or GOOGLE_* in the \
+              environment; run gemini to log in"
+            ]
+        );
+    }
+    for name in [
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_GENAI_USE_VERTEXAI",
+    ] {
+        let mut env = lab.env();
+        env.inject.push((name.into(), "x".into()));
+        assert!(gemini_notices(&lab, &env).await.is_empty(), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn each_gemini_login_file_counts_and_is_linked_not_copied() {
+    for name in [
+        "oauth_creds.json",
+        "google_accounts.json",
+        "gemini-credentials.json",
+    ] {
+        let lab = lab();
+        let state = lab.home.join(".gemini");
+        fs::remove_file(state.join("oauth_creds.json")).unwrap();
+        fs::write(state.join(name), "CANARY-LOGIN").unwrap();
+        script(
+            &lab.bin.join("gemini"),
+            &lab.rec,
+            &format!(
+                "{GEMINI_HOME_PROBE}\nreadlink \"$GEMINI_CLI_HOME/.gemini/{name}\" > \"$REC/link\"\n"
+            ),
+        );
+        let events = run_job(&lab.env(), gemini_job(JailPolicy::Layered)).await;
+        assert!(
+            login_notices(&events)
+                .iter()
+                .all(|n| !n.contains("no login")),
+            "{name}"
+        );
+        assert_eq!(
+            lab.recorded("link").trim(),
+            state.join(name).to_str().unwrap(),
+            "{name}"
+        );
+        assert!(lab.recorded("listing").lines().any(|l| l == name), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn gemini_takes_its_login_from_gemini_cli_home_when_that_is_set() {
+    let lab = lab();
+    let custom = gemini_home_in(&lab, "custom-gemini");
+    user_gemini_folder(&custom.join(".gemini"));
+    let mut env = lab.env();
+    env.gemini_home = Some(custom.clone());
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    run_job(&env, gemini_job(JailPolicy::Layered)).await;
+    assert_eq!(
+        lab.recorded("oauth_link").trim(),
+        custom.join(".gemini/oauth_creds.json").to_str().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn an_unresolvable_gemini_cli_home_refuses_the_turn_and_wipes_the_folder() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    let mut env = lab.env();
+    env.gemini_home = Some(lab.home.join("gone"));
+    let events = run_job(&env, gemini_job(JailPolicy::Layered)).await;
+    let [StreamEvent::Error(ChatError::Failed(text))] = &events[..] else {
+        panic!("{events:?}")
+    };
+    assert_eq!(
+        text,
+        &format!("{CANNOT_PREPARE_HOME}: $GEMINI_CLI_HOME does not exist or cannot be resolved")
+    );
+    assert!(!lab.rec.join("home").exists(), "gemini must not start");
+    assert_eq!(fs::read_dir(lab.data.join("cli-tmp")).unwrap().count(), 0);
+}
+
+#[tokio::test]
+async fn the_reason_of_a_refused_home_is_bounded() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    // A turn folder that cannot hold the home: the name is taken by a file.
+    let mut env = lab.env();
+    env.gemini_home = Some(lab.home.join("x".repeat(400)));
+    let events = run_job(&env, gemini_job(JailPolicy::Layered)).await;
+    let Some(StreamEvent::Error(ChatError::Failed(text))) = events.last() else {
+        panic!("{events:?}")
+    };
+    assert!(
+        text.chars().count() <= CANNOT_PREPARE_HOME.len() + 2 + REASON_CAP,
+        "{text}"
+    );
+}
+
+/// What gemini's private settings hold when the auth type cannot be read.
+const NO_AUTH_SETTINGS: &str = r#"{"context":{"memoryBoundaryMarkers":[]}}"#;
+
+fn settings_notice(settings: &str, with_variable: bool) -> (Option<String>, String) {
+    let lab = lab();
+    fs::write(lab.home.join(".gemini/settings.json"), settings).unwrap();
+    let mut env = lab.env();
+    if with_variable {
+        env.inject.push(("GEMINI_API_KEY".into(), "k".into()));
+    }
+    let tmp = lab.data.join("t");
+    fs::create_dir_all(&tmp).unwrap();
+    let got = home::prepare_with(&env, Cli::Gemini, &tmp, &[]).unwrap();
+    let written =
+        fs::read_to_string(tmp.join("gemini-home/.gemini/settings.json")).unwrap_or_default();
+    (got.notice, written)
+}
+
+#[test]
+fn gemini_settings_with_comments_are_read() {
+    let text = "{\n // the login\n \"security\": { /* kind */ \"auth\": {\n\
+                \"selectedType\": \"gemini-api-key\", \"url\": \"http://x//y /* z */\" } } }";
+    let (notice, written) = settings_notice(text, false);
+    assert_eq!(notice, None);
+    assert_eq!(
+        written,
+        r#"{"context":{"memoryBoundaryMarkers":[]},"security":{"auth":{"selectedType":"gemini-api-key"}}}"#
+    );
+}
+
+#[test]
+fn gemini_settings_up_to_the_size_limit_are_read() {
+    let pad = "a".repeat(900 * 1024);
+    let text =
+        format!(r#"{{"pad":"{pad}","security":{{"auth":{{"selectedType":"oauth-personal"}}}}}}"#);
+    assert_eq!(settings_notice(&text, false).0, None);
+    let too_big = format!(r#"{{"pad":"{}"}}"#, "a".repeat(1 << 20));
+    let (notice, written) = settings_notice(&too_big, false);
+    assert_eq!(
+        notice.as_deref(),
+        Some("gemini auth type not read: settings.json is larger than 1 MiB")
+    );
+    assert_eq!(written, NO_AUTH_SETTINGS);
+}
+
+#[test]
+fn an_unreadable_gemini_auth_type_gives_a_notice_with_the_reason() {
+    for (text, reason) in [
+        ("{ not json", "settings.json is not valid JSON"),
+        ("{}", "settings.json has no security.auth.selectedType"),
+    ] {
+        let (notice, written) = settings_notice(text, false);
+        assert_eq!(notice, Some(format!("gemini auth type not read: {reason}")));
+        assert_eq!(written, NO_AUTH_SETTINGS);
+        // With an API key in the environment the missing choice is no problem.
+        assert_eq!(settings_notice(text, true).0, None, "{text}");
+    }
+}
+
+#[test]
+fn comments_are_stripped_outside_strings_only() {
+    use super::home::strip_comments;
+    assert_eq!(strip_comments("a // b\nc"), "a \nc");
+    assert_eq!(strip_comments("a /* b\n */ c"), "a \n  c");
+    assert_eq!(strip_comments(r#""//" "/*" "\\" //"#), r#""//" "/*" "\\" "#);
+    assert_eq!(strip_comments("x /* never closed"), "x  ");
+}
+
+#[tokio::test]
+async fn a_codex_that_writes_its_login_in_place_updates_the_real_file() {
+    let lab = lab();
+    script(
+        &lab.bin.join("codex"),
+        &lab.rec,
+        &format!("{CODEX_HOME_PROBE}\nprintf refreshed > \"$CODEX_HOME/auth.json\"\n"),
+    );
+    run_job(&lab.env(), layered_codex()).await;
+    let real = lab.home.join(".codex/auth.json");
+    assert_eq!(fs::read_to_string(real).unwrap(), "refreshed");
+}
+
+#[tokio::test]
+async fn a_login_renamed_over_the_link_stays_in_the_wiped_folder() {
+    // What gemini does to `oauth_creds.json`: the real file is left alone.
+    let lab = lab();
+    script(
+        &lab.bin.join("gemini"),
+        &lab.rec,
+        &format!(
+            "{GEMINI_HOME_PROBE}\nd=\"$GEMINI_CLI_HOME/.gemini\"\n\
+             printf refreshed > \"$d/tmp\" && mv \"$d/tmp\" \"$d/oauth_creds.json\"\n"
+        ),
+    );
+    run_job(&lab.env(), gemini_job(JailPolicy::Layered)).await;
+    let real = lab.home.join(".gemini/oauth_creds.json");
+    assert_eq!(fs::read_to_string(real).unwrap(), "{}");
+}
+
+#[tokio::test]
+async fn the_model_listing_and_the_version_get_no_private_home() {
+    let lab = lab();
+    script(
+        &lab.bin.join("codex"),
+        &lab.rec,
+        "env > \"$REC/env\"\necho codex 1",
+    );
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let lim = Duration::from_secs(10);
+    super::run_version(&env, lim, 4096).await.unwrap();
+    assert!(
+        !lab.recorded("env").contains("CODEX_HOME=/"),
+        "{}",
+        lab.recorded("env")
+    );
+    assert_eq!(fs::read_dir(lab.data.join("cli-tmp")).unwrap().count(), 0);
+}
+
+#[test]
+fn every_gemini_file_variable_is_scrubbed() {
+    for name in [
+        "GEMINI_SYSTEM_MD",
+        "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
+        "GEMINI_CLI_SYSTEM_DEFAULTS_PATH",
+        "GEMINI_CLI_TRUSTED_FOLDERS_PATH",
+    ] {
+        assert!(SCRUBBED.contains(&name), "{name}");
+    }
+    for key in ["GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"] {
+        assert!(!SCRUBBED.contains(&key), "{key} must pass through");
+    }
+}
+
+/// The probe's view of a turn whose real `~/.gemini/.env` is `dotenv`.
+async fn gemini_with_dotenv(lab: &Lab) -> Vec<String> {
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    login_notices(&run_job(&lab.env(), gemini_job(JailPolicy::Layered)).await)
+}
+
+const DOTENV: &str = "# my keys\nGEMINI_SYSTEM_MD=/home/u/evil.md\nexport GEMINI_API_KEY=k1\n\
+    GOOGLE_CLOUD_PROJECT=\"p # not a comment\"\nFOO=bar # c\nGOOGLE_API_KEY='q'  # trailing\n\
+    GEMINI_CLI_SYSTEM_SETTINGS_PATH=/x\n  GOOGLE_CLOUD_LOCATION = us \nbad line\n";
+
+#[tokio::test]
+async fn the_real_dotenv_is_never_linked_only_its_allowlisted_keys_are_rewritten() {
+    let lab = lab();
+    fs::write(lab.home.join(".gemini/.env"), DOTENV).unwrap();
+    let said = gemini_with_dotenv(&lab).await;
+    assert!(said.is_empty(), "{said:?}");
+    assert!(
+        !lab.rec.join("env_is_link").exists(),
+        ".env must not be a link"
+    );
+    let written = lab.recorded("env_home");
+    assert_eq!(
+        written,
+        "GEMINI_API_KEY='k1'\nGOOGLE_CLOUD_PROJECT='p # not a comment'\nGOOGLE_API_KEY='q'\n\
+         GOOGLE_CLOUD_LOCATION='us'\n"
+    );
+    for leaked in ["SYSTEM_MD", "FOO", "SETTINGS_PATH", "evil"] {
+        assert!(!written.contains(leaked), "{leaked}");
+    }
+    assert_eq!(lab.recorded("env_mode").trim(), "600");
+    // The same file sits in the working folder, so gemini's walk upwards for
+    // a `.env` stops there and never reaches the real home.
+    assert_eq!(lab.recorded("env_cwd"), written);
+}
+
+#[tokio::test]
+async fn a_dotenv_with_a_login_key_counts_as_a_login() {
+    let lab = lab();
+    fs::remove_file(lab.home.join(".gemini/oauth_creds.json")).unwrap();
+    fs::write(lab.home.join(".gemini/.env"), "GEMINI_API_KEY=k\n").unwrap();
+    let said = gemini_with_dotenv(&lab).await;
+    assert!(said.iter().all(|n| !n.contains("no login")), "{said:?}");
+}
+
+#[tokio::test]
+async fn an_oversized_or_non_regular_dotenv_is_skipped_with_a_notice() {
+    let big = format!("GEMINI_API_KEY=k\n{}", "#".repeat(70 * 1024));
+    let lab = lab();
+    fs::write(lab.home.join(".gemini/.env"), big).unwrap();
+    let said = gemini_with_dotenv(&lab).await;
+    assert_eq!(said, ["gemini .env skipped: it is larger than 64 KiB"]);
+    assert_eq!(lab.recorded("env_home"), "");
+    assert!(
+        lab.rec.join("env_cwd").exists(),
+        "an empty .env still stops the walk"
+    );
+
+    let lab = lab_sibling();
+    let other = lab.home.join("real.env");
+    fs::write(&other, "GEMINI_API_KEY=k\n").unwrap();
+    symlink(&other, lab.home.join(".gemini/.env")).unwrap();
+    let said = gemini_with_dotenv(&lab).await;
+    assert_eq!(
+        said,
+        ["gemini .env skipped: it is not a regular file of yours"]
+    );
+    assert_eq!(lab.recorded("env_home"), "");
+}
+
+fn lab_sibling() -> Lab {
+    lab()
+}
+
+#[tokio::test]
+async fn without_a_dotenv_gemini_still_gets_an_empty_one_in_its_working_folder() {
+    let lab = lab();
+    gemini_with_dotenv(&lab).await;
+    assert!(lab.rec.join("env_cwd").exists());
+    assert_eq!(lab.recorded("env_cwd"), "");
+    let shared = lab.data.join("cli-cwd");
+    assert_ne!(
+        Path::new(lab.recorded("cwd_seen").trim()),
+        fs::canonicalize(shared).unwrap()
+    );
+}
+
+/// A `GEMINI_CLI_HOME` candidate: a folder of the lab with a `.gemini` inside.
+fn gemini_home_in(lab: &Lab, name: &str) -> PathBuf {
+    let dir = lab.home.join(name);
+    fs::create_dir_all(dir.join(".gemini")).unwrap();
+    for d in [&dir, &dir.join(".gemini")] {
+        fs::set_permissions(d, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn a_sane_gemini_cli_home_is_accepted_resolved() {
+    let lab = lab();
+    let dir = gemini_home_in(&lab, "gh");
+    assert_eq!(home::checked_gemini_home(&dir, Some(&lab.home)), Ok(dir));
+}
+
+#[test]
+fn a_hostile_gemini_cli_home_is_refused() {
+    let lab = lab();
+    let ssh = lab.home.join(".ssh");
+    let claude = lab.home.join(".claude");
+    for dir in [&ssh, &claude] {
+        fs::create_dir_all(dir.join(".gemini")).unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let good = gemini_home_in(&lab, "gh");
+    let dotdot = good.join("..").join("gh");
+    let link = lab.home.join("to-etc");
+    symlink("/etc", &link).unwrap();
+    let writable = gemini_home_in(&lab, "writable");
+    fs::set_permissions(&writable, fs::Permissions::from_mode(0o775)).unwrap();
+    let no_state = lab.home.join("no-state");
+    fs::create_dir(&no_state).unwrap();
+    fs::set_permissions(&no_state, fs::Permissions::from_mode(0o755)).unwrap();
+    let linked_state = lab.home.join("linked-state");
+    fs::create_dir(&linked_state).unwrap();
+    fs::set_permissions(&linked_state, fs::Permissions::from_mode(0o755)).unwrap();
+    symlink(&good, linked_state.join(".gemini")).unwrap();
+    let hostile = [
+        PathBuf::from("/"),
+        PathBuf::from("/usr"),
+        PathBuf::from("rel/dir"),
+        ssh,
+        claude,
+        dotdot,
+        link,
+        writable,
+        no_state,
+        linked_state,
+        lab.home.join("missing"),
+    ];
+    for dir in hostile {
+        let got = home::checked_gemini_home(&dir, Some(&lab.home));
+        assert!(
+            got.as_ref()
+                .is_err_and(|why| why.starts_with("$GEMINI_CLI_HOME ")),
+            "{dir:?}: {got:?}"
+        );
+    }
+}
+
+#[test]
+fn the_jail_layout_refuses_what_the_validator_refuses() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    let mut env = lab.env();
+    env.gemini_home = Some(PathBuf::from("/"));
+    let dirs = Dirs::create(env.data.as_deref().unwrap()).unwrap();
+    let binary = lab.bin.join("gemini");
+    let refusal = jail_plan(&env, Cli::Gemini, &binary, &dirs, None).unwrap_err();
+    assert!(
+        matches!(refusal, JailRefusal::BadGeminiHome(_)),
+        "{refusal:?}"
+    );
+    // Codex and claude never read it.
+    assert!(jail_plan(&env, Cli::Claude, &binary, &dirs, None).is_ok());
+}
+
+#[tokio::test]
+async fn a_hostile_gemini_cli_home_refuses_the_turn_with_a_notice() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    let mut env = lab.env();
+    env.gemini_home = Some(PathBuf::from("/usr"));
+    let events = run_job(&env, gemini_job(JailPolicy::Layered)).await;
+    let [StreamEvent::Error(ChatError::Failed(text))] = &events[..] else {
+        panic!("{events:?}")
+    };
+    assert!(
+        text.starts_with(&format!("{CANNOT_PREPARE_HOME}: $GEMINI_CLI_HOME ")),
+        "{text}"
+    );
+    assert!(!lab.rec.join("home").exists());
+}
+
+#[tokio::test]
+async fn the_login_notice_is_shown_once_per_run_not_every_turn() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    fs::remove_file(lab.home.join(".codex/auth.json")).unwrap();
+    let env = lab.env();
+    let first = login_notices(&run_job(&env, layered_codex()).await);
+    let second = login_notices(&run_job(&env, layered_codex()).await);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(second.is_empty(), "{second:?}");
+}
+
+#[tokio::test]
+async fn a_long_path_in_a_notice_is_capped() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    let mut env = lab.env();
+    env.codex_home = Some(PathBuf::from(format!("/{}", "x".repeat(400))));
+    let said = login_notices(&run_job(&env, layered_codex()).await);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].chars().count() < 260, "{}", said[0]);
+}
+
+#[test]
+fn comment_stripping_survives_the_awkward_cases() {
+    use super::home::strip_comments;
+    let cases = [
+        (r#"{"a":"x\"//y"} // z"#, r#"{"a":"x\"//y"} "#),
+        ("a // no newline at the end", "a "),
+        ("/ alone and */ stray", "/ alone and */ stray"),
+        ("a /* /* nested */ b */", "a   b */"),
+        ("a /**/ b", "a   b"),
+        ("é // ü\nñ", "é \nñ"),
+        ("\"unterminated // string", "\"unterminated // string"),
+        ("a/*x\ny*/b", "a\n b"),
+    ];
+    for (input, want) in cases {
+        assert_eq!(strip_comments(input), want, "{input:?}");
+    }
+}
+
+#[tokio::test]
+async fn lazarobox_never_writes_the_users_oauth_login_even_when_gemini_renames_over_the_link() {
+    let lab = lab();
+    let real = lab.home.join(".gemini/oauth_creds.json");
+    fs::write(&real, r#"{"access_token":"old","expiry_date":100}"#).unwrap();
+    let before = fs::metadata(&real).unwrap().modified().unwrap();
+    let body = format!(
+        "{GEMINI_HOME_PROBE}\nd=\"$GEMINI_CLI_HOME/.gemini\"\n\
+         printf '%s' '{{\"access_token\":\"new\",\"expiry_date\":999}}' > \"$d/new\" && \
+         mv \"$d/new\" \"$d/oauth_creds.json\"\n"
+    );
+    script(&lab.bin.join("gemini"), &lab.rec, &body);
+    let events = run_job(&lab.env(), gemini_job(JailPolicy::Layered)).await;
+    assert!(
+        events.contains(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&real).unwrap(),
+        r#"{"access_token":"old","expiry_date":100}"#
+    );
+    assert_eq!(fs::metadata(&real).unwrap().modified().unwrap(), before);
+    let names: Vec<String> = fs::read_dir(lab.home.join(".gemini"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.iter().all(|n| !n.contains("lazarobox")), "{names:?}");
+}
+
+fn mkfifo(path: &Path) {
+    let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+    // SAFETY: a plain mkfifo with a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+}
+
+#[tokio::test]
+async fn a_skipped_dotenv_value_is_never_dropped_silently_and_never_echoed() {
+    let lab = lab();
+    let tricky = [
+        "GEMINI_API_KEY=it's \"both\"",
+        "GOOGLE_API_KEY=\"it's \\\"x\\\"\"",
+        "GOOGLE_CLOUD_PROJECT=ok",
+    ]
+    .join("\n");
+    fs::write(lab.home.join(".gemini/.env"), tricky).unwrap();
+    let said = gemini_with_dotenv(&lab).await;
+    assert_eq!(
+        said,
+        [
+            "gemini .env: GEMINI_API_KEY skipped (unsupported characters); \
+             gemini .env: GOOGLE_API_KEY skipped (unsupported characters)"
+        ]
+    );
+    assert_eq!(lab.recorded("env_home"), "GOOGLE_CLOUD_PROJECT='ok'\n");
+    assert!(!said.concat().contains("both"));
+}
+
+#[test]
+fn a_bom_and_lone_carriage_returns_are_handled_by_the_dotenv_parser() {
+    let (pairs, notes) =
+        home::parse_dotenv("\u{feff}GEMINI_API_KEY=a\rGOOGLE_API_KEY=b\r\nFOO=c\n");
+    assert_eq!(
+        pairs,
+        [
+            ("GEMINI_API_KEY".to_owned(), "a".to_owned()),
+            ("GOOGLE_API_KEY".to_owned(), "b".to_owned()),
+            ("FOO".to_owned(), "c".to_owned())
+        ]
+    );
+    assert!(notes.is_empty());
+}
+
+#[test]
+fn an_unterminated_quote_skips_its_lines_with_a_notice_and_yields_no_keys() {
+    let text = "A=1\nB=\"first\nGEMINI_API_KEY=evil\nlast\" # end\nGOOGLE_API_KEY=ok\n";
+    let (pairs, notes) = home::parse_dotenv(text);
+    let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(keys, ["A", "GOOGLE_API_KEY"]);
+    assert_eq!(
+        notes,
+        ["gemini .env: line 2 has an unterminated quote; skipped"]
+    );
+    // Never closed: the rest of the file is skipped.
+    let (pairs, notes) = home::parse_dotenv("X='open\nGEMINI_API_KEY=evil\n");
+    assert!(pairs.is_empty(), "{pairs:?}");
+    assert_eq!(notes.len(), 1);
+}
+
+#[test]
+fn a_hash_without_a_space_before_it_stays_in_the_value() {
+    let (pairs, _) = home::parse_dotenv("GEMINI_API_KEY=abc#def\nGOOGLE_API_KEY=abc #def\n");
+    assert_eq!(pairs[0].1, "abc#def");
+    assert_eq!(pairs[1].1, "abc");
+}
+
+/// A key written outside every multi-line value, by a plain reference reading
+/// that follows quotes across lines.
+fn reference_keys(text: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut quote: Option<char> = None;
+    for line in text.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        if let Some(q) = quote {
+            if line.contains(q) {
+                quote = None;
+            }
+            continue;
+        }
+        let line = line.trim();
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((key, rest)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        keys.push(key.trim().to_owned());
+        let rest = rest.trim_start();
+        if let Some(q) = rest.chars().next().filter(|c| matches!(c, '"' | '\''))
+            && !rest[1..].contains(q)
+        {
+            quote = Some(q);
+        }
+    }
+    keys
+}
+
+#[test]
+fn the_parser_never_yields_a_key_from_inside_a_multi_line_value() {
+    let pieces = [
+        "A=1",
+        "B=\"x",
+        "y\"",
+        "C='",
+        "GEMINI_API_KEY=evil",
+        "export GOOGLE_API_KEY=z",
+        "#c",
+        "",
+        "q' # t",
+        "D=\"a\" # b",
+        "GOOGLE_CLOUD_PROJECT=\"p",
+        "\"",
+    ];
+    let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+    for _ in 0..2000 {
+        let mut text = String::new();
+        for _ in 0..(seed % 9 + 1) {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            text.push_str(pieces[(seed >> 33) as usize % pieces.len()]);
+            text.push(['\n', '\r', '\n'][(seed >> 20) as usize % 3]);
+        }
+        let allowed = reference_keys(&text);
+        let (pairs, _) = home::parse_dotenv(&text);
+        for (key, _) in pairs {
+            assert!(
+                allowed.contains(&key),
+                "{key} came from inside a value in {text:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_fifo_or_foreign_dotenv_is_skipped_without_hanging() {
+    let lab = lab();
+    mkfifo(&lab.home.join(".gemini/.env"));
+    let said = gemini_with_dotenv(&lab).await;
+    assert_eq!(
+        said,
+        ["gemini .env skipped: it is not a regular file of yours"]
+    );
+    // A file of another user (root's) is refused by its owner.
+    let foreign = Path::new("/etc/passwd");
+    if foreign.exists() {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(
+                home::read_dotenv(foreign).unwrap_err(),
+                "it is not a regular file of yours"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_fifo_settings_file_is_skipped_without_hanging() {
+    let lab = lab();
+    let settings = lab.home.join(".gemini/settings.json");
+    fs::remove_file(&settings).unwrap();
+    mkfifo(&settings);
+    let said = gemini_with_dotenv(&lab).await;
+    assert_eq!(
+        said,
+        ["gemini auth type not read: settings.json is not a regular file of yours"]
+    );
+}
+
+#[tokio::test]
+async fn an_empty_value_is_not_a_login() {
+    let lab = lab();
+    fs::remove_file(lab.home.join(".gemini/oauth_creds.json")).unwrap();
+    fs::write(lab.home.join(".gemini/.env"), "GEMINI_API_KEY=\n").unwrap();
+    let said = gemini_with_dotenv(&lab).await;
+    assert!(said.iter().any(|n| n.contains("no login")), "{said:?}");
+    let mut env = lab.env();
+    env.inject.push(("GEMINI_API_KEY".into(), "".into()));
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_HOME_PROBE);
+    let said = login_notices(&run_job(&env, gemini_job(JailPolicy::Layered)).await);
+    assert!(said.iter().any(|n| n.contains("no login")), "{said:?}");
+}
+
+#[test]
+fn a_gemini_cli_home_equal_to_home_follows_the_default_rules() {
+    let lab = lab();
+    fs::set_permissions(&lab.home, fs::Permissions::from_mode(0o775)).unwrap();
+    assert_eq!(
+        home::checked_gemini_home(&lab.home, Some(&lab.home)),
+        Ok(lab.home.clone())
+    );
+    // Any other 0775 home is refused, and the error says how to fix it.
+    let other = gemini_home_in(&lab, "other");
+    fs::set_permissions(&other, fs::Permissions::from_mode(0o775)).unwrap();
+    let why = home::checked_gemini_home(&other, Some(&lab.home)).unwrap_err();
+    assert!(why.contains("chmod g-w,o-w"), "{why}");
+    // A group-writable `.gemini` is refused too.
+    let third = gemini_home_in(&lab, "third");
+    fs::set_permissions(third.join(".gemini"), fs::Permissions::from_mode(0o775)).unwrap();
+    assert!(home::checked_gemini_home(&third, Some(&lab.home)).is_err());
+}
+
+#[test]
+fn the_work_folder_that_cannot_hold_the_dotenv_turns_the_tools_off() {
+    let lab = lab();
+    let wired = |cwd: PathBuf| Wired {
+        args: Vec::new(),
+        drops: Vec::new(),
+        vars: Vec::new(),
+        socket: lab.rec.join("s"),
+        cwd: Some(cwd),
+    };
+    let work = lab.rec.join("work");
+    fs::create_dir(&work).unwrap();
+    assert!(with_dotenv(Some(wired(work.clone())), Some("A='1'\n")).is_some());
+    assert_eq!(fs::read_to_string(work.join(".env")).unwrap(), "A='1'\n");
+    assert!(with_dotenv(Some(wired(lab.rec.join("gone"))), Some("A='1'\n")).is_none());
+}
+
+#[tokio::test]
+async fn the_login_notice_counts_as_shown_only_once_delivered() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_HOME_PROBE);
+    fs::remove_file(lab.home.join(".codex/auth.json")).unwrap();
+    let env = lab.env();
+    // A turn whose events nobody receives delivers nothing.
+    let (tx, rx) = mpsc::channel(64);
+    drop(rx);
+    process_turn(&env, layered_codex(), &tx).await;
+    let again = login_notices(&run_job(&env, layered_codex()).await);
+    assert_eq!(again.len(), 1, "{again:?}");
+}
+
+/// Issue #526: `--check-install` prints the diagnosis of the trust check.
+#[test]
+fn check_install_is_ok_for_a_closed_binary_and_names_the_fix_otherwise() {
+    let lab = lab();
+    let dir = lab.bin.join("shimdir");
+    fs::create_dir(&dir).unwrap();
+    let shim = dir.join("lazarobox-shell");
+    fs::write(&shim, "").unwrap();
+    for (dir_mode, shim_mode) in [(0o755, 0o755), (0o775, 0o775), (0o757, 0o755)] {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(dir_mode)).unwrap();
+        fs::set_permissions(&shim, fs::Permissions::from_mode(shim_mode)).unwrap();
+        let verdict = check_install(&shim, Some(&lab.home));
+        match (dir_mode, shim_mode) {
+            (0o755, 0o755) => assert!(verdict.is_ok(), "{verdict:?}"),
+            (0o775, 0o775) => {
+                let text = verdict.unwrap_err();
+                assert!(text.starts_with("tools would be off: "), "{text}");
+                assert!(
+                    text.contains(
+                        "writable by its group (install with umask 022 to keep it); \
+                         run: chmod g-w "
+                    ),
+                    "{text}"
+                );
+            }
+            _ => {
+                let text = verdict.unwrap_err();
+                assert!(text.contains("run: chmod o-w "), "{text}");
+                assert!(!text.contains("umask"), "{text}");
+            }
+        }
+    }
+    let gone = check_install(&dir.join("missing"), None).unwrap_err();
+    assert!(gone.starts_with("tools would be off: "), "{gone}");
 }

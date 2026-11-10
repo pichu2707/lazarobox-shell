@@ -235,6 +235,7 @@ fn pane(n: u32) -> PaneId {
 fn resolve(n: u32, cwd: &str) -> MemCmd {
     MemCmd::Resolve {
         pane: pane(n),
+        epoch: 0,
         cwd: cwd.into(),
     }
 }
@@ -319,7 +320,11 @@ async fn commands_run_in_fifo_order() {
     }
     for n in 1..=3 {
         match rig.answer().await {
-            MemReply::Project { pane: p, result } => {
+            MemReply::Project {
+                pane: p,
+                epoch: 0,
+                result,
+            } => {
                 assert_eq!(p, pane(n));
                 assert_eq!(result, Ok("widget".to_string()));
             }
@@ -508,12 +513,14 @@ async fn a_context_for_an_unknown_project_is_no_memory_yet() {
     );
     rig.link.send(MemCmd::Context {
         pane: pane(1),
+        epoch: 0,
         project: "widget".into(),
     });
     assert_eq!(
         rig.answer().await,
         MemReply::Context {
             pane: pane(1),
+            epoch: 0,
             block: None
         }
     );
@@ -524,6 +531,7 @@ async fn a_context_is_returned_as_a_block() {
     let mut rig = up();
     rig.link.send(MemCmd::Context {
         pane: pane(1),
+        epoch: 0,
         project: "widget".into(),
     });
     match rig.answer().await {
@@ -657,6 +665,7 @@ async fn a_down_server_answers_unavailable_at_once_and_probes_every_10_seconds()
         rig.next().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::NotRunning
         }
     );
@@ -665,6 +674,7 @@ async fn a_down_server_answers_unavailable_at_once_and_probes_every_10_seconds()
         rig.next().await,
         MemReply::Unavailable {
             pane: Some(pane(2)),
+            epoch: Some(0),
             reason: Reason::NotRunning
         }
     );
@@ -701,6 +711,7 @@ async fn an_old_or_foreign_server_is_unavailable_with_its_reason() {
         rig.next().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::OldServer { port: PORT }
         }
     );
@@ -717,6 +728,7 @@ async fn an_old_or_foreign_server_is_unavailable_with_its_reason() {
         rig.next().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::Foreign { port: PORT }
         }
     );
@@ -740,6 +752,7 @@ async fn a_transport_failure_after_ready_sets_down() {
         rig.answer().await,
         MemReply::Unavailable {
             pane: Some(pane(2)),
+            epoch: Some(0),
             reason: Reason::NotRunning
         }
     );
@@ -765,6 +778,7 @@ async fn a_full_queue_answers_busy_at_once() {
         rig.rx.try_recv().unwrap(),
         MemReply::Unavailable {
             pane: Some(pane(99)),
+            epoch: Some(0),
             reason: Reason::Busy
         }
     );
@@ -799,6 +813,7 @@ async fn each_call_class_has_its_own_limit() {
     rig.link.send(resolve(1, "/a"));
     rig.link.send(MemCmd::Context {
         pane: pane(1),
+        epoch: 0,
         project: "widget".into(),
     });
     rig.link.send(save(1, None));
@@ -828,6 +843,7 @@ async fn a_silent_health_probe_gives_up_at_300_ms() {
         rig.answer().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::NoAnswer
         }
     );
@@ -887,12 +903,14 @@ async fn a_panic_while_handling_still_gives_a_reply_and_the_worker_lives() {
     rig.link.send(resolve(1, "/a"));
     rig.link.send(MemCmd::Context {
         pane: pane(2),
+        epoch: 0,
         project: "widget".into(),
     });
     assert_eq!(
         rig.answer().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::NoAnswer
         }
     );
@@ -1012,6 +1030,7 @@ async fn a_context_server_error_is_unavailable_and_degrades_the_health() {
         .on("GET /context", Act::Reply(500, b"boom".to_vec()));
     let context = |n| MemCmd::Context {
         pane: pane(n),
+        epoch: 0,
         project: "widget".into(),
     };
     rig.link.send(context(1));
@@ -1027,6 +1046,7 @@ async fn a_context_server_error_is_unavailable_and_degrades_the_health() {
         rig.next().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::NoAnswer
         }
     );
@@ -1047,12 +1067,14 @@ async fn any_non_200_context_other_than_unknown_project_is_unavailable() {
             .on("GET /context", Act::Reply(status, body.to_vec()));
         rig.link.send(MemCmd::Context {
             pane: pane(1),
+            epoch: 0,
             project: "widget".into(),
         });
         assert_eq!(
             rig.answer().await,
             MemReply::Unavailable {
                 pane: Some(pane(1)),
+                epoch: Some(0),
                 reason: Reason::NoAnswer
             },
             "{status}"
@@ -1068,12 +1090,14 @@ async fn a_200_context_that_cannot_be_read_is_no_memory_and_stays_healthy() {
     for n in 1..=2 {
         rig.link.send(MemCmd::Context {
             pane: pane(n),
+            epoch: 0,
             project: "widget".into(),
         });
         assert_eq!(
             rig.answer().await,
             MemReply::Context {
                 pane: pane(n),
+                epoch: 0,
                 block: None
             }
         );
@@ -1406,7 +1430,11 @@ async fn take_the_offer(rig: &mut Rig) {
 }
 
 fn unavailable_global(reason: Reason) -> MemReply {
-    MemReply::Unavailable { pane: None, reason }
+    MemReply::Unavailable {
+        pane: None,
+        epoch: None,
+        reason,
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -1426,6 +1454,7 @@ async fn a_down_server_with_a_3x_binary_gets_one_offer_with_the_absolute_path() 
         rig.next().await,
         MemReply::Unavailable {
             pane: Some(pane(1)),
+            epoch: Some(0),
             reason: Reason::NotRunning
         }
     );
@@ -1464,6 +1493,7 @@ async fn a_missing_or_1x_binary_is_told_once_and_never_offered() {
             rig.next().await,
             MemReply::Unavailable {
                 pane: Some(pane(1)),
+                epoch: Some(0),
                 reason: Reason::NotRunning
             }
         );

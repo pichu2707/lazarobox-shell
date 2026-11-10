@@ -153,6 +153,7 @@ fn memory_cmds(effects: &[Effect]) -> Vec<MemCmd> {
 fn resolve() -> MemCmd {
     MemCmd::Resolve {
         pane: chat_id(),
+        epoch: 0,
         cwd: CWD.into(),
     }
 }
@@ -160,6 +161,7 @@ fn resolve() -> MemCmd {
 fn context_cmd() -> MemCmd {
     MemCmd::Context {
         pane: chat_id(),
+        epoch: 0,
         project: PROJECT.into(),
     }
 }
@@ -167,6 +169,7 @@ fn context_cmd() -> MemCmd {
 fn project(a: &mut App) -> Vec<Effect> {
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Ok(PROJECT.into()),
     }))
 }
@@ -174,12 +177,14 @@ fn project(a: &mut App) -> Vec<Effect> {
 fn context(a: &mut App, block: Option<ContextBlock>) -> Vec<Effect> {
     a.update(AppEvent::Memory(MemReply::Context {
         pane: chat_id(),
+        epoch: 0,
         block,
     }))
 }
 
 fn unavailable(a: &mut App, reason: Reason) -> Vec<Effect> {
     a.update(AppEvent::Memory(MemReply::Unavailable {
+        epoch: None,
         pane: Some(chat_id()),
         reason,
     }))
@@ -340,6 +345,7 @@ fn a_directory_that_is_not_a_git_project_says_so_once() {
         let (mut a, _) = opened(true);
         a.update(AppEvent::Memory(MemReply::Project {
             pane: chat_id(),
+            epoch: 0,
             result: Err(error),
         }));
         assert_eq!(systems(&a), ["memory needs a git project"]);
@@ -351,6 +357,7 @@ fn a_reply_the_app_cannot_read_gets_the_generic_reason_line() {
     let (mut a, _) = opened(true);
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Err(ProjectError::Invalid),
     }));
     assert_eq!(
@@ -399,6 +406,7 @@ fn a_reply_for_a_pane_that_is_gone_changes_nothing() {
     let (mut a, _) = opened(true);
     let gone = AppEvent::Memory(MemReply::Context {
         pane: PaneId::for_test(9),
+        epoch: 0,
         block: Some(block(3)),
     });
     assert_eq!(a.update(gone), vec![]);
@@ -418,7 +426,7 @@ fn waiting_for_the_project() -> App {
     let mut a = timed(launched(80, 25).with_ai(ai(true)));
     at(&mut a, 0, cwd_event(CWD));
     at(&mut a, 0, ctrl_space());
-    let effects = at(&mut a, 0, key('c'));
+    let effects = a.update_settled(key('c'));
     assert_eq!(memory_cmds(&effects), [resolve()]);
     a
 }
@@ -438,12 +446,112 @@ fn a_view_waiting_for_its_project_gives_up_after_five_seconds() {
     assert_eq!(systems(&a), [NO_ANSWER_LINE]);
 }
 
+// chat-folder D6: a reply asked under the old folder is not for the new one --
+
+#[test]
+fn a_folder_change_asks_for_the_project_of_the_new_folder() {
+    let (mut a, _) = opened(true);
+    project(&mut a);
+    context(&mut a, Some(block(1)));
+    assert_eq!(chat_of(&a).readiness(), &Readiness::Ready(PROJECT.into()));
+    let effects = a.apply_folder(chat_id(), "/srv/other".into());
+    assert_eq!(
+        memory_cmds(&effects),
+        [MemCmd::Resolve {
+            pane: chat_id(),
+            cwd: "/srv/other".into(),
+            epoch: 1,
+        }]
+    );
+    assert!(matches!(
+        chat_of(&a).readiness(),
+        Readiness::Resolving { .. }
+    ));
+    assert_eq!(head(&a), None, "the old block and its line are gone");
+}
+
+#[test]
+fn replies_of_the_old_folder_are_ignored_and_the_new_ones_are_not() {
+    let (mut a, _) = opened(true);
+    a.apply_folder(chat_id(), "/srv/other".into());
+    let stale = a.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        epoch: 0,
+        result: Ok(PROJECT.into()),
+    }));
+    assert_eq!(stale, vec![]);
+    assert!(matches!(
+        chat_of(&a).readiness(),
+        Readiness::Resolving { .. }
+    ));
+
+    let fresh = a.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        epoch: 1,
+        result: Ok("other".into()),
+    }));
+    assert_eq!(
+        memory_cmds(&fresh),
+        [MemCmd::Context {
+            pane: chat_id(),
+            project: "other".into(),
+            epoch: 1,
+        }]
+    );
+
+    a.update(AppEvent::Memory(MemReply::Context {
+        pane: chat_id(),
+        epoch: 0,
+        block: Some(block(3)),
+    }));
+    assert_eq!(head(&a), None, "a stale block is not injected");
+    a.update(AppEvent::Memory(MemReply::Context {
+        pane: chat_id(),
+        epoch: 1,
+        block: Some(block(3)),
+    }));
+    assert_eq!(head(&a).as_deref(), Some("▸ memory (3 notes)"));
+}
+
+#[test]
+fn a_failure_reply_of_the_old_folder_does_not_degrade_the_new_one() {
+    let (mut a, _) = opened(true);
+    a.apply_folder(chat_id(), "/srv/other".into());
+    let stale = a.update(AppEvent::Memory(MemReply::Unavailable {
+        pane: Some(chat_id()),
+        epoch: Some(0),
+        reason: Reason::NotRunning,
+    }));
+    assert_eq!(stale, vec![]);
+    assert!(matches!(
+        chat_of(&a).readiness(),
+        Readiness::Resolving { .. }
+    ));
+    // The real answer still lands.
+    let fresh = a.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        epoch: 1,
+        result: Ok("other".into()),
+    }));
+    assert_eq!(memory_cmds(&fresh).len(), 1);
+    // A failure of the current epoch still applies.
+    let (mut b, _) = opened(true);
+    b.apply_folder(chat_id(), "/srv/other".into());
+    b.update(AppEvent::Memory(MemReply::Unavailable {
+        pane: Some(chat_id()),
+        epoch: Some(1),
+        reason: Reason::NotRunning,
+    }));
+    assert!(matches!(chat_of(&b).readiness(), Readiness::Unavailable(_)));
+}
+
 #[test]
 fn after_giving_up_the_chat_streams_and_the_late_project_reply_is_ignored() {
     let mut a = waiting_for_the_project();
     tick(&mut a, 5_000);
     let late = a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
+        epoch: 0,
         result: Ok(PROJECT.into()),
     }));
     assert_eq!(memory_cmds(&late), [], "no context is asked for any more");
@@ -481,6 +589,7 @@ fn a_lost_context_reply_gives_up_after_five_seconds_from_its_request() {
         1_000,
         AppEvent::Memory(MemReply::Project {
             pane: chat_id(),
+            epoch: 0,
             result: Ok(PROJECT.into()),
         }),
     );
@@ -496,6 +605,7 @@ fn a_lost_context_reply_gives_up_after_five_seconds_from_its_request() {
         7_000,
         AppEvent::Memory(MemReply::Context {
             pane: chat_id(),
+            epoch: 0,
             block: Some(block(3)),
         }),
     );
@@ -510,6 +620,7 @@ fn an_answer_in_time_means_nothing_to_give_up() {
         100,
         AppEvent::Memory(MemReply::Project {
             pane: chat_id(),
+            epoch: 0,
             result: Ok(PROJECT.into()),
         }),
     );
@@ -518,6 +629,7 @@ fn an_answer_in_time_means_nothing_to_give_up() {
         200,
         AppEvent::Memory(MemReply::Context {
             pane: chat_id(),
+            epoch: 0,
             block: Some(block(3)),
         }),
     );
@@ -677,6 +789,29 @@ fn an_unmodified_y_starts_the_server_and_is_not_typed() {
     assert_eq!(a.update(unmodified('y')), start_server());
     assert_eq!(a.chat_guidance(chat_id()), None, "answered");
     assert_eq!(chat_of(&a).composer().text(), "");
+}
+
+// ai-cost 1c: the `/cost` overlay hides the offer, so it must not answer it.
+#[test]
+fn the_cost_overlay_keeps_the_keys_from_the_engram_offer() {
+    let mut a = offered();
+    for c in "/cost".chars() {
+        a.update(unmodified(c));
+    }
+    a.update(plain_key(KeyCode::Enter));
+    assert!(chat_of(&a).cost().is_some());
+    assert_eq!(chat_of(&a).composer().text(), "");
+    for key in [unmodified('y'), unmodified('n')] {
+        assert_eq!(a.update(key), vec![], "the offer must not start or decline");
+        assert!(chat_of(&a).cost().is_some());
+    }
+    a.update(plain_key(KeyCode::Esc));
+    assert!(chat_of(&a).cost().is_none(), "Esc closes the overlay");
+    assert_eq!(
+        a.chat_guidance(chat_id()).as_deref(),
+        Some(OFFER_PROMPT),
+        "the offer is still pending"
+    );
 }
 
 #[test]
@@ -972,7 +1107,11 @@ fn a_server_outcome_with_no_chat_open_is_a_notice() {
 // 10.5: a missing or old binary is the reason, not 'not running' ------------------
 
 fn global_notice(reason: Reason) -> AppEvent {
-    AppEvent::Memory(MemReply::Unavailable { pane: None, reason })
+    AppEvent::Memory(MemReply::Unavailable {
+        epoch: None,
+        pane: None,
+        reason,
+    })
 }
 
 #[test]

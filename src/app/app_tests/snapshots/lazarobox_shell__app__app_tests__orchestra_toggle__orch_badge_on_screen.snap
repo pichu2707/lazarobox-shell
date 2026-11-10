@@ -1,0 +1,29 @@
+---
+source: src/app/app_tests/orchestra_toggle.rs
+expression: shown
+---
+                                       │                                   ORCH
+                                       │• This chat cannot write files, run
+                                       │  commands or read GitHub itself. A code
+                                       │  worker writes, through the batch
+                                       │  review. Ctrl+O goes back to a plain
+                                       │  chat.
+                                       │
+                                       │• code workers need Write: type /write,
+                                       │  or turn it on in the AI menu
+                                       │  (Ctrl+Space m)
+                                       │
+                                       │• ORCH on
+                                       │
+                                       │• This chat cannot write files, run
+                                       │  commands or read GitHub itself. A code
+                                       │  worker writes, through the batch
+                                       │  review. Ctrl+O goes back to a plain
+                                       │  chat.
+                                       │
+                                       │• code workers need Write: type /write,
+                                       │  or turn it on in the AI menu
+                                       │  (Ctrl+Space m)
+                                       │Ctrl+O: stop orchestrating
+                                       │
+ ◐ CHAT  /launch                                          ollama › llama3:8b

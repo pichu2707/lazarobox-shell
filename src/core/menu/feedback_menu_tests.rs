@@ -92,10 +92,7 @@ fn enter_opens_the_form_with_the_environment_shown() {
         ]
     );
     assert_eq!(hint(&m), HINT_KIND);
-    assert_eq!(
-        HINT_KIND,
-        "←/→ kind · Tab · Ctrl+S send · Ctrl+O open · Esc"
-    );
+    assert_eq!(HINT_KIND, "←/→ kind · Tab next · Ctrl+S send · Esc back");
     // The focused text field draws its cursor.
     send(&mut m, KeyCode::Tab);
     assert_eq!(texts(&m)[2], "› Title");
@@ -108,7 +105,7 @@ fn enter_opens_the_form_with_the_environment_shown() {
     assert_eq!(hint(&m), HINT_ATTACH);
     assert_eq!(
         HINT_ATTACH,
-        "Space attach · Ctrl+S send · Ctrl+O open · Esc"
+        "Space attach · Tab next · Ctrl+S send · Esc back"
     );
     // Every footer fits the 48 columns of the narrow popup.
     for h in [
@@ -119,6 +116,7 @@ fn enter_opens_the_form_with_the_environment_shown() {
         HINT_SENT,
         HINT_SENT_COPY,
         feedback::SENDING,
+        feedback::SEARCHING,
     ] {
         assert!(h.chars().count() <= 48, "{h}");
     }
@@ -205,10 +203,13 @@ const ISSUE_URL: &str = "https://github.com/pichu2707/lazarobox-shell/issues/42"
 /// The form of [`filled`] after its Ctrl+S, and the issue it sends.
 fn sending(opener: bool) -> (MenuState, feedback::Issue) {
     let mut m = filled(opener);
-    let MenuCommand::SendIssue(issue) = ctrl(&mut m, 's') else {
+    let MenuCommand::SendIssue(request) = ctrl(&mut m, 's') else {
         panic!("not sent");
     };
-    (m, *issue)
+    let feedback::Request::Find(issue) = *request else {
+        panic!("Ctrl+S looks for similar issues first: {request:?}");
+    };
+    (m, issue)
 }
 
 // Spec (open-links S4, S7): Ctrl+S sends the issue; the form stays, says
@@ -227,12 +228,12 @@ fn ctrl_s_sends_the_issue_and_waits_for_the_answer() {
     );
     let form = texts(&m);
     assert_eq!(form[3], "  Scroll jumps");
-    assert_eq!(hint(&m), "Sending to GitHub…");
+    assert_eq!(hint(&m), "Looking for similar issues, then sending…");
     assert_eq!(ctrl(&mut m, 's'), MenuCommand::None);
     assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::None);
     assert!(m.in_sub_level(), "Esc does not leave while sending");
     assert_eq!(texts(&m), form);
-    assert_eq!(hint(&m), "Sending to GitHub…");
+    assert_eq!(hint(&m), "Looking for similar issues, then sending…");
 }
 
 // Spec (open-links S7): once sent, the view shows the issue's link on a
@@ -360,6 +361,19 @@ fn a_missing_title_reads_as_the_footer_error() {
     assert_eq!(texts(&m)[3], "  s▏");
 }
 
+// A terminal that sends ^H for Backspace delivers Ctrl+H.
+#[test]
+fn ctrl_h_deletes_like_backspace_in_the_feedback_form() {
+    let mut m = on_row();
+    send(&mut m, KeyCode::Enter);
+    send(&mut m, KeyCode::Tab);
+    send(&mut m, KeyCode::Char('a'));
+    send(&mut m, KeyCode::Char('b'));
+    assert_eq!(texts(&m)[3], "  ab▏");
+    key_with(&mut m, KeyCode::Char('h'), KeyModifiers::CONTROL);
+    assert_eq!(texts(&m)[3], "  a▏");
+}
+
 // Spec (config-menu, Feedback): the engines attached are the detected ones,
 // with their version; one not installed is left out.
 #[test]
@@ -420,4 +434,122 @@ fn the_attached_facts_wrap_and_are_never_cut() {
     for line in &shown {
         assert!(line.chars().count() <= 48, "{line}");
     }
+}
+
+// Issue #551: from any tab, the form opens filled and closes to its row.
+#[test]
+fn open_feedback_shows_the_text_and_closes_to_the_feedback_row() {
+    let mut m = MenuState::open(&Config::default()).with_feedback(facts());
+    m.open_feedback("The chat hangs");
+    let shown = texts(&m);
+    assert!(
+        shown.iter().any(|line| line.contains("The chat hangs")),
+        "{shown:?}"
+    );
+    send(&mut m, KeyCode::Esc);
+    assert!(!m.feedback_open());
+    assert_eq!(m.selected_label(&Config::default()), Some("Feedback"));
+}
+
+// Spec (issue-draft): a draft fills its own fields and opens on its kind; the
+// first-line rule of `/feedback` stays out of it.
+#[test]
+fn open_feedback_draft_fills_kind_and_fields_and_lands_on_the_row() {
+    let mut m = MenuState::open(&Config::default()).with_feedback(facts());
+    m.open_feedback_draft(
+        feedback::Kind::Idea,
+        "A goal title",
+        "Line one\nLine two of the description",
+    );
+    let form = m.feedback_form().unwrap();
+    assert_eq!(form.kind(), feedback::Kind::Idea);
+    assert_eq!(form.title(), "A goal title");
+    assert_eq!(form.description(), "Line one\nLine two of the description");
+    send(&mut m, KeyCode::Esc);
+    assert!(!m.feedback_open());
+    assert_eq!(m.selected_label(&Config::default()), Some("Feedback"));
+    m.open_feedback_draft(feedback::Kind::Bug, "t", "d");
+    assert_eq!(m.feedback_form().unwrap().kind(), feedback::Kind::Bug);
+}
+
+// `/feedback <text>` keeps its first-line rule and still starts on `Bug report`.
+#[test]
+fn open_feedback_keeps_the_first_line_rule_and_starts_on_a_bug() {
+    let mut m = MenuState::open(&Config::default()).with_feedback(facts());
+    m.open_feedback("First line\nThe rest");
+    let form = m.feedback_form().unwrap();
+    assert_eq!(form.kind(), feedback::Kind::Bug);
+    assert_eq!(form.title(), "First line");
+    assert_eq!(form.description(), "The rest");
+}
+
+// The send path is the form's own: a drafted form sends through the same
+// Ctrl+S as a typed one.
+#[test]
+fn a_drafted_form_sends_through_the_same_path_as_a_typed_one() {
+    let mut m = on_row();
+    let typed = {
+        let mut typed = filled(true);
+        ctrl(&mut typed, 's')
+    };
+    m.open_feedback_draft(feedback::Kind::Bug, "Scroll jumps", "It jumps\nback");
+    assert_eq!(ctrl(&mut m, 's'), typed);
+}
+
+const COMMENT_URL: &str = "https://github.com/pichu2707/lazarobox-shell/issues/42#issuecomment-7";
+
+// S1-S3: GitHub has similar open issues: the form lists them; Enter adds
+// the report to the selected one; once added, its link is shown and Ctrl+O
+// opens it.
+#[test]
+fn similar_issues_are_listed_and_enter_adds_the_report() {
+    let (mut m, issue) = sending(true);
+    let similar = vec![feedback::Similar {
+        number: 42,
+        title: "Scroll jumps on resize".to_owned(),
+    }];
+    assert_eq!(
+        m.feedback_reply(SendReply::Similar(similar)),
+        MenuCommand::None
+    );
+    assert_eq!(
+        texts(&m),
+        [
+            "Feedback",
+            feedback::SIMILAR,
+            "› #42 Scroll jumps on resize",
+            "",
+            feedback::SIMILAR_ADD,
+            feedback::SIMILAR_NEW,
+        ]
+    );
+    assert_eq!(hint(&m), feedback::HINT_SIMILAR);
+    assert_eq!(
+        send(&mut m, KeyCode::Enter),
+        MenuCommand::SendIssue(Box::new(feedback::Request::Comment { issue, number: 42 }))
+    );
+    assert_eq!(hint(&m), "Sending to GitHub…");
+    m.feedback_reply(SendReply::Commented(COMMENT_URL.to_owned()));
+    assert_eq!(texts(&m), ["Feedback", feedback::COMMENTED, COMMENT_URL]);
+    assert_eq!(hint(&m), HINT_SENT);
+    assert_eq!(ctrl(&mut m, 'o'), MenuCommand::Open(COMMENT_URL.to_owned()));
+    assert_eq!(send(&mut m, KeyCode::Esc), MenuCommand::None);
+    assert!(!m.in_sub_level());
+}
+
+// S3: Ctrl+S on the list creates the issue anyway, and its link is shown.
+#[test]
+fn ctrl_s_on_similar_issues_creates_the_issue_anyway() {
+    let (mut m, issue) = sending(true);
+    let similar = vec![feedback::Similar {
+        number: 42,
+        title: "Scroll jumps".to_owned(),
+    }];
+    m.feedback_reply(SendReply::Similar(similar));
+    assert_eq!(
+        ctrl(&mut m, 's'),
+        MenuCommand::SendIssue(Box::new(feedback::Request::Create(issue)))
+    );
+    m.feedback_reply(SendReply::Sent(ISSUE_URL.to_owned()));
+    assert_eq!(texts(&m), ["Feedback", "Sent:", ISSUE_URL]);
 }

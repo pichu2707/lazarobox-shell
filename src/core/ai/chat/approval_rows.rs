@@ -9,7 +9,7 @@
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::{ChatState, approval::ApprovalPrompt, wrap::wrap_ranges};
+use super::{BlockWhy, ChatState, approval::ApprovalPrompt, wrap::wrap_ranges};
 
 /// The most rows of the command drawn.
 pub const MAX_COMMAND_ROWS: usize = 6;
@@ -40,7 +40,7 @@ pub enum Part {
 }
 
 /// The command as rows `width` columns wide, one or more per logical line.
-fn command_rows(command: &str, width: usize) -> Vec<String> {
+pub(crate) fn command_rows(command: &str, width: usize) -> Vec<String> {
     command
         .split('\n')
         .flat_map(|line| {
@@ -78,6 +78,13 @@ pub fn clip(text: &str, width: usize) -> String {
     kept
 }
 
+/// Whether `why` is a reason of the GitHub block.
+fn is_block(why: &str) -> bool {
+    [BlockWhy::Marker, BlockWhy::NewerRows]
+        .iter()
+        .any(|block| why == block.reason() || why == block.read_ask())
+}
+
 /// The rows when the whole command fits in `height` rows, else `None`.
 fn full_rows(prompt: &ApprovalPrompt, width: usize, height: usize) -> Option<Vec<Part>> {
     let rows = command_rows(&prompt.command, width.max(1));
@@ -102,6 +109,12 @@ fn full_rows(prompt: &ApprovalPrompt, width: usize, height: usize) -> Option<Vec
         _ if height - 2 < notes.len() || rows.len() > room(height) => None,
         _ => {
             let spare = rows.len() < room(height);
+            // The reason of the GitHub block must not vanish in a short pane:
+            // with no spare row it leads the head row, ahead of the target.
+            let head = match prompt.why.as_deref().filter(|why| !spare && is_block(why)) {
+                Some(why) => Part::Head(clip(&format!("{why} - {}", prompt.target), width)),
+                None => head,
+            };
             let mut out = vec![head];
             out.extend(rows.into_iter().map(Part::Command));
             out.extend(notes.into_iter().map(Part::Notice));
@@ -445,6 +458,49 @@ mod tests {
         let six = (1..=6).map(|n| format!("echo {n}")).collect::<Vec<_>>();
         let rows = parts(&explained(&six.join("\n")), 40, MAX_COMMAND_ROWS + 2);
         assert!(!rows.iter().any(|r| matches!(r, Part::Why(_))), "{rows:?}");
+    }
+
+    #[test]
+    fn the_newer_rows_reason_survives_a_pane_with_no_spare_row_too() {
+        for why in [BlockWhy::NewerRows.reason(), BlockWhy::NewerRows.read_ask()] {
+            let blocked = ApprovalPrompt {
+                why: Some(why.into()),
+                ..read("src/main.rs")
+            };
+            let rows = parts(&blocked, 80, 3);
+            assert!(
+                matches!(&rows[0], Part::Head(h) if h.starts_with(why)),
+                "{rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_block_reason_survives_a_pane_with_no_spare_row() {
+        use super::super::approval::GITHUB_READ_ASK;
+        let blocked = ApprovalPrompt {
+            why: Some(GITHUB_READ_ASK.into()),
+            ..read("src/main.rs")
+        };
+        // head + command + keys: no spare row for a Why row.
+        let rows = parts(&blocked, 80, 3);
+        assert_eq!(rows.len(), 3);
+        assert!(
+            matches!(&rows[0], Part::Head(h) if h.starts_with(GITHUB_READ_ASK)),
+            "{rows:?}"
+        );
+        assert!(rows.contains(&Part::Command("read src/main.rs".into())));
+        assert_eq!(fits(&blocked, 80, 4), fits(&read("src/main.rs"), 80, 4));
+        // Narrow: the head is clipped to the width, never wider.
+        let rows = parts(&blocked, 30, 3);
+        assert!(
+            matches!(&rows[0], Part::Head(h) if h.width() <= 30),
+            "{rows:?}"
+        );
+        // With a spare row it is the usual Why row and the head is untouched.
+        let rows = parts(&blocked, 80, 4);
+        assert!(rows.iter().any(|r| matches!(r, Part::Why(_))), "{rows:?}");
+        assert_eq!(rows[0], Part::Head(blocked.target.clone()));
     }
 
     // Past the row cap more height does not help: the marker says to widen.

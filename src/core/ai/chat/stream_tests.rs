@@ -21,13 +21,19 @@ fn a_send_while_streaming_is_refused_with_a_system_line() {
 #[test]
 fn waiting_text_follows_the_first_byte_and_the_slow_event() {
     let mut state = chat();
-    assert_eq!(state.waiting_text(), None);
+    assert_eq!(state.waiting_text().as_deref(), None);
     let (turn, _) = sent(&mut state, "hi");
-    assert_eq!(state.waiting_text(), Some("waiting for the model…"));
+    assert_eq!(
+        state.waiting_text().as_deref(),
+        Some("waiting for the model…")
+    );
     state.apply(turn, StreamEvent::Slow);
-    assert_eq!(state.waiting_text(), Some("still waiting for the model…"));
+    assert_eq!(
+        state.waiting_text().as_deref(),
+        Some("still waiting for the model…")
+    );
     state.apply(turn, delta("a"));
-    assert_eq!(state.waiting_text(), None);
+    assert_eq!(state.waiting_text().as_deref(), None);
 }
 #[test]
 fn slow_after_the_first_byte_or_when_idle_is_ignored() {
@@ -53,7 +59,7 @@ fn deltas_build_the_answer_in_order_and_done_finishes_it() {
         (Role::Assistant, "Hello".into(), MsgStatus::Complete)
     );
     assert_eq!(state.phase(), Phase::Idle);
-    assert_eq!(state.waiting_text(), None);
+    assert_eq!(state.waiting_text().as_deref(), None);
     assert!(systems(&state).is_empty());
 }
 #[test]
@@ -193,7 +199,7 @@ fn cancel_while_waiting_leaves_no_empty_message() {
     assert_eq!(state.cancel(), Follow::CancelEngine);
     assert_eq!(texts(&state).len(), 1);
     assert_eq!(state.phase(), Phase::Idle);
-    assert_eq!(state.waiting_text(), None);
+    assert_eq!(state.waiting_text().as_deref(), None);
 }
 #[test]
 fn cancel_when_idle_is_a_no_op() {

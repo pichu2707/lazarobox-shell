@@ -16,11 +16,11 @@ fn exchange(state: &mut ChatState, size: usize) -> ChatRequest {
     };
     state.apply(turn, StreamEvent::Delta("a".repeat(size)));
     state.apply(turn, StreamEvent::Done(Finish::Stop));
-    request
+    *request
 }
 
 /// A chat whose window dropped its oldest messages: 1000-char messages under
-/// the 12k server cap keep about 12.
+/// the 12k server cap (less the system prompt) keep about 11.
 fn overflowing(exchanges: usize) -> ChatState {
     let mut state = chat();
     for _ in 0..exchanges {
@@ -124,7 +124,9 @@ fn a_chat_that_never_overflowed_is_not_compacted() {
 
 #[test]
 fn fewer_than_the_floor_of_dropped_messages_is_not_worth_a_call() {
-    let mut state = overflowing(7);
+    // 12 messages of 1000 characters under the 12k cap less the system prompt:
+    // 11 fit, and the leading assistant goes too, so 2 are dropped.
+    let mut state = overflowing(6);
     assert!(state.begin_compaction(&ready()).is_none());
 }
 
@@ -451,6 +453,16 @@ fn coverage_is_by_transcript_position_not_by_filtered_position() {
     assert_eq!(marker_count(&state), 1);
 }
 
+// a folder change waits for the run (chat-folder D4) ---------------------------
+
+#[test]
+fn a_running_compaction_blocks_a_folder_change() {
+    let mut state = overflowing(10);
+    assert_eq!(state.folder_busy(false), None);
+    begun(&mut state);
+    assert_eq!(state.folder_busy(false), Some("the model is answering"));
+}
+
 // a late summary after a turn change, no send in between (F7) -----------------
 
 #[test]
@@ -465,4 +477,114 @@ fn a_summary_for_a_turn_that_changed_without_a_send_is_not_a_compaction_turn() {
     state.apply(turn, StreamEvent::Delta("- late".into()));
     state.apply(turn, StreamEvent::Done(Finish::Stop));
     assert_eq!(state.summary_block(), None);
+}
+
+// ai-cost 1b.4: the run's own usage is a row with its role ---------------------
+
+mod usage_rows {
+    use super::*;
+    use crate::core::ai::chat::{store::StoreCmd, usage::TurnUsage};
+    use crate::core::layout::PaneId;
+
+    fn used(output: u64) -> StreamEvent {
+        StreamEvent::usage(TurnUsage {
+            output: Some(output),
+            ..TurnUsage::default()
+        })
+    }
+
+    type Row = (String, String, Option<String>, bool, Option<u64>);
+
+    fn rows(state: &mut ChatState) -> Vec<Row> {
+        state
+            .store_cmds(PaneId::FIRST, &[])
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                StoreCmd::RecordUsage {
+                    engine,
+                    role,
+                    usage,
+                    ..
+                } => Some((
+                    role,
+                    engine,
+                    usage.model.clone(),
+                    usage.partial,
+                    usage.output,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_compaction_run_that_reported_usage_is_a_compaction_row() {
+        let mut state = overflowing(10);
+        // The chat turns report nothing here, so only the run is a row.
+        state.store_cmds(PaneId::FIRST, &[]);
+        let (turn, _) = begun(&mut state);
+        state.apply_compaction_event(turn, used(40));
+        finish(&mut state, turn, "summary");
+        assert_eq!(
+            rows(&mut state),
+            vec![(
+                "compaction".into(),
+                "ollama".into(),
+                Some("llama3:8b".into()),
+                false,
+                Some(40)
+            )]
+        );
+        assert!(rows(&mut state).is_empty(), "taken once");
+    }
+
+    #[test]
+    fn a_failed_compaction_run_is_partial_and_one_without_usage_is_no_row() {
+        let mut state = overflowing(10);
+        state.store_cmds(PaneId::FIRST, &[]);
+        let (turn, _) = begun(&mut state);
+        state.apply_compaction_event(turn, used(3));
+        state.apply_compaction_event(
+            turn,
+            StreamEvent::Error(super::super::engine::ChatError::Interrupted),
+        );
+        let got = rows(&mut state);
+        assert_eq!((got[0].0.as_str(), got[0].3), ("compaction", true));
+
+        let mut state = overflowing(10);
+        state.store_cmds(PaneId::FIRST, &[]);
+        let (turn, _) = begun(&mut state);
+        finish(&mut state, turn, "summary");
+        assert!(rows(&mut state).is_empty());
+    }
+}
+
+mod cancelled_runs {
+    use super::*;
+    use crate::core::ai::chat::{store::StoreCmd, usage::TurnUsage};
+    use crate::core::layout::PaneId;
+
+    #[test]
+    fn a_run_superseded_by_a_send_records_its_reported_usage_as_partial() {
+        let mut state = overflowing(10);
+        state.store_cmds(PaneId::FIRST, &[]);
+        let (turn, _) = begun(&mut state);
+        state.apply_compaction_event(
+            turn,
+            StreamEvent::usage(TurnUsage {
+                output: Some(8),
+                ..TurnUsage::default()
+            }),
+        );
+        exchange(&mut state, 10);
+        let rows: Vec<_> = state
+            .store_cmds(PaneId::FIRST, &[])
+            .into_iter()
+            .filter_map(|c| match c {
+                StoreCmd::RecordUsage { role, usage, .. } => Some((role, usage.partial)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows, vec![("compaction".to_owned(), true)]);
+    }
 }

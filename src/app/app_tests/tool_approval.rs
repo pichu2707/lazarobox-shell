@@ -7,6 +7,7 @@ use super::chat_live::{ollama, plain};
 use super::run_pane::{enter_turn, one_shell_and_a_chat};
 use super::*;
 use crate::core::ai::chat::{
+    BlockWhy,
     approval::{ANOTHER_PENDING, ApprovalAsk, Origin},
     engine::{CallId, Decision, Finish, StreamEvent, ToolStatus, Tools},
 };
@@ -26,9 +27,7 @@ pub(super) fn run(command: &str) -> ApprovalAsk {
 }
 
 pub(super) fn read(path: &str) -> ApprovalAsk {
-    ApprovalAsk::Read {
-        path: path.to_owned(),
-    }
+    ApprovalAsk::read(path)
 }
 
 /// A shell (pane 1), a focused chat (pane 2) and a turn in flight.
@@ -78,6 +77,18 @@ pub(super) fn result(a: &mut App, turn: u64, call: u64, status: ToolStatus) -> V
 pub(super) fn decision(turn: u64, call: u64, decision: Decision) -> Effect {
     Effect::ToolDecision {
         pane: id2(),
+        worker: None,
+        turn,
+        call: CallId(call),
+        decision,
+    }
+}
+
+/// The answer to a worker's call: addressed to the worker's session.
+pub(super) fn worker_decision(turn: u64, call: u64, decision: Decision) -> Effect {
+    Effect::ToolDecision {
+        pane: id2(),
+        worker: Some(crate::core::ai::orchestra::WorkerKey::for_test(1, 1)),
         turn,
         call: CallId(call),
         decision,
@@ -140,6 +151,61 @@ fn a_read_ask_shows_read_and_the_path() {
     let prompt = a.approval_prompt(id2()).unwrap();
     assert_eq!(prompt.command, "read /home/u/note.txt");
     assert!(prompt.keys.contains("y read it"), "{prompt:?}");
+}
+
+// Spec (lazarobox-mcp-server, Label travels; agent-orchestrator, Outside
+// read asks with a label): a worker's read ask reaches the app with its kind
+// and `engine>model`, and the prompt shows them with the path.
+#[test]
+fn a_worker_read_ask_shows_the_label_and_the_path() {
+    let (mut a, turn) = live();
+    let ask = ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+        path: "/home/u/dev/other/a.rs".to_owned(),
+        label: "review claude>opus".to_owned(),
+        reach: crate::core::ai::chat::approval::Reach::Other,
+        cloud: true,
+    };
+    announce(&mut a, turn, 1, ask.clone());
+    assert_eq!(pending(&a).map(|(got, _)| got), Some(ask));
+    let prompt = a.approval_prompt(id2()).unwrap();
+    assert_eq!(prompt.command, "read /home/u/dev/other/a.rs");
+    assert!(prompt.target.contains("review claude>opus"), "{prompt:?}");
+    assert!(prompt.keys.contains("y read it"), "{prompt:?}");
+}
+
+// Spec (chat-pane, Label shown): the screen shows the worker's prompt with
+// its label (kind and `engine>model`; the `n/m` count of the queue is S3) and
+// the sanitized path.
+#[test]
+fn the_screen_shows_a_worker_read_prompt_with_its_label() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let (mut a, turn) = live();
+    let ask = ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+        path: "~/dev/other/a.rs".to_owned(),
+        label: "review claude>opus".to_owned(),
+        reach: crate::core::ai::chat::approval::Reach::Other,
+        cloud: true,
+    };
+    announce(&mut a, turn, 1, ask);
+    let theme = crate::ui::theme::LazaroboxTheme::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, &a, &theme))
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let screen = (0..buf.area.height)
+        .map(|y| {
+            let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            row.trim_end().to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(screen.contains("worker review claude>opus"), "{screen}");
+    assert!(screen.contains("read ~/dev/other/a.rs"), "{screen}");
+    assert!(screen.contains("y read it"), "{screen}");
+    insta::assert_snapshot!("worker_read_prompt_80x25", screen);
 }
 
 // y on a run: one write, then the answer that says it was typed.
@@ -270,6 +336,217 @@ fn a_second_ask_is_denied_at_once_and_the_first_stays() {
     assert_eq!(pending(&a), Some((run("one"), Some((turn, CallId(1))))));
 }
 
+fn worker_read(path: &str, label: &str) -> ApprovalAsk {
+    ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, 1),
+        path: path.to_owned(),
+        label: label.to_owned(),
+        reach: crate::core::ai::chat::approval::Reach::Other,
+        cloud: true,
+    }
+}
+
+fn worker_read_of(worker: u32, path: &str) -> ApprovalAsk {
+    let ApprovalAsk::WorkerRead {
+        path, reach, cloud, ..
+    } = worker_read(path, &format!("{worker}/3 review claude>opus"))
+    else {
+        unreachable!()
+    };
+    ApprovalAsk::WorkerRead {
+        worker: crate::core::ai::orchestra::WorkerKey::for_test(1, worker),
+        label: format!("{worker}/3 review claude>opus"),
+        path,
+        reach,
+        cloud,
+    }
+}
+
+fn worker_over(a: &mut App, worker: u32, status: crate::core::ai::orchestra::worker::WorkerStatus) {
+    use crate::core::ai::{
+        config::Task,
+        orchestra::{
+            RunId, WorkerId,
+            event::{OrchestraEvent, WorkerRow},
+        },
+    };
+    a.update(AppEvent::Orchestra(
+        id2(),
+        OrchestraEvent::Worker(WorkerRow {
+            run: RunId(1),
+            id: WorkerId(worker),
+            kind: Task::Review,
+            engine: "claude".into(),
+            model: Some("opus".into()),
+            status,
+            elapsed: None,
+            usage: None,
+            partial: false,
+            overridden: false,
+        }),
+    ));
+}
+
+// Spec (agent-orchestrator, Cancel denies pending asks; chat-pane, Approval
+// label and queue): worker 2 has the shown ask and a queued one, worker 1 one
+// in between. Worker 2 ending takes both of its asks and nothing of worker
+// 1's, which is promoted and armed afresh.
+#[test]
+fn a_worker_ending_withdraws_its_own_asks_and_promotes_the_next_worker() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, worker_read_of(2, "/a"));
+    announce(&mut a, turn, 2, worker_read_of(1, "/b"));
+    announce(&mut a, turn, 3, worker_read_of(2, "/c"));
+    let shown = a.approval_prompt(id2()).unwrap();
+    assert!(shown.target.contains("worker 2/3 review"), "{shown:?}");
+    worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    let now = a.approval_prompt(id2()).unwrap();
+    assert!(now.target.contains("worker 1/3 review"), "{now:?}");
+    assert!(
+        !now.target.contains("waiting"),
+        "worker 2's queued ask went: {now:?}"
+    );
+    assert!(!now.armed, "the promoted ask is armed afresh");
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 0);
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    assert_eq!(
+        a.update(key('y')),
+        vec![Effect::ToolDecision {
+            pane: id2(),
+            worker: Some(crate::core::ai::orchestra::WorkerKey::for_test(1, 1)),
+            turn,
+            call: CallId(2),
+            decision: Decision::Sent,
+        }]
+    );
+}
+
+// The review the user opened on an orphan (no call) is the user's: a worker
+// ending, the one whose label heads it included, must not take it away.
+#[test]
+fn a_worker_ending_does_not_withdraw_a_review_the_user_opened() {
+    use crate::core::ai::{
+        chat::{review::BatchReview, review_view::testing::numbered},
+        orchestra::{WorkerKey, worker::WorkerStatus},
+        tools::stage::{BatchId, StageKey},
+    };
+    let (mut a, _turn) = live();
+    let doc = numbered(3).doc().clone();
+    let review = std::sync::Arc::new(BatchReview::labelled(
+        doc,
+        "1/1 code x>y".to_owned(),
+        WorkerKey::for_test(1, 2),
+    ));
+    let id = BatchId {
+        key: StageKey::Pane(id2()),
+        generation: 7,
+    };
+    a.update(AppEvent::Batch(id2(), BatchEvent::Review(id, review)));
+    assert!(chat(&a, id2()).approvals().pending().is_some());
+    worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    assert!(
+        chat(&a, id2()).approvals().pending().is_some(),
+        "the user's review stays"
+    );
+    assert_eq!(chat(&a, id2()).orphan(), Some(id));
+}
+
+// A worker's ask that reaches the app after the worker's terminal row (it
+// was announced just as the worker was cancelled) is refused, never shown; a
+// retry of the worker (running again) asks normally.
+#[test]
+fn an_ask_that_arrives_after_its_worker_ended_is_refused_unseen() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    let (mut a, turn) = live();
+    worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    let effects = announce(&mut a, turn, 1, worker_read_of(2, "/a"));
+    assert_eq!(
+        effects,
+        vec![Effect::ToolDecision {
+            pane: id2(),
+            worker: Some(crate::core::ai::orchestra::WorkerKey::for_test(1, 2)),
+            turn,
+            call: CallId(1),
+            decision: Decision::Denied("the worker already ended"),
+        }]
+    );
+    assert_eq!(pending(&a), None);
+    worker_over(&mut a, 2, WorkerStatus::Running);
+    assert!(announce(&mut a, turn, 2, worker_read_of(2, "/b")).is_empty());
+    assert!(pending(&a).is_some());
+}
+
+// Another worker ending leaves the shown prompt and the queue as they are.
+#[test]
+fn another_worker_ending_leaves_the_shown_ask_and_the_queue_alone() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, worker_read_of(1, "/a"));
+    announce(&mut a, turn, 2, worker_read_of(2, "/b"));
+    announce(&mut a, turn, 3, worker_read_of(3, "/c"));
+    let armed = chat(&a, id2()).armed_at();
+    worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    let shown = a.approval_prompt(id2()).unwrap();
+    assert!(shown.target.contains("worker 1/3 review"), "{shown:?}");
+    assert!(shown.target.contains("1 waiting"), "{shown:?}");
+    assert_eq!(chat(&a, id2()).armed_at(), armed);
+    // A running or queued row of any worker withdraws nothing.
+    worker_over(&mut a, 3, WorkerStatus::Running);
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 1);
+}
+
+// Spec (agent-tools, FIFO order; chat-pane, Approval label and queue): worker
+// asks queue behind the one shown, which says how many wait; each answer
+// applies to its own prompt, and the next one is shown unarmed so a key
+// still in flight cannot answer it.
+#[test]
+fn worker_asks_queue_fifo_and_each_answer_is_its_own() {
+    let (mut a, turn) = live();
+    assert!(announce(&mut a, turn, 1, worker_read("/a", "review claude>opus")).is_empty());
+    assert!(announce(&mut a, turn, 2, worker_read("/b", "general codex>x")).is_empty());
+    let first = a.approval_prompt(id2()).unwrap();
+    assert!(first.target.contains("review claude>opus"), "{first:?}");
+    assert!(first.target.contains("1 waiting"), "{first:?}");
+    assert_eq!(
+        a.update(key('y')),
+        vec![worker_decision(turn, 1, Decision::Sent)]
+    );
+    let second = a.approval_prompt(id2()).unwrap();
+    assert!(second.target.contains("general codex>x"), "{second:?}");
+    assert!(!second.target.contains("waiting"), "{second:?}");
+    assert!(!second.armed, "a promoted ask is armed afresh");
+    assert!(
+        a.update(key('y')).is_empty(),
+        "a key in flight answers nothing"
+    );
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    assert_eq!(
+        a.update(key('n')),
+        vec![worker_decision(
+            turn,
+            2,
+            Decision::Denied("the user declined")
+        )]
+    );
+    assert_eq!(pending(&a), None);
+}
+
+// The result of a queued call (its worker was cancelled, its turn ended)
+// takes it out of the queue; the one shown stays.
+#[test]
+fn a_queued_ask_whose_call_is_over_leaves_the_queue() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, worker_read("/a", "w"));
+    announce(&mut a, turn, 2, worker_read("/b", "w"));
+    result(&mut a, turn, 2, ToolStatus::Denied);
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 0);
+    assert_eq!(
+        pending(&a).and_then(|(_, call)| call),
+        Some((turn, CallId(1)))
+    );
+}
+
 #[test]
 fn a_confirm_the_user_opened_also_blocks_a_tool_ask() {
     let (mut a, turn) = live();
@@ -382,6 +659,23 @@ fn turning_tools_off_denies_the_call_that_waits() {
     assert_eq!(pending(&a), None);
 }
 
+// Tools off denies every waiting call, the queued ones included: none is
+// promoted into a prompt that could run a tool.
+#[test]
+fn turning_tools_off_denies_the_queued_worker_asks_too() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, worker_read("/a", "w"));
+    announce(&mut a, turn, 2, worker_read("/b", "w"));
+    a.ai.set_tools_enabled(false);
+    let effects = a.sync_tools();
+    for call in [1, 2] {
+        let denied = worker_decision(turn, call, Decision::Denied("tools are off"));
+        assert!(effects.contains(&denied), "{call}: {effects:?}");
+    }
+    assert_eq!(pending(&a), None);
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 0);
+}
+
 fn external(server: &str, tool: &str, args: &str) -> ApprovalAsk {
     ApprovalAsk::External {
         server: server.into(),
@@ -426,6 +720,7 @@ fn search(pattern: &str, dir: &str) -> ApprovalAsk {
     ApprovalAsk::Search {
         pattern: pattern.into(),
         dir: dir.into(),
+        reach: crate::core::ai::chat::approval::Reach::Other,
     }
 }
 
@@ -534,6 +829,7 @@ fn a_chat_whose_tab_has_no_shell_denies_a_run() {
         effects,
         vec![Effect::ToolDecision {
             pane: chat_pane,
+            worker: None,
             turn,
             call: CallId(1),
             decision: Decision::Denied("there is no shell pane in this tab"),
@@ -597,16 +893,40 @@ fn families_of_a_turn_on(ai: AiConfig, engines: &'static [&'static str]) -> Fami
 
 #[test]
 fn a_turn_offers_the_families_of_the_toggles() {
-    assert_eq!(families_of_a_turn(ollama()), FamilySet::LEGACY);
+    let default = FamilySet::LEGACY.with(Family::IssueDraft);
+    assert_eq!(families_of_a_turn(ollama()), default);
     let mut ai = ollama();
     ai.set_toggle(ToolToggle::Search, true);
     ai.set_toggle(ToolToggle::GitWrite, true);
     assert_eq!(
         families_of_a_turn(ai),
-        FamilySet::LEGACY
-            .with(Family::Search)
-            .with(Family::GitWrite)
+        default.with(Family::Search).with(Family::GitWrite)
     );
+}
+
+// Spec (config-menu, Toggle is saved): with the toggle on the next turn offers
+// the GitHub family, and with it off again the set is the legacy one.
+#[test]
+fn the_github_toggle_adds_its_family_and_turning_it_off_removes_it() {
+    let mut ai = ollama();
+    ai.set_toggle(ToolToggle::Github, true);
+    assert_eq!(
+        families_of_a_turn(ai),
+        FamilySet::LEGACY
+            .with(Family::Github)
+            .with(Family::IssueDraft)
+    );
+    let mut ai = ollama();
+    ai.set_toggle(ToolToggle::Github, true);
+    ai.set_toggle(ToolToggle::Github, false);
+    assert_eq!(
+        families_of_a_turn(ai),
+        FamilySet::LEGACY.with(Family::IssueDraft)
+    );
+    // The master switch wins: no tools, no GitHub family.
+    let mut ai = ollama();
+    ai.set_toggle(ToolToggle::Github, true);
+    assert_eq!(families_of_a_turn_on(ai, &[]), FamilySet::LEGACY);
 }
 
 #[test]
@@ -626,6 +946,29 @@ fn an_unverified_engine_or_tools_off_send_tools_off() {
         panic!("{effects:?}")
     };
     assert_eq!(request.tools, Tools::Off);
+}
+
+// The runtime asks for reads of a blocked conversation on an Ollama `*-cloud`
+// model from this bit; it is set only for a turn that offers tools.
+#[test]
+fn a_turn_tells_the_runtime_whether_the_conversation_read_github() {
+    for (blocked, want) in [(false, false), (true, true)] {
+        let mut a = launched(80, 25)
+            .with_ai(ollama())
+            .with_tool_engines(&["ollama"]);
+        press(&mut a, "c");
+        super::run_pane::answer(&mut a, id2(), "hi");
+        if blocked {
+            super::tool_run::chat_mut(&mut a).adopt_github_read(BlockWhy::Marker);
+        }
+        a.update(key('q'));
+        let effects = a.update(plain(KeyCode::Enter));
+        let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+            panic!("{effects:?}")
+        };
+        assert_ne!(request.tools, Tools::Off);
+        assert_eq!(request.github_read, want, "blocked {blocked}");
+    }
 }
 
 #[test]
@@ -690,6 +1033,7 @@ async fn what_the_model_is_told_follows_what_happened_to_the_pane() {
         for effect in effects {
             if let Effect::ToolDecision {
                 pane,
+                worker: None,
                 turn,
                 call,
                 decision,
@@ -765,6 +1109,7 @@ fn a_short_pane_ignores_y_and_enlarging_it_enables_y_again() {
     assert_eq!(a.update(key('y')), vec![]);
     assert!(pending(&a).is_some());
     resize(&mut a, 80, 30);
+    let_go();
     assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
 }
 
@@ -775,6 +1120,7 @@ fn a_narrow_pane_with_a_path_of_100_characters_needs_height_for_it() {
     resize(&mut a, 40, 6);
     assert_eq!(a.update(key('y')), vec![]);
     resize(&mut a, 40, 25);
+    let_go();
     assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
 }
 
@@ -871,25 +1217,95 @@ mod guard {
         }
     }
 
+    // A key held from before the prompt opened, sent as Presses, never
+    // answers it once it arms.
+    #[test]
+    fn a_held_answer_key_never_answers_the_prompt() {
+        for answer in [key('y'), key('n'), plain(KeyCode::Esc)] {
+            let (mut a, _) = asked(run("cd x"));
+            for ms in (0..=1_000).step_by(50) {
+                assert_eq!(at(&mut a, ms, answer.clone()), vec![], "{answer:?} at {ms}");
+            }
+            assert!(pending(&a).is_some(), "still waiting");
+        }
+    }
+
+    // Real OS auto-repeat: the first repeat comes after the initial delay
+    // (X11 660 ms, KDE 600 ms), past the hold window, so it reads as a new
+    // press; the prompt must not be armed by then (modal-input).
+    #[test]
+    fn a_key_held_with_the_os_repeat_delay_never_answers_the_prompt() {
+        for (first, delay) in [(100, 660), (0, 600), (100, 501)] {
+            for answer in [key('y'), key('n'), plain(KeyCode::Esc)] {
+                let (mut a, _) = asked(run("cd x"));
+                assert_eq!(at(&mut a, first, answer.clone()), vec![]);
+                for ms in (first + delay..=1_500).step_by(25) {
+                    let got = at(&mut a, ms, answer.clone());
+                    assert_eq!(got, vec![], "{answer:?} at {ms} (delay {delay})");
+                }
+                assert!(pending(&a).is_some(), "still waiting");
+            }
+        }
+    }
+
+    #[test]
+    fn a_held_p_cycles_the_target_once() {
+        NOW_MS.with(|n| n.set(0));
+        let mut a = launched(80, 25).with_ai(ollama()).with_clock(mock_now);
+        press(&mut a, "wv");
+        press(&mut a, "wh");
+        press(&mut a, "c");
+        let chat_id = a.focused();
+        super::super::run_pane::answer(&mut a, chat_id, super::super::run_pane::BLOCK);
+        press(&mut a, "e");
+        let target = |a: &App| super::super::run_pane::chat(a, chat_id).run_target();
+        let first = target(&a);
+        at(&mut a, 0, key('p'));
+        let cycled = target(&a);
+        assert_ne!(cycled, first);
+        for ms in [100, 200] {
+            at(&mut a, ms, key('p'));
+            assert_eq!(target(&a), cycled, "p at {ms}");
+        }
+    }
+
     #[test]
     fn a_y_after_the_delay_approves() {
-        let (mut a, turn) = asked(run("cd x"));
-        assert_eq!(at(&mut a, 10, key('y')), vec![]);
-        assert_eq!(
-            at(&mut a, ms(ARM_DELAY), key('y')),
+        let sent = |turn| {
             vec![
                 Effect::WritePty(PaneId::FIRST, b"cd x".to_vec()),
-                decision(turn, 1, Decision::Sent)
+                decision(turn, 1, Decision::Sent),
             ]
+        };
+        let (mut a, turn) = asked(run("cd x"));
+        assert_eq!(at(&mut a, 10, key('y')), vec![]);
+        // The same `y` held until the delay is still the hold: it never answers.
+        for t in (260..ms(ARM_DELAY)).step_by(250).chain([ms(ARM_DELAY)]) {
+            assert_eq!(at(&mut a, t, key('y')), vec![], "held at {t}");
+        }
+        assert_eq!(
+            at(&mut a, ms(ARM_DELAY) + hold_ms() + 1, key('y')),
+            sent(turn)
         );
+        // A first press at exactly the delay approves.
+        let (mut b, turn) = asked(run("cd x"));
+        assert_eq!(at(&mut b, ms(ARM_DELAY), key('y')), sent(turn));
     }
 
     #[test]
     fn a_read_is_guarded_the_same_way() {
         let (mut a, turn) = asked(read("/home/u/a.txt"));
         assert_eq!(at(&mut a, 5, key('y')), vec![]);
+        for t in (255..ms(ARM_DELAY)).step_by(250).chain([ms(ARM_DELAY)]) {
+            assert_eq!(at(&mut a, t, key('y')), vec![], "held at {t}");
+        }
         assert_eq!(
-            at(&mut a, ms(ARM_DELAY), key('y')),
+            at(&mut a, ms(ARM_DELAY) + hold_ms() + 1, key('y')),
+            vec![decision(turn, 1, Decision::Sent)]
+        );
+        let (mut b, turn) = asked(read("/home/u/a.txt"));
+        assert_eq!(
+            at(&mut b, ms(ARM_DELAY), key('y')),
             vec![decision(turn, 1, Decision::Sent)]
         );
     }
@@ -913,6 +1329,133 @@ mod guard {
         assert!(!a.approval_prompt(id2()).unwrap().armed);
         NOW_MS.with(|n| n.set(ms(ARM_DELAY)));
         assert!(a.approval_prompt(id2()).unwrap().armed);
+    }
+
+    // A key the prompt does not take is never silent (visible-failure-notices).
+    const ANSWER_FIRST: &str = "Answer the pending confirm first";
+    const JUST_OPENED: &str = "Prompt just opened: answer again in a moment";
+
+    #[test]
+    fn an_answer_in_the_unarmed_window_is_ignored_with_a_notice_and_never_approves() {
+        for answer in [key('y'), key('n'), plain(KeyCode::Esc)] {
+            let (mut a, _) = asked(run("cd x"));
+            assert_eq!(at(&mut a, 10, answer.clone()), vec![], "{answer:?}");
+            assert_eq!(a.notice(), Some(JUST_OPENED), "{answer:?}");
+            assert!(pending(&a).is_some(), "{answer:?} must not answer");
+        }
+    }
+
+    #[test]
+    fn a_key_the_prompt_does_not_take_says_to_answer_first_and_keeps_the_composer() {
+        let (mut a, _) = asked(run("cd x"));
+        at(&mut a, ms(ARM_DELAY), key('q'));
+        for event in [
+            key('a'),
+            plain(KeyCode::Enter),
+            plain(KeyCode::F(5)),
+            AppEvent::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+        ] {
+            assert_eq!(
+                at(&mut a, ms(ARM_DELAY), event.clone()),
+                vec![],
+                "{event:?}"
+            );
+            assert_eq!(a.notice(), Some(ANSWER_FIRST), "{event:?}");
+        }
+        assert!(pending(&a).is_some());
+        assert_eq!(chat(&a, id2()).composer().text(), "");
+    }
+
+    #[test]
+    fn a_modifier_alone_and_a_repeat_stay_quiet() {
+        use ratatui::crossterm::event::ModifierKeyCode;
+        let (mut a, _) = asked(run("cd x"));
+        let alone = plain(KeyCode::Modifier(ModifierKeyCode::LeftShift));
+        assert_eq!(at(&mut a, ms(ARM_DELAY), alone), vec![]);
+        assert_eq!(a.notice(), None);
+        let held = super::super::chat_live::repeat(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(at(&mut a, ms(ARM_DELAY), held), vec![]);
+        assert_eq!(a.notice(), None);
+    }
+
+    #[test]
+    fn the_keys_that_answer_still_answer_without_a_notice() {
+        for (answer, text) in [
+            (key('n'), "n"),
+            (plain(KeyCode::Esc), "esc"),
+            (key('y'), "y"),
+        ] {
+            let (mut a, _) = asked(run("cd x"));
+            let effects = at(&mut a, ms(ARM_DELAY), answer);
+            assert!(!effects.is_empty(), "{text}");
+            assert_eq!(a.notice(), None, "{text}");
+            assert!(pending(&a).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_paste_under_the_prompt_is_dropped_with_a_notice() {
+        let (mut a, _) = asked(run("cd x"));
+        assert_eq!(at(&mut a, 10, AppEvent::Paste("rm -rf".into())), vec![]);
+        assert_eq!(a.notice(), Some(ANSWER_FIRST));
+        assert!(pending(&a).is_some());
+        assert_eq!(chat(&a, id2()).composer().text(), "");
+    }
+
+    #[test]
+    fn a_paste_never_covers_a_notice_already_showing() {
+        let (mut a, _) = asked(run("cd x"));
+        a = a.with_notice(Some("llama-server ready".into()));
+        at(&mut a, 10, AppEvent::Paste("x".into()));
+        assert_eq!(a.notice(), Some("llama-server ready"));
+    }
+
+    // A call that waits for the user, a worker's too, is announced on the
+    // turn's channel: the announcement stops the clock of the request, so no
+    // time spent answering is ever on the wait line.
+    #[test]
+    fn the_announced_ask_stops_the_clock_of_the_wait_line() {
+        use std::time::Duration;
+        NOW_MS.with(|n| n.set(0));
+        let mut a = one_shell_and_a_chat("hello").with_clock(mock_now);
+        a.update(key('q'));
+        let turn = enter_turn(&mut a);
+        // The chat applies stream events on its own clock: hand it the mock's.
+        NOW_MS.with(|n| n.set(10_000));
+        let said = mock_now();
+        a.focused_state_mut()
+            .chat_mut()
+            .unwrap()
+            .apply_at(turn, StreamEvent::Slow, said);
+        let waits = |a: &mut App, ms: u64| {
+            NOW_MS.with(|n| n.set(ms));
+            let now = mock_now();
+            a.focused_state_mut().chat_mut().unwrap().wait_elapsed(now)
+        };
+        assert_eq!(waits(&mut a, 12_000), Some(Duration::from_secs(5)));
+        a.update(AppEvent::Chat(
+            id2(),
+            turn,
+            StreamEvent::ToolCall {
+                id: CallId(9),
+                name: "run_in_pane".into(),
+                summary: "cd x".into(),
+                approval: Some(Box::new(run("cd x"))),
+            },
+        ));
+        assert!(pending(&a).is_some(), "the ask is shown");
+        assert_eq!(waits(&mut a, 20_000), None, "no seconds under a prompt");
+        at(&mut a, 30_000, AppEvent::AnimTick);
+        a.update(AppEvent::Chat(
+            id2(),
+            turn,
+            StreamEvent::ToolResult {
+                id: CallId(9),
+                status: ToolStatus::Ok,
+                summary: "ok".into(),
+            },
+        ));
+        assert_eq!(waits(&mut a, 50_000), None, "the old clock is gone");
     }
 
     // The confirm the user opens with `Prefix e` is theirs: no delay.
@@ -1173,4 +1716,542 @@ fn the_exec_row_says_why_when_the_system_has_no_landlock_jail() {
             "{off:?}"
         );
     }
+}
+
+// -- `run` mode: reads in the chat's root and searches go without a prompt ----
+
+/// The two halves of a read or search together: a real host whose chat root
+/// is `proj` under a temp HOME, and the app of `live`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod root_reads {
+    use super::*;
+    use crate::core::ai::{
+        chat::approval::UNSHOWABLE,
+        config::ApprovalMode,
+        tools::{
+            Call, Locality,
+            paths::REFUSED,
+            registry::{Family, FamilySet},
+            stage::StageKey,
+        },
+    };
+    use crate::runtime::{
+        mcp::Outcome,
+        tools::{Limits, Pending, ToolHost, TurnScope, Waits},
+    };
+
+    /// A HOME with the chat's root `proj` in it: a file inside the root, one
+    /// outside it, a link in the root that leads outside it, and two
+    /// sensitive files (one in the root, one under `~/.ssh`).
+    fn home() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        let root = home.join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::write(root.join("src/notes.txt"), "inside the root\n").unwrap();
+        std::fs::write(home.join("outside.txt"), "outside the root\n").unwrap();
+        std::fs::write(root.join(".env"), "TOKEN=inside-secret\n").unwrap();
+        std::fs::write(home.join(".ssh/id_rsa"), "ssh-secret\n").unwrap();
+        std::os::unix::fs::symlink(home.join("outside.txt"), root.join("link.txt")).unwrap();
+        (dir, home, root)
+    }
+
+    fn read(path: &str) -> Call {
+        Call::ReadFile {
+            path: path.into(),
+            lines: None,
+        }
+    }
+
+    fn grep(pattern: &str) -> Call {
+        Call::Grep {
+            pattern: pattern.into(),
+            dir: None,
+        }
+    }
+
+    /// One turn of a `locality` engine in a chat in `mode`, against a real
+    /// host whose chat root is `proj`, with the write family on so an edit
+    /// can stage.
+    struct Lab {
+        _dir: tempfile::TempDir,
+        home: PathBuf,
+        a: App,
+        turn: u64,
+        waits: std::sync::Arc<Waits>,
+        rx: tokio::sync::mpsc::Receiver<StreamEvent>,
+        dispatch: std::sync::Arc<dyn crate::runtime::mcp::Dispatch>,
+    }
+
+    fn lab(mode: ApprovalMode, locality: Locality) -> Lab {
+        lab_in(mode, locality, |_, root| root.to_path_buf())
+    }
+
+    /// [`lab`] with the chat's root chosen from HOME and `proj`.
+    fn lab_in(mode: ApprovalMode, locality: Locality, at: fn(&Path, &Path) -> PathBuf) -> Lab {
+        let (dir, home, root) = home();
+        let root = at(&home, &root);
+        let (mut a, turn) = live();
+        super::super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
+        let waits = Waits::new();
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let mut scope = TurnScope::new(tx, locality, root);
+        scope.approver = waits.approver(id2(), turn, Pending::new());
+        scope.families = FamilySet::LEGACY.with(Family::Write);
+        scope.stage_key = Some(StageKey::Pane(id2()));
+        let host = ToolHost::new(Some(home.clone().into()), None, None, Limits::default());
+        Lab {
+            _dir: dir,
+            home,
+            a,
+            turn,
+            waits,
+            rx,
+            dispatch: host.dispatch(scope),
+        }
+    }
+
+    impl Lab {
+        /// Runs `call`: the host announces it, `between` runs, the app routes
+        /// it, and a prompt the app opens is answered with `answer`. Returns
+        /// the ask the prompt showed, if one opened, and what the model was
+        /// told.
+        async fn call(
+            &mut self,
+            call: Call,
+            answer: char,
+            between: impl FnOnce(&Path),
+        ) -> (Option<ApprovalAsk>, Outcome) {
+            let (a, turn) = (&mut self.a, self.turn);
+            let task = tokio::spawn(self.dispatch.call(call));
+            let announced = self.rx.recv().await.unwrap();
+            assert!(matches!(announced, StreamEvent::ToolCall { .. }));
+            between(&self.home);
+            let mut effects = a.update(AppEvent::Chat(id2(), turn, announced));
+            let prompted = pending(a).map(|(ask, _)| ask);
+            if prompted.is_some() {
+                assert!(!task.is_finished(), "nothing runs before the answer");
+                NOW_MS.with(|n| n.set(n.get() + 1_000));
+                effects.extend(a.update(key(answer)));
+            }
+            for effect in effects {
+                if let Effect::ToolDecision {
+                    pane,
+                    worker: None,
+                    turn,
+                    call,
+                    decision,
+                } = effect
+                {
+                    assert!(self.waits.decide(pane, turn, call, decision));
+                }
+            }
+            let out = task.await.unwrap();
+            let result = self.rx.recv().await.unwrap();
+            assert!(matches!(result, StreamEvent::ToolResult { .. }));
+            a.update(AppEvent::Chat(id2(), turn, result));
+            assert!(pending(a).is_none());
+            (prompted, out)
+        }
+    }
+
+    /// One call in a fresh turn, a prompt answered `n`.
+    async fn drive(
+        mode: ApprovalMode,
+        locality: Locality,
+        call: Call,
+    ) -> (Option<ApprovalAsk>, Outcome) {
+        lab(mode, locality).call(call, 'n', |_| {}).await
+    }
+
+    fn edit(path: &str) -> Call {
+        Call::EditFile {
+            path: path.into(),
+            old: "inside".into(),
+            new: "changed".into(),
+        }
+    }
+
+    // S4 (a write asks): a read that `run` let go is not the user's `y`, so a
+    // later edit of the same file still asks; in `ask`, the user's `y` on the
+    // read still lets the edit go, as before.
+    #[tokio::test]
+    async fn a_read_run_mode_let_go_does_not_allow_a_later_edit() {
+        let mut run = lab(ApprovalMode::Run, Locality::Cloud);
+        let (prompted, out) = run.call(read("src/notes.txt"), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        assert!(out.text.contains("inside the root"), "{out:?}");
+        let (prompted, out) = run.call(edit("src/notes.txt"), 'n', |_| {}).await;
+        assert!(
+            matches!(prompted, Some(ApprovalAsk::Read { .. })),
+            "{prompted:?}"
+        );
+        assert_eq!(out.text, "denied: the user declined");
+
+        let mut ask = lab(ApprovalMode::Ask, Locality::Cloud);
+        let (prompted, out) = ask.call(read("src/notes.txt"), 'y', |_| {}).await;
+        assert!(prompted.is_some());
+        assert!(out.text.contains("inside the root"), "{out:?}");
+        let (prompted, out) = ask.call(edit("src/notes.txt"), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        // Staging reads the disk through the safe write primitives, which
+        // exist on Linux only (macOS refuses by design), so only Linux can
+        // stage the edit once no prompt stands in the way.
+        if cfg!(target_os = "linux") {
+            assert!(!out.is_error, "{out:?}");
+        }
+    }
+
+    // `ask` is unchanged for a local read outside the root whose path is too
+    // long to show: it still runs free, with no prompt.
+    #[tokio::test]
+    async fn ask_mode_still_runs_a_local_read_outside_the_root_that_cannot_be_shown() {
+        let name = format!("{}.txt", "a".repeat(130));
+        let mut ask = lab(ApprovalMode::Ask, Locality::Local);
+        std::fs::write(ask.home.join(&name), "a long name outside").unwrap();
+        let (prompted, out) = ask.call(read(&format!("~/{name}")), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        assert!(!out.is_error, "{out:?}");
+        assert!(out.text.contains("a long name outside"), "{out:?}");
+    }
+
+    // A file in the root swapped for a link to outside it between the ask and
+    // the answer: the read `run` let go is judged again and reads nothing.
+    #[tokio::test]
+    async fn a_read_swapped_for_a_link_outside_the_root_after_the_ask_reads_nothing() {
+        let mut run = lab(ApprovalMode::Run, Locality::Cloud);
+        let (prompted, out) = run
+            .call(read("src/notes.txt"), 'n', |home| {
+                let file = home.join("proj/src/notes.txt");
+                std::fs::remove_file(&file).unwrap();
+                std::os::unix::fs::symlink(home.join("outside.txt"), &file).unwrap();
+            })
+            .await;
+        assert_eq!(prompted, None);
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(out.text, REFUSED);
+    }
+
+    // S2: a non-sensitive read inside the chat's root runs unasked in `run`,
+    // on a cloud engine too, and its text reaches the model.
+    #[tokio::test]
+    async fn run_mode_reads_a_file_in_the_root_without_a_prompt() {
+        for locality in [Locality::Cloud, Locality::Local] {
+            for path in ["src/notes.txt", "~/proj/src/notes.txt"] {
+                let (prompted, out) = drive(ApprovalMode::Run, locality, read(path)).await;
+                assert_eq!(prompted, None, "{locality:?} {path}");
+                assert!(!out.is_error, "{out:?}");
+                assert!(out.text.contains("inside the root"), "{out:?}");
+            }
+        }
+    }
+
+    // S1 (grep tool): a search of the root runs unasked in `run`, on a cloud
+    // engine too, and the matching lines reach the model.
+    #[tokio::test]
+    async fn run_mode_greps_the_root_without_a_prompt() {
+        for locality in [Locality::Cloud, Locality::Local] {
+            let (prompted, out) = drive(ApprovalMode::Run, locality, grep("inside the")).await;
+            assert_eq!(prompted, None, "{locality:?}");
+            assert!(!out.is_error, "{out:?}");
+            assert!(
+                out.text.contains("src/notes.txt:1:inside the root"),
+                "{out:?}"
+            );
+        }
+    }
+
+    // S2: a non-sensitive read outside the root asks in `run`, on every
+    // engine, and a link in the root that leads outside it is judged by where
+    // it leads. Nothing is read before the answer, and `n` reads nothing.
+    #[tokio::test]
+    async fn run_mode_asks_before_a_read_outside_the_root() {
+        for locality in [Locality::Cloud, Locality::Local] {
+            for path in ["~/outside.txt", "../outside.txt", "link.txt"] {
+                let (prompted, out) = drive(ApprovalMode::Run, locality, read(path)).await;
+                assert!(
+                    matches!(prompted, Some(ApprovalAsk::Read { .. })),
+                    "{locality:?} {path}: {prompted:?}"
+                );
+                assert!(out.is_error, "{out:?}");
+                assert_eq!(out.text, "denied: the user declined");
+            }
+        }
+    }
+
+    // S2 (Q2): a sensitive path is refused as before, in the root or not: no
+    // prompt, nothing read, the same refusal text as any hidden path.
+    #[tokio::test]
+    async fn run_mode_refuses_a_sensitive_path_without_a_prompt() {
+        for locality in [Locality::Cloud, Locality::Local] {
+            for path in [".env", "~/.ssh/id_rsa"] {
+                let (prompted, out) = drive(ApprovalMode::Run, locality, read(path)).await;
+                assert_eq!(prompted, None, "{locality:?} {path}");
+                assert!(out.is_error, "{out:?}");
+                assert_eq!(out.text, REFUSED);
+                assert!(!out.text.contains("secret"));
+            }
+        }
+    }
+
+    /// The two roots too broad to keep a read in: HOME and `/`.
+    const BROAD: [fn(&Path, &Path) -> PathBuf; 2] =
+        [|home, _| home.to_path_buf(), |_, _| PathBuf::from("/")];
+
+    // S2 (L14): a chat whose root is HOME or `/` reads nothing on its own in
+    // `run`: a non-sensitive read asks, and `n` reads nothing. A sensitive
+    // path is still refused with no prompt. A local engine reads as in every
+    // mode, with no prompt: nothing leaves the machine.
+    #[tokio::test]
+    async fn run_mode_asks_before_every_read_under_a_broad_root() {
+        for at in BROAD {
+            let mut lab = lab_in(ApprovalMode::Run, Locality::Cloud, at);
+            let (prompted, out) = lab.call(read("~/proj/src/notes.txt"), 'n', |_| {}).await;
+            assert!(
+                matches!(prompted, Some(ApprovalAsk::Read { .. })),
+                "{prompted:?}"
+            );
+            assert_eq!(out.text, "denied: the user declined");
+            let (prompted, out) = lab.call(read("~/.ssh/id_rsa"), 'n', |_| {}).await;
+            assert_eq!(prompted, None);
+            assert_eq!(out.text, REFUSED);
+            let mut local = lab_in(ApprovalMode::Run, Locality::Local, at);
+            let (prompted, out) = local.call(read("~/proj/src/notes.txt"), 'n', |_| {}).await;
+            assert_eq!(prompted, None);
+            assert!(out.text.contains("inside the root"), "{out:?}");
+        }
+    }
+
+    // S2 (L14): a search of a root that is HOME or `/` asks in `run`.
+    #[tokio::test]
+    async fn run_mode_asks_before_a_grep_under_a_broad_root() {
+        for at in BROAD {
+            let mut lab = lab_in(ApprovalMode::Run, Locality::Cloud, at);
+            let (prompted, out) = lab.call(grep("inside the"), 'n', |_| {}).await;
+            assert!(
+                matches!(prompted, Some(ApprovalAsk::Search { .. })),
+                "{prompted:?}"
+            );
+            assert_eq!(out.text, "denied: the user declined");
+        }
+    }
+
+    // S2 (L14): a read the mode answers because its path was refused opens
+    // nothing, even when the file appears before the read: under a root of
+    // HOME it would otherwise read any file in HOME with no prompt.
+    #[tokio::test]
+    async fn run_mode_reads_nothing_of_a_refused_path_that_appears_before_the_read() {
+        let mut lab = lab_in(ApprovalMode::Run, Locality::Cloud, |home, _| {
+            home.to_path_buf()
+        });
+        let home = lab.home.clone();
+        let late = home.join("late.txt");
+        crate::runtime::tools::fs::hooks::before_read(&home, move || {
+            std::fs::write(&late, "late content\n").unwrap();
+        });
+        let (prompted, out) = lab.call(read("~/late.txt"), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(out.text, REFUSED);
+    }
+
+    // A file in the root swapped for a link to outside it after every check
+    // the host makes before the read, just before the read judges its path:
+    // the read `run` let go is kept in the root by the read itself.
+    #[tokio::test]
+    async fn a_read_swapped_for_a_link_just_before_it_opens_reads_nothing() {
+        let mut run = lab(ApprovalMode::Run, Locality::Cloud);
+        let home = run.home.clone();
+        crate::runtime::tools::fs::hooks::before_read(&home.join("proj"), move || {
+            let file = home.join("proj/src/notes.txt");
+            std::fs::remove_file(&file).unwrap();
+            std::os::unix::fs::symlink(home.join("outside.txt"), &file).unwrap();
+        });
+        let (prompted, out) = run.call(read("src/notes.txt"), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        assert!(!out.text.contains("outside the root"), "{out:?}");
+        assert_eq!(out.text, REFUSED);
+    }
+
+    // `run` denies a local read outside the root whose path cannot be shown:
+    // no prompt may approve it, and nothing is read.
+    #[tokio::test]
+    async fn run_mode_denies_a_local_read_outside_the_root_that_cannot_be_shown() {
+        let name = format!("{}.txt", "a".repeat(130));
+        let mut run = lab(ApprovalMode::Run, Locality::Local);
+        std::fs::write(run.home.join(&name), "a long name outside").unwrap();
+        let (prompted, out) = run.call(read(&format!("~/{name}")), 'n', |_| {}).await;
+        assert_eq!(prompted, None);
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(out.text, format!("denied: {UNSHOWABLE}"));
+    }
+
+    // `ask` and `auto` are unchanged: a cloud read in the root and a cloud
+    // search still prompt, and a local read outside the root still runs.
+    #[tokio::test]
+    async fn ask_and_auto_modes_keep_the_read_and_search_prompts() {
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto] {
+            let (prompted, _) = drive(mode, Locality::Cloud, read("src/notes.txt")).await;
+            assert!(
+                matches!(prompted, Some(ApprovalAsk::Read { .. })),
+                "{mode:?}: {prompted:?}"
+            );
+            let (prompted, _) = drive(mode, Locality::Cloud, grep("inside the")).await;
+            assert!(
+                matches!(prompted, Some(ApprovalAsk::Search { .. })),
+                "{mode:?}: {prompted:?}"
+            );
+            let (prompted, out) = drive(mode, Locality::Local, read("~/outside.txt")).await;
+            assert_eq!(prompted, None, "{mode:?}");
+            assert!(out.text.contains("outside the root"), "{out:?}");
+        }
+    }
+}
+
+// Spec (git-tools, Read verbs): a git diff on a cloud engine waits for `y` in
+// every mode and the prompt says what is sent.
+#[test]
+fn a_git_diff_prompts_in_every_approval_mode_and_shows_what_is_sent() {
+    use crate::core::ai::config::ApprovalMode;
+    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        let (mut a, turn) = live();
+        super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
+        let ask = ApprovalAsk::GitDiff {
+            staged: true,
+            path: "src/a.rs".into(),
+        };
+        assert_eq!(announce(&mut a, turn, 1, ask.clone()), Vec::new());
+        assert_eq!(pending(&a).map(|(ask, _)| ask), Some(ask));
+        let prompt = a.approval_prompt(id2()).unwrap();
+        assert_eq!(prompt.command, "git diff --staged src/a.rs", "{mode:?}");
+        assert!(prompt.target.contains("engine"), "{mode:?}");
+        assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    }
+}
+
+// Spec (git-tools, add): a one-line prompt with the paths, in every mode; `y`
+// answers it once the prompt fits.
+#[test]
+fn a_git_add_prompts_in_every_approval_mode_with_the_paths_and_the_count() {
+    use crate::core::ai::config::ApprovalMode;
+    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        let (mut a, turn) = live();
+        super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
+        let ask = ApprovalAsk::GitAdd {
+            paths: "src/a.rs b.rs".into(),
+            files: Some(2),
+        };
+        assert_eq!(announce(&mut a, turn, 1, ask.clone()), Vec::new());
+        assert_eq!(pending(&a).map(|(ask, _)| ask), Some(ask));
+        let prompt = a.approval_prompt(id2()).unwrap();
+        assert_eq!(
+            prompt.command, "git add src/a.rs b.rs (2 files)",
+            "{mode:?}"
+        );
+        assert!(prompt.target.contains("index"), "{mode:?}");
+        assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    }
+}
+
+fn github_ask(ollama_cloud: bool) -> ApprovalAsk {
+    ApprovalAsk::GithubRead {
+        repo: "o/r".into(),
+        what: "gh_pr_view #7".into(),
+        ollama_cloud,
+    }
+}
+
+// Spec (github-tools, Cloud consent, Auto and run do not answer): every mode
+// prompts, the prompt names the repository and the engine, and only an
+// unmodified lowercase `y` accepts.
+#[test]
+fn a_github_read_prompts_in_every_mode_and_only_a_lowercase_y_accepts() {
+    use crate::core::ai::config::ApprovalMode;
+    for (mode, ollama_cloud, engine) in [
+        (ApprovalMode::Ask, false, "the engine"),
+        (ApprovalMode::Auto, false, "the engine"),
+        (ApprovalMode::Run, true, "an Ollama cloud model"),
+    ] {
+        let (mut a, turn) = live();
+        super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
+        let ask = github_ask(ollama_cloud);
+        assert_eq!(announce(&mut a, turn, 1, ask.clone()), Vec::new());
+        assert_eq!(pending(&a).map(|(ask, _)| ask), Some(ask));
+        let prompt = a.approval_prompt(id2()).unwrap();
+        assert_eq!(
+            prompt.target,
+            format!("send GitHub text of o/r to {engine}")
+        );
+        assert_eq!(prompt.command, "gh_pr_view #7");
+        // The text is sent to the provider: the wording says "send".
+        assert_eq!(prompt.keys, crate::core::ai::chat::approval::PANES_KEYS);
+        for other in [key('Y'), plain(KeyCode::Enter), key(' '), key('a')] {
+            assert_eq!(a.update(other), vec![], "{mode:?}: only y accepts");
+            assert!(pending(&a).is_some());
+        }
+        assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    }
+}
+
+// The host fills the repository in before the prompt is drawn; an empty one
+// would show "send GitHub text of  to the engine". Debug builds refuse it.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "repository")]
+fn a_github_prompt_with_an_empty_repository_is_refused_in_debug() {
+    let (mut a, turn) = live();
+    let ask = ApprovalAsk::GithubRead {
+        repo: String::new(),
+        what: "gh_pr_view #7".into(),
+        ollama_cloud: false,
+    };
+    announce(&mut a, turn, 1, ask);
+    let _ = a.approval_prompt(id2());
+}
+
+// Spec (Declined consent): `n`, Esc, a cancel and the end of the call all end
+// as denied or gone, and the next ask is not blocked by the old one.
+#[test]
+fn a_declined_github_read_is_denied_and_frees_the_chat() {
+    for decline in [key('n'), plain(KeyCode::Esc)] {
+        let (mut a, turn) = live();
+        announce(&mut a, turn, 1, github_ask(false));
+        assert_eq!(
+            a.update(decline),
+            vec![decision(turn, 1, Decision::Denied("the user declined"))]
+        );
+        assert_eq!(pending(&a), None);
+    }
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, github_ask(false));
+    let effects = a.update(super::chat_live::ctrl('c'));
+    assert_eq!(
+        effects,
+        vec![
+            decision(turn, 1, Decision::Denied("cancelled")),
+            Effect::ChatCancel(id2())
+        ]
+    );
+    assert_eq!(pending(&a), None);
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, github_ask(false));
+    result(&mut a, turn, 1, ToolStatus::Denied);
+    assert_eq!(pending(&a), None);
+}
+
+// One pending approval per chat: no mode answers the consent, and a second
+// ask is refused while it waits.
+#[test]
+fn a_pending_github_consent_refuses_a_second_ask() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, github_ask(false));
+    assert_eq!(
+        announce(&mut a, turn, 2, read("/home/u/x")),
+        vec![decision(turn, 2, Decision::Denied(ANOTHER_PENDING))]
+    );
+    assert!(matches!(
+        pending(&a).map(|(ask, _)| ask),
+        Some(ApprovalAsk::GithubRead { .. })
+    ));
 }

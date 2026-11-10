@@ -16,6 +16,7 @@ use super::{
 };
 use crate::core::ai::{
     chat::review::{Badge, BatchReview, ReviewDoc},
+    orchestra::WorkerKey,
     tools::{
         paths::SecretRoots,
         stage::{Batch, BatchId, Outcome, StageError, StageKey, State},
@@ -52,7 +53,13 @@ pub struct Stages {
     /// The generation of the next batch. One counter for every key: it only
     /// grows, so a generation is never handed out twice.
     next: u64,
+    /// The worker label a sealed batch was headed with, by key and the
+    /// generation it belongs to: an orphan review shows it again.
+    labels: HashMap<StageKey, (u64, WorkerLabel)>,
 }
+
+/// The ask label, worker and receipt line a worker's review is headed with.
+pub type WorkerLabel = (String, WorkerKey, Option<String>);
 
 impl Stages {
     /// The batch of `key` open for staging, or a new one when the key has none.
@@ -89,25 +96,30 @@ impl Stages {
         }
     }
 
-    /// What each pane with a batch shows: the entries it holds, an orphan
-    /// when `live` says no turn of the pane runs. An empty batch shows nothing.
+    /// What each pane with a batch shows: the entries all its keys hold, an
+    /// orphan when `live` says no turn of the pane runs. An empty batch shows
+    /// nothing.
     pub fn badges(&self, live: impl Fn(PaneId) -> bool) -> HashMap<PaneId, Badge> {
-        let mut out = HashMap::new();
-        for (&StageKey::Pane(pane), batch) in &self.batches {
+        let mut held: HashMap<PaneId, (usize, bool)> = HashMap::new();
+        for (key, batch) in &self.batches {
+            let pane = key.pane();
             let n = batch.entries().len();
             if n > 0 {
-                let orphan = batch.orphan(live(pane)).is_some();
-                out.insert(
-                    pane,
-                    if orphan {
-                        Badge::Orphan(n)
-                    } else {
-                        Badge::Staged(n)
-                    },
-                );
+                let slot = held.entry(pane).or_default();
+                slot.0 += n;
+                slot.1 |= batch.orphan(live(pane)).is_some();
             }
         }
-        out
+        (held.into_iter())
+            .map(|(pane, (n, orphan))| {
+                let badge = if orphan {
+                    Badge::Orphan(n)
+                } else {
+                    Badge::Staged(n)
+                };
+                (pane, badge)
+            })
+            .collect()
     }
 
     pub fn batch(&self, key: StageKey) -> Option<&Batch> {
@@ -122,23 +134,60 @@ impl Stages {
             .map_or_else(StagedView::default, StagedView::from_batch)
     }
 
-    /// Closes staging for the batch `id` and hands it to the user. A stale
-    /// id, from a gone batch of the same key, is refused.
+    /// Closes staging for the batch `id` and hands it to the user, again if
+    /// its earlier ask is gone. A stale id, from a gone batch of the same
+    /// key, is refused.
     pub fn seal(&mut self, id: BatchId) -> Result<BatchId, StageError> {
-        self.current(id)?.propose()
+        self.current(id)?.ask()
+    }
+
+    /// Remembers the head of the review of the sealed batch `id`, for the
+    /// review of its orphan. A stale id is ignored.
+    pub fn label(&mut self, id: BatchId, label: WorkerLabel) {
+        if self.current(id).is_ok() {
+            self.labels.insert(id.key, (id.generation, label));
+        }
+    }
+
+    /// Remembers the head of the review of the batch `key` holds now, while a
+    /// worker stages it: a batch the worker never proposes is never sealed,
+    /// and its orphan review is still headed by the worker. It carries no
+    /// receipt: no review covered a batch that was not sealed. Staging is
+    /// refused once the batch is sealed, so this never replaces the head a
+    /// seal gave. Kept by the batch's generation, so it never heads a later
+    /// batch of the key. A key with no batch is ignored.
+    pub fn label_staging(&mut self, key: StageKey, label: WorkerLabel) {
+        if let Some(batch) = self.batches.get(&key) {
+            self.labels.insert(key, (batch.id().generation, label));
+        }
+    }
+
+    /// The ask for the batch `id` is over without an answer (see
+    /// [`Batch::ask_gone`]). A stale id is ignored.
+    pub fn ask_gone(&mut self, id: BatchId) {
+        if let Ok(batch) = self.current(id) {
+            batch.ask_gone();
+        }
     }
 
     /// The orphan of `key` for the user (see [`Batch::review_orphan`]): a
     /// batch the turn never proposed is sealed now, a proposed one is shown
     /// as it is. A live turn, an empty batch or no batch is an error.
-    pub fn review(
+    fn review(
         &mut self,
         key: StageKey,
         turn_live: bool,
     ) -> Result<(BatchId, BatchReview), StageError> {
         let batch = self.batches.get_mut(&key).ok_or(StageError::NotOrphan)?;
         let id = batch.review_orphan(turn_live)?;
-        Ok((id, BatchReview::new(ReviewDoc::build(batch))))
+        let doc = ReviewDoc::build(batch);
+        let review = match self.labels.get(&key) {
+            Some((generation, (label, worker, receipt))) if *generation == id.generation => {
+                BatchReview::labelled(doc, label.clone(), *worker).with_receipt(receipt.clone())
+            }
+            _ => BatchReview::new(doc),
+        };
+        Ok((id, review))
     }
 
     /// Applies the proposed batch `id` to the disk below `roots`.
@@ -162,6 +211,7 @@ impl Stages {
         if let Some(outcome) = closed {
             batch.resolve(id, outcome)?;
             self.batches.remove(&id.key);
+            self.labels.remove(&id.key);
         }
         Ok(result)
     }
@@ -170,15 +220,49 @@ impl Stages {
     pub fn discard(&mut self, id: BatchId) -> Result<(), StageError> {
         self.current(id)?.discard();
         self.batches.remove(&id.key);
+        self.labels.remove(&id.key);
         Ok(())
     }
 
-    /// Drops whatever `key` holds (a pane close or an app quit). How many
-    /// entries were lost; `None` when nothing worth a notice was: an empty
-    /// batch is no loss.
+    /// Drops whatever `key` holds. How many entries were lost; `None` when
+    /// nothing worth a notice was: an empty batch is no loss. A pane close
+    /// goes through [`Stages::discard_pane`]; tests use this to clear one key.
+    #[cfg(test)]
     pub fn discard_key(&mut self, key: StageKey) -> Option<usize> {
         let lost = self.batches.remove(&key)?.entries().len();
         (lost > 0).then_some(lost)
+    }
+
+    /// Drops whatever any key of `pane` holds (a pane close). How many
+    /// entries were lost; `None` when nothing worth a notice was.
+    pub fn discard_pane(&mut self, pane: PaneId) -> Option<usize> {
+        let mut lost = 0;
+        self.labels.retain(|key, _| key.pane() != pane);
+        self.batches.retain(|key, batch| {
+            let ours = key.pane() == pane;
+            if ours {
+                lost += batch.entries().len();
+            }
+            !ours
+        });
+        (lost > 0).then_some(lost)
+    }
+
+    /// The oldest orphan of `pane` for the user, by arrival (generation): the
+    /// user reviews one worker batch at a time, and an unanswered one is
+    /// shown again until it is. A live turn, an empty batch or no batch is an
+    /// error (see [`Stages::review`]).
+    pub fn review_pane(
+        &mut self,
+        pane: PaneId,
+        turn_live: bool,
+    ) -> Result<(BatchId, BatchReview), StageError> {
+        let oldest = (self.batches.iter())
+            .filter(|(key, batch)| key.pane() == pane && batch.orphan(turn_live).is_some())
+            .min_by_key(|(_, batch)| batch.id().generation)
+            .map(|(&key, _)| key)
+            .ok_or(StageError::NotOrphan)?;
+        self.review(oldest, turn_live)
     }
 
     /// The live batch with exactly this id.
@@ -230,14 +314,21 @@ mod tests {
     struct Rec {
         log: RefCell<Vec<String>>,
         drift: bool,
+        /// Files a create left behind: a later probe finds them.
+        made: RefCell<Vec<PathBuf>>,
     }
 
     impl WriteOps for Rec {
-        fn probe(&self, _: &Path) -> Result<Option<Vec<u8>>, WriteError> {
+        fn probe(&self, real: &Path) -> Result<Option<Vec<u8>>, WriteError> {
             if self.drift {
                 return Err(WriteError::Drifted);
             }
-            Ok(None)
+            Ok(self
+                .made
+                .borrow()
+                .iter()
+                .any(|p| p == real)
+                .then(|| b"x\n".to_vec()))
         }
         fn make_dir(&self, real: &Path) -> Result<(), WriteError> {
             self.log
@@ -246,6 +337,7 @@ mod tests {
             Ok(())
         }
         fn create_file(&self, real: &Path, _: &[u8]) -> Result<(), WriteError> {
+            self.made.borrow_mut().push(real.to_path_buf());
             self.log
                 .borrow_mut()
                 .push(format!("create {}", real.display()));
@@ -285,6 +377,98 @@ mod tests {
         );
         stages.discard(id).unwrap();
         assert!(!stages.badges(|_| false).contains_key(&PaneId::for_test(2)));
+    }
+
+    fn worker(pane: u32, worker: u32) -> StageKey {
+        StageKey::Worker(
+            PaneId::for_test(pane),
+            crate::core::ai::orchestra::WorkerKey::for_test(1, worker),
+        )
+    }
+
+    #[test]
+    fn a_pane_with_several_batches_shows_one_badge_with_the_sum() {
+        use crate::core::ai::chat::review::Badge;
+        let mut stages = Stages::default();
+        put(&mut stages, worker(1, 1), "a.txt");
+        put(&mut stages, worker(1, 1), "b.txt");
+        put(&mut stages, worker(1, 2), "c.txt");
+        put(&mut stages, worker(1, 2), "d.txt");
+        put(&mut stages, worker(1, 2), "e.txt");
+        // A sibling pane and an empty batch of the same pane.
+        put(&mut stages, key(2), "f.txt");
+        stages.stage(worker(1, 3)).unwrap();
+        stages.stage(worker(3, 1)).unwrap();
+        let badges = stages.badges(|pane| pane == PaneId::for_test(1));
+        assert_eq!(badges.len(), 2, "{badges:?}");
+        assert_eq!(badges[&PaneId::for_test(1)], Badge::Staged(5));
+        assert_eq!(badges[&PaneId::for_test(2)], Badge::Orphan(1));
+        assert_eq!(
+            stages.badges(|_| false)[&PaneId::for_test(1)],
+            Badge::Orphan(5)
+        );
+        assert!(!stages.badges(|_| false).contains_key(&PaneId::for_test(3)));
+    }
+
+    #[test]
+    fn a_pane_close_drops_every_key_of_the_pane_and_sums_the_entries() {
+        let mut stages = Stages::default();
+        put(&mut stages, key(1), "a.txt");
+        put(&mut stages, worker(1, 1), "b.txt");
+        put(&mut stages, worker(1, 1), "c.txt");
+        put(&mut stages, worker(2, 1), "d.txt");
+        stages.stage(worker(3, 1)).unwrap();
+        stages.stage(worker(3, 2)).unwrap();
+        assert_eq!(stages.discard_pane(PaneId::for_test(1)), Some(3));
+        assert_eq!(stages.discard_pane(PaneId::for_test(1)), None);
+        assert!(stages.batch(worker(2, 1)).is_some(), "a sibling pane stays");
+        // Empty batches are no loss, but they go too.
+        assert_eq!(stages.discard_pane(PaneId::for_test(3)), None);
+        assert!(stages.batch(worker(3, 1)).is_none());
+    }
+
+    #[test]
+    fn a_stale_worker_label_never_heads_a_later_batch_of_the_key() {
+        let mut stages = Stages::default();
+        let k = worker(1, 1);
+        let first = put(&mut stages, k, "a.txt");
+        let wkey = crate::core::ai::orchestra::WorkerKey::for_test(1, 1);
+        stages.label_staging(k, ("1/1 code x>y".into(), wkey, None));
+        // The batch goes without its label being dropped with it.
+        stages.discard_key(k);
+        let second = put(&mut stages, k, "b.txt");
+        assert!(second.generation > first.generation);
+        let (_, review) = stages.review_pane(PaneId::for_test(1), false).unwrap();
+        assert_eq!(review.label(), None);
+        // Labelled while it stages, the batch's own label heads its review.
+        stages.label_staging(k, ("1/2 code x>y".into(), wkey, None));
+        let (_, review) = stages.review_pane(PaneId::for_test(1), false).unwrap();
+        assert_eq!(review.label(), Some("1/2 code x>y"));
+    }
+
+    #[test]
+    fn the_orphan_review_of_a_pane_opens_the_oldest_batch_first() {
+        let mut stages = Stages::default();
+        let pane = PaneId::for_test(1);
+        let second = put(&mut stages, worker(1, 2), "b.txt");
+        let first = put(&mut stages, worker(1, 1), "a.txt");
+        let other = put(&mut stages, key(2), "z.txt");
+        assert!(first.generation > second.generation, "arrival, not worker");
+        // A live turn owns the batches; an empty one is nothing to review.
+        assert!(stages.review_pane(pane, true).is_err());
+        stages.stage(worker(1, 3)).unwrap();
+        let (id, _) = stages.review_pane(pane, false).unwrap();
+        assert_eq!(id, second);
+        // Not answered yet: the same batch again.
+        assert_eq!(stages.review_pane(pane, false).unwrap().0, id);
+        stages.discard(id).unwrap();
+        assert_eq!(stages.review_pane(pane, false).unwrap().0, first);
+        stages.discard(first).unwrap();
+        assert!(stages.review_pane(pane, false).is_err());
+        assert_eq!(
+            stages.review_pane(PaneId::for_test(2), false).unwrap().0,
+            other
+        );
     }
 
     #[test]
@@ -369,6 +553,31 @@ mod tests {
         assert_eq!(stages.batch(key(1)).unwrap().state(), State::Proposed);
         assert_eq!(stages.discard(id), Ok(()));
         assert!(stages.batch(key(1)).is_none());
+    }
+
+    // GUARD (passes by design; spec "Same file, drift refused"): two keys can
+    // stage one path. The first apply wins; the second, approved, writes
+    // nothing, stays proposed for the user and reports the drift.
+    #[test]
+    fn two_batches_of_one_path_apply_once_and_the_second_reports_drift() {
+        let mut stages = Stages::default();
+        let first = put(&mut stages, worker(1, 1), "same.txt");
+        let second = put(&mut stages, worker(1, 2), "same.txt");
+        stages.seal(first).unwrap();
+        stages.seal(second).unwrap();
+        let disk = Rec::default();
+        assert!(matches!(
+            stages.apply_with(first, &disk).unwrap(),
+            ApplyResult::Applied(_)
+        ));
+        let result = stages.apply_with(second, &disk).unwrap();
+        assert!(
+            matches!(result, ApplyResult::Drifted(ref p) if p.len() == 1),
+            "{result:?}"
+        );
+        assert_eq!(disk.log.borrow().len(), 1, "the second wrote nothing");
+        assert_eq!(stages.batch(worker(1, 2)).unwrap().state(), State::Proposed);
+        assert!(stages.batch(worker(1, 1)).is_none());
     }
 
     #[test]

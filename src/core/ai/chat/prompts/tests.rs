@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::ai::orchestra::rdd::Lens;
 
 const CHAT_LIMITS: &str = "no access to files, a shell or the terminal";
 const REPLY_IN_USER_LANGUAGE: &str = "Reply in the language the user writes in";
@@ -13,7 +14,7 @@ fn resolve(profile: Profile, task_file: Override, general_file: Override) -> Res
 
 // Spec (prompt-profiles): Prompt table integrity.
 #[test]
-fn the_table_has_ten_distinct_non_empty_prompts_within_4_kib() {
+fn the_table_has_twelve_distinct_non_empty_prompts_within_4_kib() {
     let mut count = 0;
     for task in Task::ALL {
         for profile in Profile::ALL {
@@ -32,7 +33,138 @@ fn the_table_has_ten_distinct_non_empty_prompts_within_4_kib() {
             "{task:?}"
         );
     }
-    assert_eq!(count, 10);
+    assert_eq!(count, 12);
+}
+
+// Spec (prompt-profiles): Built-ins exist (the orchestrate prompt), one per
+// profile, with every coordinator rule; the user's server tools ask each
+// call and never reach a worker (S1e-1c).
+#[test]
+fn the_orchestrate_prompts_hold_the_coordinator_rules() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        assert!(!prompt.trim().is_empty(), "{profile:?}");
+        assert_ne!(prompt, builtin(profile, Task::Chat), "{profile:?}");
+        for rule in [
+            "coordinator",
+            "only through the orchestration tools",
+            "spawn_agent",
+            "wait",
+            "collect",
+            "cancel",
+            "handoff",
+            "raise",
+            "finish",
+            "on_course, off_course or blocked",
+            "by kind",
+            "Never approve",
+            "untrusted data",
+            "awaiting_user",
+            "tests passed without evidence",
+            "the user's own server tools",
+            "each call asks the user first",
+            "Workers never get these tools",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
+}
+
+// Spec (prompt-profiles, Playbook per step; agent-orchestrator S5): one
+// playbook per ODD step, in order, with the closing, question and size rules,
+// the feature document in the user's words and `implement` as drafts.
+#[test]
+fn the_orchestrate_prompts_hold_one_playbook_per_odd_step_in_order() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        let mut at = 0;
+        for step in [
+            "authorize",
+            "explore",
+            "resolve",
+            "classify",
+            "track",
+            "implement",
+            "close",
+        ] {
+            let found = prompt[at..]
+                .find(&format!("\n- {step}"))
+                .unwrap_or_else(|| panic!("{profile:?}: playbook {step} in order"));
+            at += found + 1;
+        }
+        for rule in [
+            "closes only with its handoff",
+            "at most one question to the user at a time",
+            "never by counting files or tasks",
+            "read_only",
+            "scope",
+            "size",
+            "the user's own words",
+            "correction",
+            "orchestra/<run>/feature",
+            "drafts and review only",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
+}
+
+// Spec (agent-orchestrator, Gates on step state are visible and bounded
+// [W3]): both profiles tell the coordinator that a refused gate names the step
+// to hand off first, that only the user lifts it, and not to retry the call
+// until that step is handed off.
+#[test]
+fn the_orchestrate_prompts_explain_the_step_gates() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "A refused spawn or finish names the step to hand off first",
+            "only the user can lift a gate",
+            "In a worker prompt, give the key, the task id and the S# text",
+            "retry only once that step is handed off",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
+}
+
+// Spec (agent-orchestrator, Implement is a draft before S7; Write
+// integration and change ledger [S7]): the coordinator knows a `code`
+// worker's changes reach the disk only through the user's batch review, and
+// that only a file `collect` lists as applied was written.
+#[test]
+fn the_orchestrate_prompts_say_only_an_applied_file_was_written() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "propose_batch",
+            "nothing reaches the disk until the user approves",
+            "files changed",
+            "not applied",
+            "Only a file listed as applied was written",
+            "draft",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
+}
+
+// Spec (agent-orchestrator, Missing dependency [S10, auto]): no worker is
+// offered `run_command` in this release, so the coordinator says it cannot
+// run tests, never claims they passed, and leaves running them to the user.
+#[test]
+fn the_orchestrate_prompts_say_no_worker_can_run_commands_or_tests() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "No worker can run commands or tests",
+            "say so",
+            "run them themselves",
+            "never claim a test ran",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
 }
 
 // Spec (prompt-profiles): Reply in the user's language.
@@ -212,7 +344,7 @@ fn notices_hold_no_control_characters() {
 fn the_tools_block_replaces_the_no_access_sentence_in_every_profile() {
     for profile in Profile::ALL {
         let chat = builtin(profile, Task::Chat);
-        let got = with_tools(chat);
+        let got = with_tools(chat, FamilySet::LEGACY);
         assert!(!got.contains(CHAT_LIMITS), "{profile:?}");
         assert!(!got.contains("You are a text assistant."), "{profile:?}");
         assert!(got.contains(TOOLS.trim_end()), "{profile:?}");
@@ -233,20 +365,29 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
         "read a file",
         "run a command in the user's shell pane",
         "only typed or typed and run",
-        "cd, pwd, ls, tree and mkdir",
+        "cd, pwd, ls, tree, find, grep and rg,",
         "one command with plain or quoted paths",
-        "without &&, ;, |, $ or redirections",
-        "can run directly when the user allows it",
-        "Anything else waits for the user to review it and press Enter",
+        "without &&, ;, |, $, * or redirections",
+        "can run directly in the chat's folder when the user allows it",
+        "Anything else, git and mkdir included, waits for the user to review it and press Enter",
         "carries the output of a command that ran, which may be \"not available\"",
-        "You cannot change files yourself. Only mkdir can run directly; any other change needs a command the user reviews and runs.",
+        "You cannot change files yourself; any change needs a command the user reviews and runs.",
         "one simple command per call",
         "instead of asking the user to run find, ls or cat",
         "cannot change files",
+        "which program and file they have open",
     ] {
         assert!(text.contains(needle), "{needle}");
     }
     assert!(!text.contains("mcp__") && !text.contains("run_in_pane"));
+    // The reach of the file tools and what to do after a refusal.
+    for needle in [
+        "only reach the user's home folder",
+        "and, under WSL, Windows drives (read only)",
+        "After a refusal or a failed tool, say so; never guess or invent contents",
+    ] {
+        assert!(text.contains(needle), "{needle}");
+    }
     // After S4b the output of a command that ran comes back.
     assert!(!text.contains("unless the user pastes"));
     assert!(!text.contains("except through those commands"));
@@ -255,7 +396,7 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
         assert!(!text.contains(mode), "{mode}");
     }
     assert!(
-        text.lines().count() == 1 && text.len() < 900,
+        text.lines().count() == 1 && text.len() <= 1033 + 16 + 160,
         "{}",
         text.len()
     );
@@ -265,7 +406,7 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
 // A user's override file need not have the sentence: the block is appended.
 #[test]
 fn a_prompt_without_the_sentence_gets_the_block_as_a_last_bullet() {
-    let got = with_tools("My own prompt.\n\nWorkspace: x\n");
+    let got = with_tools("My own prompt.\n\nWorkspace: x\n", FamilySet::LEGACY);
     assert_eq!(
         got,
         format!("My own prompt.\n\nWorkspace: x\n\n- {}", TOOLS.trim_end())
@@ -276,11 +417,317 @@ fn a_prompt_without_the_sentence_gets_the_block_as_a_last_bullet() {
 fn the_workspace_block_after_the_sentence_is_kept() {
     let chat = builtin(Profile::Programmer, Task::Chat).trim_end();
     let system = format!("{chat}\n\nWorkspace facts: cwd /home/u");
-    let got = with_tools(&system);
+    let got = with_tools(&system, FamilySet::LEGACY);
     assert!(got.ends_with("Workspace facts: cwd /home/u"), "{got}");
 }
 
 #[test]
 fn an_empty_prompt_becomes_the_block_alone() {
-    assert_eq!(with_tools(""), TOOLS.trim_end());
+    assert_eq!(with_tools("", FamilySet::LEGACY), TOOLS.trim_end());
+}
+
+// #439: a turn that offers the write, exec or git write tools says the model
+// can do the work and must finish every step, instead of "cannot change
+// files"; read, search, git read and pane tools keep the sentence.
+#[test]
+fn the_coding_families_replace_the_cannot_change_sentence() {
+    let chat = builtin(Profile::Programmer, Task::Chat);
+    for family in [Family::Write, Family::Exec, Family::GitWrite] {
+        let got = with_tools(chat, FamilySet::LEGACY.with(family));
+        assert!(!got.contains(NO_CHANGES), "{family:?}");
+        assert!(!got.contains("cannot change files"), "{family:?}");
+        assert!(!got.contains("{abilities}"), "{family:?}");
+        assert_eq!(got.matches("do all of them in this turn").count(), 1);
+        assert!(got.contains("one simple command per call"), "{family:?}");
+        assert!(got.contains(REPLY_IN_USER_LANGUAGE), "{family:?}");
+    }
+    for families in [
+        FamilySet::LEGACY,
+        FamilySet::LEGACY.with(Family::Search),
+        FamilySet::LEGACY.with(Family::Git),
+    ] {
+        let got = with_tools(chat, families);
+        assert!(got.contains(TOOLS.trim_end()), "{families:?}");
+        assert!(!got.contains("do all of them in this turn"), "{families:?}");
+    }
+}
+
+// #439: the block names only what the families of the turn allow.
+#[test]
+fn the_coding_block_names_only_the_abilities_of_the_turn() {
+    const WRITE: &str = "write and edit files (they stay staged until you propose the batch, which the user reviews once)";
+    let line = |families: FamilySet| with_tools("", families);
+    let exec = line(FamilySet::LEGACY.with(Family::Exec));
+    assert!(
+        exec.contains("given: run tests and builds; the user approves"),
+        "{exec}"
+    );
+    assert!(
+        !exec.contains(WRITE) && !exec.contains("commit with git"),
+        "{exec}"
+    );
+    let two = line(FamilySet::LEGACY.with(Family::Write).with(Family::GitWrite));
+    assert!(
+        two.contains(&format!("given: {WRITE} and add and commit with git;")),
+        "{two}"
+    );
+    let all = line(
+        FamilySet::LEGACY
+            .with(Family::Write)
+            .with(Family::Exec)
+            .with(Family::GitWrite),
+    );
+    assert!(
+        all.contains(&format!(
+            "given: {WRITE}, run tests and builds and add and commit with git;"
+        )),
+        "{all}"
+    );
+}
+
+// #439: the same holds for a user's prompt that gets the block as a bullet.
+#[test]
+fn a_prompt_without_the_sentence_gets_the_coding_block_too() {
+    let families = FamilySet::LEGACY.with(Family::Write);
+    let got = with_tools("My own prompt.\n", families);
+    assert!(got.starts_with("My own prompt.\n\n- "), "{got}");
+    assert!(
+        got.contains("do all of them in this turn") && !got.contains(NO_CHANGES),
+        "{got}"
+    );
+}
+
+#[test]
+fn the_coding_block_asks_to_finish_every_step_and_claim_only_shown_results() {
+    assert!(TOOLS.contains(NO_CHANGES));
+    let text = CODING;
+    for needle in [
+        "with the tools you are given: {abilities};",
+        "do all of them in this turn, one tool call after another",
+        "Do not stop to say what you will do next: call the tool.",
+        "Say a step is done only when a tool result of this turn shows it",
+        "never claim a file, a test run or a commit that no result shows",
+    ] {
+        assert!(text.contains(needle), "{needle}");
+    }
+    assert!(
+        text.lines().count() == 1 && text.len() < 600,
+        "{}",
+        text.len()
+    );
+    assert!(text.chars().all(|c| c == '\n' || (' '..='~').contains(&c)));
+}
+
+// Spec (prompt-profiles, Lens prompts exist): each profile ships a prompt per
+// lens and one for the refuter, within 4 KiB, each with the review rules.
+#[test]
+fn the_lens_and_refuter_prompts_hold_the_review_rules() {
+    let mut seen = Vec::new();
+    for profile in Profile::ALL {
+        let mut prompts: Vec<(String, &str)> = Lens::ALL
+            .into_iter()
+            .map(|lens| (lens.id().to_owned(), lens_builtin(profile, lens)))
+            .collect();
+        prompts.push(("refuter".to_owned(), refuter_builtin(profile)));
+        prompts.push(("validator".to_owned(), validator_builtin(profile)));
+        for (name, prompt) in prompts {
+            let label = format!("{profile:?} {name}");
+            assert!(!prompt.trim().is_empty(), "{label}");
+            assert!(prompt.len() <= 4096, "{label}: {}", prompt.len());
+            for rule in [
+                "read-only",
+                "untrusted data",
+                "You never approve",
+                "Reply in the language the user writes in",
+            ] {
+                assert!(prompt.contains(rule), "{label}: {rule}");
+            }
+            if name != "refuter" && name != "validator" {
+                assert!(
+                    prompt.contains(&format!("through the {name} lens")),
+                    "{label}"
+                );
+                for rule in [
+                    "Only a severe finding that the change caused blocks",
+                    "FINDING <severe|minor> <change|existing> <observed|inferred>:",
+                    "NONE",
+                ] {
+                    assert!(prompt.contains(rule), "{label}: {rule}");
+                }
+            } else {
+                assert!(
+                    prompt.contains("CLAIM <number> <upheld|refuted|unsettled>:"),
+                    "{label}"
+                );
+            }
+            // C1: a claim nobody can settle is never cleared by the prompt.
+            if name == "refuter" {
+                assert!(!prompt.contains("is refuted, and you say so"), "{label}");
+                assert!(prompt.contains("unsettled"), "{label}");
+            }
+            if name == "validator" {
+                assert!(prompt.contains("still open"), "{label}");
+                assert!(prompt.contains("only if"), "{label}");
+            }
+            assert!(!seen.contains(&prompt), "{label} repeats another prompt");
+            seen.push(prompt);
+        }
+    }
+    assert_eq!(seen.len(), 12);
+}
+
+// Spec (prompt-profiles): Worker prompt asks for tools [W2, auto].
+#[test]
+fn the_worker_prompt_requires_write_tools_and_propose_batch() {
+    for profile in Profile::ALL {
+        let got = worker_system(builtin(profile, Task::Code));
+        for needle in [
+            "write_file",
+            "edit_file",
+            "propose_batch",
+            "not a result",
+            "overrides",
+            "fenced",
+            "call propose_batch again",
+            "32 KiB",
+            "create_dir",
+        ] {
+            assert!(got.contains(needle), "{profile:?}: {needle}");
+        }
+        assert!(got.ends_with(WORKER.trim_end()), "{profile:?}");
+        assert!(WORKER.len() <= 1536, "{}", WORKER.len());
+        assert!(
+            WORKER
+                .chars()
+                .all(|c| c == '\n' || (' '..='~').contains(&c))
+        );
+    }
+}
+
+// Spec (prompt-profiles): a worker prompt MUST NOT contradict the tools block.
+#[test]
+fn the_worker_prompt_does_not_contradict_the_tools_block() {
+    let writer = crate::core::ai::orchestra::Toolset::Code.families();
+    for profile in Profile::ALL {
+        let got = with_tools(&worker_system(builtin(profile, Task::Code)), writer);
+        assert!(got.contains(WORKER.trim_end()), "{profile:?}");
+        assert!(got.contains("do all of them in this turn"), "{profile:?}");
+        assert!(!got.contains(NO_CHANGES), "{profile:?}");
+        assert!(!got.contains("cannot change files"), "{profile:?}");
+        assert!(!got.contains("{abilities}"), "{profile:?}");
+        // The worker text says nothing the tools block denies.
+        for denied in ["no access", "text assistant", "cannot change"] {
+            assert!(!WORKER.contains(denied), "{denied}");
+        }
+    }
+}
+
+// Spec (prompt-profiles): a user override of `code.md` still applies. GUARD:
+// passes before the worker text exists, pins the order.
+#[test]
+fn a_user_override_of_code_keeps_its_place_before_the_worker_text() {
+    let got = resolve_prompt(
+        Profile::Programmer,
+        Task::Code,
+        text("My own code prompt."),
+        Override::Missing,
+    );
+    let system = worker_system(&got.text);
+    assert!(system.starts_with("My own code prompt."), "{system}");
+    assert!(system.contains("propose_batch"), "{system}");
+}
+
+// Spec (prompt-profiles): Chat turn unchanged [W2, auto]. GUARD: a chat turn
+// on the `code` assignment resolves the prompt without the worker text.
+#[test]
+fn a_chat_turn_on_the_code_assignment_gets_the_code_prompt_untouched() {
+    for profile in Profile::ALL {
+        let got = resolve_prompt(profile, Task::Code, Override::Missing, Override::Missing);
+        assert_eq!(got.text, builtin(profile, Task::Code).trim_end());
+        assert!(!got.text.contains("propose_batch"), "{profile:?}");
+        assert!(!builtin(profile, Task::Code).contains(WORKER.trim_end()));
+    }
+}
+
+// Spec (prompt-profiles): a denied batch is dropped so the worker stages again.
+#[test]
+fn the_worker_prompt_lets_a_rejected_batch_be_proposed_again() {
+    assert!(!WORKER.contains("once"), "{WORKER}");
+    assert!(WORKER.contains("If the user rejects the batch"), "{WORKER}");
+}
+
+// Spec (issue-draft, D5): a turn that offers `gh_issue_draft` is told when to
+// offer a draft, once, after the rest of the tools block; any other turn is
+// told nothing about it.
+#[test]
+fn the_draft_sentence_comes_only_with_the_draft_family() {
+    let chat = builtin(Profile::Programmer, Task::Chat);
+    let draft = FamilySet::LEGACY.with(Family::IssueDraft);
+    for families in [
+        draft,
+        draft.with(Family::Write).with(Family::Exec),
+        FamilySet::ALL.without(Family::Orchestra),
+    ] {
+        let got = with_tools(chat, families);
+        assert_eq!(got.matches(DRAFT_OFFER).count(), 1, "{families:?}");
+        assert!(got.contains(REPLY_IN_USER_LANGUAGE), "{families:?}");
+        let own = with_tools("My own prompt.\n", families);
+        assert!(own.ends_with(DRAFT_OFFER), "{own}");
+    }
+    for families in [
+        FamilySet::LEGACY,
+        FamilySet::ALL.without(Family::IssueDraft),
+        FamilySet::LEGACY.with(Family::Github),
+    ] {
+        let got = with_tools(chat, families);
+        assert!(!got.contains(DRAFT_OFFER), "{families:?}");
+        assert!(!got.contains("issue draft"), "{families:?}");
+    }
+}
+
+// D5: the three cases, the permission, and what is not a reason.
+#[test]
+fn the_draft_sentence_names_the_three_cases_and_the_permission() {
+    for needle in [
+        "issue draft tool",
+        "only when the user asks for one",
+        "when you cannot do what was asked because lazarobox lacks it",
+        "when a lazarobox tool or this chat fails",
+        "never for errors in the user's own code or commands",
+        "is the user's permission, so do not ask first",
+    ] {
+        assert!(DRAFT_OFFER.contains(needle), "{needle}");
+    }
+    // One sentence, one line, ASCII.
+    assert_eq!(DRAFT_OFFER.matches(". ").count(), 0, "{DRAFT_OFFER}");
+    assert!(DRAFT_OFFER.ends_with('.'));
+    assert!(DRAFT_OFFER.chars().all(|c| (' '..='~').contains(&c)));
+}
+
+// The master switch off, or the toggle off: the saved families have no draft
+// family, so the turn's block has no sentence.
+#[test]
+fn the_switch_or_the_toggle_off_leaves_the_sentence_out() {
+    use crate::core::ai::config::{AiConfig, ToolToggle};
+    let chat = builtin(Profile::Programmer, Task::Chat);
+    let mut config = AiConfig::default();
+    assert!(with_tools(chat, config.families()).contains(DRAFT_OFFER));
+    config.set_toggle(ToolToggle::IssueDraft, false);
+    assert!(!with_tools(chat, config.families()).contains(DRAFT_OFFER));
+    config.set_toggle(ToolToggle::IssueDraft, true);
+    config.set_tools_enabled(false);
+    assert!(!with_tools(chat, config.families()).contains(DRAFT_OFFER));
+}
+
+// Workers and the orchestrator get no draft tool, so no sentence either.
+#[test]
+fn no_worker_and_no_orchestrator_turn_gets_the_sentence() {
+    use crate::core::ai::orchestra::Toolset;
+    for toolset in [Toolset::ReadOnly, Toolset::Code, Toolset::Orchestrator] {
+        for profile in Profile::ALL {
+            let system = worker_system(builtin(profile, Task::Code));
+            let got = with_tools(&system, toolset.families());
+            assert!(!got.contains(DRAFT_OFFER), "{toolset:?} {profile:?}");
+        }
+    }
 }

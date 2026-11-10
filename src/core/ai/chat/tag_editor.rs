@@ -4,7 +4,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::{composer::Composer, tags::Tags, wrap::text_width};
+use super::{composer::Composer, tags::Tags};
 
 /// The most characters of the line: the project tag and 8 extras of 64
 /// characters with their separators fit.
@@ -67,27 +67,7 @@ impl TagEditor {
     /// cursor in it. The line scrolls sideways to keep the cursor in view,
     /// with a column left for it at the end.
     pub fn window(&self, width: usize) -> (String, usize) {
-        if width == 0 {
-            return (String::new(), 0);
-        }
-        let text = self.line.text();
-        let chars: Vec<char> = text.chars().collect();
-        let cursor = self.line.cursor().min(chars.len());
-        let before = |start: usize| text_width(&chars[start..cursor].iter().collect::<String>());
-        let start = (0..=cursor)
-            .find(|&start| before(start) < width)
-            .unwrap_or(cursor);
-        let mut shown = String::new();
-        let mut used = 0;
-        for c in &chars[start..] {
-            let w = text_width(c.encode_utf8(&mut [0; 4]));
-            if used + w > width {
-                break;
-            }
-            shown.push(*c);
-            used += w;
-        }
-        (shown, before(start))
+        self.line.window(width)
     }
 
     /// One key. Everything is consumed: nothing here reaches the composer

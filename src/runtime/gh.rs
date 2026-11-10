@@ -9,6 +9,12 @@
 //! (exit code 4, or a message naming `gh auth login`), is
 //! [`SendReply::NoGh`]: the app opens the prefilled page instead. A failure
 //! naming a label or a permission is tried once more without labels.
+//!
+//! Before creating, a [`Request::Find`] lists the open issues like the new
+//! one (`gh issue list --state open --search <words> --json number,title`):
+//! when some share its key words the app shows them instead, and the user
+//! may add the report to one (`gh issue comment <n> --body-file -`). A
+//! search that fails or finds nothing is not an error: the issue is created.
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -19,11 +25,18 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::time::Instant;
 
-use crate::core::menu::feedback::{Issue, SendReply, issue_url};
+use crate::core::menu::feedback::{
+    Issue, Request, SendReply, Similar, comment_body, comment_url, issue_url, search_query, similar,
+};
 use crate::runtime::desktop::which;
 
 /// How long one `gh` run may take before it is killed.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the search for similar issues may take: past it, the issue is
+/// created as if none were found.
+pub const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// The issues the search asks GitHub for, before keeping the similar ones.
+const SEARCH_LIMIT: &str = "20";
 
 /// `gh`'s exit code when it has no credential.
 const AUTH_REQUIRED: i32 = 4;
@@ -32,26 +45,134 @@ const AUTH_REQUIRED: i32 = 4;
 const TIMED_OUT: &str = "timed out; check GitHub before sending again";
 /// The failure of a run that printed no issue link.
 const NO_LINK: &str = "printed no issue link; check GitHub first";
+/// The failure of a comment without `gh` or its login. Unlike a create, it has
+/// no prefilled page to fall back on: that page would file a new issue.
+const NO_LOGIN_COMMENT: &str = "missing or not logged in: run gh auth login";
+/// The failure of a comment that printed no comment link.
+const NO_COMMENT_LINK: &str = "printed no comment link; check GitHub first";
 
-/// Sends `issue` with the `gh` found on `path`, the login PATH the engines
-/// use. Waits at most [`TIMEOUT`] in all, the retry included.
-pub async fn send(path: &OsStr, issue: &Issue) -> SendReply {
-    send_with(path, issue, TIMEOUT).await
+/// Does `request` with the `gh` found on `path`, the login PATH the engines
+/// use. A search waits at most [`SEARCH_TIMEOUT`]; a create or a comment at
+/// most [`TIMEOUT`], the retry included.
+pub async fn send(path: &OsStr, request: &Request) -> SendReply {
+    send_with(path, request, SEARCH_TIMEOUT, TIMEOUT).await
 }
 
-/// [`send`] with the timeout given.
-async fn send_with(path: &OsStr, issue: &Issue, timeout: Duration) -> SendReply {
+/// [`send`] with the timeouts given.
+async fn send_with(
+    path: &OsStr,
+    request: &Request,
+    search_timeout: Duration,
+    timeout: Duration,
+) -> SendReply {
     let Some(program) = which("gh", Some(path)) else {
-        return SendReply::NoGh;
+        return match request {
+            Request::Comment { .. } => SendReply::Failed(NO_LOGIN_COMMENT.to_owned()),
+            _ => SendReply::NoGh,
+        };
     };
+    // One limit for the whole request: a slow search leaves the create
+    // only what is left of it.
     let deadline = Instant::now() + timeout;
-    let mut run = run(&program, issue, true, deadline).await;
+    match request {
+        Request::Find(issue) => {
+            let search = (Instant::now() + search_timeout).min(deadline);
+            match find(&program, issue, search).await {
+                Found::Some(issues) => SendReply::Similar(issues),
+                Found::NotLoggedIn => SendReply::NoGh,
+                Found::None => create(&program, issue, deadline).await,
+            }
+        }
+        Request::Create(issue) => create(&program, issue, deadline).await,
+        Request::Comment { issue, number } => comment(&program, issue, *number, deadline).await,
+    }
+}
+
+/// What the search for similar issues found.
+enum Found {
+    Some(Vec<Similar>),
+    /// Nothing like it, or the search failed: the issue is created.
+    None,
+    NotLoggedIn,
+}
+
+/// The open issues like `issue`, by the words of its title (see
+/// [`search_query`] and [`similar`]).
+async fn find(program: &Path, issue: &Issue, deadline: Instant) -> Found {
+    let Some(query) = search_query(&issue.title) else {
+        return Found::None;
+    };
+    let args = [
+        "issue",
+        "list",
+        "--repo",
+        &issue.repo,
+        "--state",
+        "open",
+        "--limit",
+        SEARCH_LIMIT,
+        "--search",
+        &query,
+        "--json",
+        "number,title",
+    ];
+    match run(program, &args, None, deadline).await {
+        Run::Printed(stdout) => match similar(&issue.title, listed(&stdout)) {
+            issues if issues.is_empty() => Found::None,
+            issues => Found::Some(issues),
+        },
+        Run::NotLoggedIn => Found::NotLoggedIn,
+        Run::Failed(_) => Found::None,
+    }
+}
+
+/// The issues of `gh issue list --json number,title`: an entry without a
+/// number or a title is skipped, and output that is not that list is none.
+fn listed(stdout: &str) -> Vec<Similar> {
+    let Ok(serde_json::Value::Array(entries)) = serde_json::from_str(stdout) else {
+        return Vec::new();
+    };
+    (entries.iter())
+        .filter_map(|entry| {
+            Some(Similar {
+                number: entry.get("number")?.as_u64()?,
+                title: entry.get("title")?.as_str()?.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// Adds `issue` to the issue `number` as a comment.
+async fn comment(program: &Path, issue: &Issue, number: u64, deadline: Instant) -> SendReply {
+    let shown = number.to_string();
+    let args = [
+        "issue",
+        "comment",
+        &shown,
+        "--repo",
+        &issue.repo,
+        "--body-file",
+        "-",
+    ];
+    match run(program, &args, Some(&comment_body(issue)), deadline).await {
+        Run::Printed(stdout) => match comment_url(&stdout, &issue.repo, number) {
+            Some(url) => SendReply::Commented(url),
+            None => SendReply::Failed(NO_COMMENT_LINK.to_owned()),
+        },
+        Run::NotLoggedIn => SendReply::Failed(NO_LOGIN_COMMENT.to_owned()),
+        Run::Failed(message) => SendReply::Failed(message),
+    }
+}
+
+/// Creates `issue`, once more without labels when GitHub refuses them.
+async fn create(program: &Path, issue: &Issue, deadline: Instant) -> SendReply {
+    let mut run = run(program, &args(issue, true), Some(&issue.body), deadline).await;
     // Only once: the second answer is the answer.
     if let Run::Failed(message) = &run
         && !issue.labels.is_empty()
         && about_labels(message)
     {
-        run = self::run(&program, issue, false, deadline).await;
+        run = self::run(program, &args(issue, false), Some(&issue.body), deadline).await;
     }
     match run {
         Run::Printed(stdout) => match issue_url(&stdout, &issue.repo) {
@@ -100,14 +221,14 @@ fn args(issue: &Issue, labels: bool) -> Vec<&str> {
     args
 }
 
-/// Starts `program` on the issue. A binary that is being written (an
+/// Starts `program` with `args`. A binary that is being written (an
 /// upgrade, or a concurrent fork holding its write handle) fails with ETXTBSY
 /// for a moment, so that one error is retried briefly.
-async fn spawn(program: &Path, issue: &Issue, labels: bool) -> std::io::Result<Child> {
+async fn spawn(program: &Path, args: &[&str]) -> std::io::Result<Child> {
     let mut attempt = 0;
     loop {
         match Command::new(program)
-            .args(args(issue, labels))
+            .args(args)
             .env("GH_PROMPT_DISABLED", "1")
             .env("GH_NO_UPDATE_NOTIFIER", "1")
             .stdin(Stdio::piped())
@@ -125,19 +246,19 @@ async fn spawn(program: &Path, issue: &Issue, labels: bool) -> std::io::Result<C
     }
 }
 
-/// One run of `program` (no shell): the body on stdin, stdout and stderr
-/// captured, the environment inherited (`gh` reads its own config and
-/// tokens there). Killed when `deadline` passes.
-async fn run(program: &Path, issue: &Issue, labels: bool, deadline: Instant) -> Run {
-    let mut child = match spawn(program, issue, labels).await {
+/// One run of `program` with `args` (no shell): `input` on stdin, stdout
+/// and stderr captured, the environment inherited (`gh` reads its own config
+/// and tokens there). Killed when `deadline` passes.
+async fn run(program: &Path, args: &[&str], input: Option<&str>, deadline: Instant) -> Run {
+    let mut child = match spawn(program, args).await {
         Ok(child) => child,
         Err(error) => return Run::Failed(error.to_string()),
     };
     let stdin = child.stdin.take();
     let work = async move {
-        if let Some(mut stdin) = stdin {
+        if let (Some(mut stdin), Some(input)) = (stdin, input) {
             // A `gh` that exits before reading says why on its own.
-            let _ = stdin.write_all(issue.body.as_bytes()).await;
+            let _ = stdin.write_all(input.as_bytes()).await;
         }
         child.wait_with_output().await
     };
@@ -199,8 +320,11 @@ mod tests {
         fs::read_to_string(dir.path().join(name)).unwrap_or_default()
     }
 
+    /// Creates `issue` with the fake `gh` of `dir`, as Ctrl+S on the similar
+    /// issues does (no search first).
     async fn run(dir: &tempfile::TempDir, issue: &Issue) -> SendReply {
-        send_with(dir.path().as_os_str(), issue, TIMEOUT).await
+        let request = Request::Create(issue.clone());
+        send_with(dir.path().as_os_str(), &request, TIMEOUT, TIMEOUT).await
     }
 
     /// Records every run's arguments, one per line, then a `--` line.
@@ -289,7 +413,8 @@ mod tests {
         let start = Instant::now();
         let reply = send_with(
             dir.path().as_os_str(),
-            &issue("t", "b"),
+            &Request::Create(issue("t", "b")),
+            TIMEOUT,
             Duration::from_millis(300),
         )
         .await;
@@ -354,7 +479,8 @@ mod tests {
         let start = Instant::now();
         let reply = send_with(
             dir.path().as_os_str(),
-            &issue("t", "b"),
+            &Request::Create(issue("t", "b")),
+            TIMEOUT,
             Duration::from_secs(1),
         )
         .await;
@@ -365,5 +491,154 @@ mod tests {
         assert!(message.contains("timed out"), "{message}");
         // One timeout per run would take 1.6 s.
         assert!(elapsed < Duration::from_millis(1400), "{elapsed:?}");
+    }
+
+    // Issue duplicates.
+
+    /// Looks for issues like `issue` with the fake `gh` of `dir`, as Ctrl+S
+    /// in the form does, the search cut after `search`.
+    async fn find(dir: &tempfile::TempDir, issue: &Issue, search: Duration) -> SendReply {
+        let request = Request::Find(issue.clone());
+        send_with(dir.path().as_os_str(), &request, search, TIMEOUT).await
+    }
+
+    /// A fake `gh` whose `issue list` runs `list` and whose `issue create`
+    /// prints [`URL`]; every run is recorded.
+    fn fake_list(list: &str) -> tempfile::TempDir {
+        fake(&format!(
+            "{RECORD}case \"$2\" in\n\
+             list) {list};;\n\
+             create) cat > /dev/null; echo '{URL}';;\n\
+             esac\n"
+        ))
+    }
+
+    const SEARCH_ARGS: &str = "issue\nlist\n--repo\npichu2707/lazarobox-shell\n--state\nopen\n\
+         --limit\n20\n--search\nscroll OR jumps in:title,body\n--json\nnumber,title\n--\n";
+
+    // S1-S3: the search finds open issues that share the title's key words:
+    // they come back to the form and nothing is created.
+    #[tokio::test]
+    async fn similar_open_issues_come_back_and_nothing_is_created() {
+        let dir = fake_list(
+            "echo '[{\"number\":583,\"title\":\"Scroll jumps to the top\"},\
+             {\"number\":1,\"title\":\"Slow start\"}]'",
+        );
+        assert_eq!(
+            find(&dir, &issue("Scroll jumps", "b"), TIMEOUT).await,
+            SendReply::Similar(vec![Similar {
+                number: 583,
+                title: "Scroll jumps to the top".to_owned(),
+            }])
+        );
+        assert_eq!(read(&dir, "args"), SEARCH_ARGS);
+    }
+
+    // S3: with no similar issue, or a search that fails or hangs, the issue
+    // is created as before.
+    #[tokio::test]
+    async fn without_similar_issues_the_issue_is_created() {
+        for list in [
+            "echo '[]'",
+            "echo '[{\"number\":1,\"title\":\"Slow start\"}]'",
+            "echo 'HTTP 502' >&2; exit 1",
+            "echo 'not json'",
+        ] {
+            let dir = fake_list(list);
+            let reply = find(&dir, &issue("Scroll jumps", "b"), TIMEOUT).await;
+            assert_eq!(reply, SendReply::Sent(URL.to_owned()), "{list}");
+            let args = read(&dir, "args");
+            assert!(args.starts_with(SEARCH_ARGS), "{list}: {args}");
+            assert!(args.contains("issue\ncreate\n"), "{list}: {args}");
+        }
+        let dir = fake_list("exec sleep 30");
+        let start = Instant::now();
+        let reply = find(
+            &dir,
+            &issue("Scroll jumps", "b"),
+            Duration::from_millis(300),
+        )
+        .await;
+        assert_eq!(reply, SendReply::Sent(URL.to_owned()));
+        assert!(start.elapsed() < Duration::from_secs(10));
+    }
+
+    // S3: a title with no key word is not searched; a search refused for
+    // the login is `NoGh`, like a create.
+    #[tokio::test]
+    async fn a_title_with_no_key_word_is_not_searched_and_no_login_is_no_gh() {
+        let dir = fake_list("echo '[]'");
+        assert_eq!(
+            find(&dir, &issue("a: b", "body"), TIMEOUT).await,
+            SendReply::Sent(URL.to_owned())
+        );
+        assert!(!read(&dir, "args").contains("list"));
+        let dir = fake_list("echo 'run gh auth login' >&2; exit 4");
+        assert_eq!(
+            find(&dir, &issue("Scroll jumps", "b"), TIMEOUT).await,
+            SendReply::NoGh
+        );
+        assert!(!read(&dir, "args").contains("create"));
+    }
+
+    // S2: Enter on a similar issue adds the report to it as a comment: the
+    // number as an argument, the text on stdin, and the comment's link back.
+    #[tokio::test]
+    async fn the_report_is_added_to_the_issue_as_a_comment() {
+        let link = "https://github.com/pichu2707/lazarobox-shell/issues/583#issuecomment-9";
+        let dir = fake(&format!("{RECORD}cat > \"$DIR/body\"\necho '{link}'\n"));
+        let issue = issue("Scroll jumps", "### What happened\n\n$(id) `x`\n");
+        let request = Request::Comment {
+            issue: issue.clone(),
+            number: 583,
+        };
+        let reply = send_with(dir.path().as_os_str(), &request, TIMEOUT, TIMEOUT).await;
+        assert_eq!(reply, SendReply::Commented(link.to_owned()));
+        assert_eq!(
+            read(&dir, "args"),
+            "issue\ncomment\n583\n--repo\npichu2707/lazarobox-shell\n--body-file\n-\n--\n"
+        );
+        assert_eq!(read(&dir, "body"), comment_body(&issue));
+        // A success that prints no comment link is a failure.
+        let dir = fake(&format!("cat > /dev/null\necho '{URL}'\n"));
+        let reply = send_with(dir.path().as_os_str(), &request, TIMEOUT, TIMEOUT).await;
+        assert!(matches!(reply, SendReply::Failed(_)), "{reply:?}");
+    }
+
+    // #588: a user who chose an existing issue is never sent to file a new
+    // one: with no login, or no gh, a comment is a failure the form shows.
+    #[tokio::test]
+    async fn a_comment_with_no_login_or_no_gh_fails_and_opens_nothing() {
+        let request = Request::Comment {
+            issue: issue("t", "b"),
+            number: 583,
+        };
+        let dir = fake("cat > /dev/null\necho 'run gh auth login' >&2\nexit 4\n");
+        let reply = send_with(dir.path().as_os_str(), &request, TIMEOUT, TIMEOUT).await;
+        assert_eq!(reply, SendReply::Failed(NO_LOGIN_COMMENT.to_owned()));
+        let empty = tempfile::tempdir().unwrap();
+        let reply = send_with(empty.path().as_os_str(), &request, TIMEOUT, TIMEOUT).await;
+        assert_eq!(reply, SendReply::Failed(NO_LOGIN_COMMENT.to_owned()));
+        let shown = crate::core::menu::feedback::gh_message(NO_LOGIN_COMMENT);
+        assert_eq!(shown, "gh: missing or not logged in: run gh auth login");
+    }
+
+    // Spec (Sending with gh): gh is killed 30 seconds after Ctrl+S, the
+    // search included: a slow search leaves the create only the rest.
+    #[tokio::test]
+    async fn the_search_and_the_create_share_one_time_limit() {
+        // The search hangs past its own limit, then the create hangs too.
+        let dir = fake("cat > /dev/null\nexec sleep 30\n");
+        let start = Instant::now();
+        let reply = send_with(
+            dir.path().as_os_str(),
+            &Request::Find(issue("Scroll jumps", "b")),
+            Duration::from_millis(500),
+            Duration::from_millis(800),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        assert!(matches!(reply, SendReply::Failed(_)), "{reply:?}");
+        assert!(elapsed < Duration::from_millis(1100), "{elapsed:?}");
     }
 }

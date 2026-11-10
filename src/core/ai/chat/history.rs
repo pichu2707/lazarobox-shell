@@ -142,17 +142,51 @@ impl ChatState {
             } else {
                 self.origin_cwd.clone()
             },
+            folder: self.origin_cwd.clone(),
             open: open.to_vec(),
         };
-        std::mem::take(&mut self.outbox)
+        // Every row of a blocked conversation carries the marker in its own
+        // transaction, so a lost marker command cannot leave a later row bare.
+        let blocked = self.github_read;
+        let was_fresh = self.store.is_fresh();
+        let mut saves: Vec<StoreCmd> = std::mem::take(&mut self.outbox)
             .into_iter()
-            .filter_map(|message| self.store.save(pane, message, &new))
-            .collect()
+            .filter_map(|message| {
+                let message = StoredMessage {
+                    github_read: blocked,
+                    ..message
+                };
+                self.store.save(pane, message, &new)
+            })
+            .collect();
+        // A fresh conversation marks itself through its first message.
+        if self.github_unmarked && was_fresh && !saves.is_empty() {
+            self.github_unmarked = false;
+        } else if self.github_unmarked && !self.store.is_fresh() {
+            self.github_unmarked = false;
+            saves.extend(self.store.mark_github_read(pane));
+        }
+        // Usage follows the messages, so a conversation created by them is
+        // named by its pane. A detached conversation stores its usage
+        // unlinked: the rows outlive the conversation.
+        let conversation = self.store.conversation();
+        let usage = std::mem::take(&mut self.usage_outbox)
+            .into_iter()
+            .map(|pending| StoreCmd::RecordUsage {
+                pane,
+                conversation,
+                engine: pending.engine,
+                role: pending.role.to_owned(),
+                worker: pending.worker,
+                usage: Box::new(pending.usage),
+            });
+        saves.into_iter().chain(usage).collect()
     }
 
-    /// Forgets what is waiting to be saved (history is off).
+    /// Forgets what is waiting to be saved (no store is attached).
     pub fn drop_saves(&mut self) {
         self.outbox.clear();
+        self.usage_outbox.clear();
     }
 
     /// The store's answer to a write of this pane.
@@ -204,6 +238,7 @@ impl ChatState {
             status: MsgStatus::Cancelled,
             engine: self.request_engine.clone(),
             model: (!self.request_model.is_empty()).then(|| self.request_model.clone()),
+            github_read: false,
         });
     }
 
@@ -219,6 +254,7 @@ impl ChatState {
         tags: Tags,
         messages: Vec<Msg>,
     ) {
+        self.drop_delegate();
         let stored = Self::resumed(self.origin_cwd.clone(), messages).entries;
         let (memory, others): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries)
             .into_iter()
@@ -236,7 +272,13 @@ impl ChatState {
             self.turn += 1;
         }
         self.compaction.reset();
+        self.end_side_run(true);
         self.store = super::store::PaneStore::open(conversation);
+        // A resumed conversation opens with no grant, the drive grant too:
+        // it is asked again (openspec `wsl-drive-access` Q2).
+        self.github_granted = false;
+        self.write_granted = false;
+        self.drive_grant = None;
         self.set_conversation(conversation);
         self.scroll = super::transcript::Scroll::Follow;
         self.generation += 1;
@@ -251,6 +293,14 @@ impl ChatState {
             return false;
         }
         self.profile = profile;
+        self.invalidate_prompt()
+    }
+
+    /// The pinned system prompt no longer fits (the profile or the folder
+    /// changed): returns whether it must be prepared again now. A prompt
+    /// already prepared is dropped; one still being prepared is dropped when
+    /// it arrives (see `set_prompt_or_reprepare`).
+    pub(super) fn invalidate_prompt(&mut self) -> bool {
         if self.prompt.take().is_some() {
             return true;
         }

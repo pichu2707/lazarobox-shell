@@ -17,6 +17,9 @@ use super::review::{ARM_DELAY, BatchReview, Coverage, Layout, Row, layout};
 /// below.
 const CHROME: usize = 2;
 
+/// How long the hint for a `y` pressed with lines unseen stays in the counter.
+pub const HINT_FOR: Duration = Duration::from_secs(2);
+
 /// A scrolling key.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Move {
@@ -40,6 +43,8 @@ pub struct ReviewView {
     drawn: Cell<Option<Drawn>>,
     /// Whether the wake-up for the end of the delay was given.
     woke: bool,
+    /// Until when the counter explains the `y` that found the gate locked.
+    hint_until: Option<Instant>,
 }
 
 /// A frame of the view: when, how big the area was and the first row on it.
@@ -84,7 +89,34 @@ impl ReviewView {
             top: 0,
             drawn: Cell::new(None),
             woke: false,
+            hint_until: None,
         }
+    }
+
+    /// A `y` was pressed at `now`. When the gate or the batch will not let it
+    /// through it starts a hint in the counter and returns true; it never
+    /// approves, scrolls or counts anything.
+    pub fn y_pressed(&mut self, now: Instant) -> bool {
+        let hint = !self.reviewable() || self.remaining() > 0;
+        if hint {
+            self.hint_until = Some(now + HINT_FOR);
+        }
+        hint
+    }
+
+    fn hint_live(&self, now: Instant) -> bool {
+        self.hint_until.is_some_and(|until| now < until)
+    }
+
+    /// The lines still unseen while the hint of a locked `y` shows at `now`.
+    pub fn locked_hint(&self, now: Instant) -> Option<usize> {
+        let live = self.hint_live(now) && self.reviewable();
+        (live && self.remaining() > 0).then(|| self.remaining())
+    }
+
+    /// Whether the hint of a `y` this batch can never answer shows at `now`.
+    pub fn refused_hint(&self, now: Instant) -> bool {
+        self.hint_live(now) && !self.reviewable()
     }
 
     /// The rows of the body in a pane `rows` high.
@@ -141,6 +173,14 @@ impl ReviewView {
     /// runs, and once more when it ends, so `y in 0.1s` becomes `y ready` by
     /// itself.
     pub fn wake(&mut self, now: Instant) -> bool {
+        // The hint needs a frame while it shows and one when it ends.
+        if self.hint_until.is_some() {
+            if self.hint_live(now) {
+                return true;
+            }
+            self.hint_until = None;
+            return true;
+        }
         if self.coverage.started().is_none() {
             return false;
         }
@@ -489,6 +529,39 @@ mod tests {
         assert!(v.answerable(t0() + ARM_DELAY));
         let big = ReviewView::new(numbered(2100), SIZE);
         assert!(big.answerable(t0()), "its only exit");
+    }
+
+    #[test]
+    fn wake_rests_again_once_the_hint_expires() {
+        let (mut v, now) = open(30);
+        // The delay was already announced: only the hint is left to wake for.
+        assert!(v.wake(now + ARM_DELAY));
+        assert!(!v.wake(now + ARM_DELAY));
+        let pressed = now + Duration::from_secs(5);
+        v.y_pressed(pressed);
+        assert!(
+            v.wake(pressed + Duration::from_millis(500)),
+            "while it shows"
+        );
+        assert!(v.wake(pressed + HINT_FOR), "the frame that clears it");
+        assert!(!v.wake(pressed + HINT_FOR + Duration::from_millis(16)));
+        assert_eq!(v.locked_hint(pressed + HINT_FOR), None);
+    }
+
+    #[test]
+    fn y_on_a_batch_that_cannot_be_reviewed_hints_and_then_rests() {
+        let mut v = ReviewView::new(numbered(2100), SIZE);
+        draw(&mut v, t0(), SIZE);
+        let at = t0() + Duration::from_secs(10);
+        v.y_pressed(at);
+        assert!(v.refused_hint(at + Duration::from_millis(1_999)));
+        assert_eq!(v.locked_hint(at), None, "no lines to scroll to");
+        assert!(!v.refused_hint(at + HINT_FOR));
+        assert!(v.wake(at + Duration::from_millis(500)));
+        assert!(v.wake(at + HINT_FOR));
+        let after = at + HINT_FOR + Duration::from_millis(16);
+        v.wake(after); // the delay's own last frame, if it was not given yet
+        assert!(!v.wake(after), "then it rests");
     }
 
     #[test]

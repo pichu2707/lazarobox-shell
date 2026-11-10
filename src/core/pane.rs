@@ -15,6 +15,8 @@ use super::osc7;
 
 /// DA1 reply: VT620-class terminal with no extensions.
 const DA1_REPLY: &[u8] = b"\x1b[?62;c";
+/// How far past the view a wrapped link is followed.
+const LINK_ROWS_PAST_VIEW: usize = 128;
 /// DSR 5n reply: terminal is operating correctly.
 const DSR_OK_REPLY: &[u8] = b"\x1b[0n";
 
@@ -115,6 +117,8 @@ struct Responder {
     cwd: Option<PathBuf>,
     /// This machine's hostname, accepted in OSC 7 URIs besides `localhost`.
     host: Option<String>,
+    /// Mode 1004: the child wants `CSI I` / `CSI O` when focus changes.
+    focus_reports: bool,
 }
 
 impl Callbacks for Responder {
@@ -150,6 +154,11 @@ impl Callbacks for Responder {
                 }
                 _ => {}
             },
+            // vt100 hands over each DEC mode it does not know, with every
+            // param of the sequence; only mode 1004 is kept.
+            (Some(b'?'), None, 'h' | 'l') if params.iter().any(|p| p.first() == Some(&1004)) => {
+                self.focus_reports = c == 'h';
+            }
             // DECSCUSR: never replies; unknown Ps leaves the shape unchanged.
             (Some(b' '), None, 'q') => {
                 if let Some(shape) = CursorShape::from_decscusr(first) {
@@ -367,6 +376,33 @@ impl Pane {
         end
     }
 
+    /// The visible rows plus up to `scrollback` rows of history above them,
+    /// whole lines. On the alternate screen there is no history: only the
+    /// visible rows. A first row that continues a soft-wrapped line is moved
+    /// up to the head of that line, within the history kept.
+    pub fn screen_span(&mut self, scrollback: usize) -> LineSpan {
+        let (rows, cols) = self.parser.screen().size();
+        let top = self.first_line + self.history_len;
+        let mut first = top.saturating_sub(scrollback).max(self.first_line);
+        let saved = self.scrollback_offset();
+        while first > self.first_line {
+            let wrapped = self
+                .page_to(first - 1)
+                .is_some_and(|row| self.parser.screen().row_wrapped(row));
+            if !wrapped {
+                break;
+            }
+            first -= 1;
+        }
+        self.set_scrollback(saved);
+        LineSpan {
+            first,
+            last: top + usize::from(rows).saturating_sub(1),
+            first_col: 0,
+            last_col: cols.saturating_sub(1),
+        }
+    }
+
     /// Text of the cells of `span`, one entry per retained line. Both end
     /// cells are included, empty cells read as `" "`, wide characters appear
     /// once. The scrollback offset is restored.
@@ -400,6 +436,40 @@ impl Pane {
         }
         self.set_scrollback(saved);
         out
+    }
+
+    /// The rows the view shows, for finding its links, with the rows a link
+    /// that crosses its edges goes on to, and how many of them come before
+    /// the view. Without them, half a link would pass for a whole one. The
+    /// scrollback offset is restored.
+    pub fn link_rows(&mut self) -> (Vec<LineText>, usize) {
+        let (rows, cols) = self.parser.screen().size();
+        let live = self.first_line + self.history_len;
+        let top = live.saturating_sub(self.scrollback_offset());
+        let bottom = top + usize::from(rows).saturating_sub(1);
+        let end = live + usize::from(rows).saturating_sub(1);
+        let span = |first, last| LineSpan {
+            first,
+            last,
+            first_col: 0,
+            last_col: cols.saturating_sub(1),
+        };
+        let wrapped = |pane: &mut Self, line| {
+            let text = pane.read_lines(span(line, line));
+            text.first().is_some_and(|row| row.wrapped)
+        };
+        let mut first = top;
+        while top - first < LINK_ROWS_PAST_VIEW
+            && first > self.first_line
+            && wrapped(self, first - 1)
+        {
+            first -= 1;
+        }
+        let mut last = bottom;
+        while last - bottom < LINK_ROWS_PAST_VIEW && last < end && wrapped(self, last) {
+            last += 1;
+        }
+        (self.read_lines(span(first, last)), top - first)
     }
 
     /// Cells `from..=to` of a viewport row. A range starting on the right half
@@ -442,6 +512,14 @@ impl Pane {
             application_cursor: screen.application_cursor(),
             bracketed_paste: screen.bracketed_paste(),
         }
+    }
+
+    /// Whether the child asked for focus reports (`CSI ? 1004 h`).
+    ///
+    /// Known limit: a full reset (`ESC c`) is handled inside vt100 and does
+    /// not clear it, as it would in xterm.
+    pub fn focus_reports(&self) -> bool {
+        self.parser.callbacks().focus_reports
     }
 
     /// The mouse protocol the child enabled and the screen it is on.
@@ -550,6 +628,38 @@ mod tests {
     }
 
     // Spec: mode tracking.
+    // Issue #483.
+    #[test]
+    fn focus_reports_follow_mode_1004() {
+        let mut p = pane(3, 10);
+        assert!(!p.focus_reports());
+        assert_eq!(p.feed(b"\x1b[?1004h"), Vec::<u8>::new());
+        assert!(p.focus_reports());
+        p.feed(b"\x1b[?1004l");
+        assert!(!p.focus_reports());
+    }
+
+    // Issue #483: one sequence may set several modes, 1004 among them.
+    #[test]
+    fn focus_reports_are_read_among_other_modes() {
+        let mut p = pane(3, 10);
+        p.feed(b"\x1b[?2004;1004h");
+        assert!(p.focus_reports() && p.modes().bracketed_paste);
+        p.feed(b"\x1b[?1004;2004l");
+        assert!(!p.focus_reports() && !p.modes().bracketed_paste);
+    }
+
+    // Issue #483: other DEC private modes leave it as it was.
+    #[test]
+    fn other_modes_leave_focus_reports_alone() {
+        let mut p = pane(3, 10);
+        p.feed(b"\x1b[?1004h\x1b[?1234l\x1b[?2004l\x1b[1004l");
+        assert!(p.focus_reports());
+        p.feed(b"\x1b[?1234h\x1b[1004h");
+        p.feed(b"\x1b[?1004l\x1b[?1234h");
+        assert!(!p.focus_reports());
+    }
+
     #[test]
     fn modes_track_application_cursor_and_bracketed_paste() {
         let mut p = pane(3, 10);
@@ -712,6 +822,69 @@ mod tests {
         for i in 0..n {
             p.feed(format!("line{i}\r\n").as_bytes());
         }
+    }
+
+    // read_pane: the span of what the model may be shown.
+    fn texts(p: &mut Pane, span: LineSpan) -> Vec<String> {
+        p.read_lines(span)
+            .into_iter()
+            .map(|l| l.text.trim_end().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn screen_span_without_scrollback_is_the_visible_rows() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        feed_lines(&mut p, 10);
+        let span = p.screen_span(0);
+        assert_eq!(texts(&mut p, span), ["line8", "line9", ""]);
+    }
+
+    #[test]
+    fn screen_span_adds_the_asked_scrollback_above_the_visible_rows() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        feed_lines(&mut p, 10);
+        let span = p.screen_span(2);
+        assert_eq!(
+            texts(&mut p, span),
+            ["line6", "line7", "line8", "line9", ""]
+        );
+        // More than the history keeps what exists.
+        let span = p.screen_span(500);
+        assert_eq!(texts(&mut p, span).len(), 8 + 3);
+    }
+
+    #[test]
+    fn screen_span_starts_at_the_head_of_a_wrapped_line() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        feed_lines(&mut p, 4);
+        // 25 chars on 10 columns: three rows, the first two soft-wrapped.
+        p.feed(b"export MY_SECRET=abcde\r\n");
+        p.feed(b"tail\r\n");
+        let span = p.screen_span(1);
+        let rows = texts(&mut p, span);
+        assert_eq!(rows[0], "export MY_");
+        // Without a wrap above the first row nothing is added.
+        let mut q = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        feed_lines(&mut q, 10);
+        assert_eq!(q.screen_span(2).first, q.screen_span(0).first - 2);
+    }
+
+    #[test]
+    fn screen_span_never_goes_above_the_available_history() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        p.feed(b"0123456789abcdefghij0123456789abcdefghij");
+        let span = p.screen_span(0);
+        assert!(span.first >= p.first_line);
+    }
+
+    #[test]
+    fn screen_span_on_the_alternate_screen_is_the_visible_rows_only() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        feed_lines(&mut p, 10);
+        p.feed(b"\x1b[?1049hfull");
+        let span = p.screen_span(5);
+        assert_eq!(texts(&mut p, span), ["full", "", ""]);
     }
 
     #[test]

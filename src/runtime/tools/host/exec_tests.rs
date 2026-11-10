@@ -1,6 +1,7 @@
 //! `run_command` in the host: what is refused before the user is asked.
 //! Spec (command-runner, Refusals before start; Approval on every command).
 
+use crate::core::build_jobs::ENV_KEYS;
 use std::sync::Mutex;
 
 use serde_json::{Value, json};
@@ -16,20 +17,20 @@ use crate::core::{
 };
 
 /// Answers every ask the same way and remembers what it was asked.
-struct Asks {
+pub(super) struct Asks {
     answer: Decision,
     asked: Mutex<Vec<ApprovalAsk>>,
 }
 
 impl Asks {
-    fn new(answer: Decision) -> Arc<Self> {
+    pub(super) fn new(answer: Decision) -> Arc<Self> {
         Arc::new(Self {
             answer,
             asked: Mutex::default(),
         })
     }
 
-    fn asked(&self) -> Vec<ApprovalAsk> {
+    pub(super) fn asked(&self) -> Vec<ApprovalAsk> {
         self.asked.lock().unwrap().clone()
     }
 }
@@ -78,6 +79,10 @@ pub(super) fn world_with(exec: impl FnOnce(Exec) -> Exec) -> World {
         next: AtomicU64::new(1),
         stages: Arc::default(),
         exec,
+        cli_cwds: std::sync::OnceLock::new(),
+        roster: Default::default(),
+        gh: Default::default(),
+        drives: Default::default(),
     });
     World {
         _dir: dir,
@@ -105,11 +110,23 @@ impl World {
         approver: Arc<dyn Approver>,
         families: FamilySet,
     ) -> (Arc<dyn Dispatch>, mpsc::Receiver<StreamEvent>) {
+        self.turn_granted(origin, approver, families, None)
+    }
+
+    /// [`turn`](Self::turn) of a chat whose Windows drive grant is `grant`.
+    pub(super) fn turn_granted(
+        &self,
+        origin: &Path,
+        approver: Arc<dyn Approver>,
+        families: FamilySet,
+        grant: Option<PathBuf>,
+    ) -> (Arc<dyn Dispatch>, mpsc::Receiver<StreamEvent>) {
         let (tx, rx) = mpsc::channel(32);
         let mut scope = TurnScope::new(tx, Locality::Local, origin.to_path_buf());
         scope.approver = approver;
         scope.families = families;
         scope.stage_key = Some(key());
+        scope.drive_grant = grant;
         (self.host.dispatch(scope), rx)
     }
 }
@@ -227,10 +244,21 @@ async fn a_folder_outside_the_root_and_a_broad_root_are_refused() {
         );
     }
     let asks = Asks::new(Decision::Sent);
-    for origin in [w.home.clone(), w.home.join("missing"), PathBuf::from("rel")] {
+    for origin in [w.home.join("missing"), PathBuf::from("rel")] {
         let (d, _rx) = w.turn(&origin, asks.clone(), exec_set());
         let out = d.call(command("cargo", &["test"], None)).await;
         assert_eq!(out.text, "path not available", "{origin:?}");
+    }
+    // No concrete root: the reason is the folder, and it asks for `/cd`.
+    let above = w.home.parent().unwrap().to_path_buf();
+    for origin in [w.home.clone(), above, PathBuf::from("/")] {
+        let (d, _rx) = w.turn(&origin, asks.clone(), exec_set());
+        let out = d.call(command("cargo", &["test"], None)).await;
+        assert_eq!(
+            out.text,
+            "path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>",
+            "{origin:?}"
+        );
     }
     assert!(asks.asked().is_empty());
 }
@@ -367,6 +395,11 @@ async fn a_chat_with_staged_changes_must_propose_them_first() {
         out.is_error && out.text.contains("propose them first"),
         "{out:?}"
     );
+    // #439: the refusal says how to go on, so a small model retries.
+    assert_eq!(
+        out.text,
+        "staged changes are not proposed: propose them first with propose_batch, then call this tool again"
+    );
     assert!(asks.asked().is_empty());
     // Another chat is not affected.
     let (tx, _rx) = mpsc::channel(32);
@@ -380,6 +413,48 @@ async fn a_chat_with_staged_changes_must_propose_them_first() {
         .call(command("cargo", &["test"], None))
         .await;
     assert_eq!(out.text, "denied: the user declined");
+}
+
+// GUARD (passes by design): the unproposed-changes check and the unreported
+// sink are per key. Once two writers of one pane exist, worker A's unproposed
+// batch must not refuse worker B's command, and is refused for A itself.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_command_is_judged_by_its_own_batch_not_a_siblings() {
+    use crate::core::ai::orchestra::WorkerKey;
+    let w = world();
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let turn_of = |worker: u32| {
+        let (tx, rx) = mpsc::channel(32);
+        let mut scope = TurnScope::new(tx, Locality::Local, w.proj.clone());
+        scope.approver = asks.clone();
+        scope.families = exec_set();
+        scope.stage_key = Some(StageKey::Worker(
+            PaneId::for_test(1),
+            WorkerKey::for_test(1, worker),
+        ));
+        (w.host.dispatch(scope), rx)
+    };
+    let ((a, _rx_a), (b, _rx_b)) = (turn_of(1), turn_of(2));
+    let staged = a
+        .call(Call::WriteFile {
+            path: "a.txt".into(),
+            content: "x".into(),
+        })
+        .await;
+    assert!(!staged.is_error, "{staged:?}");
+    let own = a.call(command("cargo", &["test"], None)).await;
+    assert!(own.text.contains("propose them first"), "{own:?}");
+    let sibling = b.call(command("cargo", &["test"], None)).await;
+    assert_eq!(sibling.text, "denied: the user declined");
+    let sinks = |worker| StageKey::Worker(PaneId::for_test(1), WorkerKey::for_test(1, worker));
+    use crate::runtime::tools::integrity::Kind;
+    w.host
+        .exec
+        .sink(sinks(1))
+        .push(vec![change(Kind::Added, "x")]);
+    assert!(w.host.exec.sink(sinks(2)).drain().is_empty());
+    assert_eq!(w.host.exec.sink(sinks(1)).drain().len(), 1);
 }
 
 // Scenario "One run per chat": refused at once, before the prompt.
@@ -575,6 +650,25 @@ async fn the_child_sees_none_of_the_parents_secrets() {
     let (out, _) = w.run(after_dashes("env")).await;
     assert!(out.text.contains("CI=1"), "{}", out.text);
     assert!(!out.text.contains("hunter2") && !out.text.contains("SECRET_TOKEN"));
+}
+
+// `[build] jobs`: the next run gets the count the menu holds now.
+#[tokio::test]
+async fn a_run_gets_the_job_count_the_host_was_told_last() {
+    let w = runnable(HELPER, gate());
+    let (out, _) = w.run(after_dashes("env")).await;
+    assert!(!out.text.contains("CARGO_BUILD_JOBS"), "{}", out.text);
+    let told = |n: &str| ENV_KEYS.map(|key| (key.to_owned(), n.to_owned()));
+    w.host.set_build_env(told("8"));
+    w.host.set_build_env(told("3"));
+    let (out, _) = w.run(after_dashes("env")).await;
+    assert!(out.text.contains("CARGO_BUILD_JOBS=3"), "{}", out.text);
+    assert!(
+        out.text.contains("CMAKE_BUILD_PARALLEL_LEVEL=3"),
+        "{}",
+        out.text
+    );
+    assert!(!out.text.contains("=8"), "{}", out.text);
 }
 
 // Scenario "Timeout kills the group" and "Timeout bounds".
@@ -1107,4 +1201,100 @@ async fn a_run_that_cannot_start_is_an_error_that_still_reports_the_sink() {
         out.text
     );
     assert!(w.host.exec.sink(key()).drain().is_empty());
+}
+
+/// A WSL drive `<tmp>/mnt/c` beside HOME, with a project at
+/// `Users/ana/Documents/app`, set as the host's drives.
+pub(super) fn drive_project(w: &World) -> PathBuf {
+    let drive = w.home.parent().unwrap().join("mnt/c");
+    let app = drive.join("Users/ana/Documents/app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("Cargo.toml"), "[package]\n").unwrap();
+    w.host.set_drives(WinDrives::new(
+        vec![drive.clone()],
+        Some(drive.join("Users/ana")),
+    ));
+    app
+}
+
+/// The refusal of every command and git verb in the drive folder `app`
+/// before the user grants it (openspec `wsl-drive-access` D10).
+pub(super) fn ungranted_text(app: &Path) -> String {
+    let shown = app.display();
+    format!(
+        "path not available: the chat's folder {shown} is on a Windows drive, where writes, commands and git need your permission; ask the user to run /cd {shown}"
+    )
+}
+
+// openspec `wsl-drive-access` task 3.3: before the grant a command in a drive
+// folder gets the folder-level text and asks nothing; a grant for another
+// folder does not count.
+#[tokio::test]
+async fn a_command_in_an_ungranted_drive_folder_gets_the_folder_text() {
+    let w = world();
+    let app = drive_project(&w);
+    let other = app.parent().unwrap().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let asks = Asks::new(Decision::Sent);
+    for grant in [None, Some(other)] {
+        let (d, _rx) = w.turn_granted(&app, asks.clone(), exec_set(), grant.clone());
+        let out = d.call(command("cargo", &["test"], None)).await;
+        assert!(out.is_error, "{grant:?}");
+        assert_eq!(out.text, ungranted_text(&app), "{grant:?}");
+    }
+    assert!(asks.asked().is_empty());
+    assert!(!w.host.exec.gate.is_busy(key()));
+}
+
+// Task 3.3: with the grant the command runs, with the folder as its cwd.
+#[tokio::test]
+async fn a_command_in_a_granted_drive_folder_runs_there() {
+    let w = runnable(HELPER, gate());
+    let app = drive_project(&w);
+    std::fs::create_dir_all(app.join("sub")).unwrap();
+    let asks = Asks::new(Decision::Sent);
+    let (d, _rx) = w.turn_granted(&app, asks.clone(), exec_set(), Some(app.clone()));
+    for (cwd, ran_in) in [(None, app.clone()), (Some("sub"), app.join("sub"))] {
+        let out = d.call(command("cargo", &["test", "--", "x"], cwd)).await;
+        assert!(!out.is_error, "{out:?}");
+        assert!(out.text.starts_with("exit code 0 after "), "{}", out.text);
+        assert!(
+            out.text.contains(&format!("{}\n", ran_in.display())),
+            "{}",
+            out.text
+        );
+    }
+    assert_eq!(asks.asked().len(), 2);
+}
+
+// Task 3.3: a broad drive folder (a drive root, `Users`, a profile root) is
+// broad like HOME even with a grant for it, and HOME stays broad whatever the
+// grant.
+#[tokio::test]
+async fn a_broad_drive_folder_stays_broad_with_a_grant() {
+    let w = world();
+    let app = drive_project(&w);
+    let profile = app.parent().unwrap().parent().unwrap().to_path_buf();
+    let users = profile.parent().unwrap().to_path_buf();
+    let drive = users.parent().unwrap().to_path_buf();
+    let asks = Asks::new(Decision::Sent);
+    for broad in [drive, users, profile] {
+        let (d, _rx) = w.turn_granted(&broad, asks.clone(), exec_set(), Some(broad.clone()));
+        let out = d.call(command("cargo", &["test"], None)).await;
+        assert_eq!(
+            out.text,
+            format!(
+                "path not available: the chat's folder is {}, where commands cannot run; ask the user to run /cd <project folder>",
+                broad.display()
+            ),
+            "{broad:?}"
+        );
+    }
+    let (d, _rx) = w.turn_granted(&w.home, asks.clone(), exec_set(), Some(w.home.clone()));
+    let out = d.call(command("cargo", &["test"], None)).await;
+    assert_eq!(
+        out.text,
+        "path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>"
+    );
+    assert!(asks.asked().is_empty());
 }

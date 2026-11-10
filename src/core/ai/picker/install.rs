@@ -550,10 +550,13 @@ impl Picker {
         self.install_step(step, draft, detection)
     }
 
-    /// The wizard screen was drawn: its confirm prompts accept `y`/`n`.
+    /// The wizard screen or the Delete screen was drawn: its confirm prompts
+    /// accept an answer.
     pub fn install_arm(&mut self) {
-        if let Some(wizard) = self.wizard_mut() {
-            wizard.arm();
+        match &mut self.level {
+            Level::Install(wizard) => wizard.arm(),
+            Level::Delete(delete) => delete.arm(),
+            _ => {}
         }
     }
 

@@ -26,10 +26,12 @@ mod auto_type;
 pub mod bounded_read;
 pub mod chat;
 pub mod chat_store;
+pub mod clipboard;
 mod config_write;
 pub mod desktop;
 pub mod engram;
 pub mod feedback;
+pub mod folder;
 pub mod gguf;
 pub mod gh;
 pub mod hf;
@@ -39,26 +41,40 @@ pub mod llama_install;
 pub mod login_path;
 pub mod loopback;
 pub mod mcp;
+pub mod model_delete;
 pub mod notify;
+pub mod ollama_lib;
 pub mod opener;
+pub mod orchestra;
+pub mod probe_store;
 pub mod proc;
 pub mod prompts;
 #[cfg(test)]
 pub(crate) mod refused_port;
 mod run_check;
+/// The check's reasons that never count toward the pause, for the app tests.
+#[cfg(test)]
+pub(crate) use run_check::{TOO_LARGE, UNCHECKED, UNIGNORED};
 pub mod tools;
 pub mod update;
 pub mod watch;
+pub mod win_drives;
 pub mod workspace;
 
 use crate::core::ai::chat::review::{BatchEvent, NO_ORPHAN, closed_notice};
-use crate::core::menu::feedback::{Issue, SendReply};
+use crate::core::ai::tools::{
+    github::GhRepo,
+    panes::{self, Facts, Roster},
+};
+use crate::core::menu::feedback::{Request, SendReply};
+use crate::core::pty::Probe;
 use ai_detect::spawn_detection;
 use chat::Chats;
 use chat_store::StoreHandle;
 use config_write::save_config;
 use engram::{Loopback, Memory};
 use futures::StreamExt;
+use orchestra::{OrchestraEvent, RunManager};
 use ratatui::{
     DefaultTerminal,
     crossterm::{
@@ -85,10 +101,11 @@ use crate::{
                 approval,
                 notify::{bell_after_failed_desktop, rings_at_once},
                 prompts::Resolved,
-                store::StoreReply,
+                store::{StoreCmd, StoreReply},
             },
             config::{AiConfig, NotifyMode, Profile},
             memory::port::MemReply,
+            orchestra::SessionKey,
         },
         config::{Config, config_path},
         layout::PaneId,
@@ -122,6 +139,8 @@ const MEMORY_CHANNEL: usize = 64;
 const STORE_JOIN_BOUND: Duration = Duration::from_secs(2);
 /// Capacity of the channel from the path checks of runs to the event loop.
 const RUN_CHANNEL: usize = 16;
+/// Folder probes in flight at once (one per `/cd`, resume or picker).
+const FOLDER_CHANNEL: usize = 8;
 /// Capacity of the channel from the store thread to the event loop.
 const STORE_CHANNEL: usize = 64;
 /// Longest the app waits for a prompt job before it uses the built-in prompt.
@@ -132,6 +151,8 @@ const PROMPT_CHANNEL: usize = 16;
 /// Capacity of the Hugging Face channel: the replies, and a download's
 /// progress about every 250 ms (dropped while the loop is behind).
 const HUB_CHANNEL: usize = 16;
+/// Capacity of the channel the clipboard worker reports on.
+const CLIPBOARD_CHANNEL: usize = 8;
 /// How often `Panes::shutdown` checks whether the kills are done.
 const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
 /// Most events one `drive` call processes (the first one plus its feedback).
@@ -169,6 +190,7 @@ fn startup_effects(app: &mut App) -> Vec<Effect> {
     // The capture bytes wait in `host_out` until `run` has entered the
     // terminal modes; `mouse = false` yields no effect at all.
     let mut effects: Vec<Effect> = app.sync_mouse().into_iter().collect();
+    effects.extend(app.sync_build_env());
     // Startup trigger: the first result arrives on `ai_rx` once the loop runs.
     effects.extend(app.request_detection());
     effects
@@ -212,7 +234,7 @@ impl Drop for QuitGuard {
 }
 
 /// Runs the terminal pane until the child exits or the user quits.
-pub async fn run() -> io::Result<()> {
+pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     // First, before any child or pane exists: from here on every process
     // group lazarobox starts is stopped once it ends, however it ends.
     watch::start();
@@ -225,7 +247,7 @@ pub async fn run() -> io::Result<()> {
         login_path::LOGIN_TIMEOUT,
     ));
     let (cols, rows) = terminal::size()?;
-    let cwd = env::current_dir().unwrap_or_else(|_| "/".into());
+    let launch_cwd = env::current_dir().unwrap_or_else(|_| "/".into());
     let shell = env::var("SHELL").ok();
     // Resolved once: the startup read and the menu's save use the same file.
     let config_path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
@@ -238,20 +260,38 @@ pub async fn run() -> io::Result<()> {
         .unwrap_or(crate::core::ai::jail::JailSupport::Unavailable(
             crate::core::ai::jail::JailOff::NotProbed,
         ));
-    let mut app = app_from_config(cols, rows, config_path.as_deref(), engram_port.as_deref())
+    // The start folder: `--dir`, else `[workspace] dir`, else the launch cwd.
+    // It is the launch cwd of the app; the process never changes directory.
+    let started = startup(
+        &start_args,
+        config_path.as_deref(),
+        engram_port.as_deref(),
+        env::var_os("HOME").map(PathBuf::from).as_deref(),
+        &launch_cwd,
+    );
+    let cwd = started.dir.clone();
+    let utf8 = approval::names_utf8(
+        env::var("LC_ALL").ok().as_deref(),
+        env::var("LC_CTYPE").ok().as_deref(),
+        env::var("LANG").ok().as_deref(),
+    );
+    let app = started
+        .app(cols, rows)
         .with_jail(jail)
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
-        .with_utf8_locale(approval::names_utf8(
-            env::var("LC_ALL").ok().as_deref(),
-            env::var("LC_CTYPE").ok().as_deref(),
-            env::var("LANG").ok().as_deref(),
-        ))
+        .with_utf8_locale(utf8)
         .with_session_ids(engram::worker::new_session_id)
         .with_token_check(token_in_env)
         .with_hf_tokens(hf::token_facts)
         .with_host(feedback::host_facts())
+        .with_build_machine(build_machine())
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
+    let glyph = app
+        .ai()
+        .tool_mark()
+        .resolve(env::var("TERM").ok().as_deref(), utf8);
+    let mut app = app.with_tool_glyph(glyph);
     let (id, spec) = app.initial_spawn();
 
     let shutdown = Shutdown::new()?;
@@ -280,10 +320,44 @@ pub async fn run() -> io::Result<()> {
     // Looked up once, on the same PATH as the engines.
     let opener = opener::Opener::find(&cli_env.path);
     app = app.with_opener(opener.is_some());
+    // The local clipboard tool of this session, looked up once on the same
+    // PATH; none over SSH, where the terminal's clipboard is the one that
+    // matters.
+    let session = crate::core::clipboard::Session::from_env(
+        |name| env::var(name).ok(),
+        feedback::host_facts().wsl,
+    );
+    let (clipboard_tx, clipboard_rx) = mpsc::channel(CLIPBOARD_CHANNEL);
+    let clipboard = clipboard::Clipboard::find(&cli_env.path, session).map(|(tool, program)| {
+        let tx = clipboard_tx.clone();
+        clipboard::Clipboard::start(
+            tool,
+            program,
+            clipboard::timeout(tool),
+            Box::new(move |seq, result| {
+                let _ = tx.blocking_send((seq, result));
+            }),
+        )
+    });
+    app = app.with_clipboard(
+        clipboard.as_ref().map(clipboard::Clipboard::tool),
+        session.ssh,
+    );
+    // The prefix probe: this terminal's stored result decides whether it runs.
+    let probe_dir = probe_store::dir_from(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"));
+    let terminal = crate::core::probe::terminal_key(
+        env::var("TERM_PROGRAM").ok().as_deref(),
+        env::var_os("WT_SESSION").is_some(),
+        env::var("TERM").ok().as_deref(),
+    );
+    let stored = probe_store::load(probe_dir.as_deref()).map(|rows| rows.get(&terminal).copied());
+    app = app.with_probe(terminal, stored, start_args.check_prefix);
     // Detection reads codex's model list through the same jail as its chat.
     let detect_env = cli_env.clone();
     // The codex model list is reused for 10 minutes across runs (`r` re-lists).
     let listing_cache = Arc::new(ai_detect::ListingCache::new(Arc::new(Instant::now)));
+    // Tool support of the Ollama models, by digest, for the same life.
+    let show_cache = Arc::new(ai_detect::ShowCache::default());
     let (chat_tx, chat_rx) = mpsc::channel(chat::APP_CHANNEL);
     let (memory_tx, memory_rx) = mpsc::channel(MEMORY_CHANNEL);
     // Off unless the config activates it: then no worker ever starts, nothing
@@ -343,6 +417,7 @@ pub async fn run() -> io::Result<()> {
         .with_install_env(Some(update::install_env(&cli_env.path)))
         .with_cargo_check(|cargo| chat::trusted_cargo_path(cargo).is_some());
     let (run_tx, run_rx) = mpsc::channel(RUN_CHANNEL);
+    let (folder_tx, folder_rx) = mpsc::channel(FOLDER_CHANNEL);
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
     let (prompt_tx, prompt_rx) = mpsc::channel(PROMPT_CHANNEL);
     let config_dir = config_path
@@ -358,6 +433,9 @@ pub async fn run() -> io::Result<()> {
         .and_then(Path::parent)
         .map(Path::to_owned);
     let tool_host = tools::ToolHost::from_env();
+    // `gh` is found, and runs, on the same login PATH as the engines.
+    tool_host.set_gh_path(cli_env.path.clone());
+    let roster = tool_host.roster();
     let servers_home = env::var_os("HOME").map(PathBuf::from);
     // Read at startup, like the memory port: detection and chat both use
     // these, so an engine is chatted with where it was detected. Only a menu
@@ -386,6 +464,32 @@ pub async fn run() -> io::Result<()> {
     let live = chat::LiveServers::new(server_ports, managed);
     // The idle stop: checked now and then, with the time the menu set last.
     live.set_idle(app.ai().managed_options().idle());
+    live.set_ollama(app.ai().ollama_options());
+    // Read once at start, like the ports: a change to the file needs a restart.
+    live.set_cache(app.ai().cache_options().clone());
+    let runner = chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone()));
+    // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
+    // `<data>/run`. Without a private folder every turn runs as text.
+    let socket_dirs = mcp::candidate_dirs(
+        env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        store_dir.as_deref(),
+    );
+    // The runs of orchestrating panes (D1): worker turns go through the chat's
+    // runner, prompt overrides and socket folders. Their events go to the app
+    // on their own channel, because a worker can outlive a turn.
+    let (orchestra_tx, orchestra_rx) = mpsc::unbounded_channel();
+    let orchestra = Arc::new(
+        RunManager::new(runner.clone(), config_dir.clone(), orchestra_tx)
+            .with_live(live.clone())
+            .with_tools(tool_host.clone(), socket_dirs.clone())
+            .with_run_floor({
+                let path = store_path.clone();
+                move || match path.as_deref() {
+                    Some(path) => chat_store::highest_run(path).map_err(|why| why.to_string()),
+                    None => Ok(0),
+                }
+            }),
+    );
     tokio::spawn({
         let live = live.clone();
         async move {
@@ -401,10 +505,18 @@ pub async fn run() -> io::Result<()> {
     // delays a send, it just fills the slot later. The `t` test refreshes it.
     let plan = notify::PlanSlot::default();
     notify::probe_in_background(&plan, notify::Session::current, cli_env.path.clone());
+    // Under WSL, the user's own Windows profile for the drive read policy.
+    win_drives::probe_profile_in_background();
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
+        .with_roster(roster, env::var_os("HOME").map(PathBuf::from))
         .with_memory(memory)
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
+        .with_folder_probes(
+            folder::Prober::new(run_check::process_env(), folder_tx)
+                .with_path(cli_env.path.clone()),
+        )
         .with_config_path(config_path)
+        .with_probe_dir(probe_dir)
         .with_update_checker(Box::new(check_update))
         .with_detector(Box::new({
             let live = live.clone();
@@ -414,9 +526,10 @@ pub async fn run() -> io::Result<()> {
                     ai_tx.clone(),
                     detect_env.clone(),
                     Arc::clone(&listing_cache),
+                    Arc::clone(&show_cache),
                     force,
-                    live.ports(),
                     Arc::clone(&model_dirs),
+                    live.clone(),
                 );
             }
         }))
@@ -485,6 +598,15 @@ pub async fn run() -> io::Result<()> {
                 });
             }
         }))
+        // A copy through the tool comes back as `AppEvent::Clipboard`; a
+        // worker that is gone answers with an error at once.
+        .with_clipboard(Box::new(move |seq, text| {
+            if let Some(clipboard) = &clipboard
+                && let Err(reason) = clipboard.copy(seq, text)
+            {
+                let _ = clipboard_tx.try_send((seq, Err(reason)));
+            }
+        }))
         // An opener that fails comes back as `AppEvent::OpenFailed`: the
         // app copies the link instead.
         .with_opener(Box::new(move |url| {
@@ -537,29 +659,19 @@ pub async fn run() -> io::Result<()> {
             );
         }))
         .with_chats(
-            Chats::new(
-                chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone())),
-                chat_tx,
-            )
-            .with_live(live.clone())
-            // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
-            // `<data>/run`. Without a private folder every turn runs as text.
-            .with_tools(
-                tool_host,
-                mcp::candidate_dirs(
-                    env::var_os("XDG_RUNTIME_DIR").as_deref(),
-                    store_dir.as_deref(),
+            Chats::new(runner, chat_tx)
+                .with_live(live.clone())
+                .with_tools(tool_host, socket_dirs)
+                .with_orchestra(orchestra)
+                // The user's servers, started only by a turn with tools on. They
+                // need a home to run in: without `$HOME` none is started.
+                .with_servers(
+                    servers_home
+                        .as_ref()
+                        .map_or_else(Vec::new, |_| app.ai().mcp_servers().to_vec()),
+                    servers_home.clone().unwrap_or_default(),
+                    chat::wires_for(cli_env.clone()),
                 ),
-            )
-            // The user's servers, started only by a turn with tools on. They
-            // need a home to run in: without `$HOME` none is started.
-            .with_servers(
-                servers_home
-                    .as_ref()
-                    .map_or_else(Vec::new, |_| app.ai().mcp_servers().to_vec()),
-                servers_home.clone().unwrap_or_default(),
-                chat::wires_for(cli_env.clone()),
-            ),
         )
         .with_store(chat_store::spawn_at(store_path, store_tx))
         // The picker's Hugging Face screens: curl from the same PATH as the
@@ -570,6 +682,20 @@ pub async fn run() -> io::Result<()> {
             hf::token_env,
             hub_tx.clone(),
         ))
+        // The picker's Ollama screens: curl from the same PATH for the
+        // library, the pull through the local Ollama server. They answer on
+        // the Hub's channel.
+        .with_ollama(ollama_lib::Ollama::new(
+            cli_env.path.clone(),
+            ollama_lib::models_folder(
+                env::var_os("OLLAMA_MODELS"),
+                env::var_os("HOME").map(PathBuf::from).as_deref(),
+                Path::exists,
+            ),
+            hub_tx.clone(),
+        ))
+        // A model delete answers on the Hub's channel too.
+        .with_deletes(hub_tx.clone())
         // The install wizard's steps: curl, gh and tar from the same PATH,
         // into the owned folder under the data home. They answer on the
         // Hub's channel.
@@ -607,12 +733,15 @@ pub async fn run() -> io::Result<()> {
         prompt: prompt_rx,
         update: update_rx,
         run: run_rx,
+        folder: folder_rx,
         notified: notified_rx,
         issue: issue_rx,
         open_failed: open_failed_rx,
+        clipboard: clipboard_rx,
         managed: managed_rx,
         shared: shared_rx,
         hub: hub_rx,
+        orchestra: orchestra_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -752,25 +881,75 @@ fn local_hostname() -> Option<String> {
 }
 
 /// The app as the saved config configures it: layout, AI choice and notice.
+#[cfg(test)]
 fn app_from_config(
     cols: u16,
     rows: u16,
     config_path: Option<&Path>,
     port_env: Option<&str>,
 ) -> App {
-    let (config, ai, notice) = load_config(config_path, port_env);
-    App::new(cols, rows)
-        .with_config(&config)
-        .with_ai(ai)
-        .with_chat_history()
-        .with_notice(notice)
+    let cwd = env::current_dir().unwrap_or_else(|_| "/".into());
+    startup(
+        &crate::core::start::StartArgs::default(),
+        config_path,
+        port_env,
+        None,
+        &cwd,
+    )
+    .app(cols, rows)
+    .with_config_path(config_path.map(Path::to_owned))
 }
 
-/// Reads the config once at startup; a missing file is silent defaults.
-fn load_config(path: Option<&Path>, port_env: Option<&str>) -> (Config, AiConfig, Option<String>) {
-    match path {
-        Some(path) => Config::load_with_ai(fs::read_to_string(path), port_env),
-        None => (Config::default(), AiConfig::default(), None),
+/// This machine's cores and memory, measured once for `[build] jobs`.
+fn build_machine() -> crate::core::build_jobs::Machine {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    crate::core::build_jobs::Machine::new(cores, hf::total_ram())
+}
+
+/// What startup read: the config, the start folder and the one notice to
+/// show (a start problem wins over a config problem).
+struct Startup {
+    config: Config,
+    ai: AiConfig,
+    notice: Option<String>,
+    dir: PathBuf,
+}
+
+impl Startup {
+    fn app(&self, cols: u16, rows: u16) -> App {
+        App::new(cols, rows)
+            .with_config(&self.config)
+            .with_ai(self.ai.clone())
+            .with_chat_history()
+            .with_notice(self.notice.clone())
+    }
+}
+
+/// Reads the config once at startup (a missing file is silent defaults) and
+/// resolves the start folder. An invalid folder never stops the app.
+fn startup(
+    args: &crate::core::start::StartArgs,
+    config_path: Option<&Path>,
+    port_env: Option<&str>,
+    home: Option<&Path>,
+    launch_cwd: &Path,
+) -> Startup {
+    use crate::core::start::{Kind, resolve};
+    let (config, ai, notice, workspace) = match config_path {
+        Some(path) => Config::load_with_workspace(fs::read_to_string(path), port_env, home),
+        None => (Config::default(), AiConfig::default(), None, None),
+    };
+    let kind = |p: &Path| match fs::metadata(p) {
+        Ok(meta) if meta.is_dir() => Kind::Dir,
+        Ok(_) => Kind::File,
+        Err(_) => Kind::Missing,
+    };
+    let start = resolve(args, workspace.as_deref(), launch_cwd, home, &kind);
+    Startup {
+        config,
+        ai,
+        notice: start.notice.or(notice),
+        dir: start.path,
     }
 }
 
@@ -790,18 +969,24 @@ struct Inbox {
     update: mpsc::Receiver<Option<String>>,
     /// What the path checks of runs found.
     run: mpsc::Receiver<(PaneId, RunEvent)>,
+    /// What the folder probes found.
+    folder: mpsc::Receiver<folder::Answer>,
     /// What the notification test did.
     notified: mpsc::Receiver<String>,
     /// What became of the Feedback issue sent with `gh`.
     issue: mpsc::Receiver<SendReply>,
     /// A link the opener failed to open.
     open_failed: mpsc::Receiver<String>,
+    /// How a local clipboard copy went: its number and the outcome.
+    clipboard: mpsc::Receiver<(u64, Result<(), String>)>,
     /// How the start of a llama-server the menu turned on went.
     managed: mpsc::Receiver<Result<(), String>>,
     /// The llama-server lazarobox started is answering another lazarobox.
     shared: mpsc::Receiver<()>,
     /// The Hub's replies and the progress and end of a download.
     hub: mpsc::Receiver<AppEvent>,
+    /// What the run manager says about the runs of orchestrating panes.
+    orchestra: mpsc::UnboundedReceiver<(PaneId, OrchestraEvent)>,
 }
 
 async fn event_loop(
@@ -845,12 +1030,15 @@ async fn run_loop(
         prompt: mut prompt_rx,
         update: mut update_rx,
         run: mut run_rx,
+        folder: mut folder_rx,
         notified: mut notified_rx,
         issue: mut issue_rx,
         open_failed: mut open_failed_rx,
+        clipboard: mut clipboard_rx,
         managed: mut managed_rx,
         shared: mut shared_rx,
         hub: mut hub_rx,
+        orchestra: mut orchestra_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -863,10 +1051,13 @@ async fn run_loop(
     let mut anim = anim::Animation::new();
     // Armed only while a chat awaits a memory reply: no wait lasts for ever.
     let mut memory_watch = anim::Animation::every(anim::MEMORY_PERIOD);
+    // Armed only while the first-run prefix probe waits for a key.
+    let mut probe_watch = anim::Animation::every(anim::PROBE_PERIOD);
 
     loop {
         anim.sync(app.animating());
         memory_watch.sync(app.memory_waiting());
+        probe_watch.sync(app.probe_waiting());
         tokio::select! {
             event = events.next() => match event {
                 Some(Ok(event)) => {
@@ -948,6 +1139,25 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            Some(answer) = folder_rx.recv() => {
+                let event = match answer {
+                    folder::Answer::Probed(pane, purpose, result) => {
+                        AppEvent::FolderProbed { pane, purpose, result }
+                    }
+                    folder::Answer::Many(pane, id, found, busy) => {
+                        AppEvent::FoldersProbed { pane, id, found, busy }
+                    }
+                    folder::Answer::Origin(pane, folder, dialog, repo) => {
+                        AppEvent::OriginProbed { pane, folder, dialog, repo }
+                    }
+                    folder::Answer::Completed(pane, id, text, found) => {
+                        AppEvent::FolderCompleted { pane, id, text, found }
+                    }
+                };
+                if step(&mut app, event, panes) {
+                    return Ok(());
+                }
+            }
             Some(report) = notified_rx.recv() => {
                 if step(&mut app, AppEvent::NotifyTested(report), panes) {
                     return Ok(());
@@ -955,6 +1165,11 @@ async fn run_loop(
             }
             Some(reply) = issue_rx.recv() => {
                 if step(&mut app, AppEvent::IssueSent(reply), panes) {
+                    return Ok(());
+                }
+            }
+            Some((seq, result)) = clipboard_rx.recv() => {
+                if step(&mut app, AppEvent::Clipboard { seq, result }, panes) {
                     return Ok(());
                 }
             }
@@ -979,12 +1194,21 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            // The run manager lives in `panes.chats`, and so its sender, for
+            // the whole loop. A run's events keep their order: its rows, then
+            // its failure or its `Ended`, nothing after.
+            Some((pane, event)) = orchestra_rx.recv() => {
+                if step(&mut app, AppEvent::Orchestra(pane, event), panes) {
+                    return Ok(());
+                }
+            }
             // Same exit path as Quit: the caller restores and kills the children.
             () = shutdown.requested() => return Ok(()),
             _ = cwd_poll.tick() => {
                 for event in panes.poll_cwds() {
                     step(&mut app, event, panes);
                 }
+                panes.refresh_roster_in_background(app.focused());
             }
             () = anim.tick() => {
                 if step(&mut app, AppEvent::AnimTick, panes) {
@@ -993,6 +1217,11 @@ async fn run_loop(
             }
             () = memory_watch.tick() => {
                 if step(&mut app, AppEvent::MemoryTick, panes) {
+                    return Ok(());
+                }
+            }
+            () = probe_watch.tick() => {
+                if step(&mut app, AppEvent::ProbeTick, panes) {
                     return Ok(());
                 }
             }
@@ -1020,8 +1249,10 @@ async fn run_loop(
                 // The panes wear the batches the store holds: a poll, because
                 // a model's staging has no event of its own.
                 // A busy store answers `None`: the badges stay as they were.
-                if let Some(badges) = panes.chats.as_ref().and_then(|c| c.batch_badges()) {
-                    app.sync_batches(&badges);
+                if let Some(badges) = panes.chats.as_ref().and_then(|c| c.batch_badges())
+                    && step(&mut app, AppEvent::Badges(badges), panes)
+                {
+                    return Ok(());
                 }
                 if app.take_dirty() {
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
@@ -1125,6 +1356,9 @@ struct Panes {
     reapers: Vec<JoinHandle<()>>,
     /// Where `SaveConfig` writes; `None` when no config path could be resolved.
     config_path: Option<PathBuf>,
+    /// The folder `SaveProbe` writes `terminals.json` in; `None` when no
+    /// state folder could be resolved.
+    probe_dir: Option<PathBuf>,
     /// Bytes for the host terminal (OSC 52), written by `flush_host` after
     /// the draw so nothing lands in the middle of a frame.
     host_out: Vec<u8>,
@@ -1151,10 +1385,14 @@ struct Panes {
     /// Starts the host's opener on a link, without waiting for it. Does
     /// nothing unless `with_opener` installs the production one.
     open_url: Box<dyn FnMut(&str)>,
+    /// Starts one local clipboard copy (its number and text) without
+    /// waiting; the outcome comes back on its channel. Does nothing unless
+    /// `with_clipboard` installs the production one.
+    copy_local: Box<dyn FnMut(u64, String)>,
     /// Starts sending the Feedback issue with `gh`, without waiting; the
     /// answer comes back on its channel. Does nothing unless
     /// `with_issue_sender` installs the production one.
-    send_issue: Box<dyn FnMut(Issue)>,
+    send_issue: Box<dyn FnMut(Request)>,
     /// Starts the managed llama-server the menu turned on; the outcome comes
     /// back on its channel. A no-op unless `with_manager` installs one.
     manage: Box<ManageFn>,
@@ -1180,6 +1418,7 @@ struct Panes {
     chats: Option<Chats>,
     /// Starts the path checks of runs. `None` refuses every run (unit tests).
     run_checks: Option<run_check::Checker>,
+    folder_probes: Option<folder::Prober>,
     /// The engram memory worker; off unless the config activates it.
     memory: Memory,
     /// The chat history thread. `None` ignores the store effects (unit tests).
@@ -1193,9 +1432,21 @@ struct Panes {
     /// The Hugging Face requests and download. `None` ignores the hub
     /// effects (unit tests).
     hub: Option<hf::Hub>,
+    /// The Ollama library requests and pull. `None` ignores the Ollama
+    /// effects (unit tests).
+    ollama: Option<ollama_lib::Ollama>,
+    /// Where a model delete sends its reply. `None` ignores
+    /// `Effect::DeleteModel` (unit tests).
+    deletes: Option<mpsc::Sender<AppEvent>>,
     /// The llama-server install steps. `None` ignores `Effect::Install`
     /// (unit tests).
     installer: Option<llama_install::installer::Installer>,
+    /// Where the poll writes what the panes run, for `list_panes`.
+    roster: Option<(Roster, Option<PathBuf>)>,
+    /// A background refresh of the roster is running.
+    roster_busy: Arc<AtomicBool>,
+    /// Turns the facts of a pane into its line; a test swaps in a slow one.
+    roster_line: RosterLine,
 }
 
 impl Panes {
@@ -1206,6 +1457,7 @@ impl Panes {
             spawn,
             reapers: Vec::new(),
             config_path: None,
+            probe_dir: None,
             host_out: Vec::new(),
             bell: false,
             late_bell: Arc::new(AtomicBool::new(false)),
@@ -1214,6 +1466,7 @@ impl Panes {
             sound_send: Box::new(|| {}),
             test_send: Box::new(|_, _, _| {}),
             open_url: Box::new(|_| {}),
+            copy_local: Box::new(|_, _| {}),
             send_issue: Box::new(|_| {}),
             manage: Box::new(|_, _| {}),
             set_idle: Box::new(|_| {}),
@@ -1223,13 +1476,64 @@ impl Panes {
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
             run_checks: None,
+            folder_probes: None,
             memory: Memory::off(),
             store: None,
             sessions: Vec::new(),
             list_running: Box::new(jobs::running),
             hub: None,
+            ollama: None,
+            deletes: None,
             installer: None,
+            roster: None,
+            roster_busy: Arc::new(AtomicBool::new(false)),
+            roster_line: panes::line,
         }
+    }
+
+    /// Sets where the poll writes what the panes run.
+    fn with_roster(mut self, roster: Roster, home: Option<PathBuf>) -> Self {
+        self.roster = Some((roster, home));
+        self
+    }
+
+    /// The cheap step of reading the panes for `list_panes`, on the loop: per
+    /// pane its number, whether it is focused and a [`Probe`] (one ioctl so
+    /// far). The `/proc` reads and the disk lookups run later, off the loop.
+    fn roster_probes(&self, focused: PaneId) -> Vec<(u32, bool, Probe)> {
+        (self.handles.iter())
+            .map(|(id, handle)| (id.number(), *id == focused, handle.probe()))
+            .collect()
+    }
+
+    /// Refreshes the roster for `list_panes` now (tests).
+    #[cfg(test)]
+    fn refresh_roster(&self, focused: PaneId) {
+        if let Some((roster, home)) = &self.roster {
+            let probes = self.roster_probes(focused);
+            publish_roster(roster, home.as_deref(), probes, self.roster_line);
+        }
+    }
+
+    /// Refreshes the roster on the blocking pool, so a stalled mount or a
+    /// stuck process cannot freeze the UI loop. A refresh still running is
+    /// not stacked on.
+    fn refresh_roster_in_background(&self, focused: PaneId) {
+        let Some((roster, home)) = &self.roster else {
+            return;
+        };
+        if self.roster_busy.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        // From here the guard owns the flag: it clears it however the
+        // closure ends, or when it is dropped without running.
+        let busy = BusyGuard(self.roster_busy.clone());
+        let (roster, home, line) = (roster.clone(), home.clone(), self.roster_line);
+        let probes = self.roster_probes(focused);
+        tokio::task::spawn_blocking(move || {
+            let _busy = busy;
+            publish_roster(&roster, home.as_deref(), probes, line);
+        });
     }
 
     /// Sets what names the jobs still running in the panes.
@@ -1295,6 +1599,11 @@ impl Panes {
     }
 
     /// Sets what checks the runs of `Effect::CheckRun`.
+    fn with_folder_probes(mut self, prober: folder::Prober) -> Self {
+        self.folder_probes = Some(prober);
+        self
+    }
+
     fn with_run_checks(mut self, checker: run_check::Checker) -> Self {
         self.run_checks = Some(checker);
         self
@@ -1327,14 +1636,26 @@ impl Panes {
         self
     }
 
+    /// Sets the folder the prefix probe results are kept in.
+    fn with_probe_dir(mut self, probe_dir: Option<PathBuf>) -> Self {
+        self.probe_dir = probe_dir;
+        self
+    }
+
     /// Sets what opens a link in the browser.
     fn with_opener(mut self, open: Box<dyn FnMut(&str)>) -> Self {
         self.open_url = open;
         self
     }
 
+    /// Sets what starts a local clipboard copy.
+    fn with_clipboard(mut self, copy: Box<dyn FnMut(u64, String)>) -> Self {
+        self.copy_local = copy;
+        self
+    }
+
     /// Sets what sends the Feedback issue.
-    fn with_issue_sender(mut self, send: Box<dyn FnMut(Issue)>) -> Self {
+    fn with_issue_sender(mut self, send: Box<dyn FnMut(Request)>) -> Self {
         self.send_issue = send;
         self
     }
@@ -1373,6 +1694,18 @@ impl Panes {
     /// Sets what runs the Hugging Face effects.
     fn with_hub(mut self, hub: hf::Hub) -> Self {
         self.hub = Some(hub);
+        self
+    }
+
+    /// Sets what runs the Ollama effects.
+    fn with_ollama(mut self, ollama: ollama_lib::Ollama) -> Self {
+        self.ollama = Some(ollama);
+        self
+    }
+
+    /// Sets where a model delete sends its reply.
+    fn with_deletes(mut self, deletes: mpsc::Sender<AppEvent>) -> Self {
+        self.deletes = Some(deletes);
         self
     }
 
@@ -1449,7 +1782,17 @@ impl Panes {
                         Err(message) => AppEvent::ConfigSaveFailed(message),
                     });
                 }
+                // Synchronous like `SaveConfig`: the file is tiny. Only a
+                // failure is answered, so the user sees the notice.
+                Effect::SaveProbe { key, outcome } => {
+                    if let Err(reason) = probe_store::save(self.probe_dir.as_deref(), &key, outcome)
+                    {
+                        feedback.push(AppEvent::ProbeSaveFailed(reason));
+                    }
+                }
                 Effect::SetClipboard(bytes) => self.host_out.extend_from_slice(&bytes),
+                // Returns at once: the tool runs on the clipboard worker.
+                Effect::CopyLocal { seq, text } => (self.copy_local)(seq, text),
                 // Returns at once: the opener is reaped on its own thread.
                 Effect::OpenUrl(url) => (self.open_url)(&url),
                 // Returns at once: `gh` runs on its own task.
@@ -1468,6 +1811,16 @@ impl Panes {
                 } => {
                     if let Some(chats) = self.chats.as_mut() {
                         chats.send(pane, turn, request);
+                    }
+                }
+                Effect::OrchestrateSend {
+                    pane,
+                    turn,
+                    request,
+                    orch,
+                } => {
+                    if let Some(chats) = self.chats.as_mut() {
+                        chats.send_orchestrated(pane, turn, request, *orch);
                     }
                 }
                 Effect::ChatCompact {
@@ -1489,16 +1842,77 @@ impl Panes {
                         chats.cancel(pane);
                     }
                 }
+                // Returns at once: a run that is not halted any more ignores it.
+                Effect::OrchDecide {
+                    pane,
+                    run,
+                    choice,
+                    ceiling,
+                } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        if chats.orchestrates() {
+                            chats.decide_run(pane, run, choice, ceiling);
+                        } else {
+                            feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::Unavailable));
+                        }
+                    }
+                }
+                // Returns at once: a pane without a live run ignores it.
+                Effect::OrchCeiling { pane, ceiling } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        chats.set_ceiling(pane, ceiling);
+                    }
+                }
+                // Returns at once.
+                Effect::OrchGatesOff { pane, run } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        chats.gates_off(pane, run);
+                    }
+                }
+                Effect::OrchCancelWorker { pane, run, worker } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        if chats.orchestrates() {
+                            chats.cancel_worker(pane, run, worker);
+                        } else {
+                            feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::Unavailable));
+                        }
+                    }
+                }
                 // Both return at once; the answer lands on a waiting call, or
                 // on nothing when the call is over.
                 Effect::ToolDecision {
                     pane,
+                    worker,
                     turn,
                     call,
                     decision,
                 } => {
                     if let Some(chats) = self.chats.as_ref() {
-                        chats.decide(pane, turn, call, decision);
+                        let session = worker
+                            .map_or(SessionKey::Pane(pane), |key| SessionKey::Worker(pane, key));
+                        let sent = decision == crate::core::ai::chat::engine::Decision::Sent;
+                        // A `y` for a worker that ended meanwhile reaches no
+                        // wait: said, never dropped without a word.
+                        if !chats.decide(session, turn, call, decision) && sent && worker.is_some()
+                        {
+                            feedback.push(AppEvent::Orchestra(pane, OrchestraEvent::AnswerLost));
+                        }
+                    }
+                }
+                // The approved text of a screen: the wait is claimed, and a
+                // call that is over is owed nothing.
+                Effect::ToolScreen {
+                    pane,
+                    turn,
+                    call,
+                    text,
+                } => {
+                    let wait = self
+                        .chats
+                        .as_ref()
+                        .and_then(|chats| chats.take(pane, turn, call));
+                    if let Some(wait) = wait {
+                        let _ = wait.send(crate::core::ai::chat::engine::Answer::Screen(text));
                     }
                 }
                 // The write and the answer are one step: the answer is claimed
@@ -1576,11 +1990,14 @@ impl Panes {
                     target,
                     call,
                     command,
+                    scope,
                     ..
                 } => {
                     let cwd = self.handles.get(&target).and_then(|pty| pty.cwd());
                     match (cwd, self.run_checks.as_ref()) {
-                        (Some(cwd), Some(checks)) => checks.start(target, call, cwd, command),
+                        (Some(cwd), Some(checks)) => {
+                            checks.start(target, call, cwd, command, scope);
+                        }
                         _ => feedback.push(AppEvent::Run(
                             target,
                             RunEvent::Refused {
@@ -1590,6 +2007,62 @@ impl Panes {
                         )),
                     }
                 }
+                Effect::ProbeFolder {
+                    pane,
+                    path,
+                    purpose,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start(pane, path, purpose),
+                    // No runtime to probe with: the folder cannot be judged.
+                    None => feedback.push(AppEvent::FolderProbed {
+                        pane,
+                        purpose,
+                        result: Err(crate::core::ai::chat::folder::Refusal::NotFound),
+                    }),
+                },
+                Effect::ProbeOrigin {
+                    pane,
+                    folder,
+                    dialog,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_origin(pane, folder, dialog),
+                    // No runtime to read it with: nothing can be granted.
+                    None => feedback.push(AppEvent::OriginProbed {
+                        pane,
+                        folder,
+                        dialog,
+                        repo: GhRepo::Unreadable,
+                    }),
+                },
+                Effect::ProbeFolders {
+                    pane,
+                    id,
+                    paths,
+                    git,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_many(pane, id, paths, git),
+                    None => feedback.push(AppEvent::FoldersProbed {
+                        pane,
+                        id,
+                        busy: false,
+                        found: Vec::new(),
+                    }),
+                },
+                Effect::CompleteFolder {
+                    pane,
+                    id,
+                    text,
+                    dir,
+                    prefix,
+                } => match self.folder_probes.as_ref() {
+                    Some(prober) => prober.start_completion(pane, id, text, dir, prefix),
+                    None => feedback.push(AppEvent::FolderCompleted {
+                        pane,
+                        id,
+                        text,
+                        found: Default::default(),
+                    }),
+                },
                 Effect::EndToolSession(pane) => {
                     if let Some(chats) = self.chats.as_mut() {
                         chats.end_session(pane);
@@ -1622,8 +2095,15 @@ impl Panes {
                         feedback.push(AppEvent::Batch(pane, BatchEvent::Done { shown, told }));
                     }
                 }
-                Effect::BatchApply { pane, id } => {
-                    let done = self.chats.as_ref().and_then(|chats| chats.apply_batch(id));
+                Effect::BatchApply {
+                    pane,
+                    id,
+                    drive_grant,
+                } => {
+                    let done = self
+                        .chats
+                        .as_ref()
+                        .and_then(|chats| chats.apply_batch(id, drive_grant));
                     feedback.extend(done.map(|event| AppEvent::Batch(pane, event)));
                 }
                 Effect::BatchDiscard { pane, id } => {
@@ -1640,6 +2120,17 @@ impl Panes {
                 Effect::Store(cmd) => {
                     if let Some(store) = self.store.as_ref() {
                         store.send(cmd);
+                    } else if let StoreCmd::UsageToday { pane } = cmd {
+                        // Nobody will answer: say so at once, or the app
+                        // would wait for a read that never comes.
+                        feedback.push(AppEvent::Store(StoreReply::UsageRecorded {
+                            pane,
+                            today: None,
+                            cost: Vec::new(),
+                            until: None,
+                            read_problem: Some("store not available".to_owned()),
+                            problem: None,
+                        }));
                     }
                 }
                 // Returns at once: the files are read on their own thread.
@@ -1678,9 +2169,68 @@ impl Panes {
                         hub.start(*job);
                     }
                 }
+                // Only one download runs; cancelling the idle one does
+                // nothing.
                 Effect::CancelDownload => {
                     if let Some(hub) = self.hub.as_mut() {
                         hub.cancel();
+                    }
+                    if let Some(ollama) = self.ollama.as_mut() {
+                        ollama.cancel();
+                    }
+                }
+                Effect::OllamaAsk(ask) => {
+                    if let Some(ollama) = &self.ollama {
+                        ollama.ask(ask);
+                    }
+                }
+                Effect::Pull { pull, port } => {
+                    if let Some(ollama) = self.ollama.as_mut() {
+                        ollama.start(port, *pull);
+                    }
+                }
+                Effect::DeleteModel { ask, port } => {
+                    if let Some(events) = self.deletes.clone() {
+                        tokio::spawn(async move {
+                            let answer = loopback::delete_with(
+                                "127.0.0.1",
+                                port,
+                                loopback::DELETE_PATH,
+                                ask.target.name(),
+                            )
+                            .await;
+                            let _ = events.send(AppEvent::DeleteReply { ask, answer }).await;
+                        });
+                    }
+                }
+                // The disk work runs off the UI thread; the folders are the
+                // ones the model scan reads, from this process's environment.
+                Effect::MeasureModel(ask) => {
+                    if let Some(events) = self.deletes.clone() {
+                        let dirs = model_dirs();
+                        tokio::spawn(async move {
+                            let id = ask.clone();
+                            let (ask, answer) = tokio::task::spawn_blocking(move || {
+                                model_delete::measure(ask, &dirs)
+                            })
+                            .await
+                            .unwrap_or_else(|_| (id, Err("the check stopped".to_owned())));
+                            let _ = events.send(AppEvent::DeleteMeasured { ask, answer }).await;
+                        });
+                    }
+                }
+                Effect::DeleteFiles(ask) => {
+                    if let Some(events) = self.deletes.clone() {
+                        let dirs = model_dirs();
+                        tokio::spawn(async move {
+                            let id = ask.clone();
+                            let (ask, answer) = tokio::task::spawn_blocking(move || {
+                                model_delete::carry_out(ask, &dirs)
+                            })
+                            .await
+                            .unwrap_or_else(|_| (id, Err("the delete stopped".to_owned())));
+                            let _ = events.send(AppEvent::DeleteReply { ask, answer }).await;
+                        });
                     }
                 }
                 // Returns at once: the step runs on its own task.
@@ -1705,6 +2255,11 @@ impl Panes {
                 Effect::MouseCapture(on) => {
                     self.host_out
                         .extend_from_slice(if on { CAPTURE_ON } else { CAPTURE_OFF });
+                }
+                Effect::BuildEnv(env) => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        chats.set_build_env(env);
+                    }
                 }
                 Effect::ListRunning => {
                     (self.check_shared)();
@@ -1808,6 +2363,43 @@ fn step(app: &mut App, event: AppEvent, panes: &mut Panes) -> bool {
     drive(|event| app.update(event), event, panes)
 }
 
+/// Clears the roster's busy flag when dropped.
+struct BusyGuard(Arc<AtomicBool>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Turns the facts of one pane into its line.
+type RosterLine = fn(&Facts, Option<&Path>) -> String;
+
+/// Runs the probes, then stores one already-redacted line per pane, the
+/// focused one first and then in pane order: the raw argv never leaves this
+/// function. It reads `/proc` and looks files up on disk, so it runs off the
+/// UI loop.
+fn publish_roster(
+    roster: &Roster,
+    home: Option<&Path>,
+    probes: Vec<(u32, bool, Probe)>,
+    line: RosterLine,
+) {
+    let mut facts: Vec<Facts> = (probes.into_iter())
+        .map(|(number, focused, probe)| {
+            let (cwd, fg) = probe();
+            Facts {
+                number,
+                focused,
+                cwd,
+                fg,
+            }
+        })
+        .collect();
+    facts.sort_by_key(|f| (!f.focused, f.number));
+    roster.set(facts.iter().map(|f| line(f, home)).collect());
+}
+
 /// The child's current working directory as an event, read from
 /// `/proc/<pid>/cwd`. `None` when there is no pid or the lookup fails (not
 /// Linux, process gone): the app then keeps its previous value. The link is
@@ -1828,15 +2420,16 @@ fn to_app_event(event: Event) -> Option<AppEvent> {
         // then keeps the window as focused.
         Event::FocusGained => Some(AppEvent::WindowFocus(true)),
         Event::FocusLost => Some(AppEvent::WindowFocus(false)),
-        // The vertical wheel and the left press (a link line of the menu);
-        // other buttons, releases, drags, motion and the horizontal wheel
-        // are not the app's.
+        // The vertical wheel, the left press (a link line of the menu) and
+        // its release (a link in a pane); other buttons, drags, motion and
+        // the horizontal wheel are not the app's.
         Event::Mouse(mouse)
             if matches!(
                 mouse.kind,
                 MouseEventKind::ScrollUp
                     | MouseEventKind::ScrollDown
                     | MouseEventKind::Down(MouseButton::Left)
+                    | MouseEventKind::Up(MouseButton::Left)
             ) =>
         {
             Some(AppEvent::Mouse(mouse))
@@ -1881,12 +2474,22 @@ fn flush_host<W: Write>(out: &mut W, pending: &mut Vec<u8>) -> io::Result<()> {
     result
 }
 
+/// XTMODKEYS: `CSI > 4 ; 0 m` asks the terminal to turn xterm's
+/// modifyOtherKeys off. A terminal with it on (zutty) sends Alt+Enter as
+/// `CSI 27;3;13~`, a form crossterm 0.29 rejects, so the key would vanish.
+/// A terminal that does not know the sequence ignores it.
+const MODIFY_OTHER_KEYS_OFF: &[u8] = b"\x1b[>4;0m";
+/// `CSI > 4 m` asks the terminal to return modifyOtherKeys to its initial value.
+const MODIFY_OTHER_KEYS_DEFAULT: &[u8] = b"\x1b[>4m";
+
 /// Undoes what the runtime changed in the host terminal, minus raw mode and
 /// the alternate screen, which `ratatui::restore` handles. The mouse capture
 /// is disabled whether or not it was on: the sequence is harmless when the
 /// capture is off, and the panic hook cannot know the state.
 fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
-    let mouse = out.write_all(CAPTURE_OFF);
+    let mouse = out
+        .write_all(CAPTURE_OFF)
+        .and_then(|()| out.write_all(MODIFY_OTHER_KEYS_DEFAULT));
     let rest = execute!(
         out,
         SetCursorStyle::DefaultUserShape,
@@ -1899,7 +2502,9 @@ fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
 /// Enters the terminal modes the runtime needs on top of raw mode: bracketed
 /// paste and focus reporting. [`restore_to`] undoes them.
 fn enter_modes<W: Write>(out: &mut W) -> io::Result<()> {
-    execute!(out, EnableBracketedPaste, EnableFocusChange)
+    execute!(out, EnableBracketedPaste, EnableFocusChange)?;
+    out.write_all(MODIFY_OTHER_KEYS_OFF)?;
+    out.flush()
 }
 
 fn restore() {
@@ -1969,6 +2574,77 @@ mod tests {
         );
         // Single flight: a second request while one is pending is empty.
         assert_eq!(app.request_detection(), Vec::new());
+    }
+
+    fn start_for(args: &[&str], config: Option<&str>, cwd: &Path) -> Startup {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        if let Some(text) = config {
+            fs::write(&path, text).unwrap();
+        }
+        let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        startup(
+            &crate::core::start::parse_args(&argv),
+            Some(&path),
+            None,
+            None,
+            cwd,
+        )
+    }
+
+    // Spec (start-dir): an invalid `--dir` starts in the launch cwd with a
+    // notice shown inside the app; nothing exits.
+    #[test]
+    fn a_bad_dir_flag_starts_in_the_cwd_with_an_in_app_notice() {
+        let cwd = tempfile::tempdir().unwrap();
+        let config = "[workspace]\ndir = \"/\"\n";
+        let got = start_for(&["--dir", "/nope-lazarobox"], Some(config), cwd.path());
+        assert_eq!(got.dir, cwd.path());
+        assert_eq!(
+            got.notice.as_deref(),
+            Some("--dir: folder not found: /nope-lazarobox")
+        );
+    }
+
+    #[test]
+    fn a_valid_flag_beats_the_config_and_raises_no_notice() {
+        let (cwd, target) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let flag = target.path().to_str().unwrap();
+        let got = start_for(
+            &["--dir", flag],
+            Some("[workspace]\ndir = \"/\"\n"),
+            cwd.path(),
+        );
+        assert_eq!((got.dir.as_path(), got.notice), (target.path(), None));
+    }
+
+    #[test]
+    fn the_config_dir_is_used_and_a_missing_one_falls_back_with_its_notice() {
+        let (cwd, target) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let text = format!("[workspace]\ndir = \"{}\"\n", target.path().display());
+        let got = start_for(&[], Some(&text), cwd.path());
+        assert_eq!((got.dir.as_path(), got.notice), (target.path(), None));
+        let gone = start_for(
+            &[],
+            Some("[workspace]\ndir = \"/nope-lazarobox\"\n"),
+            cwd.path(),
+        );
+        assert_eq!(gone.dir, cwd.path());
+        assert_eq!(
+            gone.notice.as_deref(),
+            Some("config: workspace.dir: folder not found")
+        );
+    }
+
+    #[test]
+    fn the_start_dir_becomes_the_launch_cwd_of_the_app() {
+        let cwd = tempfile::tempdir().unwrap();
+        let got = start_for(&[], None, cwd.path());
+        let app = got
+            .app(80, 25)
+            .with_env(Some("/bin/zsh"), None, got.dir.clone());
+        let (_, spec) = app.initial_spawn();
+        assert_eq!(spec.cwd, cwd.path());
     }
 
     const SAVED_AI: &str = "[ai]\nengine = \"ollama\"\nmodel = \"llama3:8b\"\n";
@@ -2175,7 +2851,37 @@ mod tests {
         assert!(text.contains("\x1b[?1004l"), "{text:?}");
     }
 
-    // The modes are entered with one write and undone by `restore_to`.
+    // zutty sends Alt+Enter as `CSI 27;3;13~` (xterm modifyOtherKeys), which
+    // crossterm 0.29 cannot parse, so the key would be lost. Startup asks the
+    // terminal to stop using that format.
+    #[test]
+    fn startup_turns_modify_other_keys_off() {
+        let mut out = Vec::new();
+        enter_modes(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[>4;0m"), "{text:?}");
+        // The mode goes off once the others are on, in the same write.
+        assert!(
+            text.find("\x1b[?1004h").unwrap() < text.find("\x1b[>4;0m").unwrap(),
+            "{text:?}"
+        );
+    }
+
+    // Restore hands the terminal back its own default (`CSI > 4 m`).
+    #[test]
+    fn restore_resets_modify_other_keys_to_the_terminal_default() {
+        let mut out = Vec::new();
+        restore_to(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[>4m"), "{text:?}");
+        // Written with the mouse reset, ahead of the flushed `execute!` part.
+        assert!(
+            text.find("\x1b[>4m").unwrap() < text.find("\x1b[?2004l").unwrap(),
+            "{text:?}"
+        );
+    }
+
+    // The modes are entered together and undone by `restore_to`.
     #[test]
     fn startup_enables_focus_reporting_next_to_bracketed_paste() {
         let mut out = Vec::new();
@@ -2257,15 +2963,21 @@ mod tests {
         );
     }
 
-    // Spec (mouse-input): other buttons, releases, drags, motion and the
-    // horizontal wheel are dropped.
+    // pane-links D1: a link opens on the release of the left button.
+    #[test]
+    fn the_left_release_reaches_the_app() {
+        let up = mouse(MouseEventKind::Up(MouseButton::Left));
+        assert_eq!(to_app_event(Event::Mouse(up)), Some(AppEvent::Mouse(up)));
+    }
+
+    // Spec (mouse-input): other buttons, drags, motion and the horizontal
+    // wheel are dropped.
     #[test]
     fn other_mouse_events_are_dropped() {
         for kind in [
             MouseEventKind::Down(MouseButton::Right),
             MouseEventKind::Down(MouseButton::Middle),
             MouseEventKind::Up(MouseButton::Right),
-            MouseEventKind::Up(MouseButton::Left),
             MouseEventKind::Drag(MouseButton::Left),
             MouseEventKind::Moved,
             MouseEventKind::ScrollLeft,
@@ -2403,6 +3115,58 @@ mod tests {
             self.flushes += 1;
             Ok(())
         }
+    }
+
+    // copy-selection: Local tool ran (runtime part): the copy is handed to
+    // the clipboard worker with its number, and `apply` returns at once.
+    #[test]
+    fn copy_local_is_handed_to_the_clipboard_starter() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = std::rc::Rc::clone(&calls);
+        let mut panes = panes.with_clipboard(Box::new(move |seq, text| {
+            seen.borrow_mut().push((seq, text));
+        }));
+        let (outcome, feedback) = panes.apply(vec![Effect::CopyLocal {
+            seq: 4,
+            text: "hello".to_owned(),
+        }]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+        assert!(panes.host_out.is_empty());
+        assert_eq!(*calls.borrow(), vec![(4, "hello".to_owned())]);
+    }
+
+    // terminal-compatibility: "Remembered probe result" (runtime part).
+    #[test]
+    fn save_probe_writes_the_row_and_answers_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (panes, _rx, _rec) = fake_panes(None);
+        let mut panes = panes.with_probe_dir(Some(dir.path().to_owned()));
+        let (outcome, feedback) = panes.apply(vec![Effect::SaveProbe {
+            key: "kitty".into(),
+            outcome: crate::core::probe::Outcome::Alias,
+        }]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+        let stored = probe_store::load(Some(dir.path())).unwrap();
+        assert_eq!(
+            stored.get("kitty"),
+            Some(&crate::core::probe::Outcome::Alias)
+        );
+    }
+
+    #[test]
+    fn a_probe_that_cannot_be_saved_comes_back_as_an_event() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let (_, feedback) = panes.apply(vec![Effect::SaveProbe {
+            key: "kitty".into(),
+            outcome: crate::core::probe::Outcome::Pass,
+        }]);
+        assert!(matches!(
+            feedback.as_slice(),
+            [AppEvent::ProbeSaveFailed(reason)] if reason.contains("no usable state folder")
+        ));
     }
 
     // copy-selection: Yank emits OSC 52 (runtime part).
@@ -2614,16 +3378,16 @@ mod tests {
     #[test]
     fn a_send_issue_effect_is_handed_to_the_sender() {
         let (panes, _rx, _rec) = fake_panes(None);
-        let seen: Rc<RefCell<Vec<Issue>>> = Rc::default();
+        let seen: Rc<RefCell<Vec<Request>>> = Rc::default();
         let log = Rc::clone(&seen);
         let mut panes =
             panes.with_issue_sender(Box::new(move |issue| log.borrow_mut().push(issue)));
-        let issue = Issue {
+        let issue = Request::Find(crate::core::menu::feedback::Issue {
             repo: "o/r".to_owned(),
             title: "t".to_owned(),
             body: "b".to_owned(),
             labels: vec!["bug".to_owned()],
-        };
+        });
         panes.apply(vec![Effect::SendIssue(Box::new(issue.clone()))]);
         assert_eq!(*seen.borrow(), vec![issue]);
         assert!(panes.host_out.is_empty());
@@ -3113,6 +3877,8 @@ mod tests {
         use crate::core::ai::chat::engine::{ChatRequest, Tools};
         let (mut panes, _rx, rec) = fake_panes(None);
         let request = ChatRequest {
+            drive_grant: None,
+            cache: Default::default(),
             families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
@@ -3120,6 +3886,8 @@ mod tests {
             memory: None,
             tools: Tools::Off,
             messages: Vec::new(),
+            ollama: Default::default(),
+            github_read: false,
         };
         let effects = vec![
             Effect::ChatSend {
@@ -3168,6 +3936,7 @@ mod tests {
     fn memory_effect() -> Effect {
         Effect::Memory(crate::core::ai::memory::port::MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         })
     }
@@ -3424,6 +4193,190 @@ mod tests {
         );
     }
 
+    // list_panes: the poll stores one already-redacted line per live pane, the
+    // focused one first; a pane that cannot be read stays listed with no program.
+    #[test]
+    fn refresh_roster_stores_one_redacted_line_per_pane() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some((roster.clone(), Some(PathBuf::from("/home/ana"))));
+        panes.spawn = Box::new(|_, _| {
+            Ok(Box::new(FakePty {
+                cwd: Some(PathBuf::from("/home/ana/p")),
+                fg: Some(panes::Foreground {
+                    argv: vec!["nvim".into(), "/home/ana/p/prueba.rs".into()],
+                    cwd: None,
+                }),
+                ..FakePty::default()
+            }))
+        });
+        panes.apply(vec![Effect::SpawnPane(id(2), spec())]);
+        panes.spawn = Box::new(|_, _| Ok(Box::new(FakePty::default())));
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        panes.refresh_roster(id(2));
+        assert_eq!(
+            roster.lines(),
+            vec![
+                "pane 2 (focused) cwd: ~/p program: nvim ~/p/prueba.rs".to_owned(),
+                "pane 1 cwd: unknown program: unknown".to_owned(),
+            ]
+        );
+    }
+
+    /// How many times `counting_line` ran.
+    static LINES_BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn counting_line(facts: &Facts, home: Option<&Path>) -> String {
+        LINES_BUILT.fetch_add(1, Ordering::SeqCst);
+        panes::line(facts, home)
+    }
+
+    /// Waits until `done` holds, at most 3 s.
+    async fn until(done: impl Fn() -> bool) {
+        for _ in 0..300 {
+            if done() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    // The refresh runs on the blocking pool and is not stacked: one still
+    // running makes the next poll skip, which the count of builds shows.
+    #[tokio::test]
+    async fn the_background_refresh_publishes_and_never_stacks() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some((roster.clone(), None));
+        panes.roster_line = counting_line;
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        LINES_BUILT.store(0, Ordering::SeqCst);
+        panes.roster_busy.store(true, Ordering::Release);
+        panes.refresh_roster_in_background(id(1));
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            LINES_BUILT.load(Ordering::SeqCst),
+            0,
+            "stacked on a running refresh"
+        );
+        panes.roster_busy.store(false, Ordering::Release);
+        panes.refresh_roster_in_background(id(1));
+        until(|| !roster.lines().is_empty()).await;
+        assert_eq!(LINES_BUILT.load(Ordering::SeqCst), 1);
+        until(|| !panes.roster_busy.load(Ordering::Acquire)).await;
+        assert!(!panes.roster_busy.load(Ordering::Acquire));
+    }
+
+    fn panicking_line(_: &Facts, _: Option<&Path>) -> String {
+        panic!("a lookup blew up");
+    }
+
+    // W1: a refresh that panics must not leave the flag set for ever.
+    #[tokio::test]
+    async fn a_panicking_refresh_frees_the_next_one() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some((roster.clone(), None));
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        panes.roster_line = panicking_line;
+        panes.refresh_roster_in_background(id(1));
+        until(|| !panes.roster_busy.load(Ordering::Acquire)).await;
+        assert!(
+            !panes.roster_busy.load(Ordering::Acquire),
+            "the flag stayed set"
+        );
+        panes.roster_line = panes::line;
+        panes.refresh_roster_in_background(id(1));
+        until(|| !roster.lines().is_empty()).await;
+        assert_eq!(roster.lines().len(), 1);
+    }
+
+    /// Open when the slow lookup may finish.
+    static LOOKUP_GATE: (std::sync::Mutex<bool>, std::sync::Condvar) =
+        (std::sync::Mutex::new(false), std::sync::Condvar::new());
+
+    /// Closes the gate when a test ends, however it ends.
+    struct ResetGate;
+
+    impl Drop for ResetGate {
+        fn drop(&mut self) {
+            *LOOKUP_GATE.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        }
+    }
+
+    fn open_gate() {
+        *LOOKUP_GATE.0.lock().unwrap() = true;
+        LOOKUP_GATE.1.notify_all();
+    }
+
+    /// A lookup that hangs (a stalled mount) until the gate opens, or 3 s.
+    fn stalled_line(facts: &Facts, home: Option<&Path>) -> String {
+        let (lock, cvar) = &LOOKUP_GATE;
+        let open = lock.lock().unwrap();
+        drop(cvar.wait_timeout_while(open, Duration::from_secs(3), |open| !*open));
+        panes::line(facts, home)
+    }
+
+    // W3b: a lookup that blocks must not stall the loop. The refresh returns
+    // at once and a concurrent timer still fires while the lookup hangs; the
+    // lines arrive when it ends.
+    #[tokio::test]
+    async fn a_blocked_lookup_does_not_stall_the_loop() {
+        let _reset = ResetGate;
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some((roster.clone(), None));
+        panes.roster_line = stalled_line;
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        let started = Instant::now();
+        panes.refresh_roster_in_background(id(1));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "the loop was blocked for {:?}",
+            started.elapsed()
+        );
+        assert!(
+            roster.lines().is_empty(),
+            "published before the lookup ended"
+        );
+        open_gate();
+        until(|| !roster.lines().is_empty()).await;
+        assert_eq!(roster.lines().len(), 1);
+    }
+
+    // S1: the /proc reads are on the blocking pool too: a probe that hangs
+    // (a handle on a stuck process) does not stall the loop either.
+    #[tokio::test]
+    async fn a_blocked_probe_does_not_stall_the_loop() {
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let roster = Roster::default();
+        panes.roster = Some((roster.clone(), None));
+        let held = gate.clone();
+        panes.spawn = Box::new(move |_, _| {
+            Ok(Box::new(FakePty {
+                probe_wait: Some(held.clone()),
+                ..FakePty::default()
+            }))
+        });
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        let started = Instant::now();
+        panes.refresh_roster_in_background(id(1));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(roster.lines().is_empty());
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        until(|| !roster.lines().is_empty()).await;
+        assert_eq!(roster.lines().len(), 1);
+    }
+
     // Spec: per-pane order is preserved through the shared channel.
     #[test]
     fn events_from_one_sink_arrive_in_order_even_when_interleaved() {
@@ -3521,6 +4474,7 @@ mod tests {
             status,
             engine: "ollama".into(),
             model: None,
+            github_read: false,
         }
     }
 
@@ -3532,6 +4486,7 @@ mod tests {
             extras: vec![],
             first: stored(Role::User, text, MsgStatus::Complete),
             origin: None,
+            folder: None,
             open: Vec::new(),
         }
     }
@@ -3572,6 +4527,30 @@ mod tests {
         let (mut panes, _rx, _rec) = fake_panes(None);
         let (outcome, feedback) = panes.apply(vec![Effect::Store(store_create("hi"))]);
         assert_eq!((outcome, feedback), (Outcome::Continue, Vec::new()));
+        panes.shutdown_store(STORE_JOIN_BOUND);
+    }
+
+    // A day that nobody can read is answered at once, so the app never waits.
+    #[test]
+    fn a_day_read_without_a_store_thread_is_answered_with_a_read_problem() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let pane = PaneId::for_test(2);
+        let (_, feedback) = panes.apply(vec![Effect::Store(StoreCmd::UsageToday { pane })]);
+        let [
+            AppEvent::Store(StoreReply::UsageRecorded {
+                until,
+                read_problem,
+                problem,
+                ..
+            }),
+        ] = feedback.as_slice()
+        else {
+            panic!("expected one UsageRecorded, got {feedback:?}");
+        };
+        assert_eq!(
+            (until, read_problem.as_deref(), problem),
+            (&None, Some("store not available"), &None)
+        );
         panes.shutdown_store(STORE_JOIN_BOUND);
     }
 
@@ -3833,9 +4812,10 @@ mod tests {
         let chat = id(2);
 
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        opened.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
         // The list is answered by the real store: empty.
-        through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
+        // The list and the day's usage figures.
+        through_store(&mut app, &mut panes, &mut rx, opened, 2).await;
         app.update(AppEvent::PromptReady(
             chat,
             crate::core::ai::chat::prompts::Resolved {
@@ -3893,7 +4873,7 @@ mod tests {
     fn the_app_from_config_keeps_a_chat_history() {
         let mut app = app_from_config(80, 25, None, None);
         let mut effects = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        effects.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        effects.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
         assert!(
             effects
                 .iter()
@@ -3988,8 +4968,9 @@ mod tests {
         let (mut panes, mut rx) = panes_with_store(db.clone());
         let mut app = history_app(&dir);
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        opened.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
-        through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
+        opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        // The list and the day's usage figures.
+        through_store(&mut app, &mut panes, &mut rx, opened, 2).await;
         app.update(AppEvent::PromptReady(
             id(2),
             crate::core::ai::chat::prompts::Resolved {
@@ -4073,8 +5054,9 @@ mod tests {
         let (mut panes, mut rx) = panes_with_store(store_db(dir));
         let mut app = history_app(dir);
         let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        opened.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
-        through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
+        opened.extend(app.update_settled(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        // The list and the day's usage figures.
+        through_store(&mut app, &mut panes, &mut rx, opened, 2).await;
         app.update(AppEvent::PromptReady(
             id(2),
             crate::core::ai::chat::prompts::Resolved {
@@ -4102,6 +5084,7 @@ mod tests {
         // The one stored conversation was opened from the same directory.
         let resume = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
         through_store(&mut app, &mut panes, &mut rx, resume, 1).await;
+
         app.update(hkey(KeyCode::Char('x'), KeyModifiers::NONE));
         let sent = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
         let turn = sent
@@ -4150,8 +5133,8 @@ mod tests {
         .await;
         assert!(file_holds(&db, b"ZZ-MARKER-ZZ"));
         let (mut app, mut panes, mut rx) = reopened(&dir).await;
-        app.update(hkey(KeyCode::Char('d'), KeyModifiers::NONE));
-        let delete = app.update(hkey(KeyCode::Char('y'), KeyModifiers::NONE));
+        app.update(hkey(KeyCode::Delete, KeyModifiers::NONE));
+        let delete = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
         through_store(&mut app, &mut panes, &mut rx, delete, 1).await;
         panes.shutdown_store(STORE_JOIN_BOUND);
         assert_eq!(stored_messages(&db), Vec::new());
@@ -4164,6 +5147,8 @@ mod tests {
 
     fn chat_request() -> ChatRequest {
         ChatRequest {
+            drive_grant: None,
+            cache: Default::default(),
             families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
@@ -4171,6 +5156,8 @@ mod tests {
             memory: None,
             tools: Tools::Off,
             messages: Vec::new(),
+            ollama: Default::default(),
+            github_read: false,
         }
     }
 
@@ -4341,6 +5328,7 @@ mod tests {
         assert!(session(&panes), "a turn with tools has a session");
         panes.apply(vec![Effect::ToolDecision {
             pane: id(1),
+            worker: None,
             turn: 1,
             call: CallId(99),
             decision: Decision::Sent,
@@ -4368,7 +5356,7 @@ mod tests {
         waiting_answer(panes, call)
             .map(|answer| match answer {
                 Answer::Decided(decision) => decision,
-                Answer::Ran(_) => unreachable!("no run is parked here"),
+                Answer::Ran(_) | Answer::Screen(_) => unreachable!("nothing is parked here"),
             })
             .boxed()
     }
@@ -4380,6 +5368,8 @@ mod tests {
         use crate::core::ai::chat::{approval::ApprovalAsk, engine::CallId};
         let ask = ApprovalAsk::Read {
             path: String::new(),
+            reach: crate::core::ai::chat::approval::Reach::Other,
+            cloud: true,
         };
         let waits = panes.chats.as_ref().unwrap().waits();
         waits
@@ -4396,6 +5386,54 @@ mod tests {
             turn: 1,
             call: crate::core::ai::chat::engine::CallId(call),
         }
+    }
+
+    // No silent no-op: an answer to a failure with no run manager attached
+    // is told to the pane, never dropped without a word.
+    #[tokio::test]
+    async fn an_answer_with_no_run_manager_is_told() {
+        use crate::core::ai::orchestra::{RunId, run::UserChoice};
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let (_, feedback) = panes.apply(vec![Effect::OrchDecide {
+            pane: id(1),
+            run: RunId(1),
+            choice: UserChoice::Retry,
+            ceiling: crate::core::ai::tools::registry::FamilySet::ALL,
+        }]);
+        assert_eq!(
+            feedback,
+            vec![AppEvent::Orchestra(id(1), OrchestraEvent::Unavailable)]
+        );
+    }
+
+    // No silent no-op: the user's `y` for a worker's ask that nothing waits
+    // for any more (the worker ended) is told to the pane.
+    #[tokio::test]
+    async fn a_yes_that_reaches_no_worker_wait_is_told() {
+        use crate::core::ai::orchestra::WorkerKey;
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let decision = |worker, decision| Effect::ToolDecision {
+            pane: id(1),
+            worker,
+            turn: 1,
+            call: crate::core::ai::chat::engine::CallId(7),
+            decision,
+        };
+        let key = Some(WorkerKey::for_test(1, 1));
+        let (_, feedback) = panes.apply(vec![decision(
+            key,
+            crate::core::ai::chat::engine::Decision::Sent,
+        )]);
+        assert_eq!(
+            feedback,
+            vec![AppEvent::Orchestra(id(1), OrchestraEvent::AnswerLost)]
+        );
+        // A denial lost, or a chat's own answer lost, changes nothing to say.
+        let (_, quiet) = panes.apply(vec![
+            decision(key, crate::core::ai::chat::engine::Decision::Denied("no")),
+            decision(None, crate::core::ai::chat::engine::Decision::Sent),
+        ]);
+        assert!(quiet.is_empty(), "{quiet:?}");
     }
 
     // The effect writes to the target, not to the chat, and only at a prompt.
@@ -4449,12 +5487,21 @@ mod tests {
     }
 
     fn check_effect(target: u32, call: u64, command: &str) -> Effect {
+        check_effect_in(target, call, command, std::path::Path::new("/"))
+    }
+
+    /// The check of a local chat whose root is `root`.
+    fn check_effect_in(target: u32, call: u64, command: &str, root: &std::path::Path) -> Effect {
         Effect::CheckRun {
             chat: id(9),
             target: id(target),
             turn: 1,
             call: crate::core::ai::chat::engine::CallId(call),
             command: command.to_owned(),
+            scope: crate::app::RunScope {
+                root: root.to_path_buf(),
+                cloud: false,
+            },
         }
     }
 
@@ -4490,6 +5537,53 @@ mod tests {
                     call: CallId(7),
                     cwd: home.join("dev"),
                     cd_target: None,
+                }
+            ))
+        );
+    }
+
+    // L22: the chat's root travels with the effect: the same `ls` that runs
+    // in the root asks when the root is elsewhere.
+    #[tokio::test]
+    async fn a_check_run_judges_the_paths_against_the_root_of_the_chat() {
+        use crate::app::RunEvent;
+        use crate::core::ai::chat::{approval::OUTSIDE_ROOT, engine::CallId};
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        for sub in ["dev", "other"] {
+            std::fs::create_dir_all(home.join(sub)).unwrap();
+        }
+        let env = crate::runtime::tools::ToolEnv {
+            home: Some(home.clone().into()),
+            ..run_check::process_env()
+        };
+        let (tx, mut rx) = mpsc::channel(4);
+        let (panes, _rx, _rec) = fake_panes(None);
+        let mut panes = panes.with_run_checks(run_check::Checker::new(env, tx));
+        let pty = FakePty {
+            cwd: Some(home.join("dev")),
+            ..FakePty::default()
+        };
+        panes.handles.insert(id(1), Box::new(pty));
+        panes.apply(vec![check_effect_in(1, 7, "ls", &home.join("dev"))]);
+        assert!(matches!(
+            rx.recv().await,
+            Some((
+                _,
+                RunEvent::Checked {
+                    call: CallId(7),
+                    ..
+                }
+            ))
+        ));
+        panes.apply(vec![check_effect_in(1, 8, "ls", &home.join("other"))]);
+        assert_eq!(
+            rx.recv().await,
+            Some((
+                id(1),
+                RunEvent::Refused {
+                    call: CallId(8),
+                    reason: OUTSIDE_ROOT,
                 }
             ))
         );
@@ -5050,11 +6144,13 @@ mod tests {
         );
         memory.send(MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         });
         assert_eq!(
             rx.try_recv().expect("answered at once"),
             MemReply::Unavailable {
+                epoch: Some(0),
                 pane: Some(PaneId::FIRST),
                 reason: Reason::RestartNeeded,
             }
@@ -5098,6 +6194,7 @@ mod tests {
             );
             memory.send(crate::core::ai::memory::port::MemCmd::Resolve {
                 pane: PaneId::FIRST,
+                epoch: 0,
                 cwd: "/x".into(),
             });
             memory.shutdown(Duration::from_secs(1)).await;
@@ -5132,6 +6229,7 @@ mod tests {
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
         memory.send(crate::core::ai::memory::port::MemCmd::Resolve {
             pane: PaneId::FIRST,
+            epoch: 0,
             cwd: "/x".into(),
         });
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -5140,6 +6238,7 @@ mod tests {
         let told = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Some(crate::core::ai::memory::port::MemReply::Unavailable {
+                    epoch: None,
                     pane: None,
                     ..
                 }) = rx.recv().await

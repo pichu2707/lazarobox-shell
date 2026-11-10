@@ -10,6 +10,7 @@ use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use crate::core::ai::jail::CREDENTIAL_DIRS;
+use crate::core::ai::tools::windows::{DriveVerdict, WinDrives};
 
 /// The one text returned for an excluded, outside or missing path.
 pub const REFUSED: &str = "path not available";
@@ -68,8 +69,9 @@ pub fn is_env_name(name: &str) -> bool {
 /// Whether a name is an environment template (`.env.example`,
 /// `.env.local.sample`): an env name that ends in `.example`, `.sample`,
 /// `.template` or `.dist` (ASCII case-insensitive). It holds no secret by
-/// convention, so a write may create it; a read still refuses it.
-fn is_env_template(name: &str) -> bool {
+/// convention, so a write may touch it after the user's review (see
+/// [`SecretRoots::judge_write`]); a read still refuses it.
+pub fn is_env_template(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     is_env_name(name)
         && [".example", ".sample", ".template", ".dist"]
@@ -152,7 +154,7 @@ pub fn check_path(home: &Path, real: &Path) -> PathVerdict {
 
 /// Removes `.` and resolves `..` by text alone, without touching the disk.
 /// A `..` at the root stays at the root.
-fn normalize(path: &Path) -> PathBuf {
+pub fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
         match part {
@@ -316,6 +318,11 @@ pub struct SecretRoots {
     /// HOME with every link followed.
     real: PathBuf,
     roots: Vec<PathBuf>,
+    /// The Windows drives under WSL; empty elsewhere.
+    drives: WinDrives,
+    /// The Windows drive folder the user let the chat write in (openspec
+    /// `wsl-drive-access` D7). `None` refuses every write on a drive.
+    grant: Option<PathBuf>,
 }
 
 impl SecretRoots {
@@ -352,7 +359,44 @@ impl SecretRoots {
             given: normalize(home),
             real,
             roots,
+            drives: WinDrives::default(),
+            grant: None,
         })
+    }
+
+    /// These roots with the Windows drives of WSL, judged by the drive read
+    /// policy (openspec `wsl-drive-access`).
+    pub fn with_drives(mut self, drives: WinDrives) -> Self {
+        self.drives = drives;
+        self
+    }
+
+    /// These roots with `grant`, the resolved Windows drive folder the user
+    /// let the chat write in: writes on a drive land only below it.
+    pub fn with_grant(mut self, grant: Option<PathBuf>) -> Self {
+        self.grant = grant;
+        self
+    }
+
+    /// The Windows drives of this snapshot.
+    pub fn drives(&self) -> &WinDrives {
+        &self.drives
+    }
+
+    /// Whether an already resolved path lies on a Windows drive (and not in
+    /// HOME). Writes, commands and git there need the user's grant. Pure.
+    pub fn on_drive(&self, real: &Path) -> bool {
+        !real.starts_with(&self.real) && self.drives.drive_of(real).is_some()
+    }
+
+    /// The folder a read of `real` is opened beneath: HOME, or the drive it
+    /// lies on. Pure.
+    pub fn base_of(&self, real: &Path) -> &Path {
+        if self.on_drive(real) {
+            self.drives.drive_of(real).unwrap_or(&self.real)
+        } else {
+            &self.real
+        }
     }
 
     /// The resolved HOME.
@@ -365,12 +409,68 @@ impl SecretRoots {
     /// not (under) the real target of a secret root of this snapshot. Pure.
     /// The runtime runs it on the real path of an opened file descriptor.
     pub fn judge_real(&self, real: &Path) -> bool {
-        matches!(check_path(&self.real, real), PathVerdict::Allowed(_)) && !self.under_root(real)
+        let allowed = if self.on_drive(real) {
+            self.drives.judge(real, judge_rest) == DriveVerdict::Allowed
+        } else {
+            matches!(check_path(&self.real, real), PathVerdict::Allowed(_))
+        };
+        allowed && !self.under_root(real)
+    }
+
+    /// [`judge_real`](Self::judge_real) for the file a write touches: an env
+    /// template is judged by the folder it sits in, so only its own name is
+    /// let through, and it is still refused as the real target of a secret
+    /// root (`~/.env -> proj/.env.example`). Pure.
+    pub fn judge_write(&self, real: &Path) -> bool {
+        // On a Windows drive only the folder the user granted takes writes.
+        if self.on_drive(real) && !self.granted(real) {
+            return false;
+        }
+        let template = real
+            .file_name()
+            .is_some_and(|name| is_env_template(&name.to_string_lossy()));
+        match real.parent() {
+            Some(dir) if template => self.judge_real(dir) && !self.under_root(real),
+            _ => self.judge_real(real),
+        }
+    }
+
+    /// Whether `root`, an already resolved chat folder on a drive, is the
+    /// folder the user granted: equal to the grant, and not broad. Commands
+    /// and git run only there (openspec `wsl-drive-access` D7). Pure.
+    pub fn granted_root(&self, root: &Path) -> bool {
+        self.grant.as_deref() == Some(root) && self.granted(root)
+    }
+
+    /// Whether an already resolved path on a drive is the granted folder or
+    /// lies below it. A broad grant (a drive root, a profile root) grants
+    /// nothing. Compared by its spelling: a folder with case sensitivity on
+    /// may hold another folder of the same name in another case. Pure.
+    fn granted(&self, real: &Path) -> bool {
+        self.grant.as_deref().is_some_and(|grant| {
+            self.on_drive(grant) && !self.drives.is_broad(grant) && real.starts_with(grant)
+        })
+    }
+
+    /// Whether the real target of a secret root is `dir` or lies below it:
+    /// a walk of `dir` that never follows a link can still reach it. Pure.
+    pub fn holds_root(&self, dir: &Path) -> bool {
+        let fold = cfg!(target_os = "macos") || self.on_drive(dir);
+        self.roots
+            .iter()
+            .any(|root| starts_with_folded(root, dir, fold))
+    }
+
+    /// Whether an already resolved path is (under) the real target of a secret
+    /// root, wherever it lies. Pure.
+    pub fn holds_secret(&self, real: &Path) -> bool {
+        self.under_root(real)
     }
 
     fn under_root(&self, real: &Path) -> bool {
-        // macOS volumes fold case: a variant spelling of a root is the root.
-        let fold = cfg!(target_os = "macos");
+        // macOS volumes and Windows drives fold case: a variant spelling of
+        // a root is the root (drvfs keeps the spelling it was given).
+        let fold = cfg!(target_os = "macos") || self.on_drive(real);
         self.roots
             .iter()
             .any(|root| starts_with_folded(real, root, fold))
@@ -414,7 +514,12 @@ pub fn resolve(roots: &SecretRoots, origin: &Path, input: &str) -> PathVerdict {
     let Some(full) = locate(roots, origin, input) else {
         return PathVerdict::Refused;
     };
-    if !home_rest(roots, &normalize(&full)).is_some_and(judge_rest) {
+    let requested = normalize(&full);
+    let requested_ok = match home_rest(roots, &requested) {
+        Some(rest) => judge_rest(rest),
+        None => roots.drives.judge(&requested, judge_rest) == DriveVerdict::Allowed,
+    };
+    if !requested_ok {
         return PathVerdict::Refused;
     }
     match full.canonicalize() {
@@ -508,7 +613,7 @@ fn canonical_new(path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Folder names a write never enters, at any depth below HOME.
+/// Folder names a write never enters, at any depth below HOME or a drive.
 const WRITE_DENIED_DIRS: &[&str] = &[".git", "node_modules"];
 
 /// File names that run code when the project is built or tested: a change
@@ -585,7 +690,9 @@ fn is_build_file(rel: &Path) -> bool {
 /// The path policy of the write tools. `origin` is the root; `input` is a
 /// path below it. Allowed only when:
 /// - the root is a real folder strictly inside HOME and not secret (HOME, a
-///   parent of HOME, a system folder, a missing or outside root all refuse);
+///   parent of HOME, a system folder, a missing or outside root all refuse),
+///   or, under WSL, the Windows drive folder the user granted (see
+///   [`SecretRoots::with_grant`]), judged by the drive read policy;
 /// - `input` is a plain relative path that the review shows exactly as it is
 ///   written (see [`plain_relative`]), in its canonical text form: no `.`
 ///   part, empty part or trailing slash, and no secret-looking run;
@@ -605,6 +712,10 @@ pub fn resolve_write(roots: &SecretRoots, origin: &Path, input: &str) -> Option<
     if root == roots.real || !root.is_dir() || !roots.judge_real(&root) {
         return None;
     }
+    // A Windows drive folder is a root only when it is the one granted.
+    if roots.on_drive(&root) && roots.grant.as_deref() != Some(root.as_path()) {
+        return None;
+    }
     let rel = plain_relative(input)?;
     // A secret-looking run would show redacted in the review.
     if rel.to_str() != Some(input) || crate::core::ai::memory::redact::redact(input).hits > 0 {
@@ -612,16 +723,11 @@ pub fn resolve_write(roots: &SecretRoots, origin: &Path, input: &str) -> Option<
     }
     let shown = root.join(&rel);
     let real = canonical_new(&shown)?;
-    // An env template is judged by the folder it sits in: only its own name
-    // is let through.
-    let template = real
-        .file_name()
-        .is_some_and(|name| is_env_template(&name.to_string_lossy()));
-    let judged = if template { real.parent()? } else { &real };
-    if real != shown || !roots.judge_real(judged) {
+    if real != shown || !roots.judge_write(&real) {
         return None;
     }
-    let below_home = real.strip_prefix(&roots.real).ok()?;
+    // Judged below HOME, or below the drive of a granted drive folder.
+    let below_home = real.strip_prefix(roots.base_of(&real)).ok()?;
     // A dot folder of HOME (`.config`, `.local`) or `dotfiles` holds files
     // that run at login or on start: the review carries the tier-B warning.
     let dotfiles = below_home.components().next().is_some_and(|c| {
@@ -1993,6 +2099,31 @@ mod write_tests {
         }
     }
 
+    // #583: the name opens a template only by its folder; a template that is
+    // the real target of a secret link of HOME is that secret.
+    #[test]
+    fn a_template_behind_a_secret_link_of_home_is_refused() {
+        let f = fixture();
+        let target = f.origin.join(".env.example");
+        fs::write(&target, "A=1").unwrap();
+        std::os::unix::fs::symlink(&target, f.home.join(".env")).unwrap();
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
+        assert_eq!(resolve_write(&roots, &f.origin, ".env.example"), None);
+        assert!(!roots.judge_write(&target));
+    }
+
+    #[test]
+    fn judge_write_opens_only_the_template_name() {
+        let f = fixture();
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
+        assert!(roots.judge_write(&f.origin.join(".env.example")));
+        assert!(roots.judge_write(&f.origin.join("lib.rs")));
+        assert!(!roots.judge_write(&f.origin.join(".env")));
+        assert!(!roots.judge_write(&f.origin.join(".env.local")));
+        assert!(!roots.judge_write(&f.home.join(".ssh/.env.example")));
+        assert!(!roots.judge_write(&f.home.join(".env.d/.env.example")));
+    }
+
     #[test]
     fn the_tier_b_list_covers_hooks_ci_containers_and_build_tools() {
         let f = fixture();
@@ -2101,3 +2232,76 @@ mod write_tests {
         }
     }
 }
+
+/// A path a CLI worker built by joining a relative path to its private cwd
+/// (`<data>/lazarobox/cli-cwd`, where nothing lives) means the project's file:
+/// the part below the cwd, relative. `None` for any other path, and for one
+/// with `..` below the cwd, which really leaves it and is judged as it is.
+pub fn rehome(cli_cwds: &[PathBuf], input: &str) -> Option<String> {
+    let path = Path::new(input);
+    let rest = cli_cwds
+        .iter()
+        .find_map(|cwd| path.strip_prefix(cwd).ok())?;
+    // A `~` name would be expanded to HOME once the path is relative.
+    let plain = |c: std::path::Component| matches!(c, std::path::Component::Normal(name) if !name.to_string_lossy().starts_with('~'));
+    if !rest.components().all(plain) {
+        return None;
+    }
+    let rest = rest.to_string_lossy();
+    Some(if rest.is_empty() {
+        ".".to_owned()
+    } else {
+        rest.into_owned()
+    })
+}
+
+#[cfg(test)]
+mod rehome_tests {
+    use super::*;
+
+    const CWD: &str = "/data/lazarobox/cli-cwd";
+
+    fn roots() -> Vec<PathBuf> {
+        vec![PathBuf::from(CWD)]
+    }
+
+    // D8: a CLI joins a relative path to its own private cwd; the path means
+    // the project's file.
+    #[test]
+    fn a_path_under_the_cli_cwd_is_the_project_relative_path() {
+        assert_eq!(
+            rehome(&roots(), "/data/lazarobox/cli-cwd/README.md").as_deref(),
+            Some("README.md")
+        );
+        assert_eq!(
+            rehome(&roots(), "/data/lazarobox/cli-cwd/src/a.rs").as_deref(),
+            Some("src/a.rs")
+        );
+        assert_eq!(
+            rehome(&roots(), "/data/lazarobox/cli-cwd").as_deref(),
+            Some(".")
+        );
+    }
+
+    #[test]
+    fn other_paths_are_left_alone() {
+        for input in [
+            "README.md",
+            "/data/lazarobox/cli-cwd2/a",
+            "/data/lazarobox/chat.db",
+            "/data/lazarobox/cli-cwd/../chat.db",
+            "~/data/lazarobox/cli-cwd/a",
+            // A literal `~` name below the cwd would expand to HOME as a
+            // relative path: left as it is.
+            "/data/lazarobox/cli-cwd/~/x",
+            "/data/lazarobox/cli-cwd/~root/x",
+            "/data/lazarobox/cli-cwd/a/~",
+        ] {
+            assert_eq!(rehome(&roots(), input), None, "{input}");
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "paths_drive_tests.rs"]
+mod drive_tests;

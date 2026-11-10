@@ -3,22 +3,17 @@ source: src/ui/components/menu.rs
 expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &with_update()))"
 ---
 ┌ Menu ────────────────┐
-│ Settings* │ AI       │
+│ ‹ Settings* ›        │
 │ Statusline position  │
 │ Tab bar position  t… │
 │ Mouse             on │
+│ Build jobs  auto (1) │
 │ Notify           off │
 │ Sound             on │
 │ llama-server idle  … │
+│ Usage (alpha)  line… │
 │ * Updates  0.16.0 a… │
 │ Feedback  bug repor… │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
 │                      │
 │ lazarobox 0.16.0 is …│
 │ Go to Updates and pr…│

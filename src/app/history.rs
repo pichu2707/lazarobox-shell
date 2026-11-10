@@ -2,14 +2,20 @@
 //! on, what is saved and when, resume and delete. The store thread does the
 //! IO; this side only builds its commands and applies its replies.
 
+use super::chat::{DayNote, UsageToday, per_token_spend};
 use super::*;
 use crate::core::ai::chat::{
+    BlockWhy,
     list::{
         DELETE_FAILED, LIST_FAILED, ListOutcome, NotesStay, OPEN_ELSEWHERE, RESUME_FAILED,
         notes_result_line, notes_stay_line,
     },
-    store::{ConvRow, NoteRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX},
+    store::{
+        ConvRow, NoteRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX, UNKNOWN_PROFILE_LINE,
+        USAGE_NOT_READ, USAGE_NOT_SAVED, bounded_error, skipped_line,
+    },
     tags::Tags,
+    usage,
 };
 
 /// What a confirmed delete does with the notes of its conversation.
@@ -70,7 +76,7 @@ impl App {
     }
 
     /// The commands that save what chat `id` sent and answered since the last
-    /// call. With history off nothing is saved and nothing is kept.
+    /// call. Without a store (tests only) nothing is saved and nothing is kept.
     pub(super) fn store_effects(&mut self, id: PaneId) -> Vec<Effect> {
         let open = self.open_conversations();
         let history = self.history;
@@ -102,7 +108,7 @@ impl App {
     }
 
     /// The effect that prepares chat `id`'s system prompt for its profile.
-    fn prepare_prompt(&self, id: PaneId) -> Option<Effect> {
+    pub(super) fn prepare_prompt(&self, id: PaneId) -> Option<Effect> {
         let chat = self.panes.get(&id)?.chat_state()?;
         Some(Effect::PreparePrompt {
             pane: id,
@@ -129,7 +135,7 @@ impl App {
         // Whether notes can be deleted is looked up when the prompt opens, and
         // only when it matters: memory on and the row under the cursor has
         // notes (so a run without memory never reads the environment).
-        let asks = key.code == KeyCode::Char('d') && key.modifiers == KeyModifiers::NONE;
+        let asks = key.code == KeyCode::Delete && key.modifiers == KeyModifiers::NONE;
         let deletable = asks && !repeat && self.notes_deletable(id);
         let outcome = self
             .panes
@@ -325,12 +331,22 @@ impl App {
                 extras,
                 messages,
                 session,
+                folder,
+                skipped,
+                github_read,
             } => {
                 let tags = Tags {
                     project: tag.clone(),
                     extras: extras.clone(),
                 };
-                self.on_resumed(*pane, *conversation, profile, tags, messages, session)
+                self.on_resumed(
+                    *pane,
+                    *conversation,
+                    profile,
+                    tags,
+                    messages,
+                    (session, folder, *skipped, *github_read),
+                )
             }
             StoreReply::ResumeFailed { pane } => {
                 self.set_list_line(*pane, RESUME_FAILED);
@@ -370,7 +386,120 @@ impl App {
                 Vec::new()
             }
             StoreReply::SessionLinked { .. } | StoreReply::LinkFailed { .. } => Vec::new(),
+            StoreReply::UsageRecorded {
+                pane,
+                today,
+                cost,
+                until,
+                read_problem,
+                problem,
+            } => {
+                self.on_usage_day(*pane, (*today, cost, *until), read_problem.as_deref());
+                self.on_usage_reply(*pane, problem.as_deref());
+                Vec::new()
+            }
+            StoreReply::UsageReport { pane, rows } => {
+                self.on_usage_report(*pane, rows.as_deref());
+                Vec::new()
+            }
+            StoreReply::RecentFolders { pane, folders } => {
+                self.on_recent_folders(*pane, folders.clone())
+            }
+            // The runs are `run_store`'s.
+            StoreReply::RunsRecovered { .. } | StoreReply::RunsFailed { .. } => Vec::new(),
         }
+    }
+
+    /// The day's figures of a usage answer. A day that was read replaces the
+    /// figures and sets the next read at its end; one that was not keeps the
+    /// last figures, is told once until a read succeeds again, and is tried
+    /// again in a minute.
+    fn on_usage_day(
+        &mut self,
+        id: PaneId,
+        (today, cost, until): (Option<u64>, &[(String, u64)], Option<i64>),
+        read_problem: Option<&str>,
+    ) {
+        // An answer that read no day (a lost write) says nothing about a read
+        // in flight.
+        if until.is_none() && read_problem.is_none() {
+            return;
+        }
+        self.dirty = true;
+        let now = (self.wall)();
+        self.usage_read.answered(now, until, read_problem.is_some());
+        if let Some(until) = until {
+            self.day_notes(id, (today, cost), until);
+        }
+        if let Some(until) = until {
+            self.usage_today = Some(UsageToday {
+                tokens: today,
+                cost: cost.to_vec(),
+                until,
+            });
+        }
+        let Some(reason) = read_problem else { return };
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+            && self.usage_read.tell()
+        {
+            chat.push_system(format!("{USAGE_NOT_READ}{}", bounded_error(reason)));
+        }
+    }
+
+    /// The notes of the day thresholds the figures reached (usage limits):
+    /// tokens, then spend of the per-token engines. Each shows once per local
+    /// day (`until` names it) per run, as a passive line that blocks nothing.
+    fn day_notes(
+        &mut self,
+        id: PaneId,
+        (tokens, cost): (Option<u64>, &[(String, u64)]),
+        until: i64,
+    ) {
+        let usage = self.ai.usage().clone();
+        let spend = per_token_spend(&usage, cost);
+        let notes = [
+            (
+                DayNote::Tokens,
+                usage.day_tokens(),
+                usage::day_tokens_note(tokens, usage.day_tokens()),
+            ),
+            (
+                DayNote::Spend,
+                usage.day_usd_micros(),
+                usage::day_spend_note(spend, usage.day_usd_micros()),
+            ),
+        ];
+        // Keyed on the limit too: raising it the same day arms the note again.
+        for (kind, limit, note) in notes {
+            let (Some(note), Some(limit)) = (note, limit) else {
+                continue;
+            };
+            if self.day_noted.contains(&(kind, until, limit)) {
+                continue;
+            }
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                self.day_noted.retain(|(_, day, _)| *day >= until);
+                self.day_noted.push((kind, until, limit));
+                chat.push_system(note);
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// The answer to a usage write. A lost row, a failed migration or a
+    /// failed prune is told once per run in the pane that asked, with a
+    /// reason free of text; the turn is never touched.
+    fn on_usage_reply(&mut self, id: PaneId, problem: Option<&str>) {
+        let Some(reason) = problem else { return };
+        if self.usage_notice_shown {
+            return;
+        }
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        self.usage_notice_shown = true;
+        chat.push_system(format!("{USAGE_NOT_SAVED}{}", bounded_error(reason)));
+        self.dirty = true;
     }
 
     /// The list arrived (or could not be read): the pane learns its project
@@ -421,7 +550,12 @@ impl App {
         profile: &str,
         tags: Tags,
         messages: &[crate::core::ai::chat::Msg],
-        session: &Option<(String, String)>,
+        (session, folder, skipped, github_read): (
+            &Option<(String, String)>,
+            &Option<PathBuf>,
+            usize,
+            bool,
+        ),
     ) -> Vec<Effect> {
         if !self.list_open(id) {
             return Vec::new();
@@ -430,14 +564,36 @@ impl App {
             self.set_list_line(id, OPEN_ELSEWHERE);
             return Vec::new();
         }
+        // A dialog read for the conversation that leaves is not for this one.
+        self.withdraw_github_dialog(id, github::R_RESUMED);
+        self.withdraw_write_dialog(id, github::R_RESUMED);
+        let lowered = self.end_write(id, write::RESUME_ENDED);
         let mode = self.ai.approval();
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
         chat.set_approval_mode(mode);
-        let profile = Profile::from_id(profile).unwrap_or_else(|| chat.profile());
+        // A profile this build does not know (a newer one stored it) keeps the
+        // current one, and the pane says so.
+        let known = Profile::from_id(profile);
+        let profile = known.unwrap_or_else(|| chat.profile());
         let reprepare = chat.adopt_profile(profile);
         chat.resume_into(conversation, profile, tags, messages.to_vec());
+        if known.is_none() {
+            chat.push_system(UNKNOWN_PROFILE_LINE);
+        }
+        if skipped > 0 {
+            chat.push_system(skipped_line(skipped));
+        }
+        // The marker row is stored already: the conversation opens blocked.
+        // So does one with rows of a role this build does not know: a newer
+        // build may have written tool-derived text there.
+        // The marker's line wins: that one is known to be true.
+        if github_read {
+            chat.adopt_github_read(BlockWhy::Marker);
+        } else if skipped > 0 {
+            chat.adopt_github_read(BlockWhy::NewerRows);
+        }
         // The pair its notes were written under is reused before the first
         // write: engram rejects a session under another project, and the
         // store already holds the link.
@@ -445,11 +601,14 @@ impl App {
             chat.replace_session(session_id, project);
         }
         self.dirty = true;
-        if reprepare {
+        let mut effects: Vec<Effect> = if reprepare {
             self.prepare_prompt(id).into_iter().collect()
         } else {
             Vec::new()
-        }
+        };
+        effects.extend(lowered);
+        effects.extend(self.probe_stored_folder(id, conversation, folder.as_deref()));
+        effects
     }
 
     /// The runtime prepared a system prompt for chat `id`. When the profile

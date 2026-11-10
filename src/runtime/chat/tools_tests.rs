@@ -2,8 +2,11 @@
 //! are answered by (pane, turn, call). Real unix sockets and the real clock,
 //! every wait bounded; nothing sleeps.
 
-// What only the Linux-only tests use is dead code elsewhere.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+// What only the file-tool tests use is dead code on other systems.
+#![cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(dead_code, unused_imports)
+)]
 
 use std::{path::PathBuf, sync::Mutex, time::Duration};
 
@@ -21,7 +24,7 @@ use super::{
 };
 use crate::{
     core::ai::chat::{
-        approval::ApprovalAsk,
+        approval::{ApprovalAsk, Reach},
         engine::{CallId, Decision, Finish, ToolStatus, Tools},
     },
     runtime::tools::{Limits, ToolHost, pending},
@@ -149,16 +152,20 @@ async fn next_result(rx: &mut mpsc::Receiver<Tagged>) -> (PaneId, u64, CallId, T
     }
 }
 
+/// The ask of a cloud read of `~/note.txt`. The chat's root is HOME, too
+/// broad to keep a read in.
 fn note(lab: &Lab) -> Option<ApprovalAsk> {
     Some(ApprovalAsk::Read {
         path: lab.home.join("note.txt").to_str().unwrap().into(),
+        reach: Reach::Broad,
+        cloud: true,
     })
 }
 
 // A cloud read: the app hears the ask under its pane and turn, the answer
 // reaches the call, and only then the file is read.
-// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-#[cfg(target_os = "linux")]
+// Needs the file tools: they open files below HOME with no symlink (Linux and macOS).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn a_call_waits_for_the_answer_of_its_pane_and_turn() {
     let lab = lab();
@@ -211,7 +218,14 @@ async fn the_request_families_decide_what_the_session_lists_and_accepts() {
     client.send(&list).await;
     assert_eq!(
         tools(client.reply().await.unwrap()),
-        ["find_dir", "list_dir", "read_file", "run_in_pane"]
+        [
+            "find_dir",
+            "list_dir",
+            "read_file",
+            "run_in_pane",
+            "list_panes",
+            "read_pane"
+        ]
     );
 
     let mut read_only = with_tools(&lab);
@@ -256,8 +270,8 @@ async fn a_denied_call_never_opens_the_file() {
 }
 
 // Two chats: closing one ends only its calls.
-// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-#[cfg(target_os = "linux")]
+// Needs the file tools: they open files below HOME with no symlink (Linux and macOS).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn closing_one_chat_ends_only_its_own_calls() {
     let lab = lab();
@@ -629,6 +643,10 @@ async fn a_turn_on_ollama_closes_the_cli_session_the_pane_had() {
 // batch and says how many entries; the disk is untouched and other chats keep
 // theirs.
 fn stager(lab: &Lab, pane: PaneId) -> Arc<dyn Dispatch> {
+    stager_of(lab, StageKey::Pane(pane))
+}
+
+fn stager_of(lab: &Lab, key: StageKey) -> Arc<dyn Dispatch> {
     let (tx, rx) = mpsc::channel(64);
     // Nothing reads the events of a staging call: the channel only has to stay open.
     std::mem::forget(rx);
@@ -637,7 +655,7 @@ fn stager(lab: &Lab, pane: PaneId) -> Arc<dyn Dispatch> {
     let mut scope = TurnScope::new(tx, crate::core::ai::tools::Locality::Local, proj);
     scope.families = crate::core::ai::tools::registry::FamilySet::LEGACY
         .with(crate::core::ai::tools::registry::Family::Write);
-    scope.stage_key = Some(StageKey::Pane(pane));
+    scope.stage_key = Some(key);
     lab.host.dispatch(scope)
 }
 
@@ -650,7 +668,7 @@ async fn stage(dispatch: &Arc<dyn Dispatch>, path: &str, content: &str) {
     assert!(!out.is_error, "{out:?}");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn closing_a_chat_discards_its_batch_and_counts_the_entries() {
     let lab = lab();
@@ -674,10 +692,54 @@ async fn closing_a_chat_discards_its_batch_and_counts_the_entries() {
     assert_eq!(chats.close_batch(pane(3)), None);
 }
 
+// A pane that started a run holds one batch per writer: close, review, apply
+// and the badge all go by the pane, whichever key holds the batch.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn the_chats_serve_every_key_of_a_pane() {
+    use crate::core::ai::{chat::review::Badge, orchestra::WorkerKey};
+    let lab = lab();
+    let (mut chats, _rx) = tooled(&lab, idle());
+    let proj = lab.home.join("proj");
+    let worker = |n| StageKey::Worker(pane(1), WorkerKey::for_test(1, n));
+    let (late, early) = (stager_of(&lab, worker(2)), stager_of(&lab, worker(1)));
+    stage(&late, "late.txt", "l").await;
+    stage(&early, "early.txt", "e").await;
+    stage(&stager(&lab, pane(2)), "other.txt", "o").await;
+
+    // One badge per pane, summed over its keys.
+    assert_eq!(chats.batch_badges().unwrap()[&pane(1)], Badge::Orphan(2));
+    // Arrival order, not worker number: `late` staged first.
+    let Some(BatchEvent::Review(id, _)) = chats.review_batch(pane(1)) else {
+        panic!("an orphan of the pane");
+    };
+    assert_eq!(id.key, worker(2));
+    // A turn of the pane owns every key of it, also at the apply.
+    chats.send(pane(1), 1, request(""));
+    assert_eq!(chats.review_batch(pane(1)), None);
+    let live = chats.apply_batch(id, None);
+    assert!(
+        matches!(live, Some(BatchEvent::Done { ref shown, .. }) if shown == "a turn of this chat is still running"),
+        "{live:?}"
+    );
+    assert!(!proj.join("late.txt").exists());
+    chats.cancel(pane(1));
+    chats.apply_batch(id, None);
+    assert_eq!(std::fs::read_to_string(proj.join("late.txt")).unwrap(), "l");
+    let Some(BatchEvent::Review(next, _)) = chats.review_batch(pane(1)) else {
+        panic!("the other batch is next");
+    };
+    assert_eq!(next.key, worker(1));
+    // A close drops what is left of every key and spares the other pane.
+    assert_eq!(chats.close_batch(pane(1)), Some(1));
+    assert_eq!(chats.close_batch(pane(1)), None);
+    assert_eq!(chats.close_batch(pane(2)), Some(1));
+}
+
 // Spec (code-write, Orphan, close and quit): the user reviews, applies or
 // discards what a turn left behind, through the chats. While a turn runs the
 // batch is the model's, not an orphan.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn an_orphan_is_reviewed_applied_or_discarded_through_the_chats() {
     let lab = lab();
@@ -696,7 +758,7 @@ async fn an_orphan_is_reviewed_applied_or_discarded_through_the_chats() {
     };
     assert_eq!(review.counts(), "1 file, +1 -0");
     assert_eq!(
-        chats.apply_batch(id),
+        chats.apply_batch(id, None),
         Some(BatchEvent::Done {
             shown: "applied 1 paths".into(),
             told: Some("The user applied the batch you left staged: applied 1 paths.".into()),
@@ -721,10 +783,40 @@ async fn an_orphan_is_reviewed_applied_or_discarded_through_the_chats() {
     assert_eq!(chats.review_batch(pane(3)), None);
 }
 
+// GUARD (W10b, the plain chat): a chat turn is not a worker. What it stages
+// through its own session stays under the pane's key, so the writer flip of
+// the workers does not move it and the orphan review finds it there.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn a_plain_chat_turn_stages_under_its_pane_key() {
+    let lab = lab();
+    let (mut chats, _rx) = tooled(&lab, idle());
+    let proj = lab.home.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let mut req = with_tools(&lab);
+    if let Tools::On { origin, .. } = &mut req.tools {
+        *origin = Some(proj);
+    }
+    req.families = crate::core::ai::tools::registry::FamilySet::LEGACY
+        .with(crate::core::ai::tools::registry::Family::Write);
+    chats.send(pane(1), 1, req);
+    let mut client = Client::open(&chats, pane(1)).await;
+    client
+        .call(1, "write_file", json!({"path": "a.txt", "content": "x"}))
+        .await;
+    let staged = client.reply().await.expect("a reply");
+    assert!(staged.to_string().contains("staged a.txt"), "{staged}");
+    chats.cancel(pane(1));
+    let Some(BatchEvent::Review(id, _)) = chats.review_batch(pane(1)) else {
+        panic!("a cancelled turn leaves an orphan");
+    };
+    assert_eq!(id.key, StageKey::Pane(pane(1)));
+}
+
 // The pane badge (chat-pane, "Staged batch indicator") is polled from the
 // store: a batch is staged while a turn of its pane runs and an orphan once
 // no turn does; closing the chat clears it.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn the_badges_follow_the_batches_and_the_turns_of_the_panes() {
     use crate::core::ai::chat::review::Badge;
@@ -749,4 +841,222 @@ async fn the_badges_follow_the_batches_and_the_turns_of_the_panes() {
     let badges = chats.batch_badges().unwrap();
     assert!(!badges.contains_key(&pane(1)), "{badges:?}");
     assert_eq!(badges.len(), 1);
+}
+
+// agent-orchestrator / Unusable orchestrator engine: the run does not start,
+// so the turn ends at once with the engine guidance and no engine is
+// contacted.
+#[tokio::test]
+async fn an_orchestrator_turn_whose_run_cannot_start_ends_with_the_reason() {
+    use crate::core::ai::{
+        chat::engine::{Availability, ChatError, OrchSend, StreamEvent},
+        config::{Profile, Task},
+        orchestra::run::Roster,
+    };
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    let manager = RunManager::new(idle(), None, tokio::sync::mpsc::unbounded_channel().0);
+    let mut chats = chats.with_orchestra(Arc::new(manager));
+    let unusable = Availability::Undetected {
+        engine: "codex".into(),
+        status: "not installed".into(),
+    };
+    let orch = OrchSend {
+        roster: Roster::new(vec![(Task::Orchestrate, unusable)]),
+        profile: Profile::default(),
+        deadline: Duration::from_secs(30),
+        limits: crate::core::ai::orchestra::run::RunLimits::default(),
+        ceiling: crate::core::ai::tools::registry::FamilySet::ALL,
+        goal: String::new(),
+        attach: None,
+    };
+    chats.send_orchestrated(pane(1), 1, with_tools(&lab), orch);
+    let (at, turn, event) = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the turn ends at once")
+        .expect("an event");
+    assert_eq!((at, turn), (pane(1), 1));
+    match event {
+        StreamEvent::Error(ChatError::Failed(reason)) => {
+            assert!(reason.contains("codex"), "the guidance: {reason}");
+        }
+        other => panic!("the run's refusal: {other:?}"),
+    }
+    assert!(seen.lock().unwrap().is_empty(), "no engine is contacted");
+}
+
+// An orchestrator turn whose tool session cannot open could not orchestrate:
+// its run ends with it and the turn ends with the reason, untouched by any
+// engine.
+#[tokio::test]
+async fn an_orchestrator_turn_without_a_session_ends_its_run() {
+    use crate::{
+        core::ai::{
+            chat::engine::{Availability, ChatError, OrchSend, StreamEvent},
+            config::{Profile, Task},
+            orchestra::run::Roster,
+        },
+        runtime::orchestra::OrchestraEvent,
+    };
+    let lab = lab();
+    // A plain file where the socket folder should be: no hub can start.
+    let blocked = lab.dir.path().join("blocked");
+    std::fs::write(&blocked, "").unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
+    let (events, mut ended) = tokio::sync::mpsc::unbounded_channel();
+    let manager = Arc::new(RunManager::new(idle(), None, events));
+    let mut chats = Chats::new(capturing(seen.clone()), tx)
+        .with_tools(lab.host.clone(), vec![blocked])
+        .with_orchestra(manager);
+    let ready = Availability::Ready {
+        engine: "claude".into(),
+        model: None,
+    };
+    let orch = OrchSend {
+        roster: Roster::new(vec![(Task::Orchestrate, ready)]),
+        profile: Profile::default(),
+        deadline: Duration::from_secs(30),
+        limits: crate::core::ai::orchestra::run::RunLimits::default(),
+        ceiling: crate::core::ai::tools::registry::FamilySet::ALL,
+        goal: String::new(),
+        attach: None,
+    };
+    chats.send_orchestrated(pane(1), 1, with_tools(&lab), orch);
+    let (at, turn, event) = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the turn ends at once")
+        .expect("an event");
+    assert_eq!((at, turn), (pane(1), 1));
+    assert_eq!(
+        event,
+        StreamEvent::Error(ChatError::Failed(NO_SESSION.into()))
+    );
+    let ended = std::iter::from_fn(|| ended.try_recv().ok())
+        .any(|(at, event)| at == pane(1) && matches!(event, OrchestraEvent::Ended { .. }));
+    assert!(ended, "the run ends with the turn");
+    assert!(seen.lock().unwrap().is_empty(), "no engine is contacted");
+}
+
+// S9 (user decision, 2026-10-29): when an orchestrator turn that spawned
+// nothing ends, its run ends by itself.
+#[tokio::test]
+async fn the_end_of_an_orchestrator_turn_ends_its_idle_run() {
+    use crate::{
+        core::ai::{
+            chat::engine::{Availability, OrchSend},
+            config::{Profile, Task},
+            orchestra::run::Roster,
+        },
+        runtime::orchestra::OrchestraEvent,
+    };
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    let (events, mut ended) = tokio::sync::mpsc::unbounded_channel();
+    let manager = Arc::new(RunManager::new(idle(), None, events));
+    let mut chats = chats.with_orchestra(manager.clone());
+    let orch = OrchSend {
+        roster: Roster::new(vec![(
+            Task::Orchestrate,
+            Availability::Ready {
+                engine: "claude".into(),
+                model: None,
+            },
+        )]),
+        profile: Profile::default(),
+        deadline: Duration::from_secs(30),
+        limits: crate::core::ai::orchestra::run::RunLimits::default(),
+        ceiling: crate::core::ai::tools::registry::FamilySet::ALL,
+        goal: String::new(),
+        attach: None,
+    };
+    chats.send_orchestrated(pane(1), 1, with_tools(&lab), orch);
+    assert!(manager.scope(pane(1)).is_some(), "the run started");
+    let (at, turn, event) = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the turn ends")
+        .expect("an event");
+    assert_eq!((at, turn, event), (pane(1), 1, done()));
+    // A turn that made no worker is told first (D27), then the run ends.
+    let (at, event) = timeout(Duration::from_secs(5), ended.recv())
+        .await
+        .expect("the run says no worker ran")
+        .expect("an event");
+    assert_eq!(at, pane(1));
+    assert!(
+        matches!(event, OrchestraEvent::Undelegated { .. }),
+        "{event:?}"
+    );
+    let (at, event) = timeout(Duration::from_secs(5), ended.recv())
+        .await
+        .expect("the run ends with its turn")
+        .expect("an event");
+    assert_eq!(at, pane(1));
+    assert!(matches!(event, OrchestraEvent::Ended { .. }), "{event:?}");
+    assert!(manager.scope(pane(1)).is_none());
+}
+
+// agent-orchestrator / No prompt at run start, Refused origin gives no root:
+// an orchestrator turn starts its run at once with the chat origin as the
+// run's read-scope root; a refused origin (here `$HOME`) gives no root and
+// its reason is kept.
+#[tokio::test]
+async fn an_orchestrator_run_scopes_its_reads_to_the_chat_origin() {
+    use crate::core::ai::{
+        chat::engine::{Availability, OrchSend},
+        config::{Profile, Task},
+        orchestra::{
+            run::Roster,
+            scope::{Dropped, TOO_BROAD},
+        },
+    };
+    let lab = lab();
+    let app = lab.home.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    for (origin, roots, dropped) in [
+        (app.clone(), vec![app.clone()], vec![]),
+        (
+            lab.home.clone(),
+            vec![],
+            vec![Dropped {
+                root: lab.home.display().to_string(),
+                reason: TOO_BROAD,
+            }],
+        ),
+    ] {
+        let (chats, _rx) = tooled(&lab, idle());
+        let events = tokio::sync::mpsc::unbounded_channel().0;
+        let manager = Arc::new(
+            RunManager::new(idle(), None, events)
+                .with_tools(lab.host.clone(), vec![lab.dir.path().join("wrun")])
+                // The lab lives under `/tmp`, a scratch folder of the jail.
+                .with_scratch(|_| false),
+        );
+        let mut chats = chats.with_orchestra(manager.clone());
+        let orch = OrchSend {
+            roster: Roster::new(vec![(
+                Task::Orchestrate,
+                Availability::Ready {
+                    engine: "claude".into(),
+                    model: None,
+                },
+            )]),
+            profile: Profile::default(),
+            deadline: Duration::from_secs(30),
+            limits: crate::core::ai::orchestra::run::RunLimits::default(),
+            ceiling: crate::core::ai::tools::registry::FamilySet::ALL,
+            goal: String::new(),
+            attach: None,
+        };
+        let mut req = with_tools(&lab);
+        if let Tools::On { origin: o, .. } = &mut req.tools {
+            *o = Some(origin.clone());
+        }
+        chats.send_orchestrated(pane(1), 1, req, orch);
+        let got = manager.scope(pane(1)).expect("the run started at once");
+        assert_eq!(got, (roots, dropped), "{origin:?}");
+        manager.cancel(pane(1));
+    }
 }

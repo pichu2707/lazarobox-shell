@@ -2,6 +2,10 @@
   <img src="https://raw.githubusercontent.com/pichu2707/lazarobox-shell/main/docs/assets/lazarobox-shell-banner.png" alt="Lazarobox Shell" width="100%">
 </p>
 
+<p align="center">
+  <img src="docs/assets/lazarobox-blink.gif" alt="Lazarobox logo: a panther box that blinks" width="96">
+</p>
+
 # 🚀 LAZAROBOX SHELL (`lazarobox-shell`)
 
 [![CI](https://github.com/pichu2707/lazarobox-shell/actions/workflows/ci.yml/badge.svg)](https://github.com/pichu2707/lazarobox-shell/actions/workflows/ci.yml)
@@ -13,6 +17,8 @@
 ## 📸 Overview & Vision
 
 **`lazarobox-shell`** es un espacio de trabajo unificado (_Workspace_) de terminal (TUI) ultrarrápido, modular e independiente escrita en **Rust**. Actúa como una interfaz centralizada para conversación con modelos de Inteligencia Artificial (locales y a través de CLIs), panes de terminal y ejecución de herramientas de automatización bajo aprobación del usuario.
+
+![Paneles divididos, cambio de foco y chat de IA en lazarobox](docs/assets/overview.gif)
 
 Aunque nace optimizada para flujos de trabajo en **Desarrollo de Software, SEO, CRO y Analítica Digital**, su núcleo está diseñado para ser **completamente agnóstico al dominio**, permitiendo escalar hacia sectores como **Automatización Industrial, IoT, Logística y Telemetría SCADA/PLC**.
 
@@ -51,15 +57,23 @@ Desde crates.io. Necesitas Rust (con `cargo`) 1.88 o superior; si no lo tienes, 
 cargo install lazarobox-shell --locked    # instala el binario `lazarobox-shell` en ~/.cargo/bin
 ```
 
+**Instalar y actualizar con `umask 022`.** Con `umask 002` (el valor por defecto en Ubuntu, Debian y Parrot), `cargo install` deja `~/.cargo/bin` y el binario con permiso de escritura para el grupo (modo 775) y lazarobox desactiva las herramientas del chat: quien pertenezca a ese grupo podría sustituir el programa que las ejecuta. La comprobación es estricta a propósito y no se relaja. Para no volver a verla, instala y actualiza así:
+
+```bash
+(umask 022; cargo install lazarobox-shell --locked)
+```
+
+Los paréntesis lanzan un subshell: el `umask 022` solo afecta a ese comando y no cambia el `umask` de tu shell. Ten en cuenta que el `umask` solo se aplica a los archivos y carpetas que se crean: si `~/.cargo/bin` ya está en modo 775, hace falta una vez `chmod g-w ~/.cargo/bin` (y `chmod g-w ~/.cargo/bin/lazarobox-shell` si el binario también lo está). Si prefieres no cambiar el `umask`, ejecuta `chmod g-w ~/.cargo/bin ~/.cargo/bin/lazarobox-shell` tras cada actualización. `lazarobox-shell --check-install` dice, sin abrir la interfaz, si las herramientas pueden ejecutarse con esta instalación (sale con 0 si es así y con 1, con el motivo y el comando que lo arregla, si no).
+
 `--locked` compila con las mismas versiones de dependencias que se probaron al publicar (las del `Cargo.lock` del paquete). Sin él, cargo vuelve a resolver cada dependencia a su última versión compatible, lo que casi siempre funciona igual, pero una dependencia recién publicada con un fallo puede romper la compilación.
 
-**Actualizar.** Dentro de lazarobox: abre el menú de configuración, ve a **Updates** y pulsa `Enter`. Se abre una pestaña que descarga y compila la versión nueva (puede tardar unos minutos; deja lazarobox abierto). Cuando diga `Updated to X.Y.Z`, reinicia lazarobox para usarla. Si lazarobox no puede actualizarse solo, lo dice y `Enter` o `y` copia al portapapeles el mismo comando de instalación: pégalo en una terminal.
+**Actualizar.** Dentro de lazarobox: abre el menú de configuración, ve a **Updates** y pulsa `Enter`. Se abre una pestaña que descarga y compila la versión nueva (puede tardar unos minutos; deja lazarobox abierto). Cuando diga `Updated to X.Y.Z`, reinicia lazarobox para usarla. Si lazarobox no puede actualizarse solo, lo dice y `Enter` o `y` copia al portapapeles el mismo comando de instalación: pégalo en una terminal. Si tu `umask` es `002`, ejecuta el comando entre paréntesis, `(umask 022; cargo install lazarobox-shell --locked)`, que no cambia el `umask` de tu shell (o el `chmod g-w` de arriba después), porque cada instalación vuelve a crear el binario con permiso de escritura para el grupo. La actualización desde **Updates** ya lo hace por ti: el `cargo install` que lanza lazarobox corre con `umask 022` solo para ese proceso, así que el binario queda en modo 755 aunque tu `umask` sea `002`; si `~/.cargo/bin` ya está en 775, sigue haciendo falta el `chmod g-w ~/.cargo/bin` una vez.
 
 Compatibilidad de plataformas:
 
-- **Linux:** soportado. Es la única plataforma probada.
-- **macOS:** el código compila (`cargo check --target aarch64-apple-darwin` pasa), pero no se ha probado en ejecución y no está soportado oficialmente. El directorio de trabajo de los paneles se obtiene en Linux mediante `/proc`; en macOS solo se actualiza si el shell emite OSC 7.
-- **Windows:** no soportado.
+- **Linux:** soportado. Es la única plataforma probada a mano.
+- **macOS:** sin soporte oficial. El CI compila lazarobox y pasa todos sus tests en macOS (arm64 e Intel), y prueba el codex real dentro de la jaula Seatbelt, pero nadie ha usado la interfaz a mano en un Mac. El directorio de trabajo de los paneles se obtiene en Linux mediante `/proc`; en macOS solo se actualiza si el shell emite OSC 7.
+- **Windows (WSL):** se usa lazarobox dentro de WSL, en la consola de WSL (por ejemplo Windows Terminal); no hay versión nativa de Windows. Una terminal solo se considera soportada cuando tiene un registro de pruebas en [docs/terminals](docs/terminals/README.md), y el de Windows Terminal (WSL) está pendiente. `install-desktop` en WSL imprime notas sobre el lanzador: una entrada de usuario puede no aparecer en el menú Inicio de Windows (WSLg), y entonces se arranca desde la consola de WSL.
 
 Desde el código fuente:
 
@@ -74,10 +88,15 @@ Para abrir lazarobox desde un menú de aplicaciones (rofi, GNOME, KDE…) sin te
 ```bash
 lazarobox-shell install-desktop                       # instala el lanzador "Lazarobox"
 lazarobox-shell install-desktop --terminal alacritty  # fuerza una terminal concreta
+lazarobox-shell install-desktop --dir ~/proyecto      # el lanzador abre lazarobox en esa carpeta
 lazarobox-shell install-desktop --uninstall           # lo quita
 ```
 
 Funciona con cualquier instalación (`cargo install lazarobox-shell` o desde el código fuente) y con cualquier terminal. El comando escribe `<XDG_DATA_HOME>/applications/lazarobox.desktop` (por defecto `~/.local/share/applications`; `XDG_DATA_HOME` solo se respeta si es una ruta absoluta) y usa rutas absolutas, porque la sesión de escritorio suele no tener `~/.cargo/bin` en el `PATH`. Si el binario se mueve, vuelve a ejecutar el comando.
+
+El lanzador usa el icono `lazarobox`. Como un binario de `cargo install` no trae ficheros aparte, los iconos van incluidos en el binario y `install-desktop` los escribe en el tema hicolor, en `<XDG_DATA_HOME>/icons/hicolor/<tamaño>/apps/lazarobox.png` (256, 128, 48, 32 y 16 píxeles) y `scalable/apps/lazarobox.svg`; `--uninstall` los quita también. Si algún icono no se puede escribir, el lanzador se instala igualmente, el comando lo dice en stderr y termina con error; vuelve a ejecutarlo tras arreglar la causa. Si ya tenías el lanzador instalado, vuelve a ejecutar `install-desktop` para que aparezca el logo.
+
+En WSL, si copias el `.desktop` a `/usr/share/applications` para que WSLg lo muestre en el menú Inicio (con `~/.local/share/applications` no aparece), el icono `lazarobox` se busca ahora en los temas del sistema, no en `~/.local/share/icons`, y no se verá el logo. Copia también los iconos (por ejemplo `sudo cp -r ~/.local/share/icons/hicolor/. /usr/share/icons/hicolor/`). Esto no está probado en WSLg.
 
 La terminal se elige en este orden:
 
@@ -87,11 +106,38 @@ La terminal se elige en este orden:
 4. La primera encontrada en el `PATH`: `kitty`, `ghostty`, `wezterm`, `alacritty`, `foot`, `gnome-terminal`, `konsole`, `xfce4-terminal`, `x-terminal-emulator`.
 5. Si no hay ninguna, el lanzador usa `Terminal=true` y el escritorio decide qué terminal abrir.
 
-Para una terminal desconocida se usa `<cmd> -e <lazarobox-shell>` y el comando lo indica en su salida. Lazarobox está probado en Kitty: en otras terminales algunas teclas o el portapapeles por OSC 52 pueden no funcionar, y el comando lo avisa al instalar. Las rutas con caracteres especiales de la especificación Desktop Entry (espacios, comillas, `$`, `%`…) se rechazan en lugar de escaparse. `scripts/install-desktop.sh` sigue disponible como atajo que llama a este mismo comando.
+Para una terminal desconocida se usa `<cmd> -e <lazarobox-shell>` y el comando lo indica en su salida. Solo las terminales con un registro en [docs/terminals](docs/terminals/README.md) cuentan como probadas (hoy, Kitty y zutty, con el registro rellenado el 2026-11-01); en las demás algunas teclas o el portapapeles por OSC 52 pueden no funcionar, y el comando lo avisa al instalar sin negarse nunca a instalar.
+
+Sin `--terminal`, y solo si la entrada y la salida son una terminal (TTY), `install-desktop` pregunta cuál usar: lista las terminales instaladas, marca las que tienen registro, `Enter` mantiene la elección automática de arriba y `Ctrl+D` cancela sin escribir nada. Con `--terminal` o en un script no pregunta. Las rutas con caracteres especiales de la especificación Desktop Entry (espacios, comillas, `$`, `%`…) se rechazan en lugar de escaparse. `scripts/install-desktop.sh` sigue disponible como atajo que llama a este mismo comando.
+
+Con `--dir <carpeta>` el lanzador incluye `Path=<carpeta>` y también `--dir=<carpeta>` en `Exec`, para que la carpeta se respete aunque la terminal ignore `Path=`. La ruta puede ser relativa o empezar por `~`; se resuelve al instalar y debe ser una carpeta que exista (si no, el comando falla con una línea en stderr y no escribe nada). No se admiten espacios al principio o al final de la ruta. Volver a ejecutar `install-desktop` sin `--dir` quita ambas cosas.
+
+### Carpeta de inicio
+
+lazarobox arranca en la primera de estas carpetas:
+
+1. `lazarobox-shell --dir <carpeta>` (absoluta, relativa a donde lo lanzas, o con `~`).
+2. `dir` en `[workspace]` de `config.toml` (absoluta o con `~`; una cadena vacía es "sin definir").
+3. La carpeta desde la que se lanza.
+
+```toml
+[workspace]
+dir = "~/proyecto"
+```
+
+Si `--dir` o `dir` no son válidos (no existe, no es una carpeta, falta el valor), lazarobox no se cierra ni escribe en stderr: arranca en la carpeta desde la que se lanza y muestra un aviso dentro de la aplicación. Un `--dir` inválido no recurre al valor de `[workspace]`. `--dir` solo se reconoce en el arranque normal y en `install-desktop`.
 
 ### Anidamiento
 
 Cada panel de shell define `LAZAROBOX=<pid>` (el pid de la instancia que lo abrió), igual que tmux hace con `$TMUX`, y los programas lanzados desde un panel la heredan. Si ejecutas `lazarobox-shell` dentro de un panel, no arranca: imprime `lazarobox-shell is already running in this terminal; use --force to nest anyway` y sale con código 1, antes de tocar la terminal. Para anidar a propósito usa `lazarobox-shell --force`; ten en cuenta que ambas instancias compartirán la misma tecla de prefijo.
+
+`lazarobox-shell --version` (`-V`) imprime la versión y `lazarobox-shell --help` (`-h`) el uso; ambos salen con código 0 sin tocar la terminal. Una opción o un comando desconocido imprime una línea en stderr (`lazarobox-shell: unknown option '<x>' (try --help)`) y sale con código 2, en lugar de arrancar la interfaz.
+
+### Dónde está la configuración (`config.toml`)
+
+Toda la configuración vive en un solo fichero: `~/.config/lazarobox/config.toml` (o `$XDG_CONFIG_HOME/lazarobox/config.toml` si tienes esa variable). No existe hasta que guardas algo desde el menú (`Ctrl+Espacio m`, `s`); sin él se usan los valores por defecto. Al guardar, la barra de estado dice dónde lo escribió, por ejemplo `saved to ~/.config/lazarobox/config.toml`. El menú solo cambia las claves que edita y conserva el resto del fichero, comentarios incluidos, así que puedes editarlo también a mano; lo que cambies a mano se lee al arrancar lazarobox.
+
+Una clave que lazarobox no conoce dentro de una de sus tablas (`[statusline]`, `[tabbar]`, `[updates]`, `[workspace]` y `[ai]` con todas las que cuelgan de ella) se ignora y avisa al arrancar con su ruta completa, por ejemplo `config: unknown key: ai.tols`; así se ven las erratas. El resto del fichero se carga igual y el menú conserva la clave al guardar. Las claves y tablas de la raíz que no son de lazarobox (por ejemplo una tabla `[custom]` tuya) no avisan.
 
 ### Al cerrar lazarobox
 
@@ -108,9 +154,210 @@ Al arrancar, lazarobox lanza un vigilante (`lazarobox-shell __watch`, un proceso
 
 ---
 
+## 🔒 Estabilidad y compatibilidad (1.0)
+
+Desde la 1.0, lazarobox sigue [SemVer](https://semver.org): **un cambio que rompe algo de la tabla «Congelado» exige una versión mayor** (2.0). Las versiones menores añaden funciones sin romper nada y las de parche corrigen fallos. La 1.0 es solo para **Linux**; macOS sigue sin estar soportado oficialmente (ver «Compatibilidad de plataformas»).
+
+| Congelado desde la 1.0 | Qué se promete |
+| :--- | :--- |
+| `config.toml` | Los nombres de las tablas y de las claves, y los valores que cada una admite. Los nombres actuales son los definitivos: `[tabbar] position`, `[ai] notify` y `[workspace] dir` (donde `true` y `false` siguen siendo alias de `"auto"` y `"off"`). Una versión menor puede añadir claves o valores nuevos; ninguna clave existente cambia de nombre, de significado ni deja de admitir un valor. |
+| `chat.db` | El formato del historial (hoy, esquema 3, en `$XDG_DATA_HOME/lazarobox/chat.db`). Una versión nueva abre un `chat.db` antiguo y lo migra hacia delante, nunca hacia atrás. Un `chat.db` **más nuevo** que el lazarobox que lo abre se rechaza sin tocarlo: el historial queda no disponible (`history unavailable: store schema N is newer than this build`) y el archivo no se modifica, de modo que al volver a actualizar sigue ahí. La migración del esquema 2 al 3 es automática: al abrir un `chat.db` anterior se reconstruyen las tablas en una sola transacción, se conservan las filas y se compacta el archivo (`VACUUM`). Se puede subir de versión sin perder el historial; para bajar, el historial queda inaccesible hasta volver a subir. |
+| Línea de órdenes | Las opciones y subórdenes públicas: `install-desktop` (con `--terminal` y `--uninstall`), `--force`, `--check-install`, `--version` / `-V`, `--help` / `-h` y `--dir <carpeta>` / `--dir=<carpeta>` (ver «Lanzador de escritorio» y «Anidamiento»). Quitar o cambiar su significado exige una versión mayor. |
+| Teclas | El prefijo `Ctrl+Espacio` y las teclas de la referencia de la sección «Teclas». El prefijo **no es configurable**. La tecla `?` tras el prefijo está **reservada** para el futuro visor de órdenes. |
+
+| No forma parte de la promesa | Por qué |
+| :--- | :--- |
+| Subórdenes internas `__*` (`__jail-exec`, `__mcp-serve`, `__watch`) | Las lanza lazarobox sobre sí mismo; no se invocan a mano y pueden cambiar en cualquier versión. |
+| El texto de los registros, de los avisos y de los mensajes de error | Pueden reformularse en una versión menor. No dependas de ellos en un script. |
+| La disposición de la interfaz (barras, colores, textos de las filas, ayudas de la barra de estado) | Puede cambiar en una versión menor. Lo que no cambia es qué hace cada tecla de la referencia. |
+
+**Actualizar a la 1.0.** Se hace como cualquier otra versión: `cargo install lazarobox-shell --locked` (o la fila **Updates** del menú). No hace falta tocar `config.toml` ni borrar `chat.db`: la primera vez que se abre, un `chat.db` anterior se migra solo. Antes de actualizar puedes copiar `~/.local/share/lazarobox/chat.db` si quieres poder volver a una versión anterior con el historial exacto de ese momento; sin copia, volver atrás deja el historial no disponible hasta que vuelvas a actualizar.
+
+---
+
+## ⌨️ Teclas: el prefijo `Ctrl+Espacio`
+
+Todo lo que no es escribir en un panel empieza por el prefijo `Ctrl+Espacio`; luego se pulsa la tecla, o el grupo y la tecla (por ejemplo `w` y `v`). Mientras el prefijo espera, la barra de estado muestra las teclas posibles. `Esc` o una tecla sin asignar lo cancelan sin escribir nada.
+
+| Tecla tras `Ctrl+Espacio` | Acción                                                              |
+| :------------------------ | :------------------------------------------------------------------ |
+| `h` `j` `k` `l`           | Mueve el foco a la izquierda, abajo, arriba o derecha               |
+| `w` `v` / `w` `h`         | Divide el panel a la derecha / abajo                                |
+| `w` `q`                   | Cierra el panel (pide confirmación)                                 |
+| `w` `r`                   | Modo RESIZE: `h` `j` `k` `l` mueven el borde, `Esc` sale             |
+| `w` `z`                   | Amplía el panel o lo devuelve a su tamaño                           |
+| `t` `n` / `t` `c`         | Pestaña nueva / cierra la pestaña (pide confirmación)               |
+| `g` `b` / `g` `B`         | Pestaña siguiente / anterior                                        |
+| `b` `1`…`b` `9`           | Va a la pestaña N                                                   |
+| `[`                       | Modo COPY (ver [Modo COPY](#-modo-copy))                            |
+| `m`                       | Abre el menú                                                        |
+| `c`                       | Abre un chat de IA                                                  |
+| `n` / `o` / `s` / `T`     | En un chat: nota, bloque de memoria, resumen, etiquetas             |
+| `e` / `a`                 | En un chat: ejecutar su bloque de código en un panel, modo de aprobación |
+| `q`                       | Sale de lazarobox (pide confirmación)                               |
+| `W`                       | En un chat con el orquestador: abre la transcripción del worker seleccionado |
+| `r` `r` / `r` `d`         | En un chat con el orquestador: retoma / descarta la ejecución interrumpida (ver [Orquestador de agentes](#orquestador-de-agentes-experimental)) |
+| `?`                       | Reservada para el futuro visor de órdenes; hoy no hace nada          |
+| `Ctrl+Espacio`            | Manda el propio prefijo al programa (un byte NUL)                   |
+| `Ctrl+]` (alias)          | Hace lo mismo que `Ctrl+Espacio`; dos veces mandan al programa el byte 0x1D |
+
+**Alias `Ctrl+]`.** Si tu terminal se traga `Ctrl+Espacio`, usa `Ctrl+]` (o `Ctrl+5`, que muchas terminales mandan como el mismo byte) como prefijo: todo el árbol de teclas de arriba funciona igual. Consecuencia: **una sola pulsación de `Ctrl+]` o `Ctrl+5` ya no llega al programa del panel**; hacen falta dos (`Ctrl+]` `Ctrl+]` manda 0x1D). Afecta al salto de etiquetas de vim y al escape de telnet.
+
+**Comprobación del prefijo.** La primera vez que arranca en una terminal, lazarobox espera hasta 10 s a que pulses `Ctrl+Espacio` y guarda el resultado por terminal; si no llega, avisa de que uses `Ctrl+]`. Escribir con normalidad no cuenta ni se bloquea. `lazarobox-shell --check-prefix` repite la comprobación.
+
+**Teclas mantenidas.** La mayoría de terminales manda una tecla mantenida como pulsaciones repetidas. Por eso, la misma tecla otra vez antes de 500 ms cuenta como la misma pulsación mantenida: en el menú, las confirmaciones y el chat una tecla que decide (guardar, cancelar, enviar, copiar, aprobar o rechazar) actúa **una sola vez**, y la que cerró el menú, una confirmación o RESIZE no llega al panel de debajo. Escribir y moverse funcionan igual que siempre. Si quieres pulsar a propósito la misma tecla de decisión dos veces, deja una pausa de medio segundo.
+
+**Backspace que llega como `Ctrl+H`.** Algunas terminales mandan `^H` para Backspace. En los campos de texto (el mensaje del chat, las notas, el resumen, las etiquetas y los campos del menú) `Ctrl+H` borra como Backspace; un panel de shell recibe el byte tal cual.
+
+### Referencia de teclas por vista
+
+Esta sección y la tabla del prefijo de arriba son la **referencia única** de teclas; las demás secciones del README la enlazan en lugar de repetirla. El prefijo `Ctrl+Espacio` y su alias `Ctrl+]` **no se pueden configurar**. Salvo que se diga otra cosa, las teclas se pulsan sin modificadores (`y` es la minúscula; `Y` no cuenta).
+
+**Chat, conversación**
+
+| Tecla | Acción |
+| :--- | :--- |
+| `Enter` | Envía el mensaje |
+| `Alt+Enter` / `Ctrl+J` | Salto de línea en el mensaje |
+| `Ctrl+U` | Borra el mensaje |
+| `Esc` / `Ctrl+C` | Cancela la respuesta en curso; sin respuesta en curso no hacen nada |
+| `Ctrl+R` | Muestra u oculta el último bloque de razonamiento del modelo |
+| `Ctrl+Y` / `Ctrl+B` | Copia la última respuesta / su último bloque de código (OSC 52) |
+| `PageUp` / `PageDown` | Desplaza la conversación |
+| `Ctrl+G` | Abre la revisión de un lote huérfano (insignia `orphan N · Ctrl+G`) |
+| `Ctrl+O` | Con el orquestador activado en el menú: activa o desactiva ORCH en este panel (ver [Orquestador de agentes](#orquestador-de-agentes-experimental)) |
+| `Alt+↓` / `Alt+↑` | Con el orquestador activado: selecciona el siguiente / anterior worker en marcha. Con un worker seleccionado, el primer `Ctrl+C` cancela solo ese worker y el siguiente cancela la ejecución |
+| `←` `→` `Home` `End` `Backspace` `Delete` | Editan el mensaje (`Ctrl+H` borra como `Backspace`) |
+
+**Aprobación de una herramienta o de un comando** (incluida la confirmación de `Ctrl+Espacio` `e`). Mientras espera, el resto de teclas no hacen nada. Un aviso recién abierto no acepta aún `y`, `n` ni `Esc` (por si la tecla era para el mensaje); `Ctrl+C` funciona siempre.
+
+| Tecla | Acción |
+| :--- | :--- |
+| `y` | Aprueba |
+| `n` / `Esc` | Rechaza |
+| `p` | En un comando, pasa al siguiente panel de shell como destino (da la vuelta al llegar al último) |
+| `Ctrl+C` | Rechaza y cancela la respuesta en curso |
+
+**Revisión de un lote o de un commit**
+
+La primera fila de la revisión empieza por la carpeta del chat (`~` para `$HOME`; si es larga se corta por delante y conserva el final), así que ves dónde se escribirá antes de pulsar `y`. La carpeta solo ocupa el sitio que deja el contador: si queda menos de 8 columnas se omite, y nunca desplaza el retardo ni el estado de `y`.
+
+| Tecla | Acción |
+| :--- | :--- |
+| `↑` `k` / `↓` `j` | Desplaza una fila |
+| `PageUp` / `PageDown` / `Home` / `End` | Desplaza por páginas / al principio / al final |
+| `y` | Aprueba, solo cuando has visto el lote entero y ha pasado el retardo. Si pulsas `y` con líneas sin ver, no aprueba: el contador avisa 2 s de cuántas faltan (`y needs every line seen: N left, scroll ↓`) |
+| `n` / `Esc` | Rechaza, tras el mismo retardo (en el acto si el lote no se puede revisar) |
+| `Ctrl+C` | Rechaza y cancela la respuesta en curso |
+
+**Lista de conversaciones**
+
+| Tecla | Acción |
+| :--- | :--- |
+| `j` `↓` / `k` `↑` | Mueve la selección |
+| `Enter` | Retoma la conversación: carga el historial completo y sigue en la misma, con su perfil guardado |
+| `n` / `Esc` | Empieza una conversación nueva |
+| `a` | Alterna entre las conversaciones del proyecto y las de todos los proyectos |
+| `Supr`, luego `Enter` | Borra la conversación; cualquier otra tecla cancela. Ninguna letra abre ni confirma el borrado, así que escribir nada más abrir el chat no borra nada. Si hay notas en engram que se pueden borrar, la pregunta ofrece también `Tab` (borra la conversación y después sus notas; ver «Memoria del proyecto (engram)») |
+| `t` | Edita las etiquetas de la fila |
+
+**Selector de carpeta del chat** (al abrir un chat con carpeta amplia o desconocida, o al reanudar una conversación sin carpeta usable). Ninguna tecla llega al mensaje mientras está abierto; una tecla mantenida edita pero nunca decide, salvo `Esc`, que cancela también si se mantiene.
+
+| Tecla | Acción |
+| :--- | :--- |
+| `↑` / `↓` | Mueve la fila marcada |
+| Texto, `Backspace`, `Delete`, `←` `→` `Home` `End`, `Ctrl+U` | Editan la ruta (`~` y `~/…` valen; una ruta relativa parte de la carpeta que el chat tendría) |
+| `Tab` | Completa nombres de carpeta. No hace nada mientras aún se buscan candidatos (`still looking for folders`) ni si se mantiene pulsada |
+| `Enter` | Abre la ruta escrita (gana a la fila) o, con el campo vacío, la fila marcada |
+| `Esc` | Se queda con la carpeta actual y deja la línea `chat folder is …; use /cd <folder> to change it` |
+
+**Confirmación de `/cd`** (aparece al enviar un mensaje `/cd <carpeta>`; `Tab` en esa línea completa la ruta).
+
+| Tecla | Acción |
+| :--- | :--- |
+| `y` | Comprueba la carpeta una última vez y la cambia (aún puede rechazarla); una `y` mantenida nunca confirma |
+| Mientras se comprueba la carpeta (tras `y`) | Solo `Esc` cancela; las demás teclas no hacen nada |
+| `n` / `Esc` | Cancelan, también si se mantienen |
+| Cualquier otra | Cancela, salvo que sea una tecla mantenida (el `Enter` que envió `/cd` cuenta como mantenido 500 ms) |
+
+**Editores del chat**
+
+| Editor | Teclas |
+| :--- | :--- |
+| Etiquetas (`Ctrl+Espacio` `T`, o `t` en la lista) | Una línea separada por comas. `Enter` guarda, `Esc` descarta, `Ctrl+U` borra la línea |
+| Nota (`Ctrl+Espacio` `n`) | `Tab` / `Shift+Tab` cambian de campo; en el campo de categoría, `←` `→` la cambian. `Enter` guarda desde el título y añade una línea en el contenido; `Ctrl+S` guarda; `Esc` cierra sin guardar |
+| Resumen (`Ctrl+Espacio` `s`) | `Enter` añade una línea; `Ctrl+S` aprueba (también en la segunda pasada de ocultación de secretos); `Esc` descarta |
+| Oferta de `engram serve` | Con el mensaje vacío: `y` la acepta; `n` / `Esc` la dejan para después. Cualquier otra tecla se escribe en el mensaje |
+
+En los editores de nota y de resumen, `↑` `↓` mueven el cursor entre líneas del contenido; `Ctrl+C` nunca sale de lazarobox.
+
+**Menú** (`Ctrl+Espacio` `m`)
+
+| Tecla | Acción |
+| :--- | :--- |
+| `Tab` / `Shift+Tab` | Pestaña siguiente / anterior |
+| `1`…`5` | Va a la pestaña con ese número: `1` Settings, `2` Models, `3` Tools, `4` Connectors, `5` Chat |
+| `j` `↓` / `k` `↑` | Fila siguiente / anterior |
+| `l` `→` `Espacio` / `h` `←` | Valor siguiente / anterior de la fila (`Enter` también avanza al siguiente) |
+| `s` | Guarda en `config.toml` (`Enter` nunca guarda ni cierra el menú) |
+| `Enter` | En filas con acción: abre el selector de IA, actualiza (**Updates**), abre el formulario (**Feedback**) o pide el token (Hugging Face) |
+| `r` | En **Updates**, comprueba ahora; en las filas de IA, vuelve a detectar los motores y modelos |
+| `t` | En **Notify** y **Sound**, comprueba y lanza un aviso de prueba |
+| `d` | En la fila de la cuenta de Hugging Face, olvida el token; en la lista de modelos de ollama, sobre un modelo descargado, pide confirmación para borrarlo |
+| `Esc` | Ver «`Esc` según la vista» |
+
+**Modo COPY** (`Ctrl+Espacio` `[`)
+
+| Tecla | Acción |
+| :--- | :--- |
+| `h` `j` `k` `l` | Mueve el cursor |
+| `0` / `$` | Inicio / final de la línea |
+| `gg` / `G` | Primera / última línea |
+| `Ctrl+D` / `Ctrl+U` | Media página abajo / arriba |
+| `v` / `V` | Empieza la selección por caracteres / por líneas |
+| `y` | Copia la selección (OSC 52) y sale |
+| `Esc` | Limpia la selección; sin selección, sale |
+| `q` / `i` | Salen (en un panel de chat, `i` no hace nada) |
+| `Ctrl+Y` / `Ctrl+B` | Solo en el chat: copian la última respuesta / su último bloque de código sin salir |
+
+**Modo RESIZE** (`Ctrl+Espacio` `w` `r`): `h` `j` `k` `l` mueven el borde del panel una celda; `Esc` sale. Cualquier otra tecla, incluido `Ctrl+Espacio`, se ignora y el modo sigue.
+
+**Confirmaciones** (salir, cerrar panel, cerrar pestaña): solo `y` confirma. `n`, `Esc`, `Y` o cualquier otra tecla la rechazan.
+
+**`Esc` según la vista.** No significa lo mismo en todas partes; así queda en la 1.0:
+
+| Vista | `Esc` |
+| :--- | :--- |
+| Panel de shell | Llega al programa (byte `0x1b`) |
+| Prefijo o grupo pendiente | Cancela, sin escribir nada |
+| Confirmaciones de salir, cerrar panel y cerrar pestaña | Rechaza, como cualquier tecla que no sea `y` |
+| RESIZE | Sale |
+| COPY (shell y chat) | Limpia la selección; sin selección, sale |
+| Menú, nivel superior | Cancela: descarta lo no guardado y cierra el menú |
+| Menú: selector de tarea, asistente de instalación, pantallas de Hugging Face | Vuelve un nivel (desde la lista de populares de Hugging Face, al campo de búsqueda) |
+| Menú: campo del token de Hugging Face | Cierra el campo; una comprobación en curso se cancela y no se guarda nada |
+| Menú: formulario de Feedback | Lo cierra, de vuelta a su fila (también tras enviar) |
+| Chat, conversación | Cancela la respuesta en curso; sin ella, no hace nada |
+| Chat, aprobación de herramienta y confirmación de `Ctrl+Espacio` `e` | Rechaza, cuando el aviso ya acepta respuesta |
+| Chat, revisión de un lote o de un commit | Rechaza, pasado el retardo (un lote huérfano se descarta) |
+| Chat, oferta de `engram serve` | Para después, como `n` |
+| Chat, lista de conversaciones | Empieza una conversación nueva, como `n` |
+| Chat, editor de etiquetas y borrador de resumen | Descarta la edición |
+| Chat, editor de notas | Lo cierra sin guardar |
+
+Una `Esc` mantenida actúa una sola vez en todas estas vistas salvo en un panel de shell.
+
+---
+
 ## 📋 Modo COPY
 
 Con `Ctrl+Espacio` y `[` se entra en modo COPY. Mueve el cursor con `h` `j` `k` `l`, selecciona con `v` (caracteres) o `V` (líneas completas) y copia con `y`: el texto llega al portapapeles del sistema mediante OSC 52 y se vuelve a TERMINAL. `Esc` limpia la selección (y una segunda pulsación sale). Las selecciones de más de 75 000 bytes no se copian.
+
+En un panel de chat de IA funciona igual y copia texto limpio: sin los prefijos de dibujo (`›`, `┊`, `•` y la sangría), con las líneas partidas por el ancho unidas de nuevo y sin las pistas de teclas. Dentro del modo COPY del chat, `Ctrl+Y` copia la última respuesta y `Ctrl+B` su último bloque de código, sin salir del modo.
+
+![Modo COPY: seleccionar líneas con V y copiarlas con y en un panel de shell](docs/assets/copy-mode.gif)
+
+**Cadena de copia.** Al copiar, lazarobox manda siempre OSC 52 a la terminal y, además, usa una herramienta local si la encuentra: `wl-copy` (Wayland), `xclip` o `xsel` (X11) y, en WSL, `powershell.exe` con `Set-Clipboard`, o `clip.exe` si no está. `powershell.exe` recibe el texto en UTF-8 y lo guarda exacto, sin el `<feff>` que `clip.exe` dejaba al pegar; los saltos de línea pasan a `\r\n`, como hacía `clip.exe`. `clip.exe` solo recibe la marca de orden de bytes cuando el texto no es ASCII, porque sin ella confunde los textos cortos. Por SSH no se usa ninguna herramienta local, porque el portapapeles que importa es el de tu máquina. El aviso dice lo que pasó de verdad: `Copied (xclip)` si la herramienta terminó bien; `xclip failed; sent via OSC 52 (...)` si falló; y `No paste? Install wl-copy or xclip (OSC 52 sent)` si solo se mandó OSC 52, porque nada confirma que haya llegado. Una selección demasiado grande para OSC 52 solo se copia con una herramienta local, y si esta falla lo dice.
 
 Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
@@ -119,8 +366,10 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 ## 🖱️ Desplazamiento (scroll)
 
 - **Rueda del ratón:** desplaza el panel que queda bajo el puntero, sin cambiar el foco. En un panel de shell recorre el historial (3 líneas por paso); en `less`, `man` o `vim` la rueda llega a la aplicación; en el chat de IA desplaza la conversación. Cualquier tecla pulsada en el panel (o un pegado) vuelve a la pantalla en vivo.
+- **Enlaces:** un clic sobre un enlace `https://` o `http://` que se vea en un panel o en el chat lo abre en el navegador, también en direcciones locales como `http://localhost:3000`. Se abre al soltar el botón sobre la misma celda, así que arrastrar no abre nada. Un enlace partido en varias filas se abre entero. Si no hay navegador, se copia y un aviso lo dice.
+- **Enlaces con el teclado:** `Ctrl+Espacio` y `u` lista los enlaces que se ven en el panel enfocado, también con `mouse` desactivado. `1`…`9` y luego letras abren cada fila, `Enter` abre la seleccionada, `y` la copia, `j`/`k` mueven la selección y `Esc` cierra.
 - **Selección nativa:** con la captura del ratón activa, mantén pulsado un modificador mientras arrastras para seleccionar texto con la terminal: `Shift` en Kitty y en la mayoría de terminales de Linux, `Option` en Terminal e iTerm2 de macOS.
-- **Modo COPY:** `Ctrl+Espacio` y `[` funciona en paneles de shell y de chat. Se mueve con `j`/`k` (línea), `Ctrl+u`/`Ctrl+d` (media página), `gg` (inicio) y `G` (final); `Esc` o `q` sale. En un panel de shell, además, `v`, `V` e `y` seleccionan y copian.
+- **Modo COPY:** `Ctrl+Espacio` y `[` funciona en paneles de shell y de chat. Se mueve con `j`/`k` (línea), `Ctrl+u`/`Ctrl+d` (media página), `gg` (inicio) y `G` (final); `Esc` o `q` sale. `v`, `V` e `y` seleccionan y copian (ver [Modo COPY](#-modo-copy)).
 - **Indicador `[+N]`:** un panel desplazado muestra en su esquina superior derecha cuántas líneas quedan por debajo; la línea de estado indica la posición (`↑N/total`) del panel enfocado.
 - **Desactivar la captura:** `mouse = false` en `config.toml` (o la fila `Mouse` de la sección Settings del menú `Ctrl+Espacio m`) deja la rueda y la selección a la terminal. Por defecto está activada.
 
@@ -128,22 +377,38 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 ## ⚙️ Menú: sección Settings
 
-`Ctrl+Espacio` y `m` abre el menú. Con la sección de IA, el menú se divide en pestañas, **Settings** y **AI**, que se cambian con `Tab` y `Shift+Tab`; `j`/`k` se mueven y dan la vuelta dentro de la pestaña activa, y cada pestaña recuerda su fila. Al abrir el menú siempre empieza en **Settings**. El aviso de actualización solo se muestra en esa pestaña, y su etiqueta lleva un `*` mientras haya una actualización pendiente. Dentro de un selector, del campo `custom…` o de la advertencia de privacidad, `Tab` no hace nada. Su sección **Settings** tiene, en este orden:
+`Ctrl+Espacio` y `m` abre el menú. Con la sección de IA, el menú se divide en cinco pestañas, **Settings**, **Models**, **Tools**, **Connectors** y **Chat**, que se cambian con `Tab` y `Shift+Tab` o saltando con `1`…`5` (los números son fijos: `4` es siempre Connectors). **Connectors** no se muestra hasta que tenga filas, así que `Tab` la salta y `4` avisa en el pie de que aún no hay conectores; sin la sección de IA solo existe **Settings** y `2`…`5` avisan de que la sección de IA no está disponible. Un número fuera de `1`…`5` avisa con `Tabs are 1-5` y `Tab` con una sola pestaña avisa con `No other tabs`; el aviso desaparece con la siguiente tecla. `j`/`k` se mueven y dan la vuelta dentro de la pestaña activa, y cada pestaña recuerda su fila. Al abrir el menú siempre empieza en **Settings**. El aviso de actualización solo se muestra en esa pestaña, y su etiqueta lleva un `*` mientras haya una actualización pendiente. Dentro de un selector, del campo `custom…` o de la advertencia de privacidad, `Tab` y los números no cambian de pestaña (en los campos de texto, un número se escribe como cualquier otro carácter). Su sección **Settings** tiene, en este orden:
 
 | Fila | Qué hace | Clave en `config.toml` |
 | ---- | -------- | ---------------------- |
 | `Statusline position` | Barra de estado arriba o abajo (`h`/`l`) | `[statusline] position` |
 | `Tab bar position` | Barra de pestañas arriba o abajo | `[tabbar] position` |
 | `Mouse` | Captura del ratón | `mouse` |
+| `Build jobs` | Compilaciones en paralelo de los paneles nuevos y de `run_command` en el chat: `auto` o de `1` al número de núcleos (ver abajo) | `[build] jobs` |
 | `Notify` | Aviso al terminar una respuesta del chat (`off`, `auto`, `desktop`, `bell`); `t` lo prueba | `[ai] notify` |
 | `Sound` | Sonido propio del aviso; `t` lo prueba | `[ai] notify_sound` |
 | `llama-server idle` | Minutos sin uso tras los que se para el llama-server gestionado: `5 min`, `15 min`, `30 min` o `never` | `[ai.servers.llamacpp] idle_minutes` |
+| `Usage (alpha)` | Abre la vista de uso de IA: línea de uso, segmento de la barra de estado y facturación de claude, codex y gemini (ver «Uso de IA»); muestra `line on · bar on` | `[ai.usage]`, `[ai.usage.billing]` |
 | `Updates` | Versión en ejecución y actualización disponible (ver abajo) | `[updates] check` (solo en el fichero) |
 | `Feedback` | Abre el formulario para informar de un fallo o proponer una idea (ver abajo) | — |
 
 `Notify` y `Sound` antes estaban en la sección **AI**; solo cambian de sitio, y sus claves y su comportamiento siguen igual.
 
+**`Build jobs`.** Cada panel de shell nuevo recibe `CARGO_BUILD_JOBS` y `CMAKE_BUILD_PARALLEL_LEVEL` con el número de compilaciones que `cargo` y CMake pueden lanzar a la vez. Por defecto ambos usan un trabajo por núcleo y no miran la memoria, así que una máquina con muchos núcleos y poca RAM se queda sin memoria en una compilación completa. Con `auto` (por defecto), lazarobox usa el menor entre los núcleos y la RAM dividida entre 2 GiB, y nunca menos de 1. La fila muestra lo que sale en esta máquina, por ejemplo `auto (3)` con 16 núcleos y 7,6 GB. Desde `auto`, `l` va a `1, 2, …` hasta los núcleos y `h` salta directamente al máximo: sirve para dejar una compilación larga trabajando o para bajarlo mientras haces otras cosas. En `config.toml`:
+
+```toml
+[build]
+jobs = "auto"   # o un número, por ejemplo jobs = 4
+```
+
+- El cambio vale para los paneles que se abran después; un panel ya abierto conserva su valor (`export CARGO_BUILD_JOBS=…` en él lo cambia a mano).
+- Si tu `~/.zshrc` (o `~/.bashrc`) exporta alguna de las dos variables, esa gana, porque la shell la lee al arrancar.
+- `run_command` en el chat usa siempre el valor del menú, y un cambio vale desde el siguiente comando. Su entorno se construye limpio, así que lo que exporte tu shell no le llega.
+- Los comandos que el chat lanza con `run_command` no la reciben todavía.
+
 ### Feedback: fallos e ideas desde el terminal
+
+Desde un chat no hace falta ir al menú: escribe `/feedback <texto>` en el compositor y pulsa `Enter`. Se abre este mismo formulario con la primera línea como título y el resto como descripción; si solo hay una línea, va en los dos campos, y siempre puedes editarlos. El texto no llega al modelo ni se añade a la conversación, y no se publica nada hasta que pulsas `Ctrl+S`. Para enviar al modelo un mensaje que empiece por esa palabra, escribe `//feedback`.
 
 `Enter` sobre **Feedback** abre un formulario corto:
 
@@ -151,7 +416,9 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 - **Title** y **Description** (`Tab` pasa al siguiente campo; en la descripción, `Enter` añade una línea).
 - **Attach the environment** (`Espacio` lo activa o desactiva): la versión de lazarobox, el sistema (y si es WSL), la shell, la terminal (`TERM_PROGRAM`) y los motores de IA detectados con su versión. Se ve entero antes de enviarlo; nunca incluye rutas, nombres de usuario ni claves.
 
-`Ctrl+S` envía el issue a GitHub con tu propio `gh` (`gh issue create`): el de fallos con la etiqueta `bug` o el de ideas con `idea` (las ideas llegan al tablero de Goals del proyecto). El issue sigue la forma de los formularios del repositorio: una sección `### What happened` (o `### The idea`) con la descripción y, si lo adjuntas, `### Environment`. Mientras se envía, el pie dice `Sending to GitHub…`; al terminar, el formulario muestra `Sent:` y el enlace del issue, que se abre con `Ctrl+O` o con un clic. Si `gh` falla, el formulario se queda con todo lo escrito y el pie muestra su mensaje; `Ctrl+S` lo vuelve a intentar. **lazarobox solo envía algo cuando pulsas `Ctrl+S`, y siempre a través de tu sesión de `gh`: no guarda ningún token de GitHub.** GitHub solo conserva las etiquetas si tienes permiso de escritura en el repositorio.
+`Ctrl+S` envía el issue a GitHub con tu propio `gh` (`gh issue create`): el de fallos con la etiqueta `bug` o el de ideas con `idea` (las ideas llegan al tablero de Goals del proyecto). El issue sigue la forma de los formularios del repositorio: una sección `### What happened` (o `### The idea`) con la descripción y, si lo adjuntas, `### Environment`. Tras pulsar `Ctrl+S`, el pie dice `Looking for similar issues, then sending…` hasta que termina; al enviar desde la lista de issues parecidos, dice `Sending to GitHub…`. Al terminar, el formulario muestra `Sent:` y el enlace del issue, que se abre con `Ctrl+O` o con un clic. Si `gh` falla, el formulario se queda con todo lo escrito y el pie muestra su mensaje; `Ctrl+S` lo vuelve a intentar. **lazarobox solo envía algo cuando pulsas `Ctrl+S`, y siempre a través de tu sesión de `gh`: no guarda ningún token de GitHub.** GitHub solo conserva las etiquetas si tienes permiso de escritura en el repositorio.
+
+Antes de crear nada, `Ctrl+S` busca issues abiertos parecidos, para no duplicar uno que ya existe. Busca con las palabras clave del título (`gh issue list --state open --search`) y solo muestra los que comparten al menos dos palabras con él. Si los hay, el formulario los lista (`#583 …`) en lugar de los campos. `↑`/`↓` elige uno; `Enter` añade tu descripción y el entorno como comentario a ese issue (`gh issue comment`), sin crear otro, y muestra el enlace del comentario. Si el comentario falla, también por no tener `gh` o no haber iniciado sesión, el formulario dice por qué y mantiene el issue elegido, y `Enter` lo intenta de nuevo; nunca te lleva a la página de un issue nuevo. Si ninguno es el tuyo, `Ctrl+S` crea el issue igualmente, y `Esc` vuelve a los campos. Si no hay ninguno parecido, o la búsqueda falla o tarda más de 10 segundos, el issue se crea como siempre.
 
 Si `gh` no está instalado o no has iniciado sesión (`gh auth login`), `Ctrl+S` abre en el navegador la página del issue ya rellena y el formulario explica por qué. `Ctrl+O` abre esa misma página directamente, para revisarla y enviarla desde allí (con `xdg-open`; en WSL con `wslview` o `rundll32.exe url.dll,FileProtocolHandler`; en macOS con `open`; si no hay ninguno, copia el enlace al portapapeles con OSC 52).
 
@@ -169,6 +436,7 @@ lazarobox puede avisarte de que hay una versión nueva en crates.io. Cuando exis
 
 - **Instalaste con `cargo install`** (el binario en ejecución, con rutas resueltas, incluidos los enlaces simbólicos de `~/.cargo`, está bajo `$CARGO_HOME/bin`, o `~/.cargo/bin` si `CARGO_HOME` no está definido): lazarobox cierra el menú y abre una **pestaña nueva**, que pasa a ser la activa, y ejecuta directamente `cargo install lazarobox-shell --locked --version <versión> --root <raíz>`, sin shell, donde `<versión>` es exactamente la que anuncia la fila Updates (cargo instala exactamente esa versión o falla, en lugar de instalar otra distinta) y `<raíz>` es la carpeta que contiene ese `bin`; así cargo instala siempre encima del binario en ejecución, aunque `CARGO_INSTALL_ROOT` o `install.root` apunten a otro sitio. Cerrar el menú así equivale a pulsar `Esc`: lo que no hayas guardado en el menú se descarta. Es un panel normal: ves la compilación, y sus primeras líneas, escritas por lazarobox, dicen en llano que actualiza, que puede tardar unos minutos y que no cierres lazarobox, y después qué se ejecuta (`running /home/u/.cargo/bin/cargo install lazarobox-shell --locked --version 0.16.2 --root /home/u/.cargo`).
   - **Qué `cargo`:** el que está junto al binario en ejecución (`<CARGO_HOME>/bin/cargo`) y, si no existe, el primero del `PATH` de login que ya usa lazarobox (nunca el directorio actual). Se ejecuta tal como se encontró (el proxy de rustup decide según el nombre con que se lanza). Debe ser de confianza: ni él ni ninguna carpeta por encima pueden estar bajo `/tmp` ni ser escribibles por otros, y el permiso de escritura del grupo solo se acepta (es el caso normal con umask 002) si la carpeta o el archivo es tuyo, su grupo es el tuyo y ese grupo es privado, es decir, se llama como tu usuario y no tiene más miembros que tú. Un grupo compartido (`users`, `staff`) o una carpeta de root con escritura de grupo se rechazan. Se comprueban también las carpetas que contienen el enlace a `cargo` (por ejemplo `~/.cargo/bin`) y se vuelve a comprobar al pulsar `Enter`, por si algo cambió desde el arranque. Es una regla más laxa que la de los CLIs de IA, que sigue exigiendo que ni el grupo pueda escribir. Si no la cumple, no se ejecuta nada y se muestra el comando como en el caso siguiente.
+  - **`umask`:** el `cargo install` corre con `umask 022` solo para ese proceso (a través de `/bin/sh -c 'umask 022 && exec "$0" "$@"'`, que pasa los argumentos tal cual, sin interpretarlos), sin tocar el `umask` de lazarobox ni el de tus shells. Así el binario nuevo no queda con permiso de escritura para el grupo con un `umask` de `002`, y la comprobación de confianza de las herramientas sigue pasando tras actualizar.
   - **Entorno:** cargo recibe el entorno normal de un panel (el de lazarobox más `TERM`/`COLORTERM`), con el `PATH` de login; no se depura como el de los CLIs de IA, porque cargo necesita tu `RUSTUP_*`, proxy, certificados, etc. Se ejecuta desde tu carpeta personal, no desde la de un proyecto.
   - **Resultado:** si termina bien, la pestaña se cierra sola, un aviso dice `Updated to X.Y.Z. Restart lazarobox to use it.` y la fila pasa a `X.Y.Z installed: restart` hasta que reinicies. Si falla, la pestaña **se queda abierta** con una última línea en llano (`The update did not finish (error N)`, `The update could not start` o `The update stopped unexpectedly`) seguida del comando para ejecutarlo a mano, para que leas el error de cargo; ciérrala cuando quieras (`Ctrl+Espacio`, `w`, `q`). **Reinicia lazarobox** para usar la versión nueva: el proceso en marcha no se reemplaza.
 - **Cualquier otra instalación** (paquete de la distribución, tarball, compilación local) o sin `cargo` en el `PATH`: **no se ejecuta nada**. La nota del menú dice `lazarobox cannot update itself here. Run:` con el comando `cargo install lazarobox-shell --locked`, y el pie dice por qué (`installed another way`, `Rust is not installed`, `Rust folder is too open` o `folder name is unusual`); sin Rust, la nota dice antes `Install Rust first (rustup.rs), then run:`. `Enter` o `y` copia el comando al portapapeles (OSC 52).
@@ -194,15 +462,25 @@ Con `check = false` lazarobox no hace ninguna petición, no lee la caché y no m
 
 ## 🤖 Menú de IA
 
-Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **AI** (`Tab`) muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
+Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **Models** (`2`, o `Tab` desde Settings) muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
 
-Tras las filas de tarea, la pestaña **AI** tiene las filas **Profile**, **Context**, **Memory**, **Tools**, **Approval** y **Hugging Face** (la última; ver «Descargar modelos de Hugging Face»). **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
+![Menú de IA: pestaña Models y selector de motor y modelo](docs/assets/ai-menu.gif)
+
+Tras las filas de tarea (la última, `orchestrate`, es la del coordinador del [orquestador](#orquestador-de-agentes-experimental)), la pestaña **Models** termina con la fila **Hugging Face** (ver «Descargar modelos de Hugging Face»). La pestaña **Tools** (`3`) tiene las filas **Tools**, **Search**, **Write**, **Exec**, **Git**, **Git write**, **Issue draft**, **Approval** y **Orchestrator**, y la pestaña **Chat** (`5`) tiene **Profile**, **Context** y **Memory**. **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
 
 `s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú. Mientras la elección difiera de la guardada, el pie del menú muestra `unsaved changes · s to save · Esc discards`.
 
-El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir: lazarobox **nunca descarga un modelo a través de un servidor**. Para usar uno, instálalo tú (`ollama pull <modelo>`) y pulsa `r`. lazarobox solo descarga dos cosas, y solo cuando tú lo confirmas: modelos GGUF de Hugging Face (ver «Descargar modelos de Hugging Face») y, como única excepción a «lazarobox no instala nada», `llama-server` (ver «Instalar llama-server (la excepción)»).
+El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir. Para usar uno, descárgalo desde la fila `download from Ollama…` (ver «Descargar modelos de Ollama») o instálalo tú (`ollama pull <modelo>`), y pulsa `r`. lazarobox solo descarga tres cosas, y solo cuando tú lo confirmas: modelos GGUF de Hugging Face (ver «Descargar modelos de Hugging Face»), modelos de Ollama a través de tu propio servidor de Ollama (ver «Descargar modelos de Ollama») y, como única excepción a «lazarobox no instala nada», `llama-server` (ver «Instalar llama-server (la excepción)»). Ninguna conversación de chat pide nunca a un servidor que descargue un modelo.
 
 Se detectan estos motores: `ollama`, `lmstudio`, `llamacpp` y `vllm` (servidores locales) y los CLIs `claude`, `codex`, `gemini` y `opencode`. Los servidores se consultan en su puerto habitual (o en el que fijes en `[ai.servers]`, ver abajo) y los CLIs se buscan en el `PATH`. El menú marca como `detected · not in chat yet` los motores detectados que aún no tienen adaptador de chat (hoy solo `opencode`), y no deja elegirlos.
+
+**Marcas de herramientas.** En la lista de modelos de Ollama, un modelo instalado que declara soporte de herramientas lleva `🔧` junto a `✓` (`llama3:8b ✓ 🔧`) cuando tiene 3B parámetros o más, y `tools: unreliable` si es más pequeño, porque los modelos pequeños suelen fallar al llamar herramientas. Un modelo sin soporte, con soporte desconocido o de tamaño desconocido no lleva marca. La marca es informativa: no impide elegir el modelo, y se muestra también con `[ai.tools] enabled = false`. En `TERM=linux` (la consola de Linux) o con un locale que no es UTF-8, `🔧` se escribe `tools`. Para saber si un modelo declara herramientas, la detección envía una petición `POST /api/show` por modelo a tu servidor de Ollama en `127.0.0.1` (como máximo 32 por detección, 4 a la vez y 2 segundos en total; el resultado se recuerda por digest mientras lazarobox está abierto). No se envía nada a ningún otro sitio, y la detección sigue sin tocar `/api/pull`, `/api/delete` ni `/api/push`.
+
+Si tu terminal no tiene una fuente de emoji, `🔧` se dibuja como una caja vacía (síntoma típico en zutty con `TERM=xterm-256color`): lazarobox no puede detectarlo, así que fuerza la marca de texto con `[ai] tool_mark = "text"`. Valores: `"auto"` (por defecto: la regla de arriba), `"emoji"` (siempre `🔧`, también en la consola de Linux o con un locale que no es UTF-8) y `"text"` (siempre `tools`, en todas las listas donde aparece la marca). Cualquier otro valor vuelve a `"auto"` y lo avisa al arrancar (`ai.tool_mark: expected "auto", "emoji" or "text"`). Se lee al arrancar: reinicia lazarobox tras cambiarlo.
+
+En la lista de motores, `claude`, `codex` y `gemini` detectados llevan `🔧` (o `tools` en `TERM=linux` o con un locale que no es UTF-8) tras su estado: sus herramientas están verificadas. No lo llevan `opencode`, `ollama`, un motor no detectado, uno rechazado (`refused`) ni `claude` cuando pide actualizarse (`update needed`), y tampoco las filas de modelos de un CLI. Se muestra también con `[ai.tools] enabled = false`.
+
+En las pantallas de descarga de Ollama, una fila de `Popular` lleva `🔧` si la tarjeta de la biblioteca declara `tools` y el mayor tamaño que cabe en tu PC tiene 3B o más (`tools: unreliable` si es menor); cada fila de `Sizes` usa el tamaño de su propia etiqueta. No hay peticiones nuevas: la marca sale de la tarjeta ya leída. La pantalla de confirmación no lleva marca.
 
 La detección es de solo lectura y solo usa `127.0.0.1`: no se envían credenciales ni datos de tus paneles, y no se ejecuta nada salvo `--version` de los CLIs encontrados.
 
@@ -215,7 +493,30 @@ port = 39080
 
 Valen `ollama`, `lmstudio`, `llamacpp` y `vllm`; un puerto fuera de 1–65535 o que no sea un número se ignora con un aviso al arrancar y se usa el habitual. El menú solo escribe `managed` y `model` de llamacpp (abajo) y conserva el resto de la tabla al guardar. Un `port` cambiado a mano se aplica al reiniciar lazarobox.
 
+**Ventana de contexto de Ollama.** lazarobox lee la ventana máxima de cada modelo en la misma respuesta `POST /api/show` que ya usa la detección (sin peticiones nuevas) y pide a Ollama `num_ctx` igual al menor valor entre esa ventana y un tope, para que los modelos con ventanas enormes no reserven tanta memoria de vídeo. Cada turno de un mismo modelo lleva los mismos valores, así que Ollama no recarga el modelo entre mensajes. El historial que se envía descuenta el prompt del sistema y las herramientas de la ventana: se omiten primero los mensajes más antiguos, siempre por pares (pregunta y respuesta), y la conversación muestra `earlier messages are not sent to the model`. Si el mensaje más reciente y la configuración ya superan la ventana, se envía igualmente y la conversación lo avisa. Si no se puede leer la ventana de un modelo, no se envía `num_ctx`, el historial se limita a 12.000 caracteres menos lo que ocupan el prompt del sistema y las herramientas (nunca menos de 4.000) y la barra de estado avisa una vez por modelo (`window unknown for <modelo>: 12k chars`).
+
+```toml
+[ai.servers.ollama]
+num_ctx_cap = 16384        # opcional: tope de tokens de contexto que se piden (por defecto 16384)
+```
+
+`num_ctx_cap` es un número entero de 1024 a 1048576. Un tope mayor usa más memoria de vídeo (la caché de contexto crece con él) y deja más historial; uno menor ahorra memoria y recorta antes. Un valor incorrecto se cambia por el predeterminado con un aviso al arrancar (`ai.servers.ollama.num_ctx_cap: expected a whole number of tokens from 1024 to 1048576`). El menú no escribe esta clave y la conserva al guardar. El tiempo que el modelo sigue cargado se ajusta con `keep_alive` (abajo). Cuando lazarobox conoce la ventana del modelo, manda el tope y un `PARAMETER num_ctx` del Modelfile no se respeta. Cuando no la conoce, no envía `num_ctx` y se aplica el valor del Modelfile (o el predeterminado de Ollama). El aviso del mensaje demasiado grande (`this message and the setup are about … tokens`) sale una vez por racha, y de nuevo solo tras un envío que cabe. Un worker del orquestador en Ollama manda su prompt en un solo mensaje: si el prompt y el setup no caben en esa ventana, su transcripción empieza con `the worker prompt and setup are about … tokens, over the …-token window: the server may cut them`, porque Ollama lo recorta sin avisar.
+
 Un servidor instalado (su binario está en el `PATH`) que no responde aparece en el selector como `not running`. Al elegirlo, el menú dice en qué puerto lo busca y cómo arrancarlo, por ejemplo `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`. Enter o `y` copia esa línea; arranca el servidor, pulsa `r` y aparecen sus modelos. lazarobox no arranca el servidor por ti, salvo el de llama.cpp si se lo pides (abajo).
+
+**Caché del prompt de Ollama y llama.cpp.** Dos claves opcionales ajustan cómo reutiliza cada servidor el trabajo de un mensaje para el siguiente. Sin `cache_prompt`, lazarobox no envía nada a llama.cpp y usa su valor habitual; sin `keep_alive`, a Ollama le envía `30m`:
+
+```toml
+[ai.servers.ollama]
+keep_alive = "30m"      # cuánto tiempo sigue cargado el modelo tras un mensaje
+
+[ai.servers.llamacpp]
+cache_prompt = true     # reutiliza la parte del prompt que no cambia
+```
+
+- `keep_alive` admite una duración como las de Ollama (`"30m"`, `"1h30m"`, `"45s"`), un número entero de segundos, o `-1` para no descargarlo nunca y `0` para descargarlo al terminar. Sin la clave, lazarobox envía `30m` a Ollama (Ollama, por su cuenta, lo descarga a los 5 minutos); un valor puesto se envía tal cual.
+- `cache_prompt` es `true` o `false`; se envía tanto al llama-server gestionado como a uno que arranques tú.
+- Cada clave va solo a su servidor, en el chat, los resúmenes, la compactación y los agentes del orquestador. Un valor incorrecto se ignora con un aviso al arrancar. Se leen al arrancar lazarobox: un cambio en el archivo se aplica al reiniciar.
 
 **llama.cpp gestionado por lazarobox.** Si no quieres tener una pestaña abierta con `llama-server`, lazarobox puede arrancarlo y pararlo por ti:
 
@@ -284,9 +585,9 @@ La lista de modelos de llamacpp termina en la fila `download from Hugging Face�
 4. **Descarga.** Va en segundo plano, una a la vez. La fila muestra `↓ 42% <archivo> · <licencia>` y la barra de estado `↓ 42%`. `Enter` sobre la fila ofrece cancelarla; lo ya bajado se conserva y, si vuelves a elegir el mismo archivo, sigue donde se quedó. Al terminar se comprueban el tamaño y el sha256 que publica el Hub; un archivo que no coincide se borra.
 5. **Úsalo.** Al terminar, el modelo aparece en la misma lista y, al elegirlo, lo arranca el `llama-server` gestionado (ver «llama.cpp gestionado»).
 
-**Dónde se guarda.** En la caché estándar de Hugging Face, la misma que lee la lista de modelos y que usan `hf`, `huggingface_hub` y llama.cpp: `$HF_HUB_CACHE`, o `$HF_HOME/hub`, o `~/.cache/huggingface/hub`, con su estructura habitual (`models--<owner>--<repo>/blobs`, `snapshots`, `refs`). Para borrar un modelo, borra su carpeta `models--<owner>--<repo>` (o usa `hf cache delete`).
+**Dónde se guarda.** En la caché estándar de Hugging Face, la misma que lee la lista de modelos y que usan `hf`, `huggingface_hub` y llama.cpp: `$HF_HUB_CACHE`, o `$HF_HOME/hub`, o `~/.cache/huggingface/hub`, con su estructura habitual (`models--<owner>--<repo>/blobs`, `snapshots`, `refs`). Para borrar un modelo, usa `d` sobre su fila (ver «Borrar un modelo»), o `hf cache delete`.
 
-**Cuenta de Hugging Face.** Los repos públicos no necesitan cuenta. Para los de acceso restringido o privados, conecta tu cuenta en la última fila de la pestaña AI, `Hugging Face`:
+**Cuenta de Hugging Face.** Los repos públicos no necesitan cuenta. Para los de acceso restringido o privados, conecta tu cuenta en la última fila de la pestaña Models, `Hugging Face`:
 
 - `Enter` abre un campo donde pegas un token de acceso (se ve como `••••`). Debajo aparece el enlace para crear uno de lectura, `https://huggingface.co/settings/tokens/new?tokenType=read`, en una línea propia para que el terminal lo deje pulsable; `Ctrl+O` lo abre en el navegador, y con `Mouse` activado también basta con hacer clic en esa línea. lazarobox lo comprueba con el Hub y muestra tu usuario. Si el Hub lo rechaza, dice `Hugging Face did not accept the token` y no guarda nada. `Esc` mientras se comprueba la cancela y tampoco guarda el token.
 - El token se guarda en el mismo archivo que `hf auth login`: `$HF_TOKEN_PATH`, o `$HF_HOME/token`, o `~/.cache/huggingface/token`, con permisos `0600`. Nunca va a `config.toml`, ni se muestra, ni aparece en la línea de comandos de ningún proceso.
@@ -302,23 +603,70 @@ La lista de modelos de llamacpp termina en la fila `download from Hugging Face�
 
 El token va en la cabecera `Authorization` y solo a `huggingface.co`; `curl` no lo reenvía al CDN. Como en la comprobación de versiones, `curl` respeta tu proxy y tus certificados y se ignora `~/.curlrc`. Sin `curl` en el `PATH`, el flujo dice `Hugging Face needs curl on the PATH`.
 
+### Descargar modelos de Ollama
+
+Con el servidor de Ollama en marcha (detectado como `available`), la lista de modelos de ollama termina en la fila `download from Ollama…`. Sin servidor la fila no aparece, porque quien descarga es él. Desde ahí:
+
+1. **Elige un modelo.** Se muestran hasta 20 de los modelos más populares de la biblioteca de Ollama **que caben en la memoria de tu PC**, con sus descargas y los tamaños que caben (`llama3.2  86.3M pulls  1b 3b`), sin escribir nada. Quedan fuera los modelos de embeddings y los que solo funcionan en la nube. El tamaño se estima como en Hugging Face: 5 bits por parámetro, y cabe si ocupa como mucho el 70% de la RAM. Los tamaños «efectivos» (`e2b`, `e4b`) no dicen cuánto ocupa la descarga, así que no cuentan para esa estimación.
+2. **Elige el tamaño.** Cada etiqueta aparece como `<modelo>:<etiqueta>` con su tamaño exacto, la suma de las capas de su manifiesto (`llama3.2:3b  2.0 GB`). Lo que no cabe lleva la marca `too big for this PC` y se puede elegir igualmente. Si un manifiesto no se pudo leer, la fila dice `size unknown`.
+3. **Confirma.** Antes de bajar nada se muestran el modelo y su tamaño, la **licencia** (la primera línea de cada capa de licencia, o `license: not stated`) con el enlace para leerla (`https://ollama.com/library/<modelo>:<etiqueta>`), la carpeta donde Ollama guarda los modelos y el espacio libre. Nada se descarga hasta que pulsas `y`; `n` o `Esc` vuelve atrás.
+4. **Descarga.** La hace tu servidor de Ollama, en segundo plano. Solo corre una descarga a la vez, sea de Hugging Face o de Ollama: mientras una corre, `Enter` en la fila de la otra dice `a download is already running`. La fila muestra `↓ 42% <modelo>:<etiqueta> · <licencia>` y la barra de estado `↓ 42%`. `Enter` sobre la fila ofrece cancelarla; Ollama conserva lo ya bajado y, si vuelves a elegir la misma etiqueta, sigue donde se quedó.
+5. **Úsalo.** Al terminar se vuelven a detectar los motores y el modelo aparece en la lista de ollama.
+
+**Dónde se guarda.** Donde lo guarda tu servidor de Ollama; lazarobox nunca escribe en su almacén. Normalmente es `$OLLAMA_MODELS`, `~/.ollama/models` o, con el servicio de Linux, `/usr/share/ollama/.ollama/models`. La confirmación muestra la primera de esas carpetas que encuentra, y si no encuentra ninguna dice `the Ollama server's models folder`. Para borrar un modelo, pulsa `d` sobre su fila (ver «Borrar un modelo») o usa `ollama rm <modelo>`.
+
+**Borrar un modelo.** En la lista de modelos de ollama, con el cursor sobre un modelo descargado (`✓`), el pie muestra `d delete`. `d` abre una confirmación con el nombre, el tamaño y el aviso de que no se puede deshacer. Solo una `y` sin modificadores la confirma; cualquier otra tecla vuelve atrás y una tecla mantenida no cuenta. El borrado lo hace tu servidor de Ollama (`DELETE /api/delete` en `127.0.0.1`, con el nombre en el cuerpo JSON). Al terminar, un aviso dice el resultado y se vuelven a detectar los motores. Como Ollama comparte capas entre modelos, el tamaño es un máximo: el aviso dice `freed up to …` y puede liberarse menos.
+
+En la lista de modelos de llama.cpp, `d` funciona igual sobre un archivo `.gguf` que encontró la búsqueda de modelos. La confirmación nombra el archivo, su carpeta y su tamaño (`size: measuring…` hasta que lazarobox lo mide; `y` espera a tenerlo). Un modelo dividido (`-00001-of-00003.gguf`) se borra entero, con todas sus partes, y el tamaño es su suma. Si el archivo está en la caché de Hugging Face, compartida con `hf`, `huggingface_hub` y llama.cpp, la confirmación avisa de que esas herramientas tendrán que volver a descargarlo; se borran juntos el enlace del snapshot y su blob, un blob que otro snapshot sigue usando se queda, y una carpeta de snapshot o de repositorio que queda vacía se borra (con su `refs/` y los marcadores vacíos de `.no_exist`, solo si no queda nada más). Antes de borrar, lazarobox vuelve a comprobarlo todo: el archivo, con los enlaces seguidos, tiene que estar dentro de las carpetas de modelos; tiene que ser un `.gguf` normal, o un enlace a un blob de su mismo repositorio; y solo se borran archivos y carpetas ya vacías, nunca una carpeta entera. Los archivos `.incomplete` de una descarga a medias y los `mmproj` no se tocan. Un modelo que usa una tarea, el modelo del llama-server gestionado o uno que el llama-server tiene cargado se rechazan, y el aviso dice quién lo usa. Las filas de un llama-server que lazarobox no gestiona no tienen `d`: solo dan un nombre, no un archivo. Si algo falla a medias, el aviso dice qué se borró y qué no.
+
+No se puede borrar un modelo en uso, y el aviso dice quién lo usa: una tarea que lo tiene asignado, en el borrador o en la configuración guardada (asígnale otro primero), o un turno de chat en marcha con ese modelo. Mientras corre una descarga tampoco (`a download is already running`). Se comprueba al pulsar `d` y otra vez al pulsar `y`.
+
+**Qué se envía.** Solo cuando estás en este flujo, nunca al arrancar ni en segundo plano, y sin credenciales:
+
+- con el `curl` del sistema y solo por HTTPS: la página `https://ollama.com/library?sort=popular` al entrar, un manifiesto de `registry.ollama.ai` por etiqueta en la pantalla de tamaños y una petición por capa de licencia en la confirmación;
+- tras `y`, una sola petición `POST /api/pull` a tu servidor de Ollama en `127.0.0.1` (en su puerto, el de `[ai.servers]` si lo cambiaste), con `{"model":"<modelo>:<etiqueta>","stream":true}`.
+
+**La página puede cambiar.** La lista sale de la página web de la biblioteca de Ollama, que no es una API publicada y puede cambiar en cualquier momento. Si no se puede leer o no trae ningún modelo, la lista muestra el catálogo incluido en lazarobox, con el aviso `could not read the Ollama library; showing the built-in list` delante.
+
 ---
 
 ## 💬 Chat de IA (experimental)
 
 Con `Ctrl+Espacio` y `c` se abre un panel de chat con un modelo, sin salir del workspace. Es una función **experimental**. Funciona con **Ollama** (local: debe estar instalado y en ejecución con `ollama serve`, y el modelo elegido debe estar descargado con `ollama pull <modelo>`), con los servidores locales **llama.cpp** (`llama-server`), **LM Studio** y **vLLM**, que hablan por HTTP con `127.0.0.1`, y con los CLIs **claude**, **codex** y **gemini**, que usan tu propio inicio de sesión (ver «Motores CLI: claude, codex y gemini»).
 
-Teclas dentro del chat:
+Las teclas del chat (enviar, cancelar, copiar, aprobar, revisar, editores) están en la [referencia de teclas](#referencia-de-teclas-por-vista).
 
-| Tecla                  | Acción                                              |
-| :--------------------- | :-------------------------------------------------- |
-| `Enter`                | Envía el mensaje                                    |
-| `Alt+Enter` / `Ctrl+J` | Salto de línea en el mensaje                        |
-| `Esc` / `Ctrl+C`       | Cancela la respuesta en curso                       |
-| `Ctrl+R`               | Muestra u oculta el razonamiento del modelo         |
-| `Ctrl+Y` / `Ctrl+B`    | Copia la última respuesta / su último bloque de código (OSC 52) |
-| `PageUp` / `PageDown`  | Desplaza la conversación                            |
-| `Ctrl+G`               | Abre la revisión de un lote huérfano (insignia `orphan N · Ctrl+G`) |
+**La línea de espera.** Mientras no llega ningún byte de la respuesta, la última línea de la conversación dice a quién se espera: `waiting for the model…` (pasados 3 s sin respuesta, `still waiting for the model…`), `running <herramienta>…` mientras una herramienta corre, o `waiting for your answer…` mientras hay un aviso de aprobación abierto. Con un servidor local (Ollama, llama.cpp, LM Studio, vLLM) la línea de espera larga añade los segundos que lleva el reloj de la petición y su límite, por ejemplo `still waiting for the model… 45s (gives up at 120s)`; en cuanto el servidor empieza a responder (aunque sea solo con las cabeceras, o con texto que lazarobox retiene), el límite mostrado pasa a ser el de inactividad, 60 s desde la última lectura que lazarobox conoce (por ejemplo `gives up at 73s`), con hasta 1 s de margen por abajo, y se recorta a los 15 min del turno entero; una excepción conocida: en el reintento sin herramientas, los primeros segundos de la nueva petición todavía muestran el límite anterior; los segundos se cuentan desde el aviso de lentitud del reloj de la petición, empiezan de nuevo con cada petición que sigue a una herramienta y solo se muestran mientras la línea espera al modelo (bajo un aviso de aprobación o con una herramienta en marcha la línea no lleva segundos). Con claude, codex y gemini no se muestran segundos ni límite: su límite de inactividad (300 s) se reinicia con cada lectura, que lazarobox no ve desde el panel. En un panel estrecho la línea se acorta (primero se omite el límite, luego los segundos) y nunca cambia de altura. Con un aviso de aprobación abierto, una tecla que no sea `y`, `n`, `p`, Esc ni Ctrl+C, y un pegado, no llegan al compositor: se muestra el aviso `Answer the pending confirm first`, y una respuesta que llega antes de que el aviso pueda tomarla nunca aprueba nada: en un aviso normal (`y`, `n` o Esc) muestra `Prompt just opened: answer again in a moment`; en la revisión de un lote lo muestran `n` y Esc, mientras que `y` conserva su propia pista en la vista y no muestra ese aviso.
+
+Mientras hay un bloque de razonamiento en curso, la línea de espera no se dibuja: ninguna de estas etiquetas aparece hasta que el razonamiento termina (el razonamiento cuenta como primer byte).
+
+**La carpeta del chat.** Las herramientas (leer, buscar, escribir, ejecutar, git) trabajan dentro de una sola carpeta, la _carpeta del chat_:
+
+- Empieza en la carpeta actual del panel **con foco** en el momento de pulsar `Ctrl+Espacio` y `c`. Un `cd` posterior en un shell no la mueve: se cambia con el selector al abrir el chat o con `/cd` (más abajo).
+- Los CLIs (**codex**, **claude**, **gemini**) corren en una carpeta privada propia (`cli-cwd`; con gemini conectado, una carpeta `work` por turno) y llegan al proyecto solo por las herramientas de lazarobox. Pedirle al modelo que haga `cd` no sirve de nada.
+- Con la carpeta del chat en `$HOME`, una carpeta superior o `/`, la herramienta `run_command` del modelo no ejecuta nada (`where commands cannot run`). Con un motor en la nube, además, todo comando de tu panel en modo `run` pide confirmación (`the chat's folder is your home or /`).
+- Si lanzas lazarobox desde rofi o un lanzador de escritorio, arranca en `$HOME`: al abrir el chat aparece el selector de carpeta y eliges el proyecto sin salir de lazarobox.
+
+#### El selector de carpeta y `/cd`
+
+Al abrir un chat, si su carpeta es **amplia o desconocida** (`$HOME`, un ancestro de `$HOME` como `/home`, `/`, una carpeta del sistema o fuera de `$HOME`, o un panel que no ha informado de su carpeta) aparece el selector antes de la lista de conversaciones. Con una carpeta de proyecto el chat se abre como siempre. Ninguna carpeta se elige sin que pulses una tecla, tampoco la actual ni la última usada.
+
+Las herramientas de lectura del chat llegan a `$HOME` y, en WSL, a las unidades de Windows (`/mnt/c`, `/mnt/d`…, las que `/proc/mounts` da como drvfs). En una unidad se puede leer todo salvo las carpetas de sistema de Windows (`Windows`, `Program Files`, `Program Files (x86)`, `ProgramData`, `$Recycle.Bin`, `System Volume Information`, `Recovery`, lo que deja una actualización de Windows (`Windows.old`, `$Windows.~BT`, `$Windows.~WS`, `$WinREAgent`), y `pagefile.sys`, `hiberfil.sys` y `swapfile.sys`), los perfiles de otros usuarios (solo tu perfil y `Public`) y, dentro de esos dos, `AppData`, `NTUSER.DAT*` y las mismas carpetas y ficheros secretos que en `$HOME` (`.ssh`, `.aws`, `.env`…), sin distinguir mayúsculas. También se rechaza cualquier nombre corto de DOS (un `~` seguido de un dígito, como `PROGRA~3`), porque drvfs lo resuelve a la carpeta larga; un fichero tuyo llamado así (`copia~1.txt`) tampoco se lee. Tu perfil se averigua al arrancar con `cmd.exe /d /c echo %USERPROFILE%`; mientras no responde, o si falla, solo se lee `Public`. Una carpeta de proyecto en una unidad (`/mnt/c/Users/<tú>/Documents/app`) vale como carpeta del chat; la raíz de la unidad, `Users` y la raíz de tu perfil son amplias, como `$HOME`, y solo se aceptan escritas. Escribir, ejecutar comandos (`run_command`) y usar git en una carpeta de una unidad necesita tu permiso: justo después de elegirla en el selector, confirmar un `/cd` o reanudar una conversación en ella, el chat pregunta `Allow writes, commands and git in <carpeta>? (y/n)`. Solo una `y` minúscula sin modificadores lo concede; cualquier otra respuesta deja el chat en solo lectura, y cada escritura, comando o verbo de git responde `path not available: the chat's folder <carpeta> is on a Windows drive, where writes, commands and git need your permission; ask the user to run /cd <carpeta>`. El permiso cubre esa carpeta y sus subcarpetas, vive en memoria hasta que cierras la aplicación y se pierde al cambiar de carpeta: no se guarda con la conversación, así que al reanudarla se pregunta otra vez, y un chat nuevo tampoco lo hereda. `/cd` a la carpeta actual vuelve a preguntar mientras no lo hayas concedido. Nunca se pregunta en una carpeta amplia (la raíz de la unidad, `Users`, la raíz de tu perfil), donde no se escribe ni se ejecutan comandos ni git, ni mientras el chat está ocupado; el modelo no puede abrir la pregunta ni contestarla. Con permiso siguen valiendo las mismas reglas que en `$HOME` (`.git/`, `node_modules/`, `.env`…), y los comandos y git corren en esa carpeta dentro de la misma jaula que en `$HOME`, que tampoco acepta como raíz la de la unidad, `Users`, ningún `Users/<nombre>`, las carpetas de sistema de Windows ni un nombre corto de DOS, sin distinguir mayúsculas. Cada comando y cada `git add` o `git commit` te sigue preguntando como en `$HOME`. En drvfs, `git init` deja `core.filemode=false`. Fuera de `$HOME` y de las unidades nada cambia: si el chat se abrió en una carpeta así y cierras el selector con `Esc`, el chat se queda en ella y avisa con `the file tools cannot read <carpeta>: it is outside your home folder; move the project into your home folder, or use /cd with a folder inside it`; mueve el proyecto a tu carpeta personal o cambia con `/cd` a una carpeta dentro de ella (`/cd` rechaza las de fuera). Si el modelo intenta leer una base de datos SQLite, la herramienta responde que no es texto y le sugiere proponer un comando `sqlite3` en tu panel; como cualquier otro comando, espera a que lo revises y pulses Enter.
+
+Candidatos, cada uno una vez: la carpeta en la que estabas al abrir el chat, la última carpeta usada, la raíz git de los paneles de la pestaña, las carpetas recientes del historial y el último cwd de shell. Solo la primera puede ser `$HOME`: cuando el panel desde el que abres el chat está en `$HOME` (o en una carpeta amplia que el selector acepta escrita, como `/home`), esa carpeta es la primera fila, marcada `current ⚠` y preseleccionada, con un aviso de lo que implica: en una carpeta amplia las herramientas del chat no escriben, no ejecutan comandos (`run_command`) ni usan git, con cualquier motor. Un solo Enter te deja donde estás; la última carpeta usada pasa a la segunda fila. `/`, las carpetas del sistema y las de fuera de `$HOME` nunca son fila, y el selector que se abre al reanudar una conversación no la tiene. Como mucho 12 filas. Si no hay ninguno, queda solo el campo de ruta.
+
+Las teclas del selector están en [«Referencia de teclas por vista»](#referencia-de-teclas-por-vista).
+
+Una ruta rechazada (`folder not found`, `not allowed`) deja el selector abierto con el texto y el motivo. `/` se rechaza siempre, igual que las carpetas del sistema; `$HOME` se acepta solo si lo escribes o pulsas Enter sobre la fila `current`. Una tecla mantenida pulsada edita pero nunca decide (salvo `Esc`, que cancela). Mientras se comprueba la carpeta al abrir el chat (hasta 3 s si el disco va lento) el chat ignora teclas y pegados, y las acciones de nota, resumen, etiquetas, memoria, ejecutar en panel y aprobación responden `Choose the chat folder first`.
+
+Avisos del selector y de `Tab` en `/cd`: `still looking for folders` (aún se buscan candidatos), `no matching folder` (nada completa) y `folder check is busy, try again` (una comprobación anterior sigue en el disco). Si la carpeta que eliges está ocupada por otra acción, el selector se queda abierto con el motivo.
+
+**`/cd <carpeta>`** cambia la carpeta de un chat ya abierto. Es un comando tuyo: no llega al modelo, funciona aunque no haya motor y pide confirmación con `y` (cualquier otra tecla cancela y el texto se queda en el mensaje). `Tab` completa la ruta (ver la referencia de teclas). Para enviar de verdad un mensaje que empieza por `/cd`, escribe `//cd`.
+
+- Se rechaza mientras haya una aprobación pendiente, un comando corriendo, el modelo respondiendo, escrituras en lote por revisar, una nota guardándose, un editor de nota o resumen abierto o un mensaje esperando para enviarse.
+- Una `y` mantenida nunca confirma. Un `Enter` pulsado justo después del que envió `/cd` cuenta como la misma tecla mantenida (500 ms) y no cancela; `Esc` o `n` cancelan siempre.
+- Al cambiar de carpeta se rehacen el _system prompt_ y la sesión de herramientas, y la memoria (engram) pasa al proyecto nuevo. El modelo recibe una vez el aviso del cambio.
+- La carpeta se guarda con la conversación en `chat.db` (columna `folder`: se guarda la **ruta**; sin historial no se guarda nada). Al reanudar una conversación vuelve a su carpeta si sigue siendo válida; si no existe, no está guardada o es amplia, se muestra el selector sobre la conversación y `Esc` mantiene la carpeta del panel.
 
 **Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
 
@@ -382,7 +730,7 @@ compaction = "off"   # "auto" (por defecto) | "off"
 Límites de esta versión:
 
 - `opencode` se detecta, pero aún no tiene adaptador de chat. El menú lo marca con `detected · not in chat yet` y no deja elegirlo.
-- El chat con `llama.cpp` (`llama-server`) está probado con respuestas grabadas de un servidor real; `lmstudio` y `vllm` usan el mismo formato (`/v1/chat/completions` con SSE) pero aún no se han grabado ni probado con un servidor real. Ninguno de los tres muestra razonamiento ni ofrece herramientas al modelo.
+- El chat con `llama.cpp` (`llama-server`) está probado con respuestas grabadas de un servidor real; `lmstudio` y `vllm` usan el mismo formato (`/v1/chat/completions` con SSE) pero aún no se han grabado ni probado con un servidor real. Ninguno de los tres muestra razonamiento; `lmstudio` y `vllm` tampoco ofrecen herramientas al modelo (las de `llama.cpp` se describen en «Tools with llama.cpp»).
 - Las etiquetas extra de una conversación vuelven en orden alfabético al reabrirla.
 
 ### Run a command from the chat
@@ -393,7 +741,7 @@ When the last answer of a chat ends with a shell code block (` ```bash `, `sh`, 
 
 | Key       | Action                                                                 |
 | :-------- | :--------------------------------------------------------------------- |
-| `y`       | Types the command into the target pane. **It never presses Enter.**   |
+| `y`       | Types the command into the target pane. **It never presses Enter.** (A model's command in `run` mode is run instead, see below.) |
 | `n` / `Esc` | Declines. Nothing is written.                                        |
 | `p`       | Moves the target to the next shell pane of the tab (with wrap).        |
 | `Ctrl+C`  | Cancels the answer in progress and declines.                           |
@@ -416,7 +764,7 @@ approval = "ask"
 
 #### Approval mode
 
-By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter** (salvo en `run`, ver más abajo): the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
+By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter** (except in `run`, see below, where a command you approve with `y` also runs): the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
 
 - Cycle `ask`, `auto` and `run` for the focused chat with `Ctrl+Space`, then `a` (it also works while an approval is waiting, which stays waiting). A system line in the chat says which mode is on.
 - A chat in auto mode wears an amber ` AUTO ` badge, and one in run mode a red ` RUN ` badge, at the top right of its pane, focused or not. Nothing is drawn in `ask` mode, or with tools off.
@@ -424,12 +772,13 @@ By default every command a model asks to run needs your `y` (`approval = "ask"`)
 - The **Approval** row of the AI menu (after **Tools**, before **Hugging Face**) cycles `ask`, `auto` and `run` with `h`/`l` and `s` writes `approval` in `[ai.tools]`, even when it equals the default. It has no live effect: an open chat and a pending approval keep their mode, and the saved value reaches panes opened afterwards and the next conversation switch, like an edit of the file.
 - The command is typed through the same checks as `y`: it must pass the command validator, the pane must be a shell of the chat's tab outside a full-screen app, and a multi-line command needs bracketed paste. A check that fails gives the model a `denied` result with the reason and writes nothing. The call row in the chat always shows the exact command.
 - The command is only typed when the shell itself is in the foreground of the pane; if a program runs there (`python3`, `ssh`, a nested shell), or the foreground cannot be read, the call is denied (`pane N is running a program`). The pane of an update (`cargo install`) is never a target.
-- It falls back to the normal prompt, never to a denial, when: the target pane has the focus (you may be typing in it); the chat's tab is not the one shown, or is zoomed onto another pane (you could not see the typing); a previous auto-typed command still sits unsent on that pane; or five commands were already typed in this turn. The unsent mark clears when you press Enter, `Ctrl+C` or `Ctrl+U` in that pane, paste text with a newline into it while the shell has bracketed paste off (inside bracketed paste a newline runs nothing), or close it. A command you typed with `y` marks its pane the same way. Backspace and other keys leave it set, so after you edit the line the next command still asks.
-- An approval already waiting is never answered by the mode, and a call that arrives while one waits is denied (`another approval is pending`).
+- It falls back to the normal prompt, never to a denial, when: the target pane has the focus (you may be typing in it); the chat's tab is not the one shown, or is zoomed onto another pane (you could not see the typing); a previous auto-typed command still sits unsent on that pane; or five commands were already typed in this turn. The unsent mark of a command lazarobox typed clears when you press Enter, `Ctrl+C` or `Ctrl+U` in that pane, paste text with a newline into it while the shell has bracketed paste off (inside bracketed paste a newline runs nothing), or close it. A command you typed with `y` marks its pane the same way. Backspace and other keys leave it set, so after you edit the line the next command still asks.
+- It also asks when you typed anything in the target pane (a key, a paste, the mouse wheel), because the shell may still have text on the line and the command would be appended to it. Enter or `Ctrl+C` in that pane clears this mark; `Ctrl+U` does not, since readline and zle may kill only the text left of the cursor and leave the rest to run. (After Tab or an arrow key, the next Enter only accepts a completion, so press it once more.)
+- An approval already waiting is never answered by the mode, and a call that arrives while one waits is denied (`another approval is pending`), except a read or a search the mode answers without a prompt (in `run`, see below; a local engine's read outside the chat's folder in `ask` and `auto`), which runs, or is refused, as it would with nothing waiting.
 
 Residual risks (design D18), so you can decide if auto is for you:
 
-- A typed command lands after a line you left half-typed in an unfocused pane: the typed text is appended to it, and lazarobox only knows about lines it typed itself.
+- A typed command lands after text the shell still holds on the line, for example one you left half-typed in an unfocused pane: the typed text is appended to it. lazarobox asks first when you typed anything in that pane (see above), but it cannot see text that reached the line any other way.
 - A program that acts on input without Enter (vi mode of readline or zle in normal state, a pager, a TUI outside the alternate screen) can react to the typed text. Bracketed paste makes readline and zle insert it literally; without it only single lines are typed.
 - The foreground check cannot see a shell builtin that reads your input (`read`, `select`): the shell is still the foreground process, so the text is typed into what the builtin is waiting for.
 - The foreground check happens just before the write; a program started in those microseconds is not covered.
@@ -437,16 +786,52 @@ Residual risks (design D18), so you can decide if auto is for you:
 
 #### Modo `run`
 
-En modo **run** lazarobox hace lo que `auto` no hace: para un comando de una lista corta y segura escribe el comando **y pulsa Enter**, espera a que termine y devuelve su salida al modelo. Cualquier otro comando sigue el camino normal: aparece la confirmación y `y` solo lo escribe, sin Enter. Es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
+En modo **run** lazarobox hace lo que `auto` no hace: un comando de búsqueda o navegación dentro de la carpeta del chat se escribe **y se ejecuta con Enter**, lazarobox espera a que termine y devuelve su salida al modelo. Cualquier otro comando pide confirmación (`y run it · n cancel · p next pane`), y con `y` lazarobox lo escribe, pulsa Enter, espera a que termine y devuelve su salida al modelo, igual que un comando que corre solo: `y` es tu permiso. Es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
 
-**Lista segura.** Un único comando, con palabras separadas por un solo espacio, de entre `cd`, `pwd`, `ls`, `tree` y `mkdir`:
+![rg se ejecuta solo dentro de la carpeta del chat y su salida vuelve al modelo](docs/assets/run-search.gif)
 
-- `cd` (como mucho una ruta), `pwd` (ninguna), `ls` (flags `l a h t r 1`, hasta 4 rutas), `tree` (`-d`, `-L <n>`, una ruta; sin `-a`, para no listar nombres de archivos ocultos) y `mkdir` (`-p`, de 1 a 4 rutas).
+![cd .. sale de la carpeta del chat, así que pide confirmación; con n se rechaza](docs/assets/run-outside.gif)
+
+**Con `y` se ejecuta.** El comando corre como uno que va solo: un Enter, como mucho 10 s de espera y la salida recortada a 8 KiB (las 100 primeras y las 100 últimas líneas). No cuenta para el límite de cinco comandos sin confirmar por turno. `y` solo lo escribe, sin Enter, como en `ask` (la confirmación lo dice con `y type it (no Enter)`), y la línea del chat dice por qué (`not run: …`), cuando:
+
+- el comando ocupa varias líneas (`a multi-line command is typed, not run`);
+- no se puede leer el directorio del panel, como en macOS (`the pane's directory cannot be read on this system`);
+- el panel ya ejecuta otro comando, o tiene una línea a medio escribir que el Enter ejecutaría con él;
+- el locale no es UTF-8 y el comando tiene caracteres no ASCII;
+- al escribir, el panel ya no está en el mismo directorio o ejecuta un programa.
+
+La confirmación de `Ctrl+Space`, `e` (un bloque de la respuesta, no una llamada del modelo) solo escribe, también en `run`. En `ask` y `auto`, `y` sigue sin pulsar Enter.
+
+**Corre solo.** `cd`, `pwd`, `ls`, `tree`, `find`, `grep` y `rg`, cuando todas sus rutas, y el directorio del panel si no se da ninguna, quedan dentro de la carpeta del chat. `pwd` corre en cualquier sitio y un `cd` sin ruta va a `~`. `tree`, `grep` y `rg` además solo actúan dentro de `$HOME`.
+
+**Pregunta.** La confirmación dice el motivo:
+
+- Cualquier otro comando, `git` y `mkdir` incluidos (``not a safe command: `git` ``), o uno que la gramática de abajo no admite.
+- Una ruta, o el directorio del panel, fuera de la carpeta del chat (`the command reaches outside the chat's folder`).
+- Con un motor en la nube, todo comando cuando la carpeta del chat es `$HOME`, `/` o una carpeta que contiene `$HOME`, también a través de un enlace simbólico (`the chat's folder is your home or /`). Con un motor local esta regla no se aplica.
+- Un `grep -r` sobre una carpeta con más de 5000 entradas, o un `rg` que leería más de 5000 (`the folder is too large to check`). Para `rg` la comprobación recorre la carpeta con el mismo recorrido de ripgrep: salta los ocultos y lo que ignoran `.gitignore`, `.ignore`, `.rgignore`, `.git/info/exclude`, las exclusiones globales de git y los archivos de ignorados de las carpetas superiores, y respeta `--max-depth`; así un `target/` o un `node_modules/` ignorado no cuenta para ese límite. Aun así, lo que hay en las carpetas ignoradas (sin entrar en las ocultas) se juzga igual, por si el `rg` instalado entra en ellas. Con `-t` o `-T` también juzga los archivos ocultos, porque un tipo puede incluirlos (`rg -t sh` lee `.bashrc`).
+- Un `rg` cuando las exclusiones globales de git, o un `.ignore`, `.rgignore`, `.gitignore` o `.git/info/exclude` de una carpeta de debajo, ignorada o no, o de una superior, tienen una línea `!`, que podría hacerle leer archivos ocultos: el `rg` instalado puede aplicar esos archivos de otra forma que la comprobación (`an ignore file may let the search read hidden files`).
+- Un `rg` cuyo recorrido encuentra una carpeta o un archivo de ignorados que no se puede leer, o más de 100 000 entradas contando las ignoradas (`a folder in the search cannot be checked`).
+
+**Nunca corre solo.** Pregunta con `a path in the command is not allowed to run directly`:
+
+- Una ruta sensible (ver «Which paths the read tools refuse»), también si se llega a ella por un enlace simbólico.
+- Un `find`, `grep -r` o `rg` sobre una carpeta que contiene una carpeta de secretos (`~/.ssh`, `~/.gnupg`, credenciales…).
+- Un `grep -r` o un `rg` que leería un archivo sensible por su nombre o su posición (`.env`, `.git/config`…), y un `grep` o `rg` al que se le da uno de esos archivos o un `.git/config`.
+
+**Gramática.** Un único comando de hasta 8 palabras separadas por un solo espacio:
+
+- `cd` (como mucho una ruta), `pwd` (ninguna), `ls` (flags `l a h t r 1`, hasta 4 rutas), `tree` (`-d`, `-L <n>`, una ruta; sin `-a`, para no listar nombres de archivos ocultos).
+- `grep` (flags `i n l c w v F E H h s o x r`, `-A`/`-B`/`-C`/`-m <n>`, un patrón y al menos una ruta; sin `-R` ni `-f`).
+- `rg` (flags `i s S n N l c w v F x H o`, `-A`/`-B`/`-C`/`-m <n>`, `-t`/`-T <tipo>`, `--max-depth <n>` y algunas opciones largas (`--ignore-case`, `--count`, `--no-heading`…); sin `--hidden`, `--no-ignore`, `-u`, `-L`, `--pre` ni `-z`).
+- `find` (`-name`, `-iname`, `-type f|d|l`, `-maxdepth`, `-mindepth`; sin `-exec`, `-delete`, `-fprint`, `-ok` ni `-L`).
 - Las palabras solo admiten letras latinas (también acentuadas), dígitos y `. _ / @ % + : , = ~ -`; el espacio solo va dentro de comillas. Cualquier otra cosa pregunta, por ejemplo cirílico, CJK, emoji, `*` o `;`.
-- Las rutas pueden ir sin comillas o entre comillas simples o dobles (`ls -la "Mis Documentos"`): una palabra entera entre comillas, sin `$`, comilla invertida, `\`, `!` ni otras comillas. El verbo nunca va entre comillas.
-- Solo las rutas de `mkdir` y `tree` deben resolverse dentro de `$HOME`. Con todos los verbos salvo `cd` se comprueba siempre el directorio actual del panel; para `tree` debe estar dentro de `$HOME` aunque se le dé una ruta. `cd` y `ls` pueden ir a cualquier sitio (`cd /tmp`, `ls /etc`), salvo las carpetas de secretos (`~/.ssh`, `~/.gnupg`, credenciales…), también si se llega a ellas por un enlace simbólico. Lo que no cumpla esto, o no exista, pregunta y la confirmación dice por qué.
-- No entran `&&`, `;`, `|`, `$`, redirecciones, globs ni opciones largas. Las rutas pasan la misma política que las herramientas de lectura, comprobada sobre el directorio real del panel.
-- Además, el panel debe estar libre: sin comando en ejecución, sin línea a medias, sin el foco, en la pestaña visible y con el locale en UTF-8. Si no, se usa la confirmación normal. Cada turno admite como máximo 5 comandos automáticos, y tres rechazos seguidos por gramática o ruta pausan el modo `run` hasta el final del turno; el contador vuelve a cero cuando un comando se ejecuta y en cada turno nuevo, y los motivos del estado del panel (ocupado, foco, línea a medias…) no cuentan.
+- Las rutas y los patrones pueden ir sin comillas o entre comillas simples o dobles (`ls -la "Mis Documentos"`): una palabra entera entre comillas, sin `$`, comilla invertida, `\`, `!` ni otras comillas. El verbo nunca va entre comillas.
+- No entran `&&`, `;`, `|`, `$`, redirecciones, globs ni otras opciones largas. Las rutas pasan la misma política que las herramientas de lectura, comprobada sobre el directorio real del panel.
+
+**Panel libre y pausa.** El panel debe estar sin comando en ejecución, sin línea a medias, sin el foco, en la pestaña visible y con el locale en UTF-8; si no, se usa la confirmación normal. Cada turno admite como máximo 5 comandos automáticos, y tres rechazos seguidos pausan el modo `run` hasta el final del turno. Solo cuentan los de gramática y los de ruta no permitida (`a path in the command is not allowed to run directly`); salir de la carpeta, una carpeta amplia, demasiado grande o que no se puede comprobar, un archivo de ignorados con una línea `!` y el estado del panel (ocupado, foco, línea a medias…) no cuentan. El contador vuelve a cero cuando un comando se ejecuta y en cada turno nuevo.
+
+**Lecturas y búsquedas.** En `run`, `grep` (que solo busca dentro de la carpeta del chat) y `read_file` de un archivo dentro de la carpeta del chat corren sin confirmación, también con motores en la nube, y su resultado va al modelo. La ruta se juzga sobre la ruta real: un enlace simbólico dentro de la carpeta que apunta fuera cuenta como fuera, y la propia lectura vuelve a juzgarla sobre el archivo que abre, sin seguir enlaces, así que un enlace cambiado en el último momento no saca la lectura de la carpeta. Si la carpeta del chat es `$HOME` o `/` (o una carpeta que contiene `$HOME`), nada se lee solo: con un motor en la nube cada lectura y cada `grep` piden confirmación, y con uno local las lecturas siguen como en `ask`. Leer un archivo fuera de la carpeta del chat pide confirmación con cualquier motor, también con uno local; si esa ruta no se puede mostrar tal cual se abriría (demasiado larga, con caracteres invisibles o de control), se deniega con `path cannot be shown safely`, porque ninguna confirmación podría aprobarla. Las rutas sensibles (ver «Which paths the read tools refuse») se siguen rechazando como siempre, sin preguntar y sin leerse. Una lectura que corre sola no cuenta como tu `y`: un `edit_file` posterior del mismo archivo sigue pidiendo confirmación. `edit_file`, `run_command`, las escrituras y las herramientas de usuario no cambian, y en `ask` y `auto` las lecturas y búsquedas siguen como antes.
 
 **Por qué pide confirmación.** La confirmación de un comando que no corrió directamente muestra una línea con el motivo y el trozo que lo causó, por ejemplo ``shell metacharacter: `&&` ``, ``not a safe command: `git` `` o `a command is still running in the pane`. Los caracteres de control, de formato (bidi, espacio de ancho cero) e invisibles se dibujan como `?`. La línea solo aparece si la confirmación tiene una fila libre; el comando completo siempre se muestra.
 
@@ -458,7 +843,7 @@ En modo **run** lazarobox hace lo que `auto` no hace: para un comando de una lis
 - Si tu prompt ocupa varias líneas, las superiores pueden colarse en la salida que recibe el modelo (se redactan, pero no se detectan).
 - Un programa a pantalla completa, que escribas en el panel mientras corre, o un panel que se cierra, tampoco devuelven salida.
 
-**Privacidad.** En `run` la salida del panel **se envía al modelo**, también con motores en la nube (claude, codex, gemini): puede incluir nombres de archivos, rutas y lo que imprima el comando. En `ask` y `auto` el modelo no recibe nada de la salida ni del directorio. Si algo no debe salir de tu máquina, no uses `run` con esa conversación.
+**Privacidad.** En `run` la salida del panel **se envía al modelo**, también con motores en la nube (claude, codex, gemini): puede incluir nombres de archivos, rutas y lo que imprima el comando. También se envían, sin preguntar, el texto de los archivos de la carpeta del chat que el modelo lea y las líneas que encuentre con `grep`. En `ask` y `auto` el modelo no recibe nada de la salida ni del directorio. Si algo no debe salir de tu máquina, no uses `run` con esa conversación.
 
 Riesgos residuales (diseño D20/D21 de `auto-execute`), que se suman a los de `auto`:
 
@@ -466,7 +851,7 @@ Riesgos residuales (diseño D20/D21 de `auto-execute`), que se suman a los de `a
 - Entre la comprobación de la ruta y la escritura hay una ventana en la que un enlace simbólico puede cambiarse (TOCTOU). Se comprueba de nuevo justo antes de escribir, pero no se elimina.
 - Continuación del prompt (PS2): si dejaste abierta una comilla, un `$(`, un heredoc o un bucle, o una línea que acaba en `\`, `&&`, `|`, `do` o `then`, el comando del modelo puede unirse a lo tuyo. Las palabras entre comillas son texto inerte y lazarobox rechaza texto con comillas sin cerrar, pero el caso en que lo cierras tú no se detecta hasta tener marcas de prompt (OSC 133).
 - Una línea de prompt que se cuele en la salida, como se dijo arriba.
-- Fuera de `$HOME`, `cd` y `ls` exponen solo nombres y los metadatos de `ls -l` (incluidos los destinos de enlaces simbólicos), nunca el contenido de los archivos. Los montajes bind no se detectan.
+- `ls`, `tree` y `find` exponen solo nombres y los metadatos de `ls -l` (incluidos los destinos de enlaces simbólicos), nunca el contenido de los archivos; `grep` y `rg` envían al modelo las líneas que encuentran. Con un motor local y la carpeta del chat en `$HOME` o `/`, esto vale para toda esa carpeta. Los montajes bind no se detectan.
 - El locale se lee del entorno de lazarobox; un archivo rc que lo cambie después no se ve.
 - Todo lo que dice `auto` sobre líneas a medias, `read`/`select` y programas que reaccionan sin Enter sigue valiendo.
 
@@ -474,7 +859,7 @@ Riesgos residuales (diseño D20/D21 de `auto-execute`), que se suman a los de `a
 
 El chat puede hablar con los CLIs **claude**, **codex** y **gemini** que ya tengas instalados y con la sesión iniciada (`claude`, `codex login`, `gemini`). lazarobox no pide ni guarda claves de API: arranca el CLI, le pasa la conversación por la entrada estándar y lee su respuesta. Se eligen como cualquier otro motor, en el menú de IA o en `[ai.tasks.chat]`.
 
-Versiones comprobadas: claude 2.1.299, codex-cli 0.142.5 y gemini 0.63.0. Otras versiones pueden fallar (ver «Si un CLI cambia»).
+Versiones comprobadas: claude 2.1.299, codex-cli 0.142.5 y gemini 0.63.0. Otras versiones pueden fallar (ver «Si un CLI cambia»). Las herramientas con codex necesitan codex 0.125 o posterior.
 
 **claude necesita la versión 2.1.259 o posterior**, porque las opciones de solo texto que usa lazarobox (`--permission-prompts none` entre ellas) no existen en versiones anteriores. Con una versión menor, lazarobox no lanza claude: el menú marca la fila con `update needed: 2.1.259+` y el chat muestra cómo actualizar (`claude update`, `brew upgrade claude-code` o `npm i -g @anthropic-ai/claude-code@latest`); después, `Ctrl+Espacio` `m` y `r` vuelven a detectar la versión. Si no se puede leer la versión, claude se lanza igualmente. Nunca se quitan opciones de solo texto para que quepa un claude antiguo.
 
@@ -491,11 +876,11 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 
 **Disponibilidad por sistema:**
 
-- **codex y gemini** exigen la jaula. Sin ella (otro sistema operativo, un núcleo sin Landlock o una instalación que la jaula rechaza) no se lanza ningún proceso y el panel indica `<motor>: not available on this system yet: <motivo>`. Una instalación que la jaula rechaza no se detecta en el panel: se ve al enviar, como el error `the CLI did not start: its jail could not be enforced: <motivo>`, y en la lista de motores del menú como `no jail: <motivo>`.
+- **codex y gemini** exigen la jaula. Sin ella (otro sistema operativo, un núcleo sin Landlock o una instalación que la jaula rechaza) no se lanza ningún proceso y el panel indica `<motor>: not available on this system yet: <motivo>`. Una instalación que la jaula rechaza no se detecta en el panel: se ve al enviar, como el error `the CLI did not start: its jail could not be enforced: <motivo>`, y en la lista de motores del menú como `refused · <motivo>` (la fila no se puede elegir; `y` copia el motivo completo, que nombra la instalación y qué hacer).
 - **claude** funciona también sin la jaula: en ese caso el panel avisa una vez con `claude runs without the jail here: <motivo>`. En ese modo solo lo protegen las opciones de solo texto.
 - En sistemas que no son Linux ni macOS no hay jaula. El chat funciona con claude (sin la jaula, protegido solo por sus opciones de solo texto) y con Ollama, mientras que codex y gemini no arrancan. El mensaje lo indica: `the CLI jail needs Linux or macOS; on this system use claude or Ollama for chat`.
 - **macOS: codex y gemini corren dentro de la jaula (Seatbelt).** Se aplica con `/usr/bin/sandbox-exec`, con el mismo reparto de permisos que en Linux (ver abajo). macOS 14 o posterior es la versión admitida; una versión anterior no se bloquea si la comprobación inicial pasa, pero no está probada. Al arrancar, lazarobox comprueba con tres programas de prueba (uno permitido, una escritura denegada y una ejecución denegada) que la jaula de verdad restringe, con un único límite total de 10 s. Si falla, codex y gemini se rechazan, nunca se ejecutan sin jaula.
-- **gemini en macOS: todavía no verificado en un Mac real.** Se prueba en CI con CLIs de mentira, pero no con el gemini real. codex se está verificando con un probador (ver `docs/macos-tester-checklist.md`).
+- **macOS no está soportado oficialmente.** Lo que sigue describe cómo está implementado, no una garantía. gemini en macOS no se ha verificado en un Mac real: se prueba en CI con CLIs de mentira, no con el gemini real. Quien quiera probar codex en un Mac puede seguir `docs/macos-tester-checklist.md`, pensada para voluntarios; sus resultados no cambian por sí solos el estado de soporte.
 - **claude nunca corre dentro de la jaula en macOS.** Guarda su sesión en el llavero (Keychain) y la jaula se lo impediría; en macOS siempre corre sin jaula, solo con sus opciones de solo texto, aunque la comprobación de la jaula falle. El panel lo avisa con `claude runs without the jail here: claude keeps its macOS Keychain login, so it never runs jailed on macOS` y nunca lo trata como «jaula no disponible».
 
 **La jaula en macOS: lo que cambia.**
@@ -511,6 +896,7 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 **Riesgos que quedan (léelos):**
 
 - **La jaula limita, no es un sello.** Landlock no controla `mmap` con permiso de ejecución, así que el cargador dinámico que necesita un CLI de scripts podría arrancar un programa legible; por eso se retiran de la lectura `/usr/bin`, `/usr/sbin` y `/bin`. Los programas que quedan bajo `/usr/lib` siguen siendo alcanzables. Las restricciones de `execve` son defensa en profundidad. La red **no** está restringida: un CLI puede conectar a cualquier destino (es lo que necesita para hablar con su proveedor).
+- **codex y gemini no cargan automáticamente tus instrucciones, _skills_ ni _system prompt_** (la carpeta de estado de cada turno es privada), pero eso no es un aislamiento total: una herramienta que ejecute el modelo dentro de la jaula sigue pudiendo leer y escribir `~/.gemini` y `~/.codex`, porque la jaula los concede para poder renovar el inicio de sesión. Tampoco se buscan archivos `AGENTS.md` ni `GEMINI.md` en carpetas superiores: codex se lanza con `project_root_markers=[]` y gemini con `context.memoryBoundaryMarkers = []`, de modo que solo se mira la carpeta de trabajo (vacía y privada).
 - **Las carpetas de estado son escribibles.** El CLI debe poder renovar su sesión, así que `~/.claude`, `$CODEX_HOME`/`~/.codex` y `~/.gemini` están en modo escritura. Si un modelo consiguiera que el CLI escribiera ahí una configuración (por ejemplo, hooks o servidores MCP), una ejecución posterior de ese CLI **sin** la jaula (tú, en tu terminal) la ejecutaría con tus permisos.
 - **claude reescribe `~/.claude.json` en el sitio.** Dentro de la jaula no puede crear el archivo temporal junto a `~/.claude.json`, y escribe directamente sobre él. Un corte en mitad de la escritura, o dos claude a la vez, pueden dejarlo dañado. Se está estudiando `CLAUDE_CONFIG_DIR` para evitarlo.
 - **El _system prompt_ de claude se ve en `ps`.** claude recibe el prompt del perfil como argumento de línea de comandos, visible para cualquier proceso local mientras dura el turno. codex y gemini lo reciben por la entrada estándar y en `ps` solo se ven opciones fijas y el nombre del modelo.
@@ -533,9 +919,9 @@ Comprobado con un claude 2.1.302 real y un servidor MCP de prueba: `--tools ""` 
 
 **Herramientas con codex (Tools with codex).** **Activas** desde que el usuario pasó la comprobación manual el 2026-10-17: codex figura en `MCP_VERIFIED` (la lista de motores cuya comprobación manual pasó). Con `[ai.tools] enabled` activo, cada turno hace esto.
 
-Comprobado a mano por el usuario con un codex real el 2026-10-17 (2g.6 y 2g.7): los `-c mcp_servers.*` bajo `--ignore-user-config`, las claves `env_vars`, `tool_timeout_sec` y `startup_timeout_sec`, la aprobación de una llamada MCP en `exec` y el elemento `mcp_tool_call`.
+Comprobado a mano por el usuario con un codex real el 2026-10-17 (2g.6 y 2g.7): los `-c mcp_servers.*` bajo `--ignore-user-config`, las claves `env_vars`, `tool_timeout_sec` y `startup_timeout_sec`, la aprobación de una llamada MCP en `exec` y el elemento `mcp_tool_call`. La clave `default_tools_approval_mode = "approve"` se comprobó con codex 0.162.1 (necesita codex 0.125 o posterior).
 
-- codex recibe el servidor por argumentos `-c mcp_servers.lazarobox.*` (valores TOML): `command` (el binario de lazarobox), `args = ["__mcp-serve", "<socket>"]`, `env_vars = ["LAZAROBOX_MCP_TOKEN"]`, `tool_timeout_sec = 900` (15 min, para que esperar tu `y` no corte la llamada) y `startup_timeout_sec = 20`. No se escribe ningún archivo de configuración.
+- codex recibe el servidor por argumentos `-c mcp_servers.lazarobox.*` (valores TOML): `command` (el binario de lazarobox), `args = ["__mcp-serve", "<socket>"]`, `env_vars = ["LAZAROBOX_MCP_TOKEN"]`, `tool_timeout_sec = 900` (15 min, para que esperar tu `y` no corte la llamada), `startup_timeout_sec = 20` y `default_tools_approval_mode = "approve"` (codex corre con la política de aprobación `never` y nuestras herramientas no llevan anotaciones MCP: sin esto codex rechazaría él mismo cada llamada y ninguna llegaría a tu aprobación; la aprobación sigue siendo la de lazarobox, solo de este servidor; clave comprobada con codex 0.162.1, presente desde codex ~0.125: con una versión anterior codex la rechaza y el turno falla con su error de configuración). No se escribe ningún archivo de configuración.
 - El token de la sesión va **solo** en el entorno del propio proceso de codex (`env_vars` solo nombra la variable y codex la pasa al _shim_); nunca en los argumentos (`ps` los muestra), nunca en la salida de depuración de lazarobox y, si el CLI lo repite por stderr, se sustituye por `(..)` antes de mostrar el motivo del fallo. Los argumentos solo llevan rutas, que no son secretos.
 - Se mantienen `--ignore-user-config`, el sandbox de solo lectura y las funciones desactivadas (shell y parches siguen apagados). La jaula concede lo mismo que con claude: ejecutar el binario de lazarobox, su cargador si hace falta y leer y escribir **el archivo** del socket, tras la misma comprobación de confianza.
 - Solo cuenta lo que ejecuta lazarobox: con herramientas, el decodificador de codex acepta además de `agent_message`, `reasoning`, `error` y `todo_list` un `mcp_tool_call` cuyo `server` sea exactamente `lazarobox`; otro servidor, uno ausente o cualquier otro tipo de elemento termina el turno con `codex tried to use a tool`. En un chat de solo texto no se acepta ninguna herramienta, tampoco la nuestra (el decodificador de codex sigue siendo una lista de tipos permitidos también ahí, a diferencia del de claude).
@@ -546,7 +932,7 @@ Comprobado a mano por el usuario con un codex real el 2026-10-17 (2g.6 y 2g.7): 
 Comprobado a mano por el usuario con un gemini real el 2026-10-17 (2h.6 y 2h.7): que gemini lee los ajustes del espacio de trabajo con `--skip-trust` en la carpeta del turno, que la política de administrador gana a la regla que lo deniega todo, el significado de `trust` y `timeout`, y el nombre que gemini da a la herramienta (`mcp_lazarobox_<herramienta>`).
 
 - gemini corre en `<carpeta del turno>/work`, no en la carpeta vacía compartida. Ahí se escribe `.gemini/settings.json` con `mcpServers.lazarobox` (`command`, `args = ["__mcp-serve", "<socket>"]`, `env`, `timeout = 900000` —15 min, para que esperar tu `y` no corte la llamada— y `trust = true`, porque quien te pregunta es lazarobox). Archivo 0600 en carpetas 0700, y todo se borra al terminar el turno.
-- gemini solo lee los ajustes del espacio de trabajo si la carpeta es de confianza, y `--skip-trust` llega tarde: por eso un turno con herramientas arranca gemini con `GEMINI_CLI_TRUST_WORKSPACE=true` en el entorno (solo en esos turnos). Tus propios servidores (`~/.gemini/settings.json`) se cargan estén o no en una carpeta de confianza; `--allowed-mcp-server-names=lazarobox` es lo que los deja fuera. Con la carpeta de confianza, el `trust = true` del servidor sí se aplica y gemini no pide su propia confirmación para las herramientas de lazarobox (es lo previsto: pregunta lazarobox). Confiar también habilita más cosas (variables de un `.env` hacia arriba, `GEMINI.md` de carpetas superiores, hooks y skills del proyecto): los ajustes generados las apagan con `advanced.ignoreLocalEnv`, `context.memoryBoundaryMarkers = []`, `hooksConfig.enabled = false` y `skills.enabled = false` (gemini 0.63.0). No hay ajuste para un `.gemini/.env` de una carpeta superior, que gemini lee siempre en una carpeta de confianza; las políticas del espacio de trabajo están desactivadas en el propio gemini 0.63.0. La regla de la política lleva `toolName = "*"` además de `mcpName`: sin él, gemini descarta el archivo por inválido.
+- gemini solo lee los ajustes del espacio de trabajo si la carpeta es de confianza, y `--skip-trust` llega tarde: por eso un turno con herramientas arranca gemini con `GEMINI_CLI_TRUST_WORKSPACE=true` en el entorno (solo en esos turnos). Tus propios servidores de `~/.gemini/settings.json` ya no se cargan (el `GEMINI_CLI_HOME` privado no los contiene); `--allowed-mcp-server-names=lazarobox` sigue siendo la segunda barrera. Con la carpeta de confianza, el `trust = true` del servidor sí se aplica y gemini no pide su propia confirmación para las herramientas de lazarobox (es lo previsto: pregunta lazarobox). Confiar también habilita más cosas (variables de un `.env` hacia arriba, `GEMINI.md` de carpetas superiores, hooks y skills del proyecto): los ajustes generados las apagan con `advanced.ignoreLocalEnv`, `context.memoryBoundaryMarkers = []`, `hooksConfig.enabled = false` y `skills.enabled = false` (gemini 0.63.0). No hay ajuste para un `.gemini/.env` de una carpeta superior, que gemini lee siempre en una carpeta de confianza; las políticas del espacio de trabajo están desactivadas en el propio gemini 0.63.0. La regla de la política lleva `toolName = "*"` además de `mcpName`: sin él, gemini descarta el archivo por inválido.
 - Se añaden `--allowed-mcp-server-names=lazarobox` y `--admin-policy=<archivo>` en la forma con `=`, porque ambas opciones aceptan varios valores y un valor suelto se tragaría lo que viniera después. La política (`mcpName = "lazarobox"`, `allow`) va en el nivel de administrador, que según la tabla de niveles de gemini está por encima de la regla de usuario que lo deniega todo (prioridad 999, que dentro de un mismo archivo no se puede superar). Se mantienen `-e none`, `--approval-mode plan` y esa regla: cualquier otra herramienta sigue denegada.
 - El token de la sesión va **solo** en el `env` de ese `settings.json`; nunca en los argumentos (`ps` los muestra), nunca en la salida de depuración de lazarobox y, si el CLI lo repite por stderr, se sustituye por `(..)` antes de mostrar el motivo del fallo. La jaula concede lo mismo que con claude y codex: ejecutar el binario de lazarobox, su cargador si hace falta y leer y escribir **el archivo** del socket, tras la misma comprobación de confianza.
 - Solo cuenta lo que ejecuta lazarobox: con herramientas, el decodificador de gemini acepta un `tool_use` solo si su `tool_name` es `mcp_lazarobox_<herramienta>`. Así la `read_file` propia de gemini (sin prefijo) no se confunde con la nuestra; cualquier otra herramienta, o un nombre ausente o que no sea texto, termina el turno con `gemini tried to use a tool`. En un chat de solo texto no se acepta ninguna, tampoco la nuestra.
@@ -554,11 +940,15 @@ Comprobado a mano por el usuario con un gemini real el 2026-10-17 (2h.6 y 2h.7):
 
 **codex.** La lista de modelos sale de **tu cuenta**: al detectar los motores, lazarobox ejecuta una vez `codex debug models` (con un límite de 4 s, sin entrada estándar, con el entorno depurado y en la carpeta privada de lazarobox), dentro de la misma jaula que usa el chat de codex, de modo que solo puede escribir en la carpeta de estado de codex (`$CODEX_HOME` o `~/.codex`). Igual que al usar codex, ese comando puede actualizar el catálogo desde OpenAI con tu sesión y renovar la caché de codex (`models_cache.json`). Sin la jaula no se ejecuta y solo aparece `default`. El resultado se guarda en memoria y se renueva como máximo cada 10 minutos (al arrancar y al abrir el menú se reutiliza); la tecla `r` del menú lo vuelve a pedir siempre. Si una renovación falla, se conserva la lista anterior mientras tenga menos de 10 minutos. El selector muestra `default (CLI picks)` y, a continuación, los modelos que tu cuenta lista, con su nombre visible; lo que se guarda en `config.toml` es siempre el identificador (por ejemplo `gpt-6.1-sol`). Con un codex antiguo, sin ese subcomando, o si el comando falla, solo aparece `default`. Un modelo asignado o escrito en `custom…` que no esté en la lista de tu cuenta se marca `not in your account's list`; es solo un aviso y no bloquea la elección, porque la lista puede estar desactualizada. Elige un modelo que **tu cuenta admita**. Con una cuenta de ChatGPT, solo algunos modelos funcionan: el modelo por defecto de codex (por ejemplo `gpt-5.5`) puede fallar con `The '<modelo>' model is not supported when using Codex with a ChatGPT account`. Pon el nombre en `[ai.tasks.chat] model = "..."` o en la fila `custom…` del selector. codex usa `$CODEX_HOME` si está definido. Se lanza sin guardar sesión (`--ephemeral`), con el sandbox de solo lectura y con todas sus herramientas desactivadas.
 
+**codex: instrucciones y _skills_ propios.** `--ignore-user-config` solo omite `config.toml`, y codex no ofrece ninguna opción para dejar de cargar `~/.codex/AGENTS.md` (se comprobó que `project_doc_max_bytes=0` no lo evita). Por eso cada turno ejecuta codex con un `CODEX_HOME` privado, dentro de la carpeta temporal del turno, que solo contiene un enlace simbólico a tu `auth.json` (no se copia ni se mueve). Así no llegan al proveedor ni tu `AGENTS.md` ni tus _skills_ ni tu `config.toml`. Cuando codex renueva su inicio de sesión escribe en `auth.json` en el sitio, así que la renovación sigue el enlace y llega a tu archivo real.
+
 **gemini.** Notas:
 
 - Elige un modelo que tu cuenta tenga disponible; el modelo automático puede responder «high demand» (503), y algunos modelos agotan la cuota diaria o ya no se ofrecen a cuentas nuevas. Un error del proveedor aparece en el panel con su texto.
-- gemini **guarda sus propias sesiones** en `~/.gemini/tmp/cli-cwd/chats/` (archivos `session-*.jsonl`) y no hay opción para evitarlo. Esas copias quedan **fuera de `chat.db`**: no se borran al borrar una conversación ni por retención, y no tienen los permisos `0600` de `chat.db`. Elimínalas tú si lo necesitas.
-- gemini lee tu configuración propia de `~/.gemini` (`GEMINI.md`, `skills/`, `settings.json`), que va como contexto al proveedor.
+- gemini **guarda sus propias sesiones**, pero las nuevas van a la carpeta privada del turno (`GEMINI_CLI_HOME`), que se borra al terminar. Los archivos de sesión antiguos siguen en `~/.gemini/tmp/cli-cwd/chats/` (`session-*.jsonl`): quedan **fuera de `chat.db`**, no se borran al borrar una conversación ni por retención y no tienen los permisos `0600` de `chat.db`. Elimínalos tú si lo necesitas.
+- gemini ya no lee tu `GEMINI.md`, tus _skills_ ni tus ajustes: cada turno arranca con un `GEMINI_CLI_HOME` privado (dentro de la carpeta temporal del turno, que se borra al terminar) que solo contiene enlaces simbólicos a tus archivos de inicio de sesión (`oauth_creds.json`, `google_accounts.json`, `gemini-credentials.json`, si existen) y un `settings.json` con el tipo de autenticación que elegiste y `context.memoryBoundaryMarkers` vacío, para que no busque `GEMINI.md` en las carpetas superiores. No se copia ningún secreto. Si un turno no puede preparar esa carpeta, falla con el aviso `cannot prepare the private home of the CLI` en lugar de usar la tuya. lazarobox también descarta `GEMINI_SYSTEM_MD` del entorno del hijo. Tu `~/.gemini/.env` **no se enlaza**, porque gemini aplica todas sus claves y volvería a cargar variables como `GEMINI_SYSTEM_MD`: se abre sin seguir enlaces (debe ser un archivo regular tuyo de 64 KiB como máximo; si no, se omite con un aviso) y se escribe un `.env` privado (`0600`) solo con `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GENAI_USE_GCA`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` y `GOOGLE_APPLICATION_CREDENTIALS`. El mismo archivo (vacío si no tienes ninguno) está en la carpeta de trabajo de gemini para que su búsqueda de `.env` hacia arriba no llegue a tu carpeta personal. Si defines `GEMINI_CLI_HOME`, de ahí se toman los enlaces, pero solo si es absoluta y canónica, una carpeta tuya que otros no puedan escribir, no es `/` ni un lugar demasiado amplio (`~/.ssh`, `~/.claude`…) y contiene un `.gemini` real tuyo; si no, el turno se rechaza con un aviso, igual que en la jaula. Los avisos de inicio de sesión se muestran una vez por ejecución. Si no hay ningún archivo de inicio de sesión ni `GEMINI_API_KEY`/`GOOGLE_*`, o no se puede leer el tipo de autenticación de `settings.json` (se aceptan comentarios `//` y `/* */`), el chat lo avisa antes del turno; con codex, `codex has no login at ~/.codex/auth.json; run codex login`. También se descartan `GEMINI_SYSTEM_MD`, `GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_CLI_SYSTEM_DEFAULTS_PATH` y `GEMINI_CLI_TRUSTED_FOLDERS_PATH`; las variables de clave de API (`GEMINI_API_KEY`, `GOOGLE_*`, `OPENAI_API_KEY`) se pasan a propósito, porque son la forma de iniciar sesión.
+- **Renovación del inicio de sesión de gemini.** Si gemini renueva `oauth_creds.json` durante un turno (crea un archivo nuevo y lo renombra sobre el enlace), la renovación **no se guarda de vuelta**: lazarobox nunca escribe tus archivos de credenciales. Cada turno renueva el token otra vez, lo que es algo más lento, y si Google rotara el _refresh token_ tendrías que iniciar sesión de nuevo con `gemini`.
+- codex y gemini ya no conservan estado entre turnos (caché de modelos, identificador de instalación): cada turno arranca desde cero, lo que cuesta alguna llamada extra.
 - Con gemini, el modo `plan` **no** basta como barrera (el modelo puede salir de él). El chat desactiva las herramientas con una política que deniega todas (un archivo temporal que lazarobox escribe en la carpeta privada del turno), sin extensiones y sin servidores MCP.
 - Si tu `node` es el de Homebrew (sus bibliotecas viven bajo `.linuxbrew/Cellar` y `opt`), la jaula concede en solo lectura exactamente las carpetas de bibliotecas que el propio ejecutable declara y los archivos `openssl.cnf` y `cert.pem` de Homebrew; nunca el prefijo completo. Esta regla vale para cualquier CLI cuyo ejecutable (el intérprete de un script o el binario nativo) declare un RUNPATH o RPATH en su ELF, no solo para `node`.
 
@@ -579,13 +969,16 @@ Every message below says why a CLI cannot be used. None of them changes what the
 | `<cli>: not available on this system yet: the macOS jail is unavailable: <reason>; on this system use claude or Ollama for chat` | macOS: the startup check of the jail failed (`/usr/bin/sandbox-exec is missing`, `sandbox-exec refused a test program`, `the sandbox did not block a test action`, `the sandbox check timed out`, ...). Nothing was started, and the message you typed stays in the composer. Use claude or Ollama. |
 | `the macOS sandbox could not be applied` | macOS: `sandbox-exec` exited with 71 for a turn, so the jail was not in place. It is reported as a jail error, not as a CLI error, and the CLI never runs without the jail. |
 | `the CLI did not start: its jail could not be enforced: <reason>` | The jail refused this install or the helper could not apply it. The reason is one of the next rows, or the helper's own line. Nothing was started. |
-| `... <path> is writable by group or others, so <node> is not trusted; run: chmod go-w -- '<path>'` | The `node` that runs a script-based CLI (or its folder) can be swapped by other users, so it is not trusted. Run the command, which names the real path that failed. If the folder is not yours (for example `/usr/local/bin`) the message says its owner must fix it (sudo) instead. |
+| `tools are off: <dir> and <binary> are writable by its group (install with umask 022 to keep it); run: chmod g-w <dir> <binary>` (also `... by others; run: chmod o-w ...` and `... by its group or others; run: chmod go-w ...`) | The program that serves the tools (lazarobox itself) or its folder can be swapped by someone else, so the turn runs as text and the notice names every path to fix. With `umask 002` (Ubuntu, Debian, Parrot) `cargo install` leaves `~/.cargo/bin` and the binary at 775 (group-writable): run the command once, for example `chmod g-w ~/.cargo/bin ~/.cargo/bin/lazarobox-shell`. When group write is the only cause the notice carries `(install with umask 022 to keep it)` before the command, so the command stays last to paste: install with `(umask 022; cargo install lazarobox-shell --locked)` (a subshell: it does not change your shell's umask) and it will not come back, though a folder already at 775 needs `chmod g-w ~/.cargo/bin` once, since umask only affects new files; the in-app update already runs `cargo install` with umask 022; `lazarobox-shell --check-install` prints the same diagnosis (exit 0 when trusted, 1 otherwise). If the path is not yours, its owner must fix it (sudo). The rule is not relaxed for a private group. |
+| `tools are off: cannot check <path>: permission denied` | The path could not be inspected (permissions or an I/O error), so it is not trusted. Fix the access to it and its folders. |
+| `... <path> is writable by its group or others, so <node> is not trusted; run: chmod go-w <path>` | The `node` that runs a script-based CLI (or its folder) can be swapped by other users, so it is not trusted. Run the command, which names the real path that failed. If the folder is not yours (for example `/usr/local/bin`) the message says its owner must fix it (sudo) instead. |
 | `... <path> is under a scratch folder; install the interpreter elsewhere` | The interpreter lives under `/tmp` or `/var/tmp`. Install `node` outside of them. |
 | `... no node found to run the CLI script; install it next to the CLI or on PATH` | The CLI is a script and no trusted interpreter was found. |
 | `... <path> (from the script's #! line) does not exist; reinstall the CLI` | The script names a fixed interpreter path that is gone (a removed node version). Reinstalling the CLI rewrites it. |
 | `... <path> is too broad for the jail; keep the CLI and its state in folders of their own` | The CLI, its loader or its state folder (`$CODEX_HOME`, `~/.codex`, ...) is a broad place such as `/usr/local` or `$HOME`. Install the CLI in its own folder. |
 | `... cannot read <path>`, `... the program loader <path> is not a regular file`, `... $HOME is not set or not an absolute path`, `... $HOME (<path>) does not exist` | The CLI file, its loader or `$HOME` could not be resolved. Check that they exist. |
-| `available · no jail: <short reason>` | In the engine list of the menu (the version gives way to the reason when the row is narrow). The CLI is installed but would not run jailed here (`Landlock ABI 2, needs 3+`, `Linux/macOS only · use claude` (codex and gemini; claude shows `needs Linux or macOS`), `jail unavailable · use claude` (macOS), `<folder> too broad`, `interpreter not trusted`, `no node`, ...). The chat shows the full sentence, and codex and gemini will not start. Press `y` on the row to copy the full reason. |
+| `refused · <short reason>` | In the engine list of the menu, for codex and gemini, which never run without the jail. The row cannot be chosen. The reason is the same short text as below, for example `…/bin is run and written`. Press `y` to copy the full reason, which names how codex is installed (`standalone`, `npm`, `homebrew`) and what to do. |
+| `available · no jail: <short reason>` | In the engine list of the menu, for claude only (the version gives way to the reason when the row is narrow). The CLI is installed but would not run jailed here (`Landlock ABI 2, needs 3+`, `Linux/macOS only · use claude` (codex and gemini; claude shows `needs Linux or macOS`), `jail unavailable · use claude` (macOS), `<folder> too broad`, `interpreter not trusted`, `no node`, ...). The chat shows the full sentence, and codex and gemini will not start. Press `y` on the row to copy the full reason. |
 | `the CLI did not start: its jail could not be enforced` (no reason) | The jail helper failed for a reason outside the fixed set it reports, so none is shown. Update lazarobox and try again; if it persists, report it. |
 | `available · version unknown` | The CLI was found, but `<cli> --version` failed, timed out or printed nothing readable. It may still work; try running it in a terminal. |
 | `model list unavailable: codex exited <n>: <last stderr line>` | In the model picker. `codex debug models` failed (an old codex without the subcommand, not logged in, ...). Run `codex login` or update codex, then press `r` in the menu. Only `default` and `custom...` are offered meanwhile. The note wraps over up to four rows; on it, Enter or `y` copies the full reason. |
@@ -598,7 +991,7 @@ Every message below says why a CLI cannot be used. None of them changes what the
 
 ### Herramientas de búsqueda y escritura (`[ai.tools]`)
 
-Además de leer, un modelo puede buscar en el proyecto y proponer cambios. Cada familia tiene su interruptor en `[ai.tools]`, **todos desactivados por defecto**, y solo actúa si `enabled = true` y el motor del chat tiene las herramientas verificadas:
+Además de leer, un modelo puede buscar en el proyecto y proponer cambios. Cada familia tiene su interruptor en `[ai.tools]`, **todos desactivados por defecto salvo `issue_draft`**, y solo actúa si `enabled = true` y el motor del chat tiene las herramientas verificadas:
 
 ```toml
 [ai.tools]
@@ -606,11 +999,13 @@ enabled = true
 search = true      # glob, grep y la lectura por ventanas de read_file
 write = false      # create_dir, write_file, edit_file, propose_batch
 exec = false       # run_command: comandos de la cadena de herramientas (ver más abajo)
-git = false        # interruptor de las operaciones de git de solo lectura (aún no se ofrecen al modelo)
-git_write = false  # interruptor de las operaciones de git que escriben (aún no se ofrecen al modelo)
+git = false        # git_status, git_diff, git_log (solo lectura)
+git_write = false  # git_add y git_commit (escriben; cada una pide tu `y`)
+github = false     # gh_issue_list, gh_issue_view y gh_pr_view (solo lectura; ver GitHub)
+issue_draft = true # gh_issue_draft: abre el formulario de Feedback con un borrador (ver Borrador de issue)
 ```
 
-La pestaña **AI** del menú muestra las filas **Search**, **Write**, **Exec**, **Git** y **Git write** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`). Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
+La pestaña **Tools** del menú muestra las filas **Search**, **Write**, **Exec**, **Git**, **Git write**, **GitHub** e **Issue draft** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`); **GitHub** lleva la suya (`Reads issues and PRs; locks auto-run in that chat`), porque solo lee. Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
 
 #### Búsqueda: `glob` y `grep`
 
@@ -639,28 +1034,34 @@ El modelo puede preparar cambios a lo largo de varios turnos antes de proponer. 
 
 | Tecla                 | Acción                                                                                              |
 | :-------------------- | :-------------------------------------------------------------------------------------------------- |
-| `y`                   | Aprueba **todo** el lote. Solo actúa cuando has visto en pantalla todas las líneas (puerta de cobertura) y han pasado 800 ms desde el primer dibujo (armado). Antes, la cabecera dice `y locked` o `y in 0.4s`. |
+| `y`                   | Aprueba **todo** el lote. Solo actúa cuando has visto en pantalla todas las líneas (puerta de cobertura) y han pasado 800 ms desde el primer dibujo (armado). Antes, la cabecera dice `↓ to unlock y` o `y in 0.4s`; si pulsas `y` con líneas sin ver, durante 2 s indica cuántas faltan y que debes desplazarte. |
 | `n` / `Esc`           | Rechaza **todo** el lote: no se escribe nada y el modelo recibe `denied`. También esperan los 800 ms de armado, salvo que el lote no se pueda revisar (demasiado grande), donde `n` actúa de inmediato. |
 | `Ctrl+C`              | Deniega la llamada (`cancelled`) y cancela el turno. El lote se queda como huérfano (ver abajo).    |
 | `↑` `↓` / `j` `k`, `PgUp` `PgDn`, `Home` `End`, rueda | Desplazan la revisión. Saltar con `Home`/`End` no cuenta las líneas que se saltan; solo cuenta lo que se dibuja. |
 
 Es todo o nada: no se aprueba un fichero suelto. Una línea que solo está en un panel oculto, en otra pestaña o fuera de pantalla no cuenta como vista. Si ya hay otra aprobación pendiente, `propose_batch` devuelve `denied` (`another approval is pending`).
 
-**Huérfanos.** Si cancelas el turno (o el CLI agota su tiempo) con un lote preparado o propuesto, el lote **se conserva** en el chat. El panel muestra una insignia arriba a la izquierda: ` staged 3 ` mientras el turno sigue vivo y el lote aún no se ha propuesto, y ` orphan 2 · Ctrl+G ` cuando el turno ya no existe (se estrecha a ` O2 ` si falta sitio). Con `Ctrl+G` se abre la revisión del huérfano, con las mismas reglas (cobertura, 800 ms): `y` lo aplica, `n` o `Esc` lo descarta y `Ctrl+C` solo cierra la vista. Un huérfano nunca se aplica mientras un turno de ese panel siga en curso. Al modelo se le avisa, en su siguiente turno, de que aplicaste o descartaste el lote (con cifras, sin rutas).
+**Revisión al terminar el turno.** Si el turno termina con normalidad y el modelo dejó cambios preparados sin llamar a `propose_batch` (algo frecuente en modelos locales pequeños), la revisión del lote se abre sola, con las mismas reglas que un lote propuesto: cobertura, 800 ms, `y` lo aplica y `n` o `Esc` lo descarta. No se abre sola si ya hay otra aprobación pendiente en el chat.
+
+**Huérfanos.** Si cancelas el turno, falla o el CLI agota su tiempo con un lote preparado o propuesto, el lote **se conserva** en el chat (también si la cancelación llega justo al proponer, antes de que veas la petición). El panel muestra una insignia arriba a la izquierda: ` staged 3 ` mientras el turno sigue vivo y el lote aún no se ha propuesto, y ` orphan 2 · Ctrl+G ` cuando el turno ya no existe (se estrecha a ` O2 ` si falta sitio). Con `Ctrl+G` se abre la revisión del huérfano, con las mismas reglas (cobertura, 800 ms): `y` lo aplica, `n` o `Esc` lo descarta y `Ctrl+C` solo cierra la vista. Un huérfano nunca se aplica mientras un turno de ese panel siga en curso. Al modelo se le avisa, en su siguiente turno, de que aplicaste o descartaste el lote (con cifras, sin rutas).
 
 Cerrar el panel del chat y salir de lazarobox **descartan** los lotes pendientes, con un aviso (`discarded N staged entries`). Nada se guarda: tras reiniciar no queda ningún lote.
 
 #### Modelo de amenazas de la escritura
 
 - **Nada toca el disco antes de `y`.** Preparar, buscar y proponer no crean, cambian ni borran nada; solo el paso de aplicar de un lote aprobado escribe.
-- **La raíz de escritura es la carpeta de origen del chat, siempre dentro de `$HOME`.** Se rechaza si el origen falta, es `$HOME`, un ancestro de `$HOME`, una carpeta del sistema o queda fuera de `$HOME`, y cualquier ruta que, tras resolver `..` y enlaces, salga de la raíz. También se rechaza todo lo que esté en `.git/` o `node_modules/` y los nombres de secretos (`.env`, `.npmrc`, `~/.ssh`...). Todos los rechazos devuelven el mismo texto, `path not available`, para no revelar si una ruta existe. Las lecturas de `.git/config` también se rechazan.
+- **La raíz de escritura es la carpeta de origen del chat, siempre dentro de `$HOME`.** Se rechaza si el origen falta, es `$HOME`, un ancestro de `$HOME`, una carpeta del sistema o queda fuera de `$HOME`, y cualquier ruta que, tras resolver `..` y enlaces, salga de la raíz. También se rechaza todo lo que esté en `.git/` o `node_modules/` y los nombres de secretos (`.env`, `.npmrc`, `~/.ssh`...). Todos los rechazos devuelven el mismo texto, con la carpeta del chat para que el modelo sepa desde dónde cuentan sus rutas: `path not available (paths are relative to the chat's folder ~/proyecto)`. Así no revelan si una ruta existe. La única excepción llega después de que la política aceptó la ruta: si falta la carpeta padre, el texto la nombra (`path not available: the folder src/ does not exist (paths are relative to the chat's folder ~/proyecto)`), lo mismo que `list_dir` ya le mostraría. Las lecturas de `.git/config` también se rechazan.
+- **Una plantilla de entorno (`.env.example`, `.env.sample`, `.env.template`, `.env.dist`) es la única excepción a los nombres de secretos, y siempre pregunta.** `write_file` y `edit_file` pueden prepararla, pero solo llega al disco con tu `y` en la revisión del lote, en cualquier modo de aprobación. Además, `edit_file` sobre una plantilla, y `write_file` sobre una plantilla que ya existe, preguntan antes como una lectura, también en motores locales, porque su respuesta revela qué contiene; si lo deniegas, la respuesta es la misma sea cual sea el contenido. Un worker de orquesta no puede preguntar, así que recibe el rechazo habitual al sobrescribir una plantilla existente. Crear una plantilla nueva no pregunta antes de la revisión del lote. `.env` y `.env.local` siguen rechazados, y leer la plantilla también.
 - **Reglas de contenido: se rechaza, nunca se limpia.** El texto nuevo no puede tener UTF-8 inválido, caracteres de control, de dirección (_bidi_) o de ancho cero, ni finales de línea CRLF. `edit_file` rechaza un fichero que no sea UTF-8 o tenga CRLF o NUL. Límites: 32 KiB por `write_file`, 16 KiB por campo de `edit_file`, 1 MiB por fichero editado, 50 entradas y 1 MiB por lote.
 - **En motores en la nube, `edit_file` pregunta como `read_file`, una vez por fichero y turno.** Las respuestas de `old`/`diff` (existe, no existe, aparece varias veces) revelan qué contiene un fichero, así que el aviso es el mismo que el de `read_file`; si lo deniegas no se prepara nada. Un `read_file` permitido antes del mismo fichero también cubre la edición; un turno nuevo vuelve a preguntar. Un motor local nunca pregunta.
-- **El modelo no ve el diff ni la base de la edición.** Las filas del diff y el texto base solo se dibujan para ti; el modelo recibe cifras y rutas (`staged <ruta> (batch: N of 50 entries ...)`, `applied N paths`), nunca contenido del disco.
-- **Comprobación previa, diario y deshacer.** Al aprobar, lazarobox vuelve a abrir cada destino sin seguir enlaces (`openat2` con `RESOLVE_BENEATH` y `NO_SYMLINKS`) y compara su contenido con la copia de cuando se preparó. Si algo cambió (_drift_), se rechaza **todo** el lote y no se escribe nada. Después escribe cada fichero con un temporal en la misma carpeta y un renombrado atómico (sin escribir a través de enlaces simbólicos ni de ficheros con enlaces duros), y anota cada paso en un diario. Si un paso falla, deshace los anteriores en orden inverso. Si el deshacer también falla, el resultado es `partial` y lista exactamente las rutas que quedaron cambiadas, para que las revises a mano.
-- **Huérfanos y descarte.** Un lote cancelado o con tiempo agotado se conserva como huérfano y solo se aplica si lo revisas con `Ctrl+G` (con cobertura y 800 ms); no se aplica nunca con un turno del mismo panel en curso. Cerrar el panel y salir descartan el lote.
+- **El modelo no ve el diff ni la base de la edición.** Las filas del diff y el texto base solo se dibujan para ti; el modelo recibe cifras y rutas (`staged <ruta> (batch: N of 50 entries ...)`, `applied N paths`), nunca contenido del disco. Cuando el lote se aplica, el resultado acaba con `Continue with any step the user asked for that is not finished yet.`, porque los modelos pequeños tienden a pararse tras la revisión. Si el modelo intenta `run_command`, `git_add` o `git_commit` con cambios preparados sin proponer, el rechazo le dice `propose them first with propose_batch, then call this tool again`.
+- **Comprobación previa, diario y deshacer.** Al aprobar, lazarobox vuelve a abrir cada destino sin seguir enlaces (`openat2` con `RESOLVE_BENEATH` y `NO_SYMLINKS` en Linux; un recorrido con `O_NOFOLLOW` en macOS) y compara su contenido con la copia de cuando se preparó. Si algo cambió (_drift_), se rechaza **todo** el lote y no se escribe nada. Después escribe cada fichero con un temporal en la misma carpeta y un renombrado atómico (sin escribir a través de enlaces simbólicos ni de ficheros con enlaces duros), y anota cada paso en un diario. Si un paso falla, deshace los anteriores en orden inverso. Si el deshacer también falla, el resultado es `partial` y lista exactamente las rutas que quedaron cambiadas, para que las revises a mano.
+- **Huérfanos y descarte.** Un lote cancelado o con tiempo agotado se conserva como huérfano y solo se aplica si lo revisas con `Ctrl+G`; uno que el modelo dejó sin proponer al terminar su turno con normalidad abre su revisión sola, con la misma puerta (cobertura y 800 ms); no se aplica nunca con un turno del mismo panel en curso. Cerrar el panel y salir descartan el lote.
 - **Una salida por señal descarta en silencio.** Con `SIGTERM` o `SIGHUP` no se muestra el aviso de descarte, porque el lote vive solo en memoria y no se escribe nada de todas formas.
-- Solo Linux: en otras plataformas el aplicar devuelve `writes are not supported on this platform` y no escribe nada.
+- **Linux y macOS.** En macOS no hay `openat2`: cada carpeta se abre componente a componente con `O_NOFOLLOW` y se comprueba su ruta real con `F_GETPATH`, y un create usa `renameatx_np` con `RENAME_EXCL` (que no pisa un nombre ocupado). Un denegado del sistema (`EPERM` o `EACCES`, por ejemplo TCC) se trata como un rechazo.
+- **macOS: sistemas de ficheros sin renombrado atómico.** Solo APFS y HFS+ admiten `RENAME_EXCL`. En exFAT, SMB o NFS el aplicar devuelve `this system or volume does not support a safe no-replace write` y deshace lo ya hecho.
+- **macOS: metadatos.** Reemplazar un fichero crea uno nuevo y lo renombra encima, así que se pierden sus atributos extendidos, las ACL, la marca de cuarentena y las etiquetas del Finder (en Linux se pierden los atributos extendidos). Además, el fichero nuevo toma el grupo de la carpeta que lo contiene (semántica BSD).
+- Otras plataformas: el aplicar devuelve `this system or volume does not support a safe no-replace write` y deshace lo ya hecho.
 
 #### Ejecución: `run_command`
 
@@ -680,19 +1081,165 @@ Se rechazan las opciones que cambian de dónde se lee la configuración o el des
 - **Un comando a la vez por chat y dos en total en la aplicación.** Un segundo comando espera o se rechaza con `a command is already running in this chat` o `too many commands are running; try again later`.
 - **`npm`, `yarn` y `pnpm` (`test`, `run`, `install` y `ci`) solo desde la carpeta que contiene `package.json`.** Si no, se rechazan, para que un gestor no lea un `package.json` de una carpeta superior que nadie ha mostrado.
 - **Ganchos y configuración de git.** Antes y después de cada ejecución, lazarobox compara los ganchos (_hooks_) y la configuración de git. Si el comando los cambió, el resultado lo dice (`git hooks or config changed during the run (not reverted)`) y **no los revierte**. Si no se puede verificar el estado (una carpeta con demasiadas entradas, una configuración que no se entiende, un límite superado), el resultado indica `could not verify git hooks and config after this run` y el modelo debe tratar el proyecto como posiblemente contaminado y avisarte. Lo mismo ocurre con una ejecución cancelada o que falla después de arrancar: el aviso llega en el siguiente comando de ese chat.
-- **Las operaciones de git (`git`, `git_write`) aún no se ofrecen al modelo.** Los interruptores existen en la configuración y en el menú, pero hoy no añaden ninguna herramienta.
+- **Las operaciones de git** (`git`, `git_write`) se describen en la sección siguiente.
+
+#### Git: `git_status`, `git_diff`, `git_log`, `git_add` y `git_commit`
+
+Dos interruptores independientes, ambos desactivados por defecto: **Git** (`git = true`) ofrece las tres de lectura y **Git write** (`git_write = true`) ofrece `git_add` y `git_commit`. No existe ninguna otra operación (ni `push`, `pull`, `checkout`, `reset`, `rebase`...) ni una lista libre de argumentos, y un _worker_ del orquestador nunca puede hacer commit. Linux solamente; `git` debe estar en un lugar del sistema.
+
+| Herramienta  | Qué hace                                                                 | ¿Pregunta?                                   |
+| :----------- | :----------------------------------------------------------------------- | :------------------------------------------- |
+| `git_status` | Estado acotado y ya analizado.                                           | Motor local: no. Nube: no.                   |
+| `git_log`    | Hasta 20 entradas por defecto (máximo 50), con formato fijo.             | Motor local: no. Nube: no.                   |
+| `git_diff`   | Diff del árbol de trabajo o del índice, acotado.                         | Motor local: no. **Nube: sí**, antes de ejecutar. |
+| `git_add`    | Añade al índice las rutas indicadas.                                     | Siempre.                                     |
+| `git_commit` | Crea el commit tras la revisión a panel completo.                        | Siempre, en todos los motores.               |
+
+**Lectura.** Los nombres de secretos (`.env`, `.npmrc`...) se excluyen por _pathspec_, así que un `.env` rastreado y modificado no aparece en el diff ni en el log, y toda la salida se censura y se entrega como dato no fiable. Se rechazan mientras haya un lote de escritura preparado o propuesto, y una ruta rechazada no abre ningún aviso.
+
+**`git_add`.** Una línea de aviso con las rutas y el número de ficheros. Si las rutas no caben enteras en esa línea, o alguna contiene `'`, se rechaza (no hay revisión alternativa). Nunca añade secretos ni nada dentro de `.git/`, ni siquiera con una carpeta o `.`.
+
+**`git_commit`.** Abre una revisión a panel completo, igual en todos los motores, con:
+
+- el mensaje;
+- el aviso `signing disabled for this commit` (el commit se crea sin firmar y sin _trailer_);
+- los ganchos (_hooks_) que se van a ejecutar, que corren dentro de la jaula;
+- todo el diff del índice, con `--text`.
+
+Se rechaza si hay un secreto en el índice o si el diff queda cortado. Como en un lote de escritura, `y` solo aprueba si has visto todo lo que debe caber. Tras `y`, lazarobox vuelve a comprobar el índice byte a byte; si cambió, no hay commit. El commit tiene un límite de 120 s.
+
+Después del commit, lazarobox compara el árbol que se ha confirmado con el que revisaste. Si difieren (un gancho puede cambiar ficheros), **avisa y no deshace nada**, y sugiere `git reset --soft HEAD~1`. Límite conocido: un gancho `commit-msg` que edite el mensaje no se detecta.
+
+#### Modelo de amenazas de `run_command` y de git
+
+- **La lista de programas acota el verbo, no lo que hace el programa.** `cargo test`, `npm run <script>`, `pytest` o `go test` ejecutan código del proyecto: un `build.rs`, un script de `package.json`, un `conftest.py`. Lo que ves en el aviso es la orden; lo que corre es todo lo que esa orden arrastra.
+- **La red está activa.** Un programa que corre dentro de la jaula puede leer el `.env` del proyecto (la jaula lo permite) y enviarlo fuera. El aviso lo dice cada vez; no hay «permitir siempre».
+- **Residuo: sockets UNIX.** Landlock no cubre la conexión a un socket UNIX existente (un agente de claves, un demonio de Docker accesible). Lo que sea alcanzable desde el proceso, lo es también para el comando.
+- **Procesos nietos que se desacoplan.** El proceso se vigila como grupo y se mata al terminar el tiempo, pero un nieto que se desacopla (_daemonizing_) en un grupo propio puede sobrevivir al comando.
+- **Los ganchos pueden cambiar un commit después de aprobarlo.** Se detecta (comparación del árbol confirmado con el revisado, aviso y `git reset --soft HEAD~1`), pero no se impide.
+- **Un modelo con Exec puede escribir `.git/hooks`.** Se detecta con las instantáneas de integridad antes y después de cada ejecución (`git hooks or config changed during the run (not reverted)`), pero no se impide ni se revierte. Revisa siempre los ganchos que muestra la revisión del commit.
+- **Git no carga tu configuración.** Los ganchos solo se leen del `.git/hooks` del propio repositorio, el commit no se firma y la identidad se pasa explícitamente.
+
+#### Paneles: `list_panes`
+
+`list_panes` es una herramienta de solo lectura que se ofrece junto a `run_in_pane` y no tiene interruptor propio. Responde a «¿qué estoy haciendo en mis paneles?»: con `nvim prueba.rs` abierto en el panel con foco, el modelo lo ve en lugar de pedirte que pegues el código. Los _workers_ del orquestador no la tienen.
+
+**Qué se envía exactamente.** Una línea por panel, con el número, si tiene el foco, su carpeta (con `~/` en lugar de tu `$HOME`) y el programa en primer plano; por ejemplo `pane 1 (focused) cwd: ~/proyecto program: nvim prueba.rs`. Un panel cuyo proceso no se puede leer dice `program: unknown`. `list_panes` no envía el contenido de la pantalla (para eso existe `read_pane`, más abajo), y el entorno de otros procesos no se lee nunca.
+
+**Lista de permitidos, no de prohibidos.** Una línea de comando puede esconder un secreto de muchas formas (`-u usuario:clave`, `-a CLAVE`, una cadena de conexión, una cabecera), así que no se muestra nada que no se sepa inofensivo:
+
+- Del panel con foco se muestra el nombre del programa y, de sus argumentos, solo las opciones (`-x`, `--larga`, sin su `=valor`) y las rutas: las que empiezan por `/`, `./`, `../` o `~/` y las que nombran un archivo o carpeta que existe en la carpeta del programa. Cualquier otro argumento se sustituye por `…`. `ssh -p 22 host` se ve como `ssh -p …`.
+- Con `sh`, `bash`, `zsh`, `fish -c`, `python -c`, `node -e`, `perl -e` o `ruby -e` solo se ve el intérprete y la opción: el código nunca.
+- Una ruta con `?`, `=`, `@` o `:` no se muestra. Lo que queda pasa además por la censura de secretos y de credenciales en URL.
+- Los nombres de archivos y carpetas que **existen** se muestran tal cual: `--password-file creds.txt` muestra `creds.txt` si ese archivo existe (el contenido nunca se lee). Solo se comprueban los 16 primeros argumentos del panel con foco; los demás son `…`.
+- Un programa que se pone a sí mismo un título con espacios o `:` (`nginx: master process ...`) se muestra como `…`.
+- Los demás paneles muestran solo el nombre del programa y la carpeta.
+- Todo fragmento (programa, opciones, rutas, carpetas) se limpia como el resto de avisos (sin secuencias de escape, caracteres bidireccionales ni de ancho cero) y pasa por la censura de secretos; cada argumento se corta a 120 caracteres y cada línea de panel a 300. Si la carpeta del programa difiere de la de la shell, se añade `(running in …)`.
+- El texto se acota para que el aviso se pueda aprobar: como mucho 5 paneles (el que tiene el foco primero) y una línea final `+N more` si hay más; una línea se acorta si hace falta.
+
+**Pregunta en motores en la nube.** Sigue la misma política que `read_file` y `git_diff`: con un motor local (Ollama, llama.cpp) corre sin preguntar y el texto no sale de tu máquina; con un motor en la nube **pide tu `y`** y el aviso muestra el texto exacto que se enviaría a su proveedor. Ningún modo de aprobación (`ask`, `auto`, `run`) la responde por ti. Un modelo `*-cloud` de Ollama cuenta como local para `list_panes`: no hay aviso, aunque el modelo se ejecute en la nube de Ollama. Las herramientas de GitHub y las lecturas tras una lectura de GitHub (ver más abajo) son la excepción: ahí un modelo `*-cloud` sí cuenta como nube.
+
+**Límites.**
+
+- Linux lee el grupo de procesos en primer plano con `tcgetpgrp` y después `/proc/<pgid>/cmdline` y `/proc/<pgid>/cwd`.
+- macOS no tiene `/proc`: allí el programa y la carpeta de cada panel salen como `unknown`, la herramienta no falla y no envía nada más que eso.
+- La lista se actualiza cada segundo, así que puede ir un instante por detrás. La lectura de `/proc` y las comprobaciones de archivos se hacen fuera del bucle de la interfaz; si la lista tiene más de 10 s, el texto añade `(pane list is Ns old; a lookup may be stuck)`.
+- No ve los búferes sin guardar de un editor: el modelo te sugiere guardar (`:w`) antes de leer el archivo con `read_file`.
+
+#### Paneles: `read_pane`
+
+`read_pane` deja que el modelo lea el texto de la pantalla de **otro** panel (el número que muestra `list_panes`, nunca el del propio chat). Se ofrece junto a `list_panes` y solo a los chats: ni los _workers_ ni el orquestador la tienen. Argumentos: `pane` y, opcional, `scrollback` (de 1 a 200 líneas de historial; 0, un valor mayor, un negativo o un decimal se rechazan con un mensaje que nombra el rango).
+
+- **Pregunta siempre.** En cualquier motor, local o en la nube, y en los tres modos de aprobación (`ask`, `auto`, `run`): ninguno la responde por ti. Un panel puede contener lo que escribiste o ejecutaste.
+- **Ves el texto exacto.** Al llegar la petición se lee el panel y se congela. Se abre la revisión (la misma vista de los lotes) con ese texto; `y` queda bloqueada hasta que hayas visto todas las líneas. Lo que se envía es el texto congelado, aunque el panel cambie o se cierre mientras decides.
+- **Censura y límite.** Se quitan los caracteres de control, se censuran los secretos (también los partidos por un salto de línea automático) y se envían como mucho 8 KiB; si no caben se conserva el final y se avisa.
+- **Avisos visibles.** Si lo deniegas, si el panel ya no existe, si está en blanco o si ya hay otra aprobación pendiente lo ves en el chat; el modelo recibe el resultado correspondiente. Si pides historial en una aplicación a pantalla completa (solo se lee la pantalla visible), el aviso aparece dentro de la revisión, no como una línea del chat.
+
+#### GitHub: `gh_issue_list`, `gh_issue_view` y `gh_pr_view`
+
+Tres herramientas de **solo lectura** dejan que el modelo lea los issues y las pull requests del repositorio de la carpeta del chat. Están **desactivadas por defecto**: se activan con `github = true` en `[ai.tools]` (o con la fila **GitHub** de la pestaña **Tools**), o solo para un chat con `/github` (ver más abajo), y solo actúan si `enabled = true` y el motor tiene las herramientas verificadas. Los _workers_ y el orquestador nunca las tienen.
+
+| Herramienta | Qué devuelve |
+|---|---|
+| `gh_issue_list` | Número, título, estado y etiquetas de los issues; `state` (`open`, `closed`, `all`) y `limit` (hasta 50, por defecto 20) opcionales. Si hay más de los pedidos, lo dice. |
+| `gh_issue_view` | Título, estado, autor, etiquetas y cuerpo de un issue (`number`). Los comentarios solo vienen con `comments: true`, y se ve en la fila de la llamada. |
+| `gh_pr_view` | La ficha de una pull request (`number`): título, estado, descripción, ramas, archivos con sus líneas añadidas y quitadas, y el resultado de los checks. **Nunca incluye el diff.** |
+
+**Requisitos.** El GitHub CLI (`gh`) instalado y con sesión iniciada: ejecuta `gh auth login` en un panel de shell. lazarobox no guarda ningún token; `gh` usa su propia sesión. La carpeta del chat debe ser un repositorio git con un remoto `origin` en `github.com` (https o ssh); GitHub Enterprise no se admite.
+
+**El repositorio sale siempre de `origin`.** Lo lee lazarobox en el momento de la llamada; el modelo no puede indicar otro repositorio, ni un `gh` distinto, ni añadir opciones. Si cambias de carpeta con `/cd`, la siguiente llamada lee el repositorio de la carpeta nueva. Si el repositorio es un _fork_, el resultado lo dice, nombra el repositorio padre y aclara que el padre no se lee. Sin `origin`, con un `origin` que no es de GitHub, sin repositorio, sin `gh`, sin sesión, o con un número que no existe, la fila de la herramienta muestra el motivo (por ejemplo `gh is not logged in: run gh auth login in a shell pane and try again`) y no se ejecuta nada más.
+
+**Todo lo que viene de GitHub es un dato, no una instrucción.** Títulos, cuerpos, comentarios, etiquetas, ramas y nombres de archivo se limpian (sin secuencias de escape ni caracteres invisibles), se quitan los comentarios HTML, los secretos se censan igual que en `read_file` (`[REDACTED]`) y el resultado va dentro del marcador de «datos no confiables» con un límite de 32 KiB; si se recorta, lo dice. `gh` se ejecuta con una orden fija, un entorno filtrado (sin `GH_HOST`, `GH_REPO`, `GH_ENTERPRISE_TOKEN`...) y un límite de 30 s y 4 MiB de respuesta.
+
+**Motores en la nube.** Leer GitHub envía texto de issues al proveedor, así que con un motor en la nube (y con un modelo de Ollama `*-cloud`, que se reconoce por el nombre: termina en `-cloud` o tiene la etiqueta `cloud`) la primera lectura de cada repositorio en cada turno **pide tu `y`** y el aviso muestra `owner/name`. Aceptar cubre el resto del turno; el turno siguiente pregunta de nuevo. Si rechazas, las demás llamadas de ese turno se deniegan sin volver a preguntar. Con un motor local no se pregunta. Ningún modo de aprobación (`ask`, `auto`, `run`) responde esta pregunta por ti.
+
+**`/github`: dar las herramientas a un solo chat.** Escribe `/github` en el compositor y pulsa `Enter`. Es un comando tuyo: no crea un mensaje, no llega al modelo, no se guarda en el historial y funciona aunque haya un stream en curso (el permiso se aplica desde el mensaje siguiente). lazarobox lee el `origin` de la carpeta del chat (sin red, fuera del hilo de dibujo) y abre un diálogo que nombra el repositorio `owner/name`. Solo una `y` minúscula lo concede, y solo si el panel muestra el repositorio entero (si es demasiado pequeño, `y` no concede y `n` sigue rechazando) y el chat sigue en la carpeta que se leyó; `n` y `Esc` lo rechazan (`GitHub tools stay off`), y `Ctrl+C` también lo rechaza y cancela el stream en curso, como en cualquier confirmación; cualquier otra tecla, incluidas `Y`, `Enter`, `Espacio`, `Ctrl+y` y una `y` mantenida, se descarta con el aviso `Answer the pending confirm first` y el diálogo sigue abierto. Una `y` pulsada justo cuando el diálogo se abre no cuenta: `Prompt just opened: answer again in a moment`. Ni el modelo, ni un resultado de herramienta, ni un mensaje almacenado que contenga `/github` o `y` pueden abrirlo ni responderlo: solo una pulsación tuya. Al conceder, una línea del sistema dice tres cosas: las herramientas están activas desde el mensaje siguiente, un motor en la nube sigue preguntando, y tras la primera lectura los comandos de la conversación solo se escriben.
+
+- El permiso es de **ese chat**: no cambia el interruptor guardado ni escribe `config.toml`, y otro panel no lo hereda. Termina al cerrar el panel o la aplicación, al reanudar una conversación, al cambiar de carpeta con `/cd` o al restaurar la carpeta de una conversación (con la línea `GitHub tools are off because the folder changed`), al apagar las herramientas, y cuando guardas en el menú el interruptor **GitHub** de activado a desactivado (para todos los chats). Cambiar de motor o de modelo no lo termina.
+- El interruptor general manda: con `enabled = false`, `/github` dice que las herramientas están apagadas y no abre ningún diálogo. También se niega, con una línea y sin diálogo, si las herramientas de GitHub ya están activas, si el motor del chat no ofrece herramientas, si el chat está orquestando (los turnos orquestados nunca ofrecen las herramientas de GitHub), si la carpeta no es un repositorio, si no tiene `origin` o si `origin` no está en `github.com`.
+- `/github` con texto detrás (`/github ahora`) no hace nada, avisa con `/github takes no arguments` y deja el texto en el compositor. Para enviar de verdad un mensaje que empiece por `/github`, escribe `//github`.
+- El permiso **no** da el consentimiento de la nube: con un motor en la nube, la primera lectura de cada turno sigue pidiendo tu `y`. El bloqueo de ejecución automática (abajo) tampoco termina con nada de esto.
+
+**La sugerencia de `/github`.** Si las herramientas están activas, el motor las ofrece, el interruptor de GitHub está apagado, el chat no tiene permiso y el `origin` de su carpeta está en `github.com`, el chat muestra, justo encima del compositor, una única línea atenuada: `Type /github to let this chat read owner/name's issues and PRs`. No es un mensaje: no se guarda, no se envía a ningún motor y el modelo nunca la ve. Aparece una vez por panel y repositorio (desaparece al enviar el primer mensaje y no vuelve tras aceptar o rechazar el diálogo) y no abre nada por sí sola. Si no cabe en una línea, primero pierde el nombre del repositorio (`... read this repo's issues and PRs`) y después se acorta, pero la palabra `/github` nunca se corta; es ASCII, así que se lee igual en una consola `linux`. Tras `/cd` a otro repositorio puede mostrarse una vez más. Leer el `origin` es una sola llamada local a `git config`, sin red y fuera del hilo de dibujo.
+
+**Después de leer GitHub, los comandos esperan tu Enter durante el resto de la conversación.** Un issue es texto que puede haber escrito cualquiera, así que en cuanto una herramienta de GitHub arranca `gh`, esa conversación deja de ejecutar comandos por su cuenta, incluso las pruebas y los comandos seguros del modo `run`:
+
+- `run_in_pane` solo **escribe** el comando en el panel, sin pulsar Enter; en el aviso, `y` también solo lo escribe. Lo ejecutas tú.
+- La barra muestra `RUN OFF` en lugar de `RUN`, y una línea del sistema lo explica.
+- El bloqueo sobrevive a cambiar de modo, a las respuestas del modelo y a cerrar y reanudar la conversación. Una conversación nueva no está bloqueada.
+- Con un motor en la nube (o un modelo de Ollama `*-cloud`), `read_file` y `grep` también preguntan cada vez, incluso dentro de la carpeta del proyecto.
+- Una conversación con mensajes de un rol que esta versión no conoce (los escribió una versión más nueva) también se abre bloqueada, porque pueden contener texto de GitHub que no se ve. Como no se sabe que se leyera GitHub, ningún texto lo afirma: la línea del sistema es `auto-run is off here: messages from a newer version; commands are only typed`, el aviso de `y` en el modo `run` dice `auto-run is off: messages from a newer version`, y la línea del cambio de modo dice `blocked: messages from a newer version`. Si luego esa conversación lee GitHub de verdad, los textos pasan a decirlo.
+- Se guarda como una fila marcadora en tu historial. Una versión anterior de lazarobox que abra esa conversación mostrará el aviso «saved message(s) from a newer version are not shown» y no aplicará el bloqueo.
+
+**`/write`: activar Write en un solo chat.** Escribe `/write` en el compositor y pulsa `Enter`. Es un comando tuyo: no crea un mensaje, no llega al modelo y no se guarda en el historial. Abre un diálogo que nombra la herramienta (`Write`) y la carpeta del chat. Solo una `y` minúscula lo concede, y solo si el chat sigue en esa carpeta y el panel muestra el diálogo entero; `n` y `Esc` lo rechazan (`Write stays off`), y `Ctrl+C` también lo rechaza y cancela el stream en curso. Cualquier otra tecla se descarta con el aviso `Answer the pending confirm first`, y una `y` pulsada justo al abrirse no cuenta (`Prompt just opened: answer again in a moment`).
+
+- El permiso es de **ese chat**: vive en memoria, no cambia el interruptor guardado de Write, no escribe `config.toml` y otro panel no lo hereda. Vale desde el mensaje siguiente y, en un chat que orquesta, desde el siguiente _worker_ de código que lance el coordinador; un _worker_ que ya corre conserva las herramientas con que empezó.
+- **Cada lote se sigue revisando**: el permiso solo ofrece las herramientas de escritura, y nada llega al disco sin tu revisión del lote.
+- Termina, con una línea del sistema, al cambiar o restaurar la carpeta del chat, al apagar las herramientas, al cambiar el interruptor guardado de Write desde el menú y al reanudar una conversación.
+- Solo tú puedes abrirlo: ni el modelo, ni un _worker_, ni un resultado de herramienta, ni un mensaje que contenga `/write` pueden abrir o responder el diálogo.
+- Se niega con una línea y sin diálogo (`/write refused: ...`) si las herramientas están apagadas, el motor no las ofrece, Write ya está activo, el chat no tiene carpeta o la lista de conversaciones está abierta. `/write` con texto detrás avisa con `/write takes no arguments` y deja el texto en el compositor; para enviar un mensaje que empiece por `/write`, escribe `//write`.
+- En ORCH, un _worker_ `code` necesita Write: con Write apagado el lanzamiento se rechaza con un aviso que nombra `/write` como paso desde el chat (el menú de IA sigue valiendo). En un chat sin ORCH, `/write` también amplía el turno siguiente.
+
+#### Borrador de issue: `gh_issue_draft`
+
+El chat puede redactar un issue sobre lazarobox a partir de la conversación, por ejemplo cuando le pides «apunta esto como idea» o «reporta este fallo». La herramienta recibe `kind` (`idea` o `bug`), `title` (hasta 120 caracteres) y `description` (hasta 2000), y **nunca escribe en GitHub**: solo abre el formulario de **Feedback** ya relleno, y lo envías tú con `Ctrl+S`.
+
+- Está **activada por defecto**, con su propio interruptor `issue_draft` en `[ai.tools]` (fila **Issue draft** de la pestaña **Tools**), y solo actúa si `enabled = true` y el motor tiene las herramientas verificadas. Los _workers_ y el orquestador nunca la tienen.
+- Cada llamada pide tu `y` en el compositor, con el tipo y el título: `draft issue: Idea or goal` y el título debajo. Solo una `y` minúscula sin modificadores acepta; `n`, `Esc`, un tiempo agotado, una cancelación o cerrar el chat la deniegan. Ningún modo de aprobación (`ask`, `auto`, `run`) la responde, y si hay otra aprobación pendiente se deniega al momento.
+- Un argumento mal (un campo vacío, un tipo desconocido, un título con saltos de línea o un campo por encima de su límite) se devuelve al modelo como error para que lo corrija: nada se corta en silencio.
+- Tras tu `n` (o `Esc`, una cancelación, cerrar el chat o un tiempo agotado), las siguientes llamadas del mismo turno se deniegan sin preguntar. Una llamada rechazada porque hay otra aprobación pendiente o un formulario abierto no cuenta, y una `y` ya dada siempre acaba abriendo su formulario.
+- El formulario se abre **al terminar el turno** (no mientras escribe), en el tipo del borrador, con el título y la descripción en sus campos y la fila **Feedback** seleccionada. Si el turno falla o lo cancelas después de tu `y`, se abre igual.
+- Un formulario que ya esté abierto nunca se sobrescribe: si llega una llamada mientras lo tienes abierto, se deniega; si lo abriste después de tu `y`, estás en otro modo (por ejemplo tras `Ctrl+Space`) o el menú tiene abierta una pantalla que espera tu respuesta (el aviso de privacidad de Memory, el selector de motor y modelo con su confirmación de borrado, el campo del token de Hugging Face o su pregunta de desconexión, o la vista de uso), el borrador no se abre, esa pantalla queda como estaba y el chat lo dice con una línea del sistema que nombra el título (puedes volver a pedírselo). Con el menú abierto en otra fila, el borrador se abre ahí sin perder lo que estabas tocando.
+- El envío es el de siempre: `Ctrl+S`, la revisión de secretos, la búsqueda de issues parecidos, los datos adjuntos y la alternativa del enlace sin `gh`. El borrador va al repositorio de lazarobox, no al de la carpeta del chat.
+- Cuando el turno ofrece la herramienta, el prompt de sistema le dice al modelo cuándo ofrecer un borrador por su cuenta: si le pides un issue, si no puede hacer lo que pides porque a lazarobox le falta, o si falla una herramienta de lazarobox o el propio chat; nunca por errores de tu código o de tus comandos. Llamar a la herramienta ya es la oferta: su `y`/`n` es tu permiso, así que no pregunta dos veces.
+- Si el turno no ofrece la herramienta (el motor no tiene herramientas, `enabled = false` o `issue_draft = false`), tras un turno que falla o una herramienta que acaba en error el chat muestra la línea `If this looks like a lazarobox problem, type /feedback to report it`, como mucho una vez por turno. Una llamada denegada no la muestra, ni un turno del orquestador.
 
 ### Tools with Ollama
 
 Ollama no tiene un CLI que ejecute herramientas, así que lazarobox ejecuta el bucle él mismo sobre `/api/chat`: envía las herramientas en el campo `tools`, ejecuta las llamadas del modelo con el mismo registro, las mismas aprobaciones y el mismo modo (`ask`, `auto`, `run`) que los CLIs, y devuelve los resultados en una nueva petición del mismo turno. En la conversación se ven las mismas filas de herramienta que con cualquier otro motor.
 
-- Como Ollama es local, `find_dir`, `list_dir` y `read_file` se ejecutan sin preguntar; `run_in_pane` siempre espera tu `y` y nunca pulsa Enter.
+- Como Ollama es local, `find_dir`, `list_dir` y `read_file` se ejecutan sin preguntar; `run_in_pane` sigue el modo de aprobación como con cualquier motor (en `run`, un comando seguro dentro de la carpeta corre solo y otro corre tras tu `y`).
 - Un turno hace como máximo 8 peticiones (24 si hay activa alguna familia de `[ai.tools]`: búsqueda, escritura...). Si el modelo sigue pidiendo herramientas, el turno termina con una línea de sistema y se conserva la respuesta parcial.
-- Si el modelo no admite herramientas (el servidor responde con un 400 a la petición con `tools`), se repite una sola vez sin ellas (solo si aún no hubo ninguna ronda; después, un 400 es un error normal) y la respuesta llega como texto normal. El motor y el modelo asignados no cambian.
+- Si el modelo escribe una llamada como texto (un JSON con el `name` de una herramienta ofrecida y sus `arguments`, suelto o en un bloque de código) en vez de hacerla, lazarobox le pide una vez en el mismo turno que llame a la herramienta, y el chat muestra la línea `the model wrote a tool call as text; it was asked to call the tool`. Esa petición cuenta para el límite del turno y solo ocurre una vez por turno; lo escrito en el texto nunca se ejecuta. Vale también para llama.cpp.
+- Si la última frase de la respuesta anuncia lo que el modelo va a hacer («I'll create the test next», «ahora voy a ejecutar pytest») y no hay ninguna llamada, lazarobox le pide una vez en el mismo turno que haga ese paso o que resuma lo hecho, y el chat muestra la línea `the model said what it would do next without a tool call; it was asked to do it`. Una pregunta, un ofrecimiento o una cortesía al usuario («¿hago el commit?», «si quieres, añado más tests», «I'll be happy to help») y un resumen de lo hecho no cuentan. Lo mismo ocurre si la respuesta llega vacía (línea `the model sent an empty answer; it was asked to go on`) o si su última frase empieza con un cierre del tipo «Ready for next steps.», «Ready to commit.» o «Listo para el commit.» (línea `the model stopped before finishing; it was asked to go on`); estos casos comparten ese único aviso por turno. Este aviso es aparte del de la llamada escrita como texto: cada uno ocurre como mucho una vez por turno y cuenta para el límite. Vale también para llama.cpp.
+- Con la familia de escritura, la de ejecución o la de git write activada, el prompt de sistema del turno ya no dice que el modelo no puede cambiar archivos: le dice lo que sus herramientas le permiten (escribir, probar o hacer commit, según las familias activadas), que haga en el mismo turno todos los pasos que se le piden y que no dé nada por hecho si un resultado de herramienta no lo muestra. Esto vale para todos los motores que reciben las herramientas de lazarobox, y la descripción de `run_in_pane` ya no dice que el modelo no puede cambiar archivos.
+- Si el servidor responde con un 400 a la petición con `tools` (por ejemplo, porque el modelo no las admite), se repite una sola vez sin ellas (solo si aún no hubo ninguna ronda; después, un 400 es un error normal) y la respuesta llega como texto normal. El chat lo avisa una vez por panel con `Ollama answered 400 to a request with tools: retrying without them`, sin afirmar la causa (con llama.cpp, `llama-server refused tools (start it with --jinja): answering as plain text`). El motor y el modelo asignados no cambian.
+- Tras una ronda de herramientas, algunos modelos locales (`qwen3`) escriben el final de su razonamiento como texto de la respuesta, cerrado con un `</think>` suelto. En esas rondas lazarobox retiene el texto hasta ver ese `</think>` o el final de la ronda: lo anterior se muestra como razonamiento y lo posterior como respuesta. Por eso, en las rondas que siguen a una herramienta, la respuesta aparece entera al final en vez de ir saliendo. La primera ronda del turno sale como siempre.
 - Los mensajes de herramienta viven solo en ese turno: no se guardan ni se envían en turnos posteriores. Los límites de tiempo, la sanitización y el tope de la respuesta son los de cualquier turno.
 - Solo hay herramientas si **Tools** está activado en el menú de IA (`[ai.tools] enabled`). Si lo desactivas a mitad de un turno, solo se deniegan las llamadas que piden aprobación, igual que con los CLIs.
 - **Estado:** las herramientas con Ollama están activas: el usuario las comprobó con un modelo real el 2026-10-17 y `ollama` figura en `MCP_VERIFIED`.
 - El límite de tiempo total del turno (15 minutos) incluye el tiempo que pasas decidiendo una aprobación.
+
+### Tools with llama.cpp
+
+`llama.cpp` usa el mismo bucle de herramientas que Ollama, sobre `/v1/chat/completions`: las mismas herramientas, las mismas aprobaciones y los mismos topes de rondas (8 peticiones por turno, 24 si hay activa alguna familia de `[ai.tools]`). `lmstudio` y `vllm` siguen respondiendo solo con texto.
+
+- **Plantilla de chat.** Las herramientas exigen un modelo y una plantilla de chat que admitan llamadas a herramientas, y que `llama-server` use Jinja (`--jinja`, el valor predeterminado en las versiones actuales). lazarobox no añade `--jinja` por ti; con `--no-jinja` el turno se responde como texto y el aviso `runs as plain text, without tools` sale una vez por panel.
+- **Verificado con:** Qwen2.5-7B-Instruct Q4_K_M en `llama-server` b11935 con `--jinja --parallel 1` (2026-11-07). No se ha probado Qwen3.8-27B.
+- **Plantillas `coder`.** Qwen2.5-Coder-7B Q4_K_M envía sus llamadas a herramientas como texto JSON en lugar de hacerlas, y el turno falla. Depende del modelo y de su plantilla, no de lazarobox (Ollama con `qwen2.5-coder:14b` se comporta igual). Si ves llamadas escritas como texto, prueba con un modelo Instruct.
+- **Contexto.** Se recomienda `-c 16384` o más: el prompt y las herramientas ocupan una parte importante de la ventana.
+- **Workers en paralelo.** Con `--parallel 1` el servidor atiende una petición cada vez: una espera de menos de 120 s se encola; pasados 120 s la ejecución se detiene con `no answer from the engine` y `r` la reintenta.
+- **Apagarlas.** Con `[ai.tools] enabled = false` el turno no envía el campo `tools` y vuelve a ser solo texto.
 
 ### Tus propios servidores MCP (`[[ai.mcp.servers]]`)
 
@@ -737,18 +1284,92 @@ project = "/home/u/dev/mi-proyecto"
 
 Los mensajes se guardan en `chat.db` a medida que conversas. Una respuesta que se interrumpe tras haber recibido texto (por un error o una cancelación) también se guarda, marcada como parcial. `Ctrl+Espacio` y `c` abre la **lista de conversaciones** del proyecto actual (el repositorio git), de la más reciente a la más antigua, con el formato `fecha · perfil · primer mensaje`.
 
-| Tecla        | Acción                                                                          |
-| :----------- | :------------------------------------------------------------------------------ |
-| `Enter`      | Retoma la conversación: carga el historial completo y sigue en la misma, con su perfil guardado |
-| `n` / `Esc`  | Empieza una conversación nueva                                                  |
-| `a`          | Alterna entre las conversaciones del proyecto y las de todos los proyectos      |
-| `d`, luego `y` | Borra la conversación (cualquier otra tecla cancela); si está abierta en otro panel, ese panel deja de guardar. Con memoria activada, `ENGRAM_HTTP_TOKEN` definido y notas guardadas, la pregunta ofrece también `a`: borra la conversación y después sus notas en engram (ver «Memoria») |
-| `t`          | Edita las etiquetas de la fila                                                  |
-| `Ctrl+Espacio` `T` | Edita las etiquetas de la conversación abierta                            |
+![Retomar una conversación guardada desde la lista del chat](docs/assets/history.gif)
+
+Teclas de la lista (`Enter` retoma, `n`/`Esc` empieza una nueva, `a` alterna proyecto/todos, `Supr` borra, `t` etiquetas): ver la [referencia de teclas](#referencia-de-teclas-por-vista). Borrar una conversación abierta en otro panel hace que ese panel deje de guardar. `Ctrl+Espacio` `T` edita las etiquetas de la conversación abierta.
 
 **Etiquetas:** cada conversación lleva la etiqueta del proyecto (primero) y hasta 8 etiquetas extra. El editor es una sola línea separada por comas: `Enter` guarda y `Esc` descarta. Guardar cuenta como actividad, así que la fila sube al principio de la lista.
 
 Límites: al reabrir una conversación, las etiquetas extra salen en orden alfabético. La combinación `Ctrl+Espacio` `T` aún no se ha comprobado a mano en Kitty.
+
+### Uso de IA: `/cost` (alfa)
+
+> **Alfa.** Los motores informan del uso en formatos que cambian: las cifras pueden faltar o no coincidir con lo que te factura el proveedor, según el motor y la cuenta. Si ves algo raro, ábrelo como incidencia en [GitHub](https://github.com/pichu2707/lazarobox-shell/issues) (si trabajas con un agente de IA en este repositorio, su skill `report-lazarobox-issue` lo hace por ti, con tu permiso).
+
+`/cost` escrito en el compositor del chat y enviado con `Enter` abre una vista sobre la conversación, como la lista de conversaciones. `Esc` la cierra; las flechas (o `j`/`k`) y `PageUp`/`PageDown` la desplazan, y las líneas largas se parten en vez de cortarse. `Ctrl+C` no la cierra ni cancela nada: avisa de que primero hay que pulsar `Esc`. Es un comando tuyo: no crea un mensaje, no llega al modelo, funciona aunque haya un stream en curso y aunque no haya motor. Con texto detrás (`/cost ahora`) no hace nada, avisa con `/cost takes no arguments` y deja el texto en el compositor. Para enviar de verdad un mensaje que sea `/cost`, escribe `//cost`.
+
+La vista, que empieza por `AI usage (alpha)`, muestra el uso de todos tus chats guardados (incluidos los borrados):
+
+- `today` y `last 7 days`: tokens y turnos (días locales, desde la medianoche). Los turnos son los del chat; las compactaciones y los resúmenes suman tokens pero no cuentan como turno.
+- `by engine and model`: una línea por motor y modelo, del que más usó al que menos, con `in`, `out` y, si el motor lo cuenta, `cached`. Si un turno usó varios modelos (por ejemplo el enrutador y el modelo principal de gemini, o los subagentes de claude), el modelo se guarda y se muestra como `mixed` (`gemini › mixed`). Un modelo que nadie informó, o un registro anterior a esto, se muestra como `unknown`.
+- `of which workers`: solo cuando hay registros de workers del orquestador en los últimos 7 días, justo tras `last 7 days`: los tokens de esos workers, que ya están incluidos en `today`, `last 7 days`, `this chat`, los gráficos y la barra de estado (ver «Uso de los workers»). Va en tokens; los dólares, si los hay, salen en las líneas por motor y modelo. `no data` si ninguno informó de su total y `partial` si algún registro está cortado o incompleto.
+- `this chat`: lo de la conversación actual. Si todavía no tiene datos, `this chat: no data`.
+- `this session`: lo que ha gastado este panel desde que se abrió.
+- Dos gráficos de texto al final (alfa), con los mismos datos que las líneas de arriba y solo si hay registros en los últimos 7 días:
+  - `per day (last 7 days, oldest first):` una línea de 7 símbolos, uno por día local (el más antiguo primero), escalados al día con más tokens conocidos con `▁▂▃▄▅▆▇█` y terminada en `max <N>` (el último símbolo es hoy, que cuenta «hasta ahora»: el día aún no ha terminado). Un día con tokens conocidos nunca baja de `▂`, para que no se confunda con un 0 conocido. Un día sin registros, o cuyos registros no informan su total, es `·` (un hueco, no un valor bajo); un día con 0 tokens conocidos es `▁`.
+  - `per engine (last 7 days):` una línea `  <motor> <barra> <N>` por motor, con la barra de `█` de 1 a 20 símbolos en proporción al motor que más usó; los nombres se alinean al más largo y se cortan con `…` pasados 16 columnas (un nombre vacío es `?`). Un motor sin ningún total conocido muestra `no data` en lugar de barra y número.
+
+**`no data` no es 0.** Si un motor no informa de un valor, la vista dice `no data` y la línea se marca `partial`; nunca se rellena con un cero. `partial` aparece tanto en las líneas por motor y modelo como en las de resumen (`today`, `last 7 days`, `this chat`, `this session`) cuando algún registro está cortado o le falta la entrada o la salida, y también en una línea con dólares si solo parte de sus registros los informó (la cifra es un mínimo). Mientras el historial responde se lee `reading usage…`, y si no se puede leer, `usage history is not available`.
+
+**Los gráficos no inventan datos.** Un recuento que falta es un hueco (`·` o `no data`), nunca un cero. Nunca dibujan dólares: ni el precio de lista ni ningún otro, solo tokens, así que los motores de suscripción y los locales no muestran dinero en ellos. Son líneas de texto normales: en un panel estrecho se parten como las demás y no provocan ningún fallo. Un ` *` tras el número (`claude ████ 1000 *`, o `max N *` en la línea por día) significa que algunos turnos no informaron de los dos recuentos (entrada y salida), así que la cifra es un mínimo. En paneles muy estrechos las barras se parten en varias filas. Sin historial disponible no hay gráficos, porque la sesión no guarda días. Los gráficos incluyen los tokens de los workers del orquestador, como el resto de `/cost`. Como el resto de `/cost`, están en fase alfa: si ves algo que no cuadra, puedes comunicarlo en los issues de GitHub.
+
+**Cuota de caché.** Las líneas `cache today:`, `cache last 7 days:` y `cache this chat:` (por ejemplo, `cache today: claude 91% · codex 79%`) indican, para cada motor, qué parte del prompt se sirvió desde la caché del proveedor: lecturas de caché divididas entre entrada nueva, lecturas y escrituras de caché. Una cuota alta significa que los turnos reutilizan buena parte del contexto ya enviado. Solo cuentan los turnos que informaron de la caché; un motor que no la informa (por ejemplo, Ollama) no muestra cifra, nunca `0%`. Si en el periodo algún registro de un motor mostrado no aportó cifra de caché (le faltaba la entrada, la lectura de caché o, en claude, la escritura de caché), la línea termina en `partial`: la cuota cubre solo los turnos que sí la informaron. Es solo una medición: no cambia lo que se envía al motor.
+
+**Prefill de los motores locales.** Las líneas `prefill today:`, `prefill last 7 days:` y `prefill this chat:` (por ejemplo, `prefill today: llamacpp 2.2 ms/1k tok · ollama 1.4 ms/1k tok`) muestran, para los motores locales que informan de tiempos (Ollama, llama.cpp, LM Studio y vLLM), el tiempo medio que el motor tardó en procesar el prompt (el prefill), en milisegundos por cada 1000 tokens del prompt completo. Se lee al revés que la cuota de caché: un valor bajo indica que el motor reutilizó su caché y apenas tuvo que reprocesar el prompt; un valor alto indica que lo procesó entero. Ollama no muestra porcentaje de caché porque, aunque acierte la caché, informa del prompt completo en su contador de tokens, así que el recuento no sirve para detectarla; solo el tiempo de prefill lo refleja. Esto se comprobó en la práctica con Ollama 0.30.10 (3631 tokens de prompt tanto en frío como en caliente); otras versiones podrían comportarse distinto. Compara cifras del mismo motor y modelo, porque dependen del hardware. Solo cuentan los turnos que informaron del tiempo; si algún registro de un motor mostrado no lo aportó, la línea termina en `partial`. Es solo una medición: no cambia lo que se envía al motor.
+
+**Dólares.** Solo aparecen si el motor los informa (hoy, claude), con 4 decimales por debajo de un dólar y 2 a partir de él. Por defecto claude, codex y gemini se tratan como `subscription`, así que la cifra se etiqueta `list-price equivalent`: es el precio de lista del motor, no una factura. Los motores locales (ollama, lmstudio, llama.cpp y vllm) enseñan tokens y nunca dólares.
+
+**Privacidad del uso.** Lo que se guarda en `chat.db` son solo cifras: la hora, el motor, el modelo, el rol del turno (`chat`, `compaction`, `summary`…) y el worker si lo hay, los recuentos de tokens, el coste informado, la duración y si quedó cortado. Nunca se guarda texto de mensajes, ni de prompts, ni de respuestas, ni rutas. Los registros de más de 90 días se borran solos, y borrar una conversación deja sus cifras sin enlace a ella pero no las borra. Ninguna cifra sale de tu máquina: ni se envía al motor ni a ningún otro sitio. Sin historial disponible no se guarda nada.
+
+**Sin historial.** El historial de chats siempre está activado: no hay ninguna opción para apagarlo. Si `chat.db` no se puede abrir (por ejemplo, porque lo creó una versión más nueva), no se guarda ningún uso, cada registro perdido avisa con `Usage not saved: <motivo>`, la barra muestra `today: ?` y `/cost` dice `usage history is not available`.
+
+#### Uso de los workers del orquestador (alfa)
+
+Cada turno de un worker de una ejecución del orquestador guarda su uso igual que un turno de chat, con el rol `worker`, el motor y el modelo del worker, su identificador (`<ejecución>.<worker>`) y la conversación del panel, si ya está guardada. Las peticiones de un mismo turno se suman en un solo registro. Es la misma tabla, con las mismas reglas:
+
+- **Nunca se inventa una cifra.** Si el motor del worker no informa de nada, no se guarda registro. Si informa a medias, queda `no data` en el recuento que falta y el registro cuenta como `partial`. Un worker que falla, se cancela o agota su plazo después de informar guarda lo que informó, marcado `partial`.
+- **Panel cerrado.** Si el panel ya no es un chat cuando llega el uso de un worker, se guarda igualmente, sin conversación; si esa escritura falla no hay panel donde avisarlo (límite conocido).
+- **Dólares y precio de lista** según el motor del worker y su modo de facturación, como en un turno de chat; un motor local nunca muestra dólares.
+- **Sin historial disponible no se guarda nada**, tampoco el uso de los workers. Un registro que no se pudo guardar muestra `Usage not saved: <motivo>` (una vez por ejecución) y la ejecución sigue.
+- **Cuentan en todo**: `today`, `last 7 days`, los gráficos, el segmento `today: N tok` de la barra de estado y los límites por día (`day_tokens` y `day_usd`, este último solo con motores `per-token`). El límite por turno (`turn_tokens`) es del turno del chat y **no** salta por un worker. Borrar la conversación conserva estos registros, igual que los demás. Sigue sin haber desglose por worker ni por ejecución: solo la línea `of which workers`.
+- **La línea de uso del coordinador** bajo su respuesta empieza por `usage (coordinator):` en lugar de `usage:` en el turno orquestado del coordinador, para que no se lea como el total de la ejecución. Los workers se suman aparte en `/cost`.
+
+#### Línea de uso bajo cada respuesta y barra de estado (alfa)
+
+Al terminar un turno, el chat añade bajo la respuesta una línea tenue con lo que el motor informó, por ejemplo `usage: in 2 · out 4 · $0.0049 list-price equivalent`. Tras `in` y `out` aparecen, solo si el motor los informa, `cached`, `reasoning` y los dólares, y al final `partial` si el turno quedó cortado o le faltó alguna petición. Un turno cuyo motor no informó de nada dice `usage: no data` (nunca 0). Tras una cancelación o un error, la línea solo sale si el turno llegó a informar de algún uso. Es una línea de vista: no se guarda, no se envía al motor, no entra en un `yank` de la respuesta y no vuelve al retomar la conversación.
+
+Con un chat enfocado, la barra de estado añade tras el motor ` · today: 1234 tok`: los tokens de hoy (día local) de todos tus chats y motores, borrados incluidos, sumando entrada y salida de los registros que tienen ambas. Si hoy no hay ningún total conocido, dice `today: no data`. Se lee del historial al abrir el primer chat enfocado (en el hilo del almacén, nunca en el de la interfaz), se refresca cuando se guarda un registro y se vuelve a leer al cambiar el día local: nunca se muestra la cifra de ayer, y hasta la primera lectura el segmento no aparece. Si la lectura falla, se conserva la última cifra, se avisa con `Usage not read: <motivo>` (de nuevo solo si vuelve a fallar tras una lectura buena) y se reintenta al cabo de un minuto; mientras no haya una cifra válida por ese fallo, el segmento dice `today: ?`. Una lectura sin respuesta se da por perdida a los 30 s, y un salto del reloj de más de una hora vuelve a leer. Sin historial disponible no hay registros que sumar y el segmento no aparece. Solo los motores en modo `per-token` suman dólares al segmento (` · $0.42`); los de `subscription` y los locales nunca. Si la barra va justa, este segmento es lo primero que se oculta, antes que el estado de la memoria, el texto del motor o el indicador de pensamiento.
+
+Ambas cosas vienen activadas. Se cambian desde el menú (`Ctrl+Espacio` y `m`, pestaña **Settings**, fila `Usage (alpha)`) o a mano en `config.toml`.
+
+Para apagarlas: `line = false` (la línea de uso) y `statusline = false` (el segmento de la barra) bajo `[ai.usage]` en `config.toml`, o los interruptores `Usage line` y `Usage in bar` de esa vista del menú.
+
+**Menú.** `Enter`, `Espacio`, `h`/`l` o las flechas izquierda y derecha sobre `Usage (alpha)` abren una vista con ocho filas: `Usage line` y `Usage in bar` (`on`/`off`, el segmento de la barra de estado), `claude billing`, `codex billing` y `gemini billing` (`subscription` o `per-token`) y los tres límites `Turn tokens`, `Day tokens` y `Day $` (ver «Límites de uso»; los nombres son cortos para que quepan en el tamaño mínimo: tokens por turno, tokens por día y dólares por día). No hay fila para los motores locales, que nunca muestran dólares. `j`/`k` mueven; `h`/`l`, las flechas, `Espacio` y `Enter` cambian el valor de los interruptores y la facturación (en un límite, `Enter` lo edita); `Esc` vuelve a **Settings** conservando lo cambiado, y `s` guarda (también desde la vista, como dice su pie). Cualquier otra tecla (`Tab`, los números…) avisa con `Esc first to leave Usage` y no hace nada más. Los cambios son un borrador: no afectan a los chats abiertos hasta guardar, y al guardar solo se escriben las claves que cambiaron. Con `Esc` en la lista de **Settings** se descarta todo. Con esta fila la ventana del menú mide 17 filas de alto y el tamaño mínimo es 24x16.
+
+Las claves, en `config.toml`:
+
+```toml
+[ai.usage]
+line = true         # línea bajo cada respuesta
+statusline = true   # segmento "today: N tok" en la barra de estado
+
+turn_tokens = 4000  # límite por turno, en tokens (opcional)
+day_tokens = 200000 # límite diario, en tokens (opcional)
+day_usd = 2.5       # límite diario, en dólares (opcional)
+
+[ai.usage.billing]  # solo claude, codex y gemini; por defecto "subscription"
+claude = "per-token"
+```
+
+**Límites de uso (alpha).** Los tres límites son opcionales y, si faltan, están desactivados (`off`). Solo producen una nota tenue en el chat: nunca bloquean, retrasan ni cancelan un envío, y no emiten ningún sonido ni notificación. Aparecen aunque la línea de uso esté desactivada, y son líneas de vista (no se guardan ni se envían al motor).
+
+- `turn_tokens`: si un turno terminado superó el límite (entrada más salida, ambas conocidas), la nota sigue a la línea de uso: `turn used 1200 tokens (limit 1000)`. Sale en cada turno que lo supere; un turno sin total conocido nunca la dispara.
+- `day_tokens`: cuando los tokens conocidos de hoy alcanzan el límite, `today's usage reached 5200 tokens (limit 5000)`.
+- `day_usd`: cuando el gasto de hoy alcanza el límite, `today's spend reached $5.01 (limit $1.00)`. Solo cuenta el gasto de los motores en modo `per-token`; los de `subscription` (precio de lista) y los locales nunca suman.
+
+Las dos notas diarias salen una vez por límite, por día local y por ejecución (si subes el límite el mismo día, la nota puede volver a salir al alcanzar el nuevo). Si al arrancar, en la primera lectura del día, el día ya supera el límite, la nota aparece al inicio, en el panel que hizo esa lectura. Se calculan con las cifras del historial, así que sin historial disponible no hay notas diarias. En el menú, `Enter` sobre una fila de límite la edita: se aceptan dígitos (y un solo `.` con hasta dos decimales en `Day $`, con un máximo de 12 dígitos), `Enter` confirma, `Esc` cancela y deja el valor anterior, y `0` o un campo vacío significa `off` (la clave se elimina de `config.toml`). Una tecla que no se puede escribir avisa en el pie en vez de ignorarse, y se puede pegar un número. Un valor que ya está en `config.toml` con más decimales de los que se pueden escribir (por ejemplo `day_usd = 0.125`) se muestra tal cual y no se reescribe si no lo cambias. Un valor inválido en el archivo se sustituye por `off` y avisa al arrancar.
+
+`billing` solo cambia cómo se etiqueta una cifra en dólares que el motor ya informó: `"subscription"` la muestra como `list-price equivalent` (precio de lista, no una factura) y `"per-token"` como gasto (`$0.0049`). No cambia ningún recuento ni lo guardado, y se aplica al mostrar, así que cambiarlo reetiqueta también los registros pasados. Una clave de un motor local, o cualquier clave desconocida, se ignora. Un valor inválido se sustituye por el de por defecto y avisa al arrancar con el texto exacto del problema (por ejemplo `ai.usage.line: expected true or false` o `ai.usage.billing.codex: expected "subscription" or "per-token"`).
 
 ### Memoria del proyecto (engram)
 
@@ -790,17 +1411,88 @@ La barra de estado muestra `mem: ready`, `mem: checking` o `mem: unavailable`.
 
 **Resumen de los chats largos (opcional):** cuando la compactación del historial resume un chat largo, ese resumen solo va al prompt. Con `save_summaries = true` en `[ai.memory]` se escribe además en engram como **una única nota por conversación** (`chat/<id>-<creación>/summary`, donde `<creación>` es la hora de creación de la conversación, para que el identificador reutilizado de una conversación borrada no pise el resumen de otra), que se actualiza en cada resumen nuevo en lugar de crear otra; pasa por la misma ocultación de secretos que el resto de notas. Los resúmenes guardados **permanecen en engram aunque borres el chat**, hasta que los elimines tú explícitamente. Una conversación **reanudada no actualiza su resumen guardado**: el resumen continuo no se persiste y, tras reanudar, solo cubriría los mensajes posteriores. Sin la opción no se escribe nada de forma automática y, la primera vez que habría guardado un resumen, lazarobox añade una línea al chat (una vez por ejecución) que explica qué se guardaría, dónde y cómo activarlo. Si con la opción activada engram rechaza el guardado, se avisa una vez por ejecución (`could not save the conversation summary to engram: <motivo>`); con la memoria desactivada o engram sin responder no se escribe nada y no hay avisos.
 
-**Volver a una versión anterior:** la memoria sube el esquema de `chat.db` a la versión 2. Un lazarobox más antiguo se niega a abrir un `chat.db` más nuevo que él y lo deja intacto; al volver a actualizar, vuelve a estar disponible.
+**Volver a una versión anterior:** el esquema de `chat.db` está en la versión 3 (la 2 añadió la memoria; la 3 quita las listas cerradas de perfil, rol y estado para poder ampliarlas sin reconstruir tablas). Un lazarobox más antiguo se niega a abrir un `chat.db` más nuevo que él y lo deja intacto; al volver a actualizar, vuelve a estar disponible.
 
-**Borrar notas:** una nota y una conversación tienen vidas separadas, así que borrar la conversación (`d`, `y`) deja sus notas en engram. Si la memoria está activada, `ENGRAM_HTTP_TOKEN` está definido y la conversación tiene notas, la pregunta pasa a `Delete conversation? y · n · a also delete its N notes`: `y` borra solo la conversación, `a` borra la conversación y después sus notas (`DELETE /observations/{id}` con el token, una por una), y cualquier otra tecla cancela. Sin token o con la memoria desactivada la pregunta es la normal y, tras borrar, una línea indica que las notas siguen en engram. El resultado de `a` se muestra como `deleted N notes from engram`, `deleted K of N notes from engram` o `could not delete notes: <motivo>`; la conversación ya está borrada en cualquiera de los casos. Al superar el límite de 200 conversaciones, la más antigua se elimina **sin** tocar sus notas.
+**Borrar notas:** una nota y una conversación tienen vidas separadas, así que borrar la conversación (`Supr`, `Enter`) deja sus notas en engram. Si la memoria está activada, `ENGRAM_HTTP_TOKEN` está definido y la conversación tiene notas, la pregunta pasa a `Delete conversation? ↵ yes · Tab also delete its N notes · other key no`: `Enter` borra solo la conversación, `Tab` borra la conversación y después sus notas (`DELETE /observations/{id}` con el token, una por una), y cualquier otra tecla cancela. Sin token o con la memoria desactivada la pregunta es la normal y, tras borrar, una línea indica que las notas siguen en engram. El resultado de `Tab` se muestra como `deleted N notes from engram`, `deleted K of N notes from engram` o `could not delete notes: <motivo>`; la conversación ya está borrada en cualquiera de los casos. Al superar el límite de 200 conversaciones, la más antigua se elimina **sin** tocar sus notas.
 
 **Retomar una conversación:** al retomarla se reutiliza la sesión de engram que usaron sus notas (con su proyecto), así que las notas nuevas siguen en la misma sesión y se cierra una sola vez. Una conversación retomada que no escribe nada no cierra ninguna sesión. Sus notas nuevas siguen en el proyecto de engram con el que se guardó la conversación, aunque la retomes desde otro directorio.
 
 Límites: la memoria se envía con la conversación a los adaptadores de Ollama, claude, codex y gemini (en los tres CLIs, **al proveedor**).
 
+### Orquestador de agentes (experimental)
+
+El orquestador reparte un trabajo de varios pasos entre **workers**: un modelo coordina y cada worker es un turno sin estado del motor que el menú asigna a su tarea (`general`, `code`, `chat`, `review` o `summarize`). lazarobox nunca elige motor ni modelo por ti. Está **desactivado por defecto** y no cambia nada mientras no lo actives.
+
+**Cómo se activa (dos interruptores).**
+
+1. **Interruptor global.** En la pestaña **Tools** del menú (`Ctrl+Espacio` `m`), la fila `Orchestrator` (`h`/`l`, o `Enter`; `s` guarda) escribe `[ai.orchestrator] enabled`. Con él apagado no existen ni las herramientas del orquestador, ni la insignia, ni la tecla `Ctrl+O`: los chats son los de siempre.
+2. **Interruptor por panel.** En un panel de chat, `Ctrl+O` activa o desactiva su modo **ORCH** (insignia `ORCH`, junto a `AUTO` y `RUN`). Solo vive en memoria: cada panel nuevo empieza apagado y nada se guarda. Un panel con una ejecución en curso no cambia de modo; cancélala primero (`Ctrl+C`). Con el interruptor global activo y el motor listo, la línea sobre el mensaje de un panel en reposo recuerda la tecla (`Ctrl+O: orchestrate this pane` / `Ctrl+O: stop orchestrating`); la guía del motor, el aviso del proveedor y las alertas de fallo tienen prioridad sobre ella. Con una ejecución en curso esa línea dice que la canceles primero solo si no queda ningún worker vivo (con workers vivos muestra las teclas de worker); pulsar `Ctrl+O` durante una ejecución muestra siempre ese texto como aviso. El cambio vale desde el siguiente mensaje.
+
+Los dos cambios se aplican desde el siguiente mensaje y no tocan un turno que ya corre. Con la configuración por defecto de Zellij, `Ctrl+O` abre su modo Session y no llega a lazarobox: bloquéalo (`Ctrl+G` en Zellij) o reasigna su tecla (no comprobado en un Zellij real). tmux lo deja pasar. El orquestador necesita las herramientas activadas (fila `Tools`) y un motor con herramientas verificadas (`claude`, `codex`, `gemini` u `ollama`); si no, el panel lo dice y no envía nada.
+
+**Qué pierde el chat en modo ORCH.** El coordinador de un panel ORCH solo recibe las herramientas de lectura y las del orquestador. Aunque `[ai.tools]` tenga `write`, `exec` o `github` en `true` (el menú los muestra activados), el propio chat no puede escribir archivos, ejecutar comandos ni leer GitHub: delega. Quien escribe es un worker `code`, y sus cambios pasan por la revisión por lotes. Al activar ORCH con `Ctrl+O`, el panel lo dice con dos líneas de sistema (`ORCH on` y la explicación); `Ctrl+O` de nuevo vuelve a un chat normal con todas las herramientas guardadas. Si el coordinador responde con fragmentos de código en lugar de lanzar un worker, apaga ORCH o pídele de forma explícita que delegue en un worker `code`.
+
+**La fila `orchestrate`.** En la pestaña **Models** hay una fila más de tarea, `orchestrate` (`[ai.tasks.orchestrate]`), que elige el motor y el modelo del coordinador; sin asignar usa el de `general`, y su selector tiene `(default · use general)` como primera entrada. Un panel ORCH usa siempre ese motor, nunca el de `chat` ni otro de reemplazo. Elegir **Ollama** u otro servidor local para esta fila se permite pero lleva la marca **`not recommended`**: un modelo local pequeño no suele saber coordinar, y la marca no bloquea ni cambia nada.
+
+**Cómo corre una ejecución.** Con ORCH activo, tu mensaje es el objetivo de una ejecución:
+
+- **Pasos (ODD).** El coordinador sigue en orden `authorize`, `explore`, `resolve`, `classify`, `track` (solo si el objetivo es grande), `implement` y `close`. Cada paso se cierra únicamente con su acta (handoff). Hace como mucho una pregunta a la vez y espera tu respuesta. Si lo que pides es investigar, explicar o revisar, no arranca workers de tipo `code`. Un objetivo grande recibe un documento de requisitos con tus palabras tal cual, y una corrección tuya reescribe solo el requisito afectado.
+- **Límite conocido del flujo ODD.** Clasificar el objetivo, redactar el documento de requisitos y hacer una sola pregunta a la vez dependen de que el modelo siga las instrucciones; lazarobox todavía no lo impone, así que aún no es fiable y un modelo (sobre todo uno local pequeño) puede saltarse pasos o hacer trabajo pequeño por su cuenta. Una versión posterior lo hará cumplir. Lo que sí impone lazarobox hoy no depende del modelo: el alcance de lectura, la aprobación de lo que sale de él, la revisión de tus lotes y el consentimiento antes de revisar un cambio de riesgo alto.
+- **Bloqueos por paso.** Lazarobox no deja arrancar un worker `code` mientras el paso que lo autoriza no tenga su acta, ni terminar la ejecución si `implement` se concedió y no corrió ningún worker `code`. El rechazo llega al coordinador y al panel con el paso que falta (`spawn gate: step authorize is not closed…`), sin pausar la ejecución ni abrir una alerta. Solo tú puedes levantar los bloqueos de esa ejecución: pulsa **Enter** con el compositor vacío cuando el panel ofrezca `Enter gates off`, y el panel lo confirma con `gates off: spawn and finish gates lifted for this run`. Si el turno del coordinador acaba con un worker rechazado así y nada pendiente, la ejecución no termina: el panel dice `run waits for your reply: step <paso> is not closed (Enter gates off)`. Pulsa Enter para levantar los bloqueos si quieres y escribe tu respuesta: continúa la misma ejecución y el coordinador recibe una línea que le dice que los bloqueos están levantados. La espera acaba, con una línea en el panel, si cancelas (Ctrl+C o Esc), apagas ORCH, cierras el panel o se alcanzan los límites de turnos o de tiempo. Levantar los bloqueos vale solo para esa ejecución.
+- **Comprobación de lo que dice el acta.** Lazarobox compara los ficheros que el acta de un worker dice haber tocado con los cambios que realmente preparó, y marca los que faltan (`named in handoff, not in ledger`). Solo se comparan las rutas relativas al proyecto que llevan una carpeta (`src/a.rs`): un nombre suelto (`a.rs`) puede ser prosa y una ruta absoluta puede quedar fuera del proyecto, así que nunca se marcan. Si no se marca nada pero alguno de esos nombres o rutas queda sin comprobar, la línea dice `not checked` y no que coincida, aunque las demás rutas sí coincidan.
+- **Workers en paralelo.** Cada worker aparece como una fila (tipo, `motor>modelo`, estado y tiempo) y arranca sin preguntarte; una fila `run` suma los tokens que los motores informan (`n/a` si no informan; nunca se estiman). Solo corren a la vez `max_parallel` workers; el resto espera en cola.
+- **Lectura y aprobaciones.** La ejecución parte con un alcance de lectura: la carpeta del chat, fijado sin preguntar. Si esa carpeta es `$HOME`, está fuera de `$HOME`, es una carpeta temporal (`/tmp`, `/var/tmp`…) o es una ruta secreta, no hay alcance y toda lectura sigue el modo de aprobación. Dentro de él los workers leen sin pedir; fuera, se aplica el modo de aprobación del panel y cada petición pide tu `y`, en una cola de una pregunta visible a la vez y con la etiqueta `worker n/m tipo motor>modelo`. Ninguna tecla del tiempo ni un texto del modelo responde por ti: ni el coordinador ni un worker pueden aprobar nada.
+- **Escritura.** Un worker `code` solo prepara cambios (`create_dir`, `write_file`, `edit_file`) dentro del alcance y los propone él mismo con `propose_batch`; nada llega al disco hasta que apruebas el lote en la revisión de lotes (ver «Escritura: lotes con revisión»), cuya cabecera nombra al worker. Ningún modo de aprobación, tampoco `run`, aprueba un lote. El coordinador solo da por escrito lo que `collect` lista como `applied`; lo demás es un borrador. Los workers `code` usan sus propias herramientas aunque `write` esté en `false` en `[ai.tools]`; los demás workers solo leen.
+- **Revisión de riesgo (RDD).** Un cambio de **riesgo alto** (compilación, CI, dependencias y archivos de bloqueo, formatos de configuración y rutas secretas; el coordinador solo puede subirlo con `raise`, nunca bajarlo) pide **tu consentimiento antes de cualquier revisión** (`y review it · n skip the review`). Con `y`, workers de solo lectura miran el cambio con los criterios que haga falta (`risk`, `resilience`, `readability`, `reliability`), un refutador filtra los bloqueos inferidos y, como mucho, un worker `code` hace una corrección acotada. Con `n`, el cambio pasa a la revisión de lotes marcado **`not reviewed`** y no corre ningún revisor. Todo acaba en un **recibo** (nivel, criterios, hallazgos, corrección, resultado) que se ve en la cabecera de la revisión de lotes. Un recibo nunca aprueba: **la revisión de lotes siempre la decides tú con `y`**.
+- **Fallos.** Si un worker falla, caduca o se rechaza (por ejemplo, motor sin instalar o sin jaula), la ejecución se detiene y se muestra el error del proveedor tal cual, con su clase (`rate_limit`, `conflict`, `auth`, `quota`, `timeout`, `jail_refusal`, `setup`, `other`; `setup` es un worker rechazado porque su motor o modelo no está disponible, y el coordinador recibe el motivo en el resultado de la herramienta, en una línea, con las rutas absolutas sustituidas por `<path>` para no revelar dónde está instalado nada; tu alerta conserva el texto completo; la clase `other` no se muestra porque no añade nada). Si ese worker no llegó a tener motor, `m` abre los modelos del motor configurado para su tarea; sin ninguno, abre los motores y un aviso lo explica. Los hermanos en marcha terminan su turno y no arranca ninguno nuevo hasta que respondas: `r` reintenta el mismo worker con el error añadido, `m` cambia el modelo, `p` cambia el motor y `c` o `Esc` cancela. `m` y `p` valen solo para esa ejecución: no cambian el menú ni `config.toml`. Nunca hay reintento ni cambio de motor automático.
+- **Uso.** El uso de cada worker se guarda y se suma en `/cost`, los gráficos, la barra de estado y los límites por día (ver «Uso de los workers del orquestador»); la línea de uso del coordinador lleva la etiqueta `usage (coordinator):`.
+- **Final.** La ejecución termina sola cuando acaba el turno del coordinador y no queda ningún worker en cola ni en marcha. La excepción es la espera tras un bloqueo, descrita arriba. El coordinador informa de lo verificado, de cada comprobación fallida, omitida o pendiente y de una línea de riesgo.
+
+**Teclas.** Todas están también en la [referencia de teclas](#referencia-de-teclas-por-vista).
+
+| Tecla | Acción |
+| :--- | :--- |
+| `Ctrl+O` | Activa o desactiva ORCH en el panel de chat (solo con el interruptor global activo) |
+| `Alt+↓` / `Alt+↑` | Selecciona el siguiente / anterior worker que no ha terminado |
+| `Ctrl+C` | Con un worker seleccionado, el primero cancela solo ese worker (`Ctrl+C again cancels the run`) y quita la selección; el siguiente `Ctrl+C` cancela el turno y toda la ejecución, como sin worker seleccionado. Una tecla mantenida no escala `Esc` cancela siempre todo |
+| `Ctrl+Espacio` `W` | Abre la transcripción del worker seleccionado: pantalla completa, solo lectura, sin caracteres de control, las últimas 128 KiB. `↑` `↓` `k` `j`, `PageUp` `PageDown`, `Home` `g` y `End` `G` (sigue lo nuevo) la desplazan; `Esc` o `q` la cierran. La rueda la desplaza y pegar texto se rechaza |
+| `Ctrl+Espacio` `r` `r` / `r` `d` | Retoma / descarta la ejecución interrumpida más reciente de la carpeta (ver «Persistencia») |
+
+**Avisos del proveedor.** La primera vez que una ejecución va a arrancar se muestra un aviso en el panel: los proveedores recomiendan **claves de API** para la automatización, y usar el inicio de sesión de una cuenta de consumo para automatizar conlleva riesgo. **No se exige ninguna clave** ni se rechaza ningún motor por ello, y el aviso no bloquea: la ejecución arranca sin esperar. `Enter` lo acepta (se guarda `acknowledged = true` y no vuelve a salir; `y` se escribe en el mensaje como siempre), `Esc` lo descarta y vuelve a salir en la siguiente ejecución. Solo responde con el mensaje vacío. Cada worker es un turno más contra el proveedor que asignaste a su tarea.
+
+**Configuración.** Solo existen estas claves en `[ai.orchestrator]`; un valor incorrecto se sustituye por el predeterminado, con un aviso al arrancar.
+
+```toml
+[ai.orchestrator]
+enabled = false             # interruptor global (fila Orchestrator del menú)
+acknowledged = false        # aviso del proveedor aceptado (lo escribe el menú al aceptarlo)
+worker_timeout_secs = 600   # plazo de cada worker, 30-3600; solo en el archivo
+max_parallel = 2            # workers a la vez, 1-4; solo en el archivo
+max_workers = 8             # workers por ejecución, 1-32; solo en el archivo
+run_timeout_mins = 60       # reloj de una ejecución, 1-480; solo en el archivo
+max_turns = 6               # turnos del coordinador por ejecución, 1-24; solo en el archivo
+```
+
+Superar `max_workers` rechaza el siguiente worker nombrando el límite; al cumplirse `run_timeout_mins` se paran la ejecución y los workers. El tiempo que un worker espera tu revisión de lote cuenta para su plazo: si caduca, no se escribe nada y el lote queda como huérfano (`Ctrl+G`). Un cambio en `config.toml` vale tras reiniciar lazarobox.
+
+**Memoria y privacidad.** Cada worker terminado y cada paso cerrado deja un acta (hecho, pendiente, decisiones y un veredicto de si va por buen camino), y el recibo de una revisión también. Se guardan en engram solo si la memoria está activa o si ya aceptaste antes la nota de privacidad de la memoria: en ese caso la ejecución la activa **solo para sí misma** (`memory on for this run`) y no toca `config.toml`. Sin esa aceptación, o si engram no responde, la ejecución sigue en memoria y lo dice una vez (`handoffs not persisted`). Una ejecución nunca arranca `engram serve`: solo lo hace la oferta confirmada del chat, así que con engram parado la ejecución sigue sin guardar. Lo que devuelve un worker se trata siempre como datos no fiables y se guarda con la redacción de secretos de las notas.
+
+**Persistencia.** Las ejecuciones se guardan **en local**, en `chat.db`, a medida que cambian sus workers (tablas nuevas que un lazarobox más antiguo ignora). Tras reiniciar, una ejecución que seguía viva se marca como **interrumpida** y el panel la nombra (hasta 3, luego un número) la primera vez que activas ORCH, o cuando pulsas `r` `r` / `r` `d` antes de eso (el aviso «Looking for interrupted runs...» se sustituye por la respuesta de esa misma tecla; si la lectura falla o no responde en 10 s, el aviso lo dice y la siguiente pulsación reintenta, nunca afirma que no hay ejecuciones); con ORCH apagado, `r` `r` pide activarlo primero (`Ctrl+O`); nada corre solo. Solo se ofrecen las de **la carpeta del chat** en que empezaron: las de otras carpetas solo se cuentan. `Ctrl+Espacio` `r` `r` empieza una ejecución **nueva** desde su objetivo (con el alcance de lectura fijado otra vez desde la carpeta del chat; nada de la concesión anterior se reutiliza) y avisa al coordinador de qué workers quedaron sin terminar y de que no relance ninguno hasta que se lo digas; `r` `d` la descarta. Una interrumpida más vieja de 30 días se cierra sin mostrarse. El objetivo guardado oculta los tokens que hubieras pegado.
+
+**Límites conocidos de esta versión.**
+
+- **Los workers no pueden ejecutar comandos ni tests** (ni el coordinador): `run_command` es solo del chat normal y no se ofrece dentro de una ejecución. El coordinador lo dice, no afirma que un test se haya ejecutado o pasado y te pide que lo ejecutes tú (en un chat con ORCH apagado y `exec = true`, o en un panel de shell). El «test primero» con evidencia ejecutada queda para la 1.2.
+- **«No relanzar tras retomar» es una instrucción al modelo**, no un cerrojo: nada en el código impide un `spawn_agent` tras retomar. Lo acotan las puertas de siempre (el alcance de lectura, los lotes que aprueba solo el usuario, la jaula y los límites de arriba) y cada worker se anuncia en su fila.
+- **«Solo lectura» también es del modelo**: el marcador sale del paso `authorize` del coordinador; una ejecución que nunca lo cierra no queda restringida (las escrituras siguen esperando tu lote).
+- **Una aprobación pedida entre dos turnos del coordinador** se rechaza y el panel lo dice (`worker N: a tool approval was refused when the orchestrator moved on; the worker can ask again`); el worker puede volver a pedirla. El registro y el aviso de esa pregunta no son atómicos.
+- **Los workers no tienen tus herramientas de servidores MCP**; las puede usar el coordinador y cada llamada te pide un `y`.
+- Un coordinador sin herramientas verificadas no arranca; un worker cuyo motor no está disponible (sin instalar, sin el modelo, sin jaula donde hace falta) se rechaza y la ejecución se detiene. lazarobox no los reemplaza por otro motor. Al salir de lazarobox se matan todos los workers. Con Ollama, la fiabilidad depende del modelo (ver `not recommended`).
+
 ### Publicar una versión (mantenedores)
 
-Las versiones se publican subiendo la etiqueta `vX.Y.Z`, una vez actualizados `version` en `Cargo.toml` y la sección correspondiente de `CHANGELOG.md`. La etiqueta debe apuntar a un commit que ya esté en `main`; si no, el workflow falla:
+La vía principal es un clic: **Actions → Release → Run workflow** sobre `main` (o `gh workflow run release.yml -f bump=auto`; añade `-f dry_run=true` para ensayar sin cambiar nada). El workflow elige la versión (`auto`: minor si `[Unreleased]` tiene una sección `### Added`, si no patch), mueve las entradas de `[Unreleased]` a la nueva versión, actualiza `Cargo.toml` y `Cargo.lock`, hace el commit `chore(release): vX.Y.Z` en `main`, crea la etiqueta y publica. Solo arranca si `ci.yml` pasó en el commit actual de `main`. Los detalles están en [RELEASING.md](RELEASING.md).
+
+También se puede publicar a mano subiendo la etiqueta `vX.Y.Z`, una vez actualizados `version` en `Cargo.toml` y la sección correspondiente de `CHANGELOG.md`. La etiqueta debe apuntar a un commit que ya esté en `main`; si no, el workflow falla:
 
 ```bash
 git tag vX.Y.Z && git push origin vX.Y.Z
@@ -809,6 +1501,30 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 El workflow `.github/workflows/release.yml` comprueba que la etiqueta coincida con `Cargo.toml`, ejecuta fmt, clippy y los tests, publica en crates.io y crea la GitHub Release con las notas de esa versión del `CHANGELOG.md`. Relanzarlo es seguro: si la versión ya está en crates.io, el paso de publicación se omite. Las notas de la release se regeneran siempre a partir de `CHANGELOG.md`, así que cualquier edición manual en GitHub se sobrescribe.
 
 La publicación usa Trusted Publishing (OIDC), así que no hay ningún token guardado en el repositorio. Configuración única en crates.io: en la página del crate, **Settings → Trusted Publishing**, añade un repositorio de GitHub con `pichu2707/lazarobox-shell` como repositorio, `release.yml` como workflow y sin entorno (environment).
+
+---
+
+## 🛡️ Seguridad / modelo de amenazas
+
+Un índice de qué puede hacer cada función y dónde está explicado. Para avisar de una vulnerabilidad, mira [SECURITY.md](SECURITY.md).
+
+| Superficie | Resumen del riesgo | Detalle |
+| :--- | :--- | :--- |
+| Escritura de ficheros | Nada toca el disco antes de tu `y`; el lote se revisa y se puede deshacer | [Modelo de amenazas de la escritura](#modelo-de-amenazas-de-la-escritura) |
+| `run_command` y git | Ejecutan código del proyecto, con red; lo que ves es la orden, no todo lo que arrastra | [Modelo de amenazas de `run_command` y de git](#modelo-de-amenazas-de-run_command-y-de-git) |
+| Herramientas de búsqueda | Ver abajo | [Búsqueda: `glob` y `grep`](#búsqueda-glob-y-grep) |
+| La jaula de los CLIs de IA | Landlock (Linux): limita lectura, escritura, ejecución y puertos de claude, codex y gemini | [Motores CLI](#motores-cli-claude-codex-y-gemini) |
+| Servidores MCP propios | Código tuyo con tus variables; cada llamada pide `y` | [Tus propios servidores MCP](#tus-propios-servidores-mcp-aimcpservers) |
+| Memoria de engram | Opcional; las notas salen de `chat.db` y las lee cualquier proceso local | [Memoria del proyecto (engram)](#memoria-del-proyecto-engram) |
+| Comprobación de actualizaciones | Una petición HTTPS a crates.io; se apaga con `check = false` | [Avisos de actualización](#-avisos-de-actualización-updates) |
+
+**Notas de amenaza breves**
+
+- **Búsqueda (`glob`, `grep`, lectura por ventanas).** `glob` y `grep` trabajan dentro de la carpeta de origen del chat y nunca escriben. Con un motor en la nube, `grep` pide tu `y` en cada llamada, porque su resultado, con texto de tus ficheros, llega a un proveedor externo; `glob` devuelve solo nombres y no pregunta. Se saltan enlaces simbólicos, `.git`, `node_modules`, ficheros binarios y los nombres que parecen secretos, y `grep` compara contra el texto ya censurado. La lista de secretos es de mejor esfuerzo: un secreto en un fichero con otro nombre no se detecta.
+- **La jaula.** Es una segunda capa tras las opciones de solo texto de cada CLI: el CLI no puede leer fuera de lo concedido ni ejecutar programas distintos de su intérprete, ni abrir puertos para escuchar (desde Landlock ABI 4). No es una defensa total: `claude` puede funcionar sin ella si el sistema no la ofrece (el panel lo avisa), y la red hacia fuera sigue abierta porque el CLI necesita hablar con su proveedor.
+- **Servidores MCP.** Los declaras tú y corren con tu usuario, sin shell y con un entorno limpio más las variables de `env`. Solo se lee tu configuración de usuario (un `.lazarobox/mcp.toml` de un repositorio se ignora) y reciben solo las variables que nombras en `env`. Toda llamada a una herramienta pide `y`, también en el modo de aprobación `auto`, y el resultado vuelve al modelo como dato no fiable.
+- **Memoria de engram.** Está desactivada por defecto y exige aceptar una advertencia. Una nota guardada deja de estar bajo los permisos `0600` de `chat.db`: la puede leer cualquier proceso local y cualquier agente que use engram, y las rutas HTTP de engram en `127.0.0.1` están abiertas. Antes de enviar una nota se ocultan los secretos reconocibles.
+- **Comprobación de actualizaciones.** Un único `GET` a crates.io con el `curl` del sistema, sin identificadores, cookies ni telemetría. Con `[updates] check = false` no se hace ninguna petición. Actualizar solo ejecuta `cargo install` cuando pulsas `Enter` y en una pestaña visible.
 
 ---
 

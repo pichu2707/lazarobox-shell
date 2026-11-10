@@ -2,17 +2,22 @@
 //! sends and what a stream may say back, and whether an engine can be used.
 //! Pure data and functions, no IO.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use super::{
     adapters::{self, adapter_for},
     approval::ApprovalAsk,
     budget,
+    usage::TurnUsage,
 };
 use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
-    config::{AiConfig, Task},
+    config::{AiConfig, Profile, Task},
     jail::JailSupport,
+    orchestra::{
+        RunId,
+        run::{Roster, RunLimits},
+    },
     status_text,
     tools::{
         Locality, registry::FamilySet, report::RunReport, servers::Qualified, wiring::McpWire,
@@ -53,6 +58,52 @@ pub struct ChatRequest {
     /// Which tool families the turn offers, and so which built-in names a call
     /// may use. [`FamilySet::LEGACY`] until a toggle turns more on.
     pub families: FamilySet,
+    /// The conversation read GitHub text: set by the app for every turn that
+    /// offers tools. Only the runtime reads it, to make an Ollama `*-cloud`
+    /// model ask for a file read; no adapter does, so the bytes an engine
+    /// receives do not depend on it.
+    pub github_read: bool,
+    /// The Windows drive folder the user let this chat write in (openspec
+    /// `wsl-drive-access`, D7): set by the app for every turn that offers
+    /// tools, from the chat's grant. Only the runtime reads it, for the
+    /// turn's tool host; no adapter does.
+    pub drive_grant: Option<std::path::PathBuf>,
+    /// What only Ollama's chat API reads. Empty unless the runtime stamps it
+    /// on an Ollama turn, so no other engine's bytes depend on it.
+    pub ollama: OllamaWire,
+    /// The prompt-cache options of the local servers, set by the runtime
+    /// from the config when the turn starts. Ollama's `keep_alive` is sent
+    /// unset too, as [`DEFAULT_KEEP_ALIVE`](crate::core::ai::DEFAULT_KEEP_ALIVE).
+    pub cache: crate::core::ai::CacheOptions,
+}
+
+/// The per-turn options Ollama takes beside the messages. Every turn of a
+/// model carries the same value, so Ollama never reloads it because of it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct OllamaWire {
+    /// `options.num_ctx`: the context window to load the model with.
+    pub num_ctx: Option<usize>,
+}
+
+/// What an orchestrator turn hands the runtime beside its request (D5): the
+/// availability of every task as the app resolved it from the menu, and what
+/// the run's workers need. The runtime never reads the configuration.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OrchSend {
+    pub roster: Roster,
+    /// The conversation's profile: the workers' prompts come from it.
+    pub profile: Profile,
+    /// Each worker's deadline (`worker_timeout_secs`).
+    pub deadline: Duration,
+    /// How many workers run at once, how many a run may spawn and how long it
+    /// may last.
+    pub limits: RunLimits,
+    /// What the AI menu allows the workers this turn spawns (D17).
+    pub ceiling: FamilySet,
+    /// What the user asked, verbatim: kept for the run's ledger (S4).
+    pub goal: String,
+    /// The open run this turn continues (S4, D8) instead of starting one.
+    pub attach: Option<RunId>,
 }
 
 /// Whether a turn offers tools.
@@ -77,9 +128,10 @@ pub enum Tools {
 
 /// The CLIs whose manual MCP check passed (D12). An engine joins in the commit
 /// that follows its check; one outside the set carries `Tools::Off` and stays
-/// byte-identical to a build without tools. The check passed for all four on
-/// 2026-10-17.
-pub const MCP_VERIFIED: &[&str] = &["claude", "codex", "gemini", "ollama"];
+/// byte-identical to a build without tools. The check passed for the first four
+/// on 2026-10-17 and for llamacpp on 2026-11-07 (Qwen2.5-7B-Instruct Q4_K_M on
+/// llama-server b11935 with `--jinja`).
+pub const MCP_VERIFIED: &[&str] = &["claude", "codex", "gemini", "ollama", "llamacpp"];
 
 /// The tools of a turn on `engine`: on only when the user has tools enabled
 /// and the engine is in `verified`.
@@ -160,6 +212,11 @@ pub enum Decision {
     Busy(usize),
     /// Why nothing was done; short, and it goes back to the model.
     Denied(&'static str),
+    /// Allowed by the chat's approval mode, with no prompt: a read or a search
+    /// that `run` lets go (`approval::answers_itself`). Never the user's `y`:
+    /// it allows nothing else in the turn, and the host takes it only where
+    /// its own ask allowed it, keeping a read in the root as it opens the file.
+    Unprompted,
 }
 
 /// What a waiting call is finally told: the user's `Decision`, or, for a
@@ -169,6 +226,20 @@ pub enum Decision {
 pub enum Answer {
     Decided(Decision),
     Ran(Box<RunReport>),
+    /// The user approved the frozen text of a pane's screen (`read_pane`):
+    /// the only answer that releases it.
+    Screen(ScreenText),
+}
+
+/// The text of a screen the user approved. Its `Debug` shows the size only:
+/// a screen never reaches a log.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ScreenText(pub String);
+
+impl std::fmt::Debug for ScreenText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ScreenText({} bytes)", self.0.len())
+    }
 }
 
 impl From<Decision> for Answer {
@@ -186,17 +257,101 @@ pub fn locality(engine: &str) -> Option<Locality> {
         .map(|e| e.kind.locality())
 }
 
+/// A token count as a row shows it: exact below a thousand, then `12.3k`,
+/// then `1.2M` (where `k` would round up to `1000.0k`).
+fn tokens(count: u64) -> String {
+    match count {
+        0..1000 => count.to_string(),
+        1000..999_950 => format!("{:.1}k", count as f64 / 1000.0),
+        _ => format!("{:.1}M", count as f64 / 1e6),
+    }
+}
+
+/// What a turn used, as the CLI or server reported it. Never estimated: an
+/// engine that reports nothing emits no `Usage` at all.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Usage {
+    /// Prompt tokens, cached ones included.
+    pub input: u64,
+    pub output: u64,
+    /// The cost in millionths of a US dollar, when the CLI reports one.
+    pub cost_micros: Option<u64>,
+}
+
+impl Usage {
+    /// The worker-row figure of a turn's report: the prompt count adds the
+    /// cache reads and writes to the fresh tokens, so it means the same for
+    /// every engine. `None` unless both the input and output counts were
+    /// reported: a missing one is not zero.
+    pub fn from_turn(turn: &TurnUsage) -> Option<Self> {
+        let (input, output) = turn.input.zip(turn.output)?;
+        let cached = [turn.cache_read, turn.cache_write]
+            .into_iter()
+            .flatten()
+            .fold(0u64, u64::saturating_add);
+        Some(Self {
+            input: input.saturating_add(cached),
+            output,
+            cost_micros: turn.cost_micros,
+        })
+    }
+
+    /// The sum of two reports. The cost is known only when both reports
+    /// carry one: a missing cost is never counted as zero, and a partial sum
+    /// would read as the whole.
+    pub fn plus(self, other: Self) -> Self {
+        Self {
+            input: self.input.saturating_add(other.input),
+            output: self.output.saturating_add(other.output),
+            cost_micros: self
+                .cost_micros
+                .zip(other.cost_micros)
+                .map(|(a, b)| a.saturating_add(b)),
+        }
+    }
+
+    /// The report as a row shows it: `12.3k in 450 out $0.0049`. The cost is
+    /// left out when the engine did not report one.
+    pub fn label(&self) -> String {
+        let mut text = format!("{} in {} out", tokens(self.input), tokens(self.output));
+        if let Some(micros) = self.cost_micros {
+            // Under half a unit of the fourth decimal it would read `$0.0000`.
+            if (1..50).contains(&micros) {
+                text.push_str(" <$0.0001");
+            } else {
+                text.push_str(&format!(" ${:.4}", micros as f64 / 1e6));
+            }
+        }
+        text
+    }
+
+    /// `cost_micros` of a cost in dollars, when it is a usable number.
+    pub fn micros(dollars: f64) -> Option<u64> {
+        (dollars.is_finite() && dollars >= 0.0).then(|| (dollars * 1e6).round() as u64)
+    }
+}
+
 /// What an adapter task reports about one turn.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum StreamEvent {
     /// No byte arrived yet and the wait is getting long.
     Slow,
+    /// The runtime read part of a server reply, so its idle clock restarted
+    /// now. Sent for any read, at most once per second and best effort, for
+    /// the whole reply, whatever the app does with its content. It is not a
+    /// byte of the answer.
+    Reading,
     Delta(String),
     /// Something the user should know about how this turn runs, as one line
     /// (a CLI that runs without its jail). Shown once per pane.
     Notice(String),
     /// A piece of the engine's reasoning, kept apart from the answer.
     ThinkingDelta(String),
+    /// What the external MCP tools the runtime handed this turn weigh, in
+    /// estimated tokens (#556); 0 when none apply any more. Sent once the
+    /// runtime resolved them, before the engine runs, so the app can count
+    /// them in the fill and reserve them for the next turn.
+    ExternalTools(usize),
     /// A tool call the host is about to run. Produced by the host that
     /// executes it, never decoded from answer text. `approval` is set when the
     /// call waits for the user. It is boxed so the event stays small: every
@@ -213,8 +368,23 @@ pub enum StreamEvent {
         status: ToolStatus,
         summary: String,
     },
+    /// `gh` is about to be started for a GitHub tool call. Produced by the
+    /// host just before the spawn, so it comes before any result of the call
+    /// and starts the conversation's auto-run block, whatever `gh` then does.
+    GithubStarted,
+    /// What the turn used, as the engine reported it. Sent before the final
+    /// event: nothing after `Done` or `Error` is delivered.
+    Usage(Box<TurnUsage>),
     Done(Finish),
     Error(ChatError),
+}
+
+impl StreamEvent {
+    /// The usage event of a turn. Boxed so the event stays small: every
+    /// adapter result carries one.
+    pub fn usage(usage: TurnUsage) -> Self {
+        Self::Usage(Box::new(usage))
+    }
 }
 
 /// What the chat pane may do with the engine assigned to the `chat` task.
@@ -238,6 +408,12 @@ pub enum Availability {
     NoJail {
         engine: String,
         /// Why this system cannot jail it, with what to do.
+        reason: String,
+    },
+    /// The system can jail, but the jail refuses this CLI's layout.
+    Refused {
+        engine: String,
+        /// Which layout and what to do about it.
         reason: String,
     },
     GatedOff {
@@ -265,24 +441,26 @@ pub fn availability(
     detection: Option<&Detection>,
     jail: JailSupport,
 ) -> Availability {
-    availability_with(cfg, detection, jail, GATED_OFF, &has_adapter)
+    availability_for(Task::Chat, cfg, detection, jail)
 }
 
-/// [`availability`] for the engine another task resolves to.
+/// Resolves the engine of any task through its effective assignment (its
+/// own, else `general`). Same rules as chat, and still pure: an unusable
+/// engine is reported, never replaced by another.
 pub fn availability_for(
     task: Task,
     cfg: &AiConfig,
     detection: Option<&Detection>,
     jail: JailSupport,
 ) -> Availability {
-    availability_of(task, cfg, detection, jail, GATED_OFF, &has_adapter)
+    availability_for_with(task, cfg, detection, jail, GATED_OFF, &has_adapter)
 }
 
 /// The CLIs whose manual check failed. None yet: the checks run in C13-C15.
 const GATED_OFF: &[&str] = &[];
 
 /// CLIs that must never start without a working jail.
-const JAIL_REQUIRED: &[&str] = &["codex", "gemini"];
+pub(crate) const JAIL_REQUIRED: &[&str] = &["codex", "gemini"];
 
 /// `availability` with an explicit list of CLIs whose manual check failed and
 /// the test that says which engines have an adapter (so the jail and gate
@@ -294,10 +472,11 @@ pub fn availability_with(
     gated_off: &[&str],
     adapter_exists: &dyn Fn(&str) -> bool,
 ) -> Availability {
-    availability_of(Task::Chat, cfg, detection, jail, gated_off, adapter_exists)
+    availability_for_with(Task::Chat, cfg, detection, jail, gated_off, adapter_exists)
 }
 
-fn availability_of(
+/// `availability_for` with the explicit gate list and adapter test.
+pub fn availability_for_with(
     task: Task,
     cfg: &AiConfig,
     detection: Option<&Detection>,
@@ -355,6 +534,20 @@ fn availability_of(
         return Availability::NoJail {
             engine,
             reason: off.text_required(),
+        };
+    }
+    // The system can jail, but this CLI's layout is refused: it would not
+    // start. The reason names the layout and what to do.
+    if JAIL_REQUIRED.contains(&engine.as_str())
+        && let Some(reason) = &state.diagnostics.jail
+    {
+        return Availability::Refused {
+            engine,
+            reason: state
+                .diagnostics
+                .jail_full
+                .clone()
+                .unwrap_or_else(|| reason.clone()),
         };
     }
     if gated_off.contains(&engine.as_str()) {
@@ -455,3 +648,5 @@ mod availability_tests;
 mod history_tests;
 #[cfg(test)]
 mod tools_tests;
+#[cfg(test)]
+mod usage_tests;

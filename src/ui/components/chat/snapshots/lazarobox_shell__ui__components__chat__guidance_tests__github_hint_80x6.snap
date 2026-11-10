@@ -1,0 +1,9 @@
+---
+source: src/ui/components/chat/guidance_tests.rs
+expression: shot
+---
+
+
+
+
+Type /github to let this chat read this repo's issues and PRs

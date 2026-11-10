@@ -16,7 +16,7 @@ pub(super) fn chat() -> ChatState {
 
 pub(super) fn sent(state: &mut ChatState, text: &str) -> (u64, ChatRequest) {
     match state.send(text, &ready(), SYSTEM) {
-        SendOutcome::Sent { turn, request } => (turn, request),
+        SendOutcome::Sent { turn, request } => (turn, *request),
         SendOutcome::Refused => panic!("send of {text:?} was refused"),
     }
 }
@@ -49,7 +49,13 @@ pub(super) fn systems(state: &ChatState) -> Vec<&str> {
         .iter()
         .filter_map(|e| match e {
             Entry::System(s) => Some(s.as_str()),
-            Entry::Message(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
+            Entry::Message(_)
+            | Entry::Reasoning(_)
+            | Entry::Memory(_)
+            | Entry::Tool(_)
+            | Entry::Usage(_)
+            | Entry::Worker(_)
+            | Entry::RunUsage(_) => None,
         })
         .collect()
 }
@@ -74,7 +80,7 @@ fn send_appends_the_user_message_and_builds_the_request() {
         }]
     );
     assert_eq!(state.phase(), Phase::Waiting { slow: false });
-    assert_eq!(state.waiting_text(), Some(WAITING));
+    assert_eq!(state.waiting_text().as_deref(), Some(WAITING));
 }
 #[test]
 fn blank_and_whitespace_sends_are_refused_silently() {
@@ -484,4 +490,518 @@ fn a_told_line_survives_a_turn_that_ended_before_any_event() {
     state.cancel();
     let (_, fourth) = sent(&mut state, "four");
     assert_eq!(fourth.system, SYSTEM, "the model heard it once");
+}
+
+mod usage_tests {
+    use super::*;
+    use crate::core::ai::chat::usage::TurnUsage;
+
+    fn usage(input: u64, output: u64) -> StreamEvent {
+        StreamEvent::usage(TurnUsage {
+            input: Some(input),
+            output: Some(output),
+            ..TurnUsage::default()
+        })
+    }
+
+    #[test]
+    fn a_new_chat_has_no_usage() {
+        assert_eq!(chat().turn_usage(), None);
+    }
+
+    #[test]
+    fn usage_events_of_the_turn_are_summed() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn, usage(100, 20));
+        state.apply(turn, usage(150, 30));
+        state.apply(turn, StreamEvent::Done(Finish::Stop));
+        let got = state.turn_usage().expect("usage");
+        assert_eq!(
+            (got.input, got.output, got.partial),
+            (Some(250), Some(50), false)
+        );
+    }
+
+    #[test]
+    fn usage_survives_the_end_of_the_turn_and_is_cleared_by_the_next_send() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn, usage(1, 1));
+        state.apply(turn, StreamEvent::Error(ChatError::Failed("boom".into())));
+        assert!(state.turn_usage().is_some());
+        sent(&mut state, "again");
+        assert_eq!(state.turn_usage(), None);
+    }
+
+    #[test]
+    fn usage_without_a_model_gets_the_request_model() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn, usage(1, 1));
+        assert_eq!(
+            state.turn_usage().and_then(|u| u.model.as_deref()),
+            Some("llama3:8b")
+        );
+    }
+
+    #[test]
+    fn usage_of_another_turn_is_dropped() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn + 1, usage(1, 1));
+        assert_eq!(state.turn_usage(), None);
+    }
+
+    #[test]
+    fn usage_changes_nothing_visible() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        let before = (state.generation(), state.entries().len());
+        state.apply(turn, usage(1, 1));
+        assert_eq!((state.generation(), state.entries().len()), before);
+    }
+
+    fn ended_with(end: impl FnOnce(&mut ChatState, u64)) -> Option<TurnUsage> {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn, usage(1, 1));
+        end(&mut state, turn);
+        state.turn_usage().cloned()
+    }
+
+    #[test]
+    fn a_clean_end_keeps_the_turn_whole() {
+        let got = ended_with(|s, t| {
+            s.apply(t, StreamEvent::Done(Finish::Stop));
+        });
+        assert!(!got.expect("usage").partial);
+    }
+
+    #[test]
+    fn every_unclean_end_after_reported_usage_marks_it_partial() {
+        let ends: [fn(&mut ChatState, u64); 5] = [
+            |s, t| {
+                s.apply(t, StreamEvent::Error(ChatError::Failed("boom".into())));
+            },
+            |s, t| {
+                s.apply(t, StreamEvent::Error(ChatError::Interrupted));
+            },
+            |s, t| {
+                s.apply(t, StreamEvent::Error(ChatError::Truncated));
+            },
+            |s, t| {
+                s.apply(t, StreamEvent::Error(ChatError::Jail("no".into())));
+            },
+            |s, _| {
+                s.cancel();
+            },
+        ];
+        for (i, end) in ends.into_iter().enumerate() {
+            let got = ended_with(end).unwrap_or_else(|| panic!("end {i} lost the usage"));
+            assert!(got.partial, "end {i}");
+        }
+    }
+
+    #[test]
+    fn an_error_with_no_reported_usage_leaves_no_record() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn, StreamEvent::Error(ChatError::Interrupted));
+        assert_eq!(state.turn_usage(), None);
+    }
+
+    #[test]
+    fn a_failed_process_exit_after_the_result_is_partial_too() {
+        use crate::core::ai::chat::cli::{Exit, verdict};
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(turn, usage(5, 5));
+        let last = verdict(
+            "claude",
+            Some(StreamEvent::Done(Finish::Stop)),
+            true,
+            Some(Exit { code: Some(1) }),
+            "",
+        );
+        assert!(matches!(last, StreamEvent::Error(_)), "{last:?}");
+        state.apply(turn, last);
+        assert!(state.turn_usage().expect("usage").partial);
+    }
+
+    #[test]
+    fn a_mixed_model_report_is_not_labelled_with_the_request_model() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "hi");
+        state.apply(
+            turn,
+            StreamEvent::usage(TurnUsage {
+                multi_model: true,
+                ..TurnUsage::default()
+            }),
+        );
+        assert_eq!(state.turn_usage().and_then(|u| u.model.as_deref()), None);
+    }
+}
+
+mod usage_line_tests {
+    use super::*;
+    use crate::core::ai::chat::usage::TurnUsage;
+
+    fn lines(state: &ChatState) -> Vec<&str> {
+        state
+            .entries()
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Usage(line) => Some(line.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn claude() -> Availability {
+        Availability::Ready {
+            engine: "claude".into(),
+            model: Some("sonnet".into()),
+        }
+    }
+
+    fn reported(input: u64, output: u64, cost: Option<u64>) -> StreamEvent {
+        StreamEvent::usage(TurnUsage {
+            input: Some(input),
+            output: Some(output),
+            cost_micros: cost,
+            ..TurnUsage::default()
+        })
+    }
+
+    fn config(text: &str) -> crate::core::ai::config::UsageConfig {
+        let table: toml::Table = text.parse().unwrap();
+        crate::core::ai::config::read_with_port_env(&table, &mut Vec::new(), None)
+            .usage()
+            .clone()
+    }
+
+    fn turn(state: &mut ChatState, engine: &Availability, events: Vec<StreamEvent>) {
+        let SendOutcome::Sent { turn, .. } = state.send("hi", engine, SYSTEM) else {
+            panic!("refused");
+        };
+        for event in events {
+            state.apply(turn, event);
+        }
+    }
+
+    #[test]
+    fn a_subscription_turn_gets_the_list_price_label_below_the_answer() {
+        let mut state = chat();
+        turn(
+            &mut state,
+            &claude(),
+            vec![
+                StreamEvent::Delta("ok".into()),
+                reported(2, 4, Some(4_936)),
+                StreamEvent::Done(Finish::Stop),
+            ],
+        );
+        assert_eq!(
+            lines(&state),
+            ["usage: in 2 · out 4 · $0.0049 list-price equivalent"]
+        );
+        assert!(matches!(state.entries().last(), Some(Entry::Usage(_))));
+    }
+
+    #[test]
+    fn the_configured_billing_mode_labels_the_dollars() {
+        let mut state = chat();
+        state.set_usage_config(config("[ai.usage.billing]\nclaude = \"per-token\"\n"));
+        turn(
+            &mut state,
+            &claude(),
+            vec![reported(2, 4, Some(4_936)), StreamEvent::Done(Finish::Stop)],
+        );
+        assert_eq!(lines(&state), ["usage: in 2 · out 4 · $0.0049"]);
+    }
+
+    #[test]
+    fn a_local_engine_never_shows_dollars() {
+        let mut state = chat();
+        turn(
+            &mut state,
+            &ready(),
+            vec![reported(12, 34, Some(9)), StreamEvent::Done(Finish::Stop)],
+        );
+        assert_eq!(lines(&state), ["usage: in 12 · out 34"]);
+    }
+
+    #[test]
+    fn a_clean_turn_with_no_record_says_no_data() {
+        let mut state = chat();
+        turn(&mut state, &ready(), vec![StreamEvent::Done(Finish::Stop)]);
+        assert_eq!(lines(&state), ["usage: no data"]);
+    }
+
+    #[test]
+    fn the_line_follows_the_error_text_of_a_turn_with_a_record() {
+        let mut state = chat();
+        turn(
+            &mut state,
+            &ready(),
+            vec![
+                reported(5, 5, None),
+                StreamEvent::Error(ChatError::Failed("boom".into())),
+            ],
+        );
+        assert_eq!(lines(&state), ["usage: in 5 · out 5 · partial"]);
+    }
+
+    #[test]
+    fn an_unclean_end_without_a_record_has_no_line() {
+        let mut state = chat();
+        turn(
+            &mut state,
+            &ready(),
+            vec![StreamEvent::Error(ChatError::Interrupted)],
+        );
+        assert!(lines(&state).is_empty());
+        let mut state = chat();
+        turn(&mut state, &ready(), vec![]);
+        state.cancel();
+        assert!(lines(&state).is_empty());
+    }
+
+    #[test]
+    fn turned_off_adds_no_line_and_changes_nothing_else() {
+        let mut state = chat();
+        state.set_usage_config(config("[ai.usage]\nline = false\n"));
+        turn(
+            &mut state,
+            &ready(),
+            vec![reported(1, 1, None), StreamEvent::Done(Finish::Stop)],
+        );
+        assert!(lines(&state).is_empty());
+        assert!(state.turn_usage().is_some(), "the record is still kept");
+    }
+
+    #[test]
+    fn the_line_is_not_a_message_and_never_reaches_the_next_request() {
+        let mut state = chat();
+        turn(
+            &mut state,
+            &ready(),
+            vec![
+                StreamEvent::Delta("answer".into()),
+                reported(1, 1, None),
+                StreamEvent::Done(Finish::Stop),
+            ],
+        );
+        let (_, request) = sent(&mut state, "next");
+        assert!(
+            request
+                .messages
+                .iter()
+                .all(|m| !m.content.contains("usage:")),
+            "{:?}",
+            request.messages
+        );
+        assert_eq!(state.messages().count(), 3);
+    }
+
+    fn notes(state: &ChatState) -> Vec<&str> {
+        state
+            .entries()
+            .iter()
+            .filter_map(|e| match e {
+                Entry::System(line) if line.starts_with("turn used") => Some(line.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Spec (chat-pane, Threshold notes): after the usage line, whether or not
+    // the line is on, and the next send is accepted.
+    #[test]
+    fn a_turn_over_the_limit_adds_a_note_after_the_usage_line_and_never_blocks() {
+        let mut state = chat();
+        state.set_usage_config(config("[ai.usage]\nturn_tokens = 1000\n"));
+        turn(
+            &mut state,
+            &ready(),
+            vec![reported(900, 300, None), StreamEvent::Done(Finish::Stop)],
+        );
+        let tail: Vec<_> = state.entries().iter().rev().take(2).collect();
+        assert!(matches!(tail[0], Entry::System(l) if l == "turn used 1200 tokens (limit 1000)"));
+        assert!(matches!(tail[1], Entry::Usage(_)));
+        assert!(matches!(
+            state.send("again", &ready(), SYSTEM),
+            SendOutcome::Sent { .. }
+        ));
+    }
+
+    #[test]
+    fn the_turn_note_shows_with_the_usage_line_off_and_repeats_every_turn() {
+        let mut state = chat();
+        state.set_usage_config(config("[ai.usage]\nline = false\nturn_tokens = 10\n"));
+        for _ in 0..2 {
+            turn(
+                &mut state,
+                &ready(),
+                vec![reported(9, 9, None), StreamEvent::Done(Finish::Stop)],
+            );
+        }
+        assert!(lines(&state).is_empty());
+        assert_eq!(notes(&state).len(), 2);
+    }
+
+    #[test]
+    fn no_note_under_the_limit_with_an_unknown_total_or_with_the_limit_off() {
+        for (setting, events) in [
+            (
+                "[ai.usage]\nturn_tokens = 1000\n",
+                vec![reported(400, 100, None)],
+            ),
+            (
+                "[ai.usage]\nturn_tokens = 1\n",
+                vec![StreamEvent::usage(TurnUsage {
+                    output: Some(50),
+                    ..TurnUsage::default()
+                })],
+            ),
+            ("", vec![reported(9_000, 9_000, None)]),
+        ] {
+            let mut state = chat();
+            state.set_usage_config(config(setting));
+            let mut events = events;
+            events.push(StreamEvent::Done(Finish::Stop));
+            turn(&mut state, &ready(), events);
+            assert!(notes(&state).is_empty(), "{setting:?}");
+        }
+    }
+}
+
+// The delegate offer is about one conversation in one folder: opening another
+// conversation, changing the folder or leaving ORCH ends it.
+fn offered() -> ChatState {
+    let mut state = chat();
+    state.offer_delegate("plan it".into());
+    state.park_undelegated(RunId(7));
+    state
+}
+
+fn nothing_offered(state: &mut ChatState) -> bool {
+    !state.delegate_offered() && state.take_undelegated().is_none()
+}
+
+#[test]
+fn opening_a_stored_conversation_ends_the_delegate_offer() {
+    let mut state = offered();
+    state.resume_into(
+        7,
+        Profile::Programmer,
+        super::tags::Tags::default(),
+        Vec::new(),
+    );
+    assert!(nothing_offered(&mut state));
+}
+
+#[test]
+fn changing_the_folder_ends_the_delegate_offer() {
+    let mut state = offered();
+    state.set_folder("/w/b".into());
+    assert!(nothing_offered(&mut state));
+}
+
+#[test]
+fn restoring_the_folder_ends_the_delegate_offer() {
+    let mut state = offered();
+    state.restore_folder("/w/b".into());
+    assert!(nothing_offered(&mut state));
+}
+
+#[test]
+fn leaving_orch_ends_the_delegate_offer() {
+    let mut state = offered();
+    state.set_orch(true);
+    state.set_orch(false);
+    assert!(nothing_offered(&mut state));
+}
+
+// The gate offer (W3, D24) is about one run in one conversation and folder:
+// the same events that end the delegate offer end it, and so does the run.
+fn gated() -> ChatState {
+    let mut state = chat();
+    state.set_orch_run(Some(RunId(7)));
+    state.offer_gates(GateOffer {
+        run: RunId(7),
+        gate: Gate::Spawn,
+        step: Step::Explore,
+    });
+    state
+}
+
+#[test]
+fn opening_a_stored_conversation_ends_the_gate_offer() {
+    let mut state = gated();
+    state.resume_into(
+        7,
+        Profile::Programmer,
+        super::tags::Tags::default(),
+        Vec::new(),
+    );
+    assert_eq!(state.gate_offer(), None);
+}
+
+#[test]
+fn changing_or_restoring_the_folder_ends_the_gate_offer() {
+    let mut state = gated();
+    state.set_folder("/w/b".into());
+    assert_eq!(state.gate_offer(), None);
+    let mut state = gated();
+    state.restore_folder("/w/b".into());
+    assert_eq!(state.gate_offer(), None);
+}
+
+#[test]
+fn leaving_orch_ends_the_gate_offer() {
+    let mut state = gated();
+    state.set_orch(true);
+    state.set_orch(false);
+    assert_eq!(state.gate_offer(), None);
+}
+
+#[test]
+fn cancelling_the_run_ends_the_gate_offer() {
+    let mut state = gated();
+    state.cancel_run(RunId(7));
+    assert_eq!(state.gate_offer(), None);
+}
+
+#[test]
+fn the_next_run_ends_the_gate_offer_of_the_one_before() {
+    let mut state = gated();
+    state.set_orch_run(Some(RunId(7)));
+    assert!(state.gate_offer().is_some(), "the same run");
+    state.set_orch_run(Some(RunId(8)));
+    assert_eq!(state.gate_offer(), None);
+}
+
+// The offer is for a live run: when the run ends nothing can take the lift.
+#[test]
+fn the_end_of_the_run_ends_the_gate_offer() {
+    let mut state = gated();
+    state.set_orch_run(None);
+    assert_eq!(state.gate_offer(), None);
+}
+
+#[test]
+fn a_new_refusal_replaces_the_offer() {
+    let mut state = gated();
+    let finish = GateOffer {
+        run: RunId(7),
+        gate: Gate::Finish,
+        step: Step::Implement,
+    };
+    state.offer_gates(finish);
+    assert_eq!(state.gate_offer(), Some(finish));
+    assert_eq!(state.take_gate_offer(), Some(finish));
+    assert_eq!(state.gate_offer(), None);
 }

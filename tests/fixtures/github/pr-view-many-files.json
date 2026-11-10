@@ -1,0 +1,74 @@
+{
+  "additions": 7837,
+  "author": {
+    "id": "MDQ6VXNlcjU0Nzg0MjE2",
+    "is_bot": false,
+    "login": "pichu2707",
+    "name": "Javi Lazaro"
+  },
+  "baseRefName": "main",
+  "body": "## Summary\n\nArchives the shipped openspec changes of 1.0 to 1.2, one commit each, in dependency order (a change is archived only after the ones its notes say must come first). Delta specs are merged into `openspec/specs/<capability>/spec.md`; each folder moves to `openspec/changes/archive/2026-11-02-<change>`.\n\nOrder: agent-tools, coding-tools, auto-execute, chat-folder, llama-server-install, llam",
+  "changedFiles": 175,
+  "deletions": 161,
+  "files": [
+    {
+      "path": "docs/roadmap-1.0.md",
+      "additions": 2,
+      "deletions": 2,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-02-agent-orchestrator/apply-progress.md",
+      "additions": 0,
+      "deletions": 0,
+      "changeType": "RENAMED"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-02-agent-orchestrator/design.md",
+      "additions": 0,
+      "deletions": 0,
+      "changeType": "RENAMED"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-02-agent-orchestrator/exploration.md",
+      "additions": 0,
+      "deletions": 0,
+      "changeType": "RENAMED"
+    },
+    {
+      "path": "openspec/changes/archive/2026-11-02-agent-orchestrator/manual-tests.md",
+      "additions": 0,
+      "deletions": 0,
+      "changeType": "RENAMED"
+    }
+  ],
+  "headRefName": "chore/archive-1.2",
+  "isDraft": false,
+  "labels": [],
+  "number": 537,
+  "state": "MERGED",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-02T17:53:21Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/pichu2707/lazarobox-shell/actions/runs/41493503446/job/125444488797",
+      "name": "Linux (x86_64)",
+      "startedAt": "2026-11-02T17:45:24Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-11-02T17:55:15Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/pichu2707/lazarobox-shell/actions/runs/41493503446/job/125444489552",
+      "name": "macOS (arm64)",
+      "startedAt": "2026-11-02T17:45:24Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    }
+  ],
+  "title": "docs(openspec): archive the 1.1–1.2 changes",
+  "url": "https://github.com/pichu2707/lazarobox-shell/pull/537"
+}
