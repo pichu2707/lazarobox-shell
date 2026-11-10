@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-11-10
+
 ### Added
 
 - With ORCH on, the coordinator now gets `list_panes` and `read_pane`, with
@@ -2494,7 +2496,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.16.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.17.0...HEAD
+[1.17.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.2...v1.16.0
 [1.15.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.0...v1.15.1
