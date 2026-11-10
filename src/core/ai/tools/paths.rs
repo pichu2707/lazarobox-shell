@@ -29,8 +29,14 @@ pub(crate) const SECRET_DIRS: &[&str] = &[
     ".local/share/keyrings",
     ".local/share/fish/fish_history",
     ".local/share/lazarobox",
-    // The app's config holds `config.toml` with MCP env tokens.
+    // The app's config: `config.toml` and `secrets.toml`, the values of the
+    // user's MCP servers (openspec `mcp-secrets`).
     ".config/lazarobox",
+    // Where the MCP connectors keep their tokens (openspec mcp-connectors
+    // C6, C8): workspace-mcp, clasp (a file) and mcp-gsc.
+    ".google_workspace_mcp",
+    ".clasprc.json",
+    ".config/mcp-gsc",
 ];
 
 /// File names that are never readable wherever they sit below `$HOME`:
@@ -1298,6 +1304,54 @@ mod tests {
             check_path(&f.home, &f.home.join("project").join(temp)),
             PathVerdict::Refused
         );
+    }
+
+    // Spec agent-tools, Path policy: connector token locations (openspec
+    // mcp-connectors C6, C8). The listing omits what `judge_real` refuses.
+    #[test]
+    fn connector_token_locations_and_the_secrets_file_are_refused_and_unlisted() {
+        let f = fixture();
+        for dir in [
+            ".google_workspace_mcp/credentials",
+            ".config/mcp-gsc",
+            ".config/lazarobox",
+        ] {
+            fs::create_dir_all(f.home.join(dir)).unwrap();
+        }
+        let files = [
+            ".google_workspace_mcp/credentials/u.json",
+            ".clasprc.json",
+            ".config/mcp-gsc/token.json",
+            ".config/lazarobox/secrets.toml",
+        ];
+        for file in files {
+            fs::write(f.home.join(file), "{\"token\":\"sk-1\"}").unwrap();
+        }
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
+        for file in files {
+            assert_eq!(
+                resolve(&roots, &f.home, &format!("~/{file}")),
+                PathVerdict::Refused,
+                "{file}"
+            );
+            // The same refusal as a missing path, and no write either.
+            assert_eq!(
+                resolve(&roots, &f.home, &format!("~/{file}")),
+                resolve(&roots, &f.home, "~/missing"),
+            );
+            assert!(!roots.judge_write(&f.home.join(file)), "{file}");
+        }
+        for entry in [
+            ".google_workspace_mcp",
+            ".clasprc.json",
+            ".config/mcp-gsc",
+            ".config/lazarobox",
+        ] {
+            assert!(!roots.judge_real(&f.home.join(entry)), "{entry} is listed");
+        }
+        for kept in [".config", ".config/mcp-gsc-other", ".clasp.json", "project"] {
+            assert!(roots.judge_real(&f.home.join(kept)), "{kept} is hidden");
+        }
     }
 
     #[test]

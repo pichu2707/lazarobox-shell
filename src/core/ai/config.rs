@@ -379,8 +379,9 @@ impl Default for OrchestratorConfig {
 }
 
 /// One user MCP server from `[[ai.mcp.servers]]` (design D16). `env` holds
-/// variable NAMES only: the values come from lazarobox's own environment when
-/// a later slice starts the server. `project` is the absolute git root the
+/// variable NAMES only: when the server starts, each takes its value from the
+/// server's table in `secrets.toml`, else from lazarobox's own environment
+/// (see [`super::mcp_secrets`]). `project` is the absolute git root the
 /// entry is limited to; `None` is a global server.
 #[derive(Clone, PartialEq, Eq)]
 pub struct McpServer {
@@ -1253,7 +1254,7 @@ fn valid_mcp_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-fn valid_env_name(name: &str) -> bool {
+pub(crate) fn valid_env_name(name: &str) -> bool {
     if name.len() > MCP_ENV_NAME_MAX {
         return false;
     }

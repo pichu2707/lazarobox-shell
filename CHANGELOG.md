@@ -12,6 +12,15 @@ baseline.
 
 ### Added
 
+- MCP server values can live in `~/.config/lazarobox/secrets.toml` (or under
+  `$XDG_CONFIG_HOME`), one table per server name: a variable an
+  `[[ai.mcp.servers]]` entry names in `env` takes its value from that
+  server's own table first, then from lazarobox's environment, so a value
+  reaches only its own server. The file must be a regular file with mode
+  0600 and at most 64 KiB; it is read at each start of a chat's servers, its
+  problems are shown once per start without any value, and lazarobox never
+  writes it.
+
 - The chat can draft an issue: the new `gh_issue_draft` tool (kind `idea` or
   `bug`, title, description) asks a `y` at the composer and, at the end of the
   turn, opens the Feedback form on the draft's kind with the title and the
@@ -48,6 +57,15 @@ baseline.
   engine and model picker, its delete confirmation, the Hugging Face token
   field and its disconnect question, and the usage view stay as they were, and
   the chat names the draft that was not opened, as with the Memory warning.
+
+### Security
+
+- The read tools also refuse, and leave out of listings, the token locations
+  of the MCP connectors: `~/.google_workspace_mcp`, `~/.clasprc.json` and
+  `~/.config/mcp-gsc`; writes and the git tools refuse them too. The git
+  tools now also exclude a secret root that is itself a file (such as
+  `~/.local/share/fish/fish_history` or `.clasprc.json`), not only the
+  contents of a secret folder.
 
 ## [1.16.0] - 2026-11-09
 

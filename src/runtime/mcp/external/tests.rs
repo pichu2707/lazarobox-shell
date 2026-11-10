@@ -174,3 +174,127 @@ async fn the_chat_is_told_which_servers_started_and_which_did_not() {
     );
     set.shutdown().await;
 }
+
+/// The host of the `secrets.toml` tests: a `PATH`, plus the pairs given.
+fn host_with(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+    move |name| {
+        pairs
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| OsString::from(value))
+            .or_else(|| host_env(name))
+    }
+}
+
+fn secrets(text: &str) -> Secrets {
+    let loaded = Secrets::parse(text.as_bytes());
+    assert_eq!(loaded.problems, Vec::<String>::new());
+    loaded.secrets
+}
+
+/// Starts `servers` with `secrets` and `host`, and gives each one's recorded
+/// environment, in order.
+async fn recorded(
+    lab: &super::fake::Lab,
+    servers: &[McpServer],
+    secrets: &Secrets,
+    host: impl Fn(&str) -> Option<OsString>,
+) -> Vec<Vec<String>> {
+    let refs: Vec<&McpServer> = servers.iter().collect();
+    let set = ExternalSet::start_with(&refs, &lab.home, host, secrets, timeouts(LONG)).await;
+    assert!(set.notices().is_empty(), "{:?}", set.notices());
+    set.shutdown().await;
+    servers.iter().map(|s| lab.env_of(&s.name)).collect()
+}
+
+fn has(env: &[String], line: &str) -> bool {
+    env.iter().any(|l| l == line)
+}
+
+fn names(env: &[String]) -> Vec<&str> {
+    env.iter().filter_map(|l| l.split('=').next()).collect()
+}
+
+// Spec mcp-servers, Lifecycle: value from the secrets file.
+#[tokio::test]
+async fn a_named_variable_gets_its_value_from_the_servers_table() {
+    let lab = lab();
+    let file = secrets("[clarity]\nCLARITY_API_TOKEN = \"tok\"\nEXTRA = \"e\"\nPATH = \"/evil\"\n");
+    let servers = [lab.recorder("clarity", &["CLARITY_API_TOKEN"])];
+    let env = recorded(&lab, &servers, &file, host_env).await.remove(0);
+    assert!(has(&env, "CLARITY_API_TOKEN=tok"), "{env:?}");
+    // Spec mcp-servers, Secrets and privacy: unnamed key is not passed, and
+    // the base keeps the host's values.
+    assert!(!names(&env).contains(&"EXTRA"), "{env:?}");
+    assert!(has(&env, "PATH=/usr/bin:/bin"), "{env:?}");
+}
+
+// Spec mcp-servers, Lifecycle: secrets file wins over the host variable.
+#[tokio::test]
+async fn the_file_value_wins_over_the_host_variable() {
+    let lab = lab();
+    let file = secrets("[clarity]\nCLARITY_API_TOKEN = \"tok\"\n");
+    let servers = [lab.recorder("clarity", &["CLARITY_API_TOKEN"])];
+    let host = host_with(&[("CLARITY_API_TOKEN", "host")]);
+    let env = recorded(&lab, &servers, &file, host).await.remove(0);
+    assert!(has(&env, "CLARITY_API_TOKEN=tok"), "{env:?}");
+    assert!(!has(&env, "CLARITY_API_TOKEN=host"), "{env:?}");
+}
+
+// Spec mcp-servers, Lifecycle: host variable when the file lacks the name;
+// task 1.6, characterization: with no `secrets.toml` it is as before.
+#[tokio::test]
+async fn a_name_the_table_lacks_and_no_file_at_all_take_the_host_value() {
+    let lab = lab();
+    let host = host_with(&[("GITHUB_TOKEN", "gh")]);
+    let file = secrets("[clarity]\nCLARITY_API_TOKEN = \"tok\"\n");
+    let servers = [lab.recorder("clarity", &["GITHUB_TOKEN"])];
+    let env = recorded(&lab, &servers, &file, &host).await.remove(0);
+    assert!(has(&env, "GITHUB_TOKEN=gh"), "{env:?}");
+    let refs: Vec<&McpServer> = servers.iter().collect();
+    let set = ExternalSet::start(&refs, &lab.home, &host, timeouts(LONG)).await;
+    set.shutdown().await;
+    let env = lab.env_of("clarity");
+    assert!(has(&env, "GITHUB_TOKEN=gh"), "{env:?}");
+    assert!(!names(&env).contains(&"CLARITY_API_TOKEN"), "{env:?}");
+}
+
+// Spec mcp-servers, Lifecycle: forbidden names stay out.
+#[tokio::test]
+async fn loader_home_and_token_names_are_never_taken_from_the_file() {
+    let lab = lab();
+    let file = secrets(
+        "[fake]\nLD_PRELOAD = \"/tmp/evil.so\"\nHOME = \"/not/home\"\nLAZAROBOX_MCP_TOKEN = \"0123\"\n",
+    );
+    let servers = [lab.recorder("fake", &["LD_PRELOAD", "HOME", "LAZAROBOX_MCP_TOKEN"])];
+    let env = recorded(&lab, &servers, &file, host_env).await.remove(0);
+    let keys = names(&env);
+    assert!(!keys.contains(&"LD_PRELOAD"), "{env:?}");
+    assert!(!keys.contains(&"LAZAROBOX_MCP_TOKEN"), "{env:?}");
+    assert!(
+        has(&env, &format!("HOME={}", lab.home.display())),
+        "{env:?}"
+    );
+}
+
+// Spec mcp-secrets, Format: two tables; spec mcp-servers, Secrets and
+// privacy: a value reaches only its own server.
+#[tokio::test]
+async fn each_server_gets_only_its_own_tables_values() {
+    let lab = lab();
+    let file = secrets(
+        "[clarity]\nCLARITY_API_TOKEN = \"tok\"\n\n[ga4]\nGOOGLE_CLOUD_PROJECT = \"my-project\"\n",
+    );
+    let servers = [
+        lab.recorder("clarity", &["CLARITY_API_TOKEN", "GOOGLE_CLOUD_PROJECT"]),
+        lab.recorder("ga4", &["CLARITY_API_TOKEN", "GOOGLE_CLOUD_PROJECT"]),
+    ];
+    let envs = recorded(&lab, &servers, &file, host_env).await;
+    assert!(has(&envs[0], "CLARITY_API_TOKEN=tok"), "{envs:?}");
+    assert!(
+        !names(&envs[0]).contains(&"GOOGLE_CLOUD_PROJECT"),
+        "{envs:?}"
+    );
+    assert!(has(&envs[1], "GOOGLE_CLOUD_PROJECT=my-project"), "{envs:?}");
+    assert!(!names(&envs[1]).contains(&"CLARITY_API_TOKEN"), "{envs:?}");
+}

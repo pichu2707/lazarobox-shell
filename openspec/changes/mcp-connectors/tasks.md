@@ -4,13 +4,13 @@ Order follows C8 (secrets and read-deny, then Clarity and GA4, then GSC, then Wo
 
 ## S1 Secrets file and read-deny (C6, C8) — 230–310 lines
 
-- [ ] 1.1 RED/GREEN: `secrets.toml` location (XDG and default), missing file is silent (mcp-secrets, Location and ownership).
-- [ ] 1.2 RED/GREEN: mode 0600 check, not a regular file, 64 KiB bound (Mode 0600, Read on each start).
-- [ ] 1.3 RED/GREEN: format: per-server tables, string values, bad names and types skipped alone, top-level values reported, unknown tables ignored; syntax error reported by line only, no value in any problem (Format, Problems without values).
-- [ ] 1.4 RED/GREEN: `child_env` merge: only names in `env`, file wins over the host, host fallback, forbidden names dropped, a value reaches only its own server, file read at each start (mcp-servers, Lifecycle and Secrets and privacy). The lookup becomes per server: today one closure serves every server (src/runtime/chat/external.rs:146 through `ExternalSet::start`, src/runtime/mcp/external.rs:97-133, to `McpClient::spawn`, spawn.rs:106-110).
-- [ ] 1.5 RED/GREEN: `.google_workspace_mcp`, `.clasprc.json`, `.config/mcp-gsc` refused and omitted from listings; `secrets.toml` refused (agent-tools, Path policy). `SECRET_DIRS` (paths.rs:24-34) is shared with the write check and the git tools (paths.rs:346; git.rs:207, 240): their existing tests must still pass.
-- [ ] 1.6 Characterization: an entry naming a host variable with no `secrets.toml` behaves as before; the menu save tests at config_edit.rs:1395, 1543, 1567, 1661 pass unchanged.
-- [ ] 1.7 Docs: README "Tus propios servidores MCP" (README.md:1244-1281) documents `secrets.toml` (place, 0600, format, never written by lazarobox); the read-deny paragraph (README.md:753) lists the three token locations; privacy note.
+- [x] 1.1 RED/GREEN: `secrets.toml` location (XDG and default), missing file is silent (mcp-secrets, Location and ownership).
+- [x] 1.2 RED/GREEN: mode 0600 check, not a regular file, 64 KiB bound (Mode 0600, Read on each start).
+- [x] 1.3 RED/GREEN: format: per-server tables, string values, bad names and types skipped alone, top-level values reported, unknown tables ignored; syntax error reported by line only, no value in any problem (Format, Problems without values).
+- [x] 1.4 RED/GREEN: `child_env` merge: only names in `env`, file wins over the host, host fallback, forbidden names dropped, a value reaches only its own server, file read at each start (mcp-servers, Lifecycle and Secrets and privacy). The lookup becomes per server: today one closure serves every server (src/runtime/chat/external.rs:146 through `ExternalSet::start`, src/runtime/mcp/external.rs:97-133, to `McpClient::spawn`, spawn.rs:106-110).
+- [x] 1.5 RED/GREEN: `.google_workspace_mcp`, `.clasprc.json`, `.config/mcp-gsc` refused and omitted from listings; `secrets.toml` refused (agent-tools, Path policy). `SECRET_DIRS` (paths.rs:24-34) is shared with the write check and the git tools (paths.rs:346; git.rs:207, 240): their existing tests must still pass.
+- [x] 1.6 Characterization: an entry naming a host variable with no `secrets.toml` behaves as before; the menu save tests at config_edit.rs:1395, 1543, 1567, 1661 pass unchanged.
+- [x] 1.7 Docs: README "Tus propios servidores MCP" (README.md:1244-1281) documents `secrets.toml` (place, 0600, format, never written by lazarobox); the read-deny paragraph (README.md:753) lists the three token locations; privacy note.
 
 ## S2 Catalog core with Clarity and GA4 (C2, C8, C11) — 220–300 lines
 

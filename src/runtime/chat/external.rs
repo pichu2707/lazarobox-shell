@@ -11,6 +11,10 @@
 //! turn that is still starting drops the half-started servers (their processes
 //! die with them). A chat closed during a start is caught by the pane's epoch.
 //! Nothing starts for an engine that will not be wired (a CLI that runs bare).
+//!
+//! Each start of a set reads `secrets.toml` again (off the UI thread), so an
+//! edit applies at the next start; its problems are told to the chat once per
+//! start, and a value reaches only the server of its table.
 
 use std::{
     collections::HashMap,
@@ -20,7 +24,7 @@ use std::{
 
 use tokio::sync::mpsc;
 
-use super::Wires;
+use super::{Chats, Wires};
 use crate::{
     core::{
         ai::{
@@ -29,13 +33,17 @@ use crate::{
                 engine::{ChatRequest, StreamEvent, Tools},
             },
             config::McpServer,
+            mcp_secrets::Loaded,
         },
         layout::PaneId,
     },
-    runtime::mcp::{
-        active::active_servers,
-        client::Timeouts,
-        external::{ExternalSet, Slot},
+    runtime::{
+        mcp::{
+            active::active_servers,
+            client::Timeouts,
+            external::{ExternalSet, Slot},
+        },
+        mcp_secrets,
     },
 };
 
@@ -63,6 +71,9 @@ pub(super) struct Externals {
     list: Arc<Vec<McpServer>>,
     /// The neutral working directory of every server (`$HOME`).
     home: PathBuf,
+    /// Where `secrets.toml` is, read on each start of a set; `None` (no
+    /// config folder) gives every server the host's values only.
+    secrets: Option<PathBuf>,
     /// Whether a turn's engine gets its tools wired at all.
     wires: Wires,
     sets: Arc<Mutex<State>>,
@@ -85,6 +96,7 @@ impl Externals {
         Self {
             list: Arc::new(list),
             home,
+            secrets: None,
             wires,
             sets: Arc::default(),
         }
@@ -138,12 +150,21 @@ impl Externals {
             old.shutdown().await;
         }
         let epoch = self.sets.lock().map_or(0, |state| state.epoch(pane));
+        // Read again on every start, off the UI thread, so an edit applies
+        // at the next start. A read that panicked counts as no file.
+        let loaded = match self.secrets.clone() {
+            Some(path) => tokio::task::spawn_blocking(move || mcp_secrets::load(&path))
+                .await
+                .unwrap_or_default(),
+            None => Loaded::default(),
+        };
         let refs: Vec<&McpServer> = active.iter().collect();
         let set = Arc::new(
-            ExternalSet::start(
+            ExternalSet::start_with(
                 &refs,
                 &self.home,
                 |name| std::env::var_os(name),
+                &loaded.secrets,
                 Timeouts::default(),
             )
             .await,
@@ -161,10 +182,22 @@ impl Externals {
             set.shutdown().await;
             return set;
         }
-        for line in set.announcements() {
+        // The problems name at most a table and a key, never a value.
+        let problems = loaded.problems.iter().map(|p| format!("mcp: {p}"));
+        for line in problems.chain(set.announcements()) {
             let _ = events.send(StreamEvent::Notice(line)).await;
         }
         set
+    }
+}
+
+impl Chats {
+    /// Where the user's `secrets.toml` is (openspec `mcp-secrets`): read on
+    /// each start of a chat's servers, never written. `None` leaves every
+    /// server with lazarobox's own environment only.
+    pub fn with_secrets(mut self, path: Option<PathBuf>) -> Self {
+        self.externals.secrets = path;
+        self
     }
 }
 
