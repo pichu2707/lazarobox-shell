@@ -41,6 +41,7 @@ pub mod llama_install;
 pub mod login_path;
 pub mod loopback;
 pub mod mcp;
+pub mod model_delete;
 pub mod notify;
 pub mod ollama_lib;
 pub mod opener;
