@@ -113,6 +113,9 @@ struct Seen {
     dropped: AtomicBool,
     /// Lets a `Held` turn answer.
     release: Notify,
+    /// The pending count each turn's timers read (`pending::TURN`), in
+    /// request order.
+    timers: Mutex<Vec<Option<Pending>>>,
 }
 
 impl Seen {
@@ -167,6 +170,9 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
         let first = n == 1;
         let mine = mine.clone();
         Box::pin(async move {
+            // What the adapter's first-byte, idle and total limits watch.
+            let timers = crate::runtime::tools::pending::current();
+            mine.timers.lock().unwrap().push(timers);
             let (text, end) = match script {
                 Script::FailOnce(error) if first => {
                     ("", StreamEvent::Error(ChatError::Failed(error.into())))
@@ -3896,7 +3902,7 @@ async fn asks_denied_in_one_gap_are_said_once_per_worker() {
     };
     let trace = Tracer::new(events, pane(), key);
     let (turn, seen) = mpsc::channel(TURN_CHANNEL);
-    let route = Route::new(key, trace, turn, Arc::new(Unwired), Pending::new());
+    let route = Route::new(key, trace, turn, Arc::new(Unwired));
     drop(seen);
     for id in 1..=3 {
         route.deliver(ask_call(id, key)).await;
@@ -3904,11 +3910,7 @@ async fn asks_denied_in_one_gap_are_said_once_per_worker() {
     assert_eq!(notices(&mut app).len(), 1);
     // The next turn attaches and goes away again: a new gap.
     let (turn, seen) = mpsc::channel(TURN_CHANNEL);
-    route.retarget(
-        turn,
-        &(Arc::new(Unwired) as Arc<dyn Approver>),
-        &Pending::new(),
-    );
+    route.retarget(turn, &(Arc::new(Unwired) as Arc<dyn Approver>));
     drop(seen);
     route.deliver(ask_call(4, key)).await;
     assert_eq!(notices(&mut app).len(), 1);
@@ -3926,11 +3928,11 @@ async fn an_ask_lost_to_a_moved_route_says_the_orchestrator_moved_on() {
     let trace = Tracer::new(events, pane(), key);
     let (turn, seen) = mpsc::channel(TURN_CHANNEL);
     let old = turn.clone();
-    let route = Route::new(key, trace, turn, Arc::new(Unwired), Pending::new());
+    let route = Route::new(key, trace, turn, Arc::new(Unwired));
     drop(seen);
     let (new_turn, _keep) = mpsc::channel(TURN_CHANNEL);
     let next: Arc<dyn Approver> = Arc::new(Unwired);
-    route.retarget(new_turn, &next, &Pending::new());
+    route.retarget(new_turn, &next);
     // Both asks were sent on the old channel, from before the route moved.
     route.send_from(ask_call(1, key), old.clone(), 0).await;
     route.send_from(ask_call(2, key), old, 0).await;
@@ -4013,7 +4015,11 @@ async fn a_surviving_workers_ask_counts_for_both_turns_timers() {
         .manager
         .on_run(pane(), run, |live| live.routes[&WorkerId(1)].own.count())
         .unwrap();
-    assert_eq!(worker_side, 1, "the worker's own timers");
+    assert_eq!(worker_side, 1, "the worker's own count");
+    // The count the worker's turn timers actually read is that same count.
+    let timers = lab.seen.timers.lock().unwrap()[0].clone();
+    let timers = timers.expect("the worker turn runs with a count");
+    assert_eq!(timers.count(), 1, "the worker's own timers");
     assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
 }
 
@@ -5275,7 +5281,7 @@ async fn a_routes_tool_rows_reach_the_app_as_trace() {
     };
     let trace = Tracer::new(events, pane(), key);
     let (turn, mut seen) = mpsc::channel(TURN_CHANNEL);
-    let route = Route::new(key, trace, turn, Arc::new(Unwired), Pending::new());
+    let route = Route::new(key, trace, turn, Arc::new(Unwired));
     let tx = Route::forward(&route);
     let call = StreamEvent::ToolCall {
         id: CallId(4),

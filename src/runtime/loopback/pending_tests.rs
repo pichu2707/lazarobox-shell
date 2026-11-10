@@ -117,7 +117,13 @@ async fn the_total_limit_keeps_running_while_a_call_waits() {
     let pending = Pending::new();
     let _wait = pending.enter();
     let mut turn = start(&pending, Timeouts::SERVER);
-    assert_eq!(last(&mut turn).await, Some(failed(TOO_LONG)));
+    // A total that paused here would leave no timer: the paused clock would
+    // hang, so an hour bounds it and fails it instead.
+    let ended = tokio::time::timeout(Duration::from_secs(3600), last(&mut turn)).await;
+    assert_eq!(
+        ended.expect("the total ends the turn"),
+        Some(failed(TOO_LONG))
+    );
     assert_eq!(turn.start.elapsed(), Duration::from_secs(15 * 60));
 }
 

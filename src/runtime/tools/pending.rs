@@ -158,6 +158,14 @@ mod tests {
 
     const S: Duration = Duration::from_secs(1);
 
+    /// `fut`, failed instead of hung when it never ends: with no timer left
+    /// a paused clock would wait forever, and this hour passes at once.
+    async fn bounded<F: Future>(fut: F) -> F::Output {
+        tokio::time::timeout(3600 * S, fut)
+            .await
+            .expect("the clock never ended it")
+    }
+
     /// Works `work`, waits `wait` for the user, and so on, then works
     /// forever: the clock alone ends it. Returns when and how it ended.
     async fn plan(limit: Duration, steps: &[(Duration, Duration)]) -> (Duration, bool) {
@@ -172,11 +180,7 @@ mod tests {
             }
             std::future::pending::<()>().await;
         };
-        // A clock that never resumes would hang: an hour of paused time
-        // passes at once and fails it instead.
-        let ended = tokio::time::timeout(3600 * S, pausing_timeout(limit, &pending, fut))
-            .await
-            .expect("the clock resumes after the wait");
+        let ended = bounded(pausing_timeout(limit, &pending, fut)).await;
         (start.elapsed(), ended.is_err())
     }
 
@@ -192,7 +196,7 @@ mod tests {
             sleep(S).await;
             7
         };
-        assert_eq!(pausing_timeout(3 * S, &pending, fut).await, Ok(7));
+        assert_eq!(bounded(pausing_timeout(3 * S, &pending, fut)).await, Ok(7));
         assert_eq!(start.elapsed(), 12 * S);
     }
 
@@ -232,7 +236,8 @@ mod tests {
             drop(open);
             std::future::pending::<()>().await
         };
-        assert_eq!(pausing_timeout(3 * S, &pending, fut).await, Err(Elapsed));
+        let ended = bounded(pausing_timeout(3 * S, &pending, fut)).await;
+        assert_eq!(ended, Err(Elapsed));
         assert_eq!(start.elapsed(), 53 * S);
     }
 

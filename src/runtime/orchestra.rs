@@ -137,8 +137,6 @@ struct Route {
 struct Current {
     events: mpsc::Sender<StreamEvent>,
     approver: Arc<dyn Approver>,
-    /// The current orchestrator turn's count, which its approver feeds.
-    pending: Pending,
     /// Counts the retargets, so a failed send can tell whether the route moved.
     generation: u64,
     /// The last gap a denied ask was said for.
@@ -151,7 +149,6 @@ impl Route {
         trace: Tracer,
         events: mpsc::Sender<StreamEvent>,
         approver: Arc<dyn Approver>,
-        pending: Pending,
     ) -> Arc<Self> {
         Arc::new(Self {
             key,
@@ -160,7 +157,6 @@ impl Route {
             state: Mutex::new(Current {
                 events,
                 approver,
-                pending,
                 generation: 0,
                 said: None,
             }),
@@ -171,17 +167,11 @@ impl Route {
     /// are denied first (the worker may ask again): their wait sits under a
     /// turn the new prompt would not name. Then the new turn's approver of
     /// this worker takes over, a new attempt of its session.
-    fn retarget(
-        &self,
-        events: mpsc::Sender<StreamEvent>,
-        turn: &Arc<dyn Approver>,
-        pending: &Pending,
-    ) {
+    fn retarget(&self, events: mpsc::Sender<StreamEvent>, turn: &Arc<dyn Approver>) {
         let mut state = lock(&self.state);
         state.approver.end_worker(self.key);
         state.approver = turn.for_worker(self.key).unwrap_or_else(|| turn.clone());
         state.events = events;
-        state.pending = pending.clone();
         state.generation += 1;
     }
 
@@ -792,7 +782,7 @@ impl RunManager {
                 )
             });
             for route in live.routes.values() {
-                route.retarget(scope.events.clone(), &scope.approver, &scope.pending);
+                route.retarget(scope.events.clone(), &scope.approver);
             }
             live.events = scope.events;
             live.approver = scope.approver;
@@ -1711,7 +1701,6 @@ impl RunManager {
             trace.clone(),
             live.events.clone(),
             approver.unwrap_or_else(|| live.approver.clone()),
-            live.pending.clone(),
         );
         let own = route.own.clone();
         live.routes.insert(id, route.clone());

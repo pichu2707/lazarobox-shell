@@ -75,7 +75,8 @@ baseline.
   same way on the server, Ollama and CLI paths; a chat turn keeps its
   15-minute total as before. The run wall clock (`run_timeout_mins`) still
   counts while you decide. A CLI still cuts one tool call at 900 s by itself:
-  the worker then fails and its staged batch stays as an orphan.
+  that ends the wait (the model gets a tool error and goes on, and the
+  worker's clock resumes), and the run wall clock still bounds the worker.
 
 ### Fixed
 

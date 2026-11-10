@@ -258,10 +258,11 @@ async fn propose_and_ask(lab: &mut Lab, client: &mut Client) -> CallId {
 }
 
 // D5, 15.7: the clock pauses, but a CLI still cuts one MCP call at its own
-// cap (900 s, `tools/wiring.rs`). A CLI worker whose `propose_batch` is cut
-// ends with the CLI's failure (here the fake engine stands in for the cap):
-// its row shows `failed`, the run halts with the text, and its staged batch
-// is an orphan with its badge, still reviewable; nothing is written.
+// cap (900 s, `tools/wiring.rs`). A real CLI then hands the model a tool
+// error and goes on; this worker's engine (the fake) ends its turn failing
+// once the call is cut: its row shows `failed`, the run halts with the text,
+// and its staged batch is an orphan with its badge, still reviewable;
+// nothing is written.
 // Needs the write primitives (`openat2`, `renameat2`): Linux only.
 #[cfg(target_os = "linux")]
 #[tokio::test]
