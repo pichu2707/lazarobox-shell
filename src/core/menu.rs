@@ -1851,6 +1851,15 @@ impl MenuState {
         }
     }
 
+    /// Whether something the user is answering or editing is up: a view that
+    /// replaces the rows (the warning, a picker level with its delete
+    /// confirmation, the token field, the Feedback form, the usage view) or
+    /// the Hugging Face `y/n` footer. Moving the selection under it would
+    /// change what its answer applies to, so a drafted issue does not open.
+    pub fn holds_a_view(&self) -> bool {
+        self.in_sub_level() || self.account.prompt().is_some()
+    }
+
     /// Whether the menu has an AI section.
     pub fn has_ai(&self) -> bool {
         self.ai.is_some()

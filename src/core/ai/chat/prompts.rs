@@ -166,11 +166,17 @@ const ABILITIES: [(Family, &str); 3] = [
     (Family::GitWrite, "add and commit with git"),
 ];
 
+/// What a turn that offers `gh_issue_draft` is told about it, after the rest
+/// of the tools block (openspec `chat-issue-draft` D5): the three cases, and
+/// that the tool's own y/n is the permission. One sentence, ASCII.
+pub(crate) const DRAFT_OFFER: &str = "Call the issue draft tool to offer a lazarobox issue only when the user asks for one, when you cannot do what was asked because lazarobox lacks it, or when a lazarobox tool or this chat fails, never for errors in the user's own code or commands; its yes/no prompt is the user's permission, so do not ask first.";
+
 /// `system` for a turn that offers tools: the built-in "no access" sentence
 /// becomes the tools block. A prompt without that sentence (the user's own
 /// file) gets the block as a last bullet instead. Only a turn with tools calls
 /// this: any other keeps its prompt byte for byte. A turn that offers the
-/// write, exec or git write tools gets [`CODING`] instead of [`NO_CHANGES`].
+/// write, exec or git write tools gets [`CODING`] instead of [`NO_CHANGES`];
+/// one that offers the draft tool ends the block with [`DRAFT_OFFER`].
 pub fn with_tools(system: &str, families: FamilySet) -> String {
     let abilities: Vec<&str> = ABILITIES
         .iter()
@@ -181,6 +187,12 @@ pub fn with_tools(system: &str, families: FamilySet) -> String {
         Some((last, [])) => coding(last),
         Some((last, rest)) => coding(&format!("{} and {last}", rest.join(", "))),
         None => TOOLS.trim_end().to_owned(),
+    };
+    // Only a turn that offers the draft tool hears when to offer a draft.
+    let block = if families.contains(Family::IssueDraft) {
+        format!("{block} {DRAFT_OFFER}")
+    } else {
+        block
     };
     let block = block.as_str();
     if system.trim().is_empty() {

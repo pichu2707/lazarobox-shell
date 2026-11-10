@@ -18,12 +18,27 @@ baseline.
   description in their own fields. You review it and send it with Ctrl+S; the
   model never writes to GitHub. New `[ai.tools] issue_draft` toggle, on by
   default, with its own `Issue draft` row on the Tools tab.
+- With the draft tool offered, the tools block of the system prompt tells the
+  model to offer a draft (by calling the tool, whose `y`/`n` is the permission)
+  when you ask for an issue, when lazarobox lacks what you asked for, or when a
+  lazarobox tool or the chat fails; never for errors in your own code. Without
+  the tool (an engine without tools, tools off or `issue_draft = false`), a
+  failed turn or a tool error shows `If this looks like a lazarobox problem,
+  type /feedback to report it`, at most once per turn and never after a
+  denied call.
 - The model picker deletes a downloaded Ollama model: `d` on its row opens a
   confirmation with the name and the size, and only a plain `y` deletes it,
   through the local server. A model that a task or a running chat turn uses is
   refused and the notice says who uses it, and so is any delete while a
   download runs. The notice says what was freed, as an upper bound, since
   Ollama models share layers.
+
+### Fixed
+
+- A draft issue no longer opens over a menu screen that waits for you: the
+  engine and model picker, its delete confirmation, the Hugging Face token
+  field and its disconnect question, and the usage view stay as they were, and
+  the chat names the draft that was not opened, as with the Memory warning.
 
 ## [1.16.0] - 2026-11-09
 

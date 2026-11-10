@@ -407,3 +407,189 @@ fn the_form_does_not_open_under_the_memory_warning() {
     assert!(!menu.in_warning());
     assert!(menu.ai_draft().memory.enabled, "the acceptance is kept");
 }
+
+// -- PR 2: the menu views a draft never opens over --------------------------
+
+/// The menu's rows and footer, to show a view was left as it was.
+fn view(a: &App) -> String {
+    let menu = a.menu().unwrap();
+    format!("{:?} {:?}", menu.rows(&a.config), menu.footer())
+}
+
+/// An accepted draft, then `open` puts a view of the menu up before the turn
+/// ends: the form stays shut, the view is untouched and the chat names the
+/// draft's title.
+fn kept_under(open: impl FnOnce(&mut App)) {
+    let (mut a, turn) = accepted();
+    let _ = a.open_menu();
+    open(&mut a);
+    let before = view(&a);
+    done(&mut a, turn);
+    assert!(!a.menu().unwrap().feedback_open(), "{before}");
+    assert_eq!(view(&a), before);
+    assert_eq!(a.input(), InputMode::Menu);
+    assert!(
+        lines(&a)
+            .iter()
+            .any(|l| l.contains("not opened") && l.contains("See the shell over ssh")),
+        "{:?}",
+        lines(&a)
+    );
+}
+
+#[test]
+fn the_form_does_not_open_over_the_engine_picker() {
+    kept_under(|a| {
+        goto_row(a, "chat");
+        a.update(plain(KeyCode::Enter));
+        assert!(a.menu().unwrap().in_sub_level(), "the picker is open");
+    });
+}
+
+#[test]
+fn the_form_does_not_open_over_the_model_delete_confirmation() {
+    use super::model_delete::{confirming, machine, open_picker};
+    kept_under(|a| {
+        a.engines = Some(machine());
+        a.menu = Some(MenuState::open(&a.config).with_ai(a.ai.clone(), a.engines.clone()));
+        a.input = InputMode::Menu;
+        open_picker(a, "qwen3:4b");
+        confirming(a);
+        assert!(view(a).contains("y delete"), "{}", view(a));
+    });
+}
+
+#[test]
+fn the_form_does_not_open_over_the_token_field() {
+    kept_under(|a| {
+        goto_row(a, "Hugging Face");
+        a.update(plain(KeyCode::Enter));
+        assert!(a.menu().unwrap().in_sub_level(), "the token field is open");
+    });
+}
+
+#[test]
+fn the_form_does_not_open_over_the_disconnect_prompt() {
+    use crate::core::ai::hf::{AccountReply, TokenFacts};
+    kept_under(|a| {
+        a.hf_tokens = || TokenFacts {
+            env: false,
+            saved: true,
+        };
+        // The menu reads the token facts when it opens.
+        a.menu = None;
+        a.input = InputMode::Terminal;
+        let _ = a.open_menu();
+        goto_row(a, "Hugging Face");
+        a.update(plain(KeyCode::Enter));
+        a.update(AppEvent::HfAccount(AccountReply::Checked(Ok("ana".into()))));
+        a.update(plain(KeyCode::Enter));
+        assert!(!a.menu().unwrap().in_sub_level(), "a footer, not a view");
+    });
+}
+
+#[test]
+fn the_form_does_not_open_over_the_usage_view() {
+    kept_under(|a| {
+        goto_row(a, "Usage (alpha)");
+        a.update(plain(KeyCode::Enter));
+        assert!(a.menu().unwrap().in_sub_level(), "the usage view is open");
+    });
+}
+
+// -- PR 2 (D6): the `/feedback` hint where the draft tool is not offered -----
+
+const HINT: &str = crate::app::tool::FEEDBACK_HINT;
+
+/// A turn sent after `setup`, once the first turn of the chat has ended. The
+/// engine is verified for tools, so only `setup` takes the draft tool away.
+fn sent_after(setup: impl FnOnce(&mut App)) -> (App, u64) {
+    let (mut a, turn) = live();
+    done(&mut a, turn);
+    a.tool_engines = &["ollama"];
+    setup(&mut a);
+    a.update(key('q'));
+    let turn = super::run_pane::enter_turn(&mut a);
+    (a, turn)
+}
+
+fn toggle_off(a: &mut App) {
+    a.ai.set_toggle(ToolToggle::IssueDraft, false);
+}
+
+/// The three ways a turn is sent without the draft tool.
+const WITHOUT_DRAFT: [fn(&mut App); 3] = [
+    toggle_off,
+    |a| a.ai.set_tools_enabled(false),
+    |a| a.tool_engines = &[],
+];
+
+fn fail(a: &mut App, turn: u64) {
+    a.update(AppEvent::Chat(
+        id2(),
+        turn,
+        StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Failed(
+            "boom".into(),
+        )),
+    ));
+}
+
+fn hints(a: &App) -> usize {
+    lines(a).iter().filter(|l| *l == HINT).count()
+}
+
+#[test]
+fn a_failed_turn_without_the_draft_tool_suggests_feedback() {
+    for setup in WITHOUT_DRAFT {
+        let (mut a, turn) = sent_after(setup);
+        assert_eq!(hints(&a), 0);
+        fail(&mut a, turn);
+        assert_eq!(hints(&a), 1, "{:?}", lines(&a));
+    }
+}
+
+#[test]
+fn a_tool_error_without_the_draft_tool_suggests_feedback() {
+    let (mut a, turn) = sent_after(toggle_off);
+    result(&mut a, turn, 1, ToolStatus::Error);
+    assert_eq!(hints(&a), 1, "{:?}", lines(&a));
+}
+
+// A refusal is the user's or the app's choice, not a failure; a clean turn
+// says nothing.
+#[test]
+fn a_denied_tool_or_a_clean_turn_suggests_nothing() {
+    let (mut a, turn) = sent_after(toggle_off);
+    result(&mut a, turn, 1, ToolStatus::Denied);
+    result(&mut a, turn, 2, ToolStatus::Ok);
+    done(&mut a, turn);
+    assert_eq!(hints(&a), 0, "{:?}", lines(&a));
+    // A cancel is the user's choice too.
+    let (mut a, _turn) = sent_after(toggle_off);
+    a.update(ctrl('c'));
+    assert_eq!(hints(&a), 0, "{:?}", lines(&a));
+}
+
+// With the draft tool offered the model offers the draft itself: no hint.
+#[test]
+fn with_the_draft_tool_offered_there_is_no_hint() {
+    let (mut a, turn) = sent_after(|_| {});
+    assert!(a.offered_families(id2()).contains(Family::IssueDraft));
+    result(&mut a, turn, 1, ToolStatus::Error);
+    fail(&mut a, turn);
+    assert_eq!(hints(&a), 0, "{:?}", lines(&a));
+}
+
+// Once per turn, however many failures it has; the next turn may say it again.
+#[test]
+fn the_hint_comes_at_most_once_per_turn() {
+    let (mut a, turn) = sent_after(toggle_off);
+    result(&mut a, turn, 1, ToolStatus::Error);
+    result(&mut a, turn, 2, ToolStatus::Error);
+    fail(&mut a, turn);
+    assert_eq!(hints(&a), 1, "{:?}", lines(&a));
+    a.update(key('q'));
+    let next = super::run_pane::enter_turn(&mut a);
+    fail(&mut a, next);
+    assert_eq!(hints(&a), 2, "{:?}", lines(&a));
+}
