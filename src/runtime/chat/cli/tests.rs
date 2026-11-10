@@ -928,6 +928,48 @@ async fn the_total_limit_ends_a_turn_that_keeps_talking() {
     assert_eq!(failure(&events), "the turn took too long");
 }
 
+/// A turn whose CLI talks for 1.2 s under a 400 ms total, while a call of
+/// the turn waits for the user all along; `worker` runs it as a worker turn.
+async fn turn_while_the_user_decides(worker: bool) -> Vec<StreamEvent> {
+    use crate::runtime::tools::{Pending, pending};
+    let lab = lab();
+    lab.claude(&format!("cat > /dev/null\nsleep 1.2\n{GOOD}"));
+    let mut env = lab.env();
+    env.timeouts.total = Duration::from_millis(400);
+    let pending = Pending::new();
+    let _wait = pending.enter();
+    let turn = run_job(&env, job(JailPolicy::Layered));
+    let mut events = if worker {
+        pending::TURN
+            .scope(pending, pending::worker_turn(turn))
+            .await
+    } else {
+        pending::TURN.scope(pending, turn).await
+    };
+    events.retain(|e| !matches!(e, StreamEvent::Notice(_)));
+    events
+}
+
+// Spec (agent-orchestrator, Waiting on the user stops the worker clock, D5):
+// a worker turn on the CLI relay does not fail `the turn took too long` for
+// the time it waited for the user.
+#[tokio::test]
+async fn a_worker_turns_total_limit_stops_while_the_user_decides() {
+    let events = turn_while_the_user_decides(true).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+}
+
+// GUARD: a chat turn keeps today's total limit, wait or no wait.
+#[tokio::test]
+async fn a_chat_turns_total_limit_runs_while_the_user_decides() {
+    let events = turn_while_the_user_decides(false).await;
+    assert_eq!(failure(&events), "the turn took too long");
+}
+
 #[tokio::test]
 async fn a_slow_start_sends_one_slow_event_first() {
     let lab = lab();

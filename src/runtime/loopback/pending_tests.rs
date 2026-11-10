@@ -117,8 +117,50 @@ async fn the_total_limit_keeps_running_while_a_call_waits() {
     let pending = Pending::new();
     let _wait = pending.enter();
     let mut turn = start(&pending, Timeouts::SERVER);
-    assert_eq!(last(&mut turn).await, Some(failed(TOO_LONG)));
+    // A total that paused here would leave no timer: the paused clock would
+    // hang, so an hour bounds it and fails it instead.
+    let ended = tokio::time::timeout(Duration::from_secs(3600), last(&mut turn)).await;
+    assert_eq!(
+        ended.expect("the total ends the turn"),
+        Some(failed(TOO_LONG))
+    );
     assert_eq!(turn.start.elapsed(), Duration::from_secs(15 * 60));
+}
+
+// Spec (agent-orchestrator, Waiting on the user stops the worker clock, D5):
+// a worker turn's total stops for the 20 minutes the user decides, then its
+// 15 minutes of work run it out, the reply still streaming.
+#[tokio::test(start_paused = true)]
+async fn a_worker_turns_total_limit_does_not_run_while_a_call_waits() {
+    let pending = Pending::new();
+    let wait = pending.enter();
+    let (tx, mut events) = mpsc::channel(256);
+    let (client, mut server) = duplex(64 * 1024);
+    let start = Instant::now();
+    tokio::spawn(TURN.scope(
+        pending.clone(),
+        crate::runtime::tools::pending::worker_turn(async move {
+            let mut decoder = NdjsonSplitter::server();
+            drive(client, b"POST", &Timeouts::SERVER, &mut decoder, &tx).await;
+        }),
+    ));
+    sleep(Duration::from_secs(20 * 60)).await;
+    drop(wait);
+    tokio::spawn(async move {
+        let _ = server.write_all(HEAD).await;
+        loop {
+            if server.write_all(&chunk(HELLO)).await.is_err() {
+                return;
+            }
+            sleep(Duration::from_secs(30)).await;
+        }
+    });
+    let mut last = None;
+    while let Some(event) = events.recv().await {
+        last = Some(event);
+    }
+    assert_eq!(last, Some(failed(TOO_LONG)));
+    assert_eq!(start.elapsed(), Duration::from_secs(35 * 60));
 }
 
 #[tokio::test(start_paused = true)]
