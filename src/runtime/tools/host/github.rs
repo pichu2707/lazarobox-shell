@@ -116,7 +116,8 @@ pub(super) async fn plan(host: &ToolHost, scope: &TurnScope) -> Result<Planned, 
 pub(super) enum Consent {
     Free,
     /// Ask, then remember the answer under these keys of the turn.
-    Ask(ApprovalAsk, String, String),
+    /// Boxed: an ask is large beside the other variants.
+    Ask(Box<ApprovalAsk>, String, String),
     /// The user declined this repository earlier in the turn.
     Declined,
 }
@@ -141,11 +142,11 @@ pub(super) fn consent(scope: &TurnScope, call: &GhCall, slug: &Slug) -> Consent 
     }
     match ask_for(&Call::Github(*call), Locality::Cloud) {
         Some(ApprovalAsk::GithubRead { what, .. }) => Consent::Ask(
-            ApprovalAsk::GithubRead {
+            Box::new(ApprovalAsk::GithubRead {
                 repo: slug.to_string(),
                 what,
                 ollama_cloud,
-            },
+            }),
             yes,
             no,
         ),

@@ -756,12 +756,17 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
             }
             // A command is judged before it asks: a refusal never opens a prompt.
-            (Call::RunCommand { .. }, locality, _) => {
+            // A worker's ask names its session and label (D19): only the scope
+            // knows them, not the plan.
+            (Call::RunCommand { .. }, locality, read_scope) => {
                 match exec::plan(&host, &scope, valid).await {
                     Ok(plan) => {
                         ask = ask_for(valid, locality);
                         if let Some(ask) = ask.as_mut() {
                             exec::fill(&host, &plan, ask);
+                            if let ApprovalAsk::Exec { worker, .. } = ask {
+                                *worker = read_scope.as_ref().map(|w| (w.key(), w.ask_label()));
+                            }
                         }
                         pinned = plan.pin;
                     }
@@ -824,7 +829,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         github::Consent::Free => {}
                         github::Consent::Declined => declined = Some(github::DECLINED),
                         github::Consent::Ask(question, yes, no) => {
-                            ask = Some(question);
+                            ask = Some(*question);
                             github_keys = Some((yes, no));
                         }
                     }

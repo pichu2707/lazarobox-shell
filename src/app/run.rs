@@ -626,7 +626,7 @@ impl App {
             // A worker's read outside its scope: the label names the worker,
             // its kind and `engine>model`, already sanitized.
             ApprovalAsk::WorkerRead { path, label, .. } => Some(ApprovalPrompt {
-                target: format!("worker {label}: send a file's text to the engine"),
+                target: worker_target(Some(label), "send a file's text to the engine"),
                 command: format!("read {path}"),
                 keys: READ_KEYS,
                 armed,
@@ -724,6 +724,7 @@ impl App {
                 timeout_secs,
                 cloud,
                 earlier,
+                worker,
             } => {
                 // One logical line per fact, so the folder and the script are
                 // rows `fits` checks, not a clipped head. Arguments are quoted
@@ -738,7 +739,11 @@ impl App {
                     command.push_str(line);
                 }
                 Some(ApprovalPrompt {
-                    target: "run a command in the sandbox".to_owned(),
+                    // A worker's names the worker first (D19); a chat's is as it was.
+                    target: worker_target(
+                        worker.as_ref().map(|(_, label)| label.as_str()),
+                        "run a command in the sandbox",
+                    ),
                     command,
                     keys: EXTERNAL_KEYS,
                     armed,
@@ -756,7 +761,7 @@ impl App {
             ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) | ApprovalAsk::Screen { .. } => None,
             // The label and the change were made one clean line when asked.
             ApprovalAsk::Consent { label, change, .. } => Some(ApprovalPrompt {
-                target: format!("worker {label}: review this high-risk change first?"),
+                target: worker_target(Some(label), "review this high-risk change first?"),
                 command: change.clone(),
                 keys: CONSENT_KEYS,
                 armed,
@@ -809,6 +814,15 @@ impl App {
             ),
             None => format!("run in pane {number}"),
         })
+    }
+}
+
+/// The first line of an ask's prompt: `what`, after `worker <label>: ` when a
+/// worker asks. The label is already one clean line.
+fn worker_target(label: Option<&str>, what: &str) -> String {
+    match label {
+        Some(label) => format!("worker {label}: {what}"),
+        None => what.to_owned(),
     }
 }
 
