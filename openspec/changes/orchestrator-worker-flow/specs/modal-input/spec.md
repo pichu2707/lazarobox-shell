@@ -36,12 +36,17 @@ The chat MUST offer a way for the user to turn Write on for the pane after a Wri
 - THEN Write stays off
 
 ### Requirement: Limit ask keys [W9]
-The line-limit ask and the outside-brief ask MUST be answered by user keys only. The limit ask MUST offer two choices, `split` and `keep`, and a deny key (Esc or `n`). No approval mode (`ask`, `auto`, `run`) and no timer MUST answer either ask. The prompt MUST show the file path, the counted lines, the limit and, when the language was not recognised, that every line was counted.
+The line-limit ask and the outside-brief ask MUST be answered by user keys only, with one ask per batch listing every file over the limit and every file outside the brief (K2, owner 2026-11-10: "Dos teclas"). `y` keeps the batch as it is. `n` or Esc ends the worker and discards its staged batch, showing the count: when a file is over the limit this is a split, and the coordinator issues two new briefs; when the ask lists only files outside the brief it is a decline, `writes outside the brief declined: N staged files discarded`, which is neither a split nor a clarification round. No approval mode (`ask`, `auto`, `run`) and no timer MUST answer either ask. The prompt MUST show the file path, the counted lines, the limit and, when the language was not recognised, that every line was counted.
 
 #### Scenario: Keys answer the limit ask [W9, auto]
-- GIVEN a pending limit ask
-- WHEN the user presses the `split` key
-- THEN the ask ends as split, and the other choices are not applied
+- GIVEN a pending limit ask listing a file over the limit
+- WHEN the user presses `y`, and in a second run `n`, and in a third Esc
+- THEN `y` keeps the batch; `n` and Esc end the worker as split and discard its staged batch, showing the count
+
+#### Scenario: Declining writes outside the brief [W9, auto]
+- GIVEN a pending ask that lists only files outside the brief
+- WHEN the user presses `n`
+- THEN the batch is discarded with `writes outside the brief declined: N staged files discarded`, and no split and no clarification round is counted
 
 #### Scenario: Run mode does not answer [W9, auto]
 - GIVEN a pending limit ask in approval mode `run`
