@@ -102,6 +102,9 @@ impl App {
         if id != self.mcp_probe_seq {
             return Vec::new();
         }
+        if let Some(menu) = self.menu.as_mut() {
+            menu.probe_reply(report.clone());
+        }
         self.mcp_probes.insert(report.server.clone(), report);
         self.dirty = true;
         Vec::new()

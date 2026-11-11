@@ -3,7 +3,7 @@ source: src/ui/components/menu/tests/install.rs
 expression: show(&wizard())
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ Models │ Tools │ Chat                           │
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
 │ Install llama-server                                       │
 │ CPU build                                                  │
 │ Vulkan build (GPU)                                         │

@@ -11,6 +11,7 @@ use crate::core::ai::config::McpServer;
 
 pub mod checks;
 mod entries;
+pub mod presence;
 
 /// Where an entry sits in the Connectors area.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -48,6 +49,8 @@ pub struct Login {
 pub struct Entry {
     /// A valid server name: what the user declares.
     pub id: &'static str,
+    /// The service name the area shows.
+    pub title: &'static str,
     pub group: Group,
     /// The server's project and license.
     pub project: &'static str,

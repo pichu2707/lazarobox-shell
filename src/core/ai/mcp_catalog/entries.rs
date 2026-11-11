@@ -7,6 +7,7 @@ pub(super) static ENTRIES: &[Entry] = &[CLARITY, GA4];
 
 const CLARITY: Entry = Entry {
     id: "clarity",
+    title: "Clarity",
     group: Group::Analytics,
     project: "microsoft/clarity-mcp-server",
     license: "MIT",
@@ -36,6 +37,7 @@ const CLARITY: Entry = Entry {
 
 const GA4: Entry = Entry {
     id: "ga4",
+    title: "GA4",
     group: Group::Analytics,
     project: "googleanalytics/google-analytics-mcp",
     license: "Apache-2.0",

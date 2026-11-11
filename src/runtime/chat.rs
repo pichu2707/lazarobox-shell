@@ -1130,11 +1130,17 @@ impl Chats {
     pub fn apply_batch(&self, id: BatchId, drive_grant: Option<PathBuf>) -> Option<BatchEvent> {
         let pane = id.key.pane();
         let live = self.turns.get(&pane).is_some_and(|t| !t.is_finished());
+        // A worker's batch is only the user's to apply while its run lives.
+        let run_live = match id.key {
+            crate::core::ai::tools::stage::StageKey::Worker(_, worker) => (self.orchestra.as_ref())
+                .is_some_and(|orchestra| orchestra.is_live(pane, worker.run)),
+            crate::core::ai::tools::stage::StageKey::Pane(_) => true,
+        };
         Some(
             self.tooling
                 .as_ref()?
                 .host
-                .apply_batch(id, live, drive_grant),
+                .apply_batch_of(id, live, drive_grant, run_live),
         )
     }
 

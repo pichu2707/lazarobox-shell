@@ -274,3 +274,14 @@ fn a_token_pasted_as_a_key_name_is_redacted_in_the_problem() {
     assert!(problem.ends_with(": expected a variable name"), "{problem}");
     assert!(!problem.contains("abcdef123456"), "{problem}");
 }
+
+// A token pasted as a table name is redacted in the problem, like a key name.
+#[test]
+fn a_token_used_as_a_table_name_is_not_shown_in_a_problem() {
+    let loaded = parse("sk-abcdef123456 = \"x\"\n[sk-abcdef654321]\nGOOD = 5\n");
+    assert_eq!(loaded.problems.len(), 2, "{:?}", loaded.problems);
+    for problem in &loaded.problems {
+        assert!(!problem.contains("abcdef123456"), "{problem}");
+        assert!(!problem.contains("abcdef654321"), "{problem}");
+    }
+}

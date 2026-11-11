@@ -16,10 +16,29 @@ baseline.
   floods the pane: the same notice (and its blocked receipt) is one line with
   a count, `(22 times)`. A different cause is still its own line.
 
+- When an orchestrator run ends (`run_timeout_mins`, a stop or a cancel), the
+  batch reviews and asks of its workers still on screen close with `review
+  closed: the run ended; nothing was written`, and a late `y` no longer writes
+  a batch the run had already denied.
+
 ## [1.18.0] - 2026-11-11
 
 ### Added
 
+- The `Connectors` tab of the menu (key `4`) is visible now. Its one row,
+  `Connectors`, opens a list of the catalog services (Microsoft Clarity and
+  Google Analytics 4) with their state: `not declared`, `disabled`, `values
+  missing: <NAMES>`, `declared` and the last probe of the session. The list
+  reads `config.toml` and `secrets.toml` each time it opens (names only, never
+  a value) and says `restart lazarobox to use it in chats` when the file has
+  servers that the running chats did not load. The area writes nothing.
+- Each service of the `Connectors` area has its own screen: the guide and its
+  warnings, the exact `[[ai.mcp.servers]]` entry to paste, the `secrets.toml`
+  table to fill (names only, `set` or `not set`), the file paths and the
+  actions. `i` installs and `l` logs in by typing the command, shown whole
+  after a `y` prompt, into a new shell tab and sending Enter; `p` probes the
+  declared server after a `y` and Esc stops it. Nothing runs without the `y`.
+  See "Conectar un servicio" in the README.
 - A `simple` worker is started from a brief (`goal`, `inputs`, `outputs`,
   `done_when`, `out_of_scope`) instead of free text. An incomplete brief or a
   path outside the project creates no worker and says so in the pane and to

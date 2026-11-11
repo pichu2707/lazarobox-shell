@@ -1,0 +1,22 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(62, POPUP_H, &menu))"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
+│ GA4 · googleanalytics/google-analytics-mcp (Apache-2.0)    │
+│   [1] https://console.cloud.google.com/apis/credentials    │
+│   [2]                                                      │
+│   https://github.com/googleanalytics/google-analytics-mcp  │
+│ Paste into config.toml                                     │
+│   [[ai.mcp.servers]]                                       │
+│   name = "ga4"                                             │
+│   command = "analytics-mcp"                                │
+│   env = ["GOOGLE_CLOUD_PROJECT"]                           │
+│ Fill in secrets.toml                                       │
+│   [ga4]                                                    │
+│   GOOGLE_CLOUD_PROJECT = ""                                │
+│   GOOGLE_CLOUD_PROJECT: not set                            │
+│                                                            │
+│ j/k scroll · i install · l login · p probe · c copy · Esc  │
+└────────────────────────────────────────────────────────────┘
