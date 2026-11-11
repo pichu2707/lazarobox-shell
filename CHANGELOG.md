@@ -12,6 +12,10 @@ baseline.
 
 ### Fixed
 
+- When an orchestrator run ends (`run_timeout_mins`, a stop or a cancel), the
+  batch reviews and asks of its workers still on screen close with `review
+  closed: the run ended; nothing was written`, and a late `y` no longer writes
+  a batch the run had already denied.
 - A worker whose task row is unassigned (for example `simple`, which runs on
   `general`) now says `(default)` on its row in the orchestra panel, like the
   AI menu row does, instead of showing only `engine>model`.
@@ -27,6 +31,13 @@ baseline.
   reads `config.toml` and `secrets.toml` each time it opens (names only, never
   a value) and says `restart lazarobox to use it in chats` when the file has
   servers that the running chats did not load. The area writes nothing.
+- Each service of the `Connectors` area has its own screen: the guide and its
+  warnings, the exact `[[ai.mcp.servers]]` entry to paste, the `secrets.toml`
+  table to fill (names only, `set` or `not set`), the file paths and the
+  actions. `i` installs and `l` logs in by typing the command, shown whole
+  after a `y` prompt, into a new shell tab and sending Enter; `p` probes the
+  declared server after a `y` and Esc stops it. Nothing runs without the `y`.
+  See "Conectar un servicio" in the README.
 - A `simple` worker is started from a brief (`goal`, `inputs`, `outputs`,
   `done_when`, `out_of_scope`) instead of free text. An incomplete brief or a
   path outside the project creates no worker and says so in the pane and to

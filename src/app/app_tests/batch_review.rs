@@ -756,6 +756,66 @@ fn a_promoted_batch_opens_its_review_with_the_batch_delay() {
     assert_eq!(chat(&a, id2()).armed_at(), Some(now + ARM_DELAY));
 }
 
+/// The run `run` of the pane ended (expired, stopped, cancelled or settled):
+/// the app hears the same `Ended` in every case.
+fn run_ended(a: &mut App, run: u64) {
+    a.update(AppEvent::Orchestra(
+        id2(),
+        crate::core::ai::orchestra::event::OrchestraEvent::Ended {
+            run: crate::core::ai::orchestra::RunId(run),
+        },
+    ));
+}
+
+fn said(a: &App, line: &str) -> bool {
+    chat(a, id2())
+        .entries()
+        .iter()
+        .any(|entry| matches!(entry, crate::core::ai::chat::Entry::System(t) if t == line))
+}
+
+// A worker's batch review is closed when its run ends, with a notice, and a
+// `y` typed after it answers nothing and writes nothing: the run denied it.
+#[test]
+fn a_batch_review_of_a_run_that_ended_is_closed_and_a_late_y_writes_nothing() {
+    use crate::core::ai::chat::review::RUN_ENDED;
+    let (mut a, turn) = live();
+    announce_now(&mut a, turn, 1, worker_batch(5, "code ollama>qwen"));
+    assert!(a.batch_pending(id2()));
+    run_ended(&mut a, 1);
+    assert!(!a.batch_pending(id2()), "the review is gone");
+    assert!(chat(&a, id2()).approvals().pending().is_none());
+    assert!(said(&a, RUN_ENDED), "{:?}", chat(&a, id2()).entries());
+    NOW_MS.with(|n| n.set(n.get() + 60_000));
+    let effects = a.update(key('y'));
+    assert!(
+        effects.iter().all(|effect| !matches!(
+            effect,
+            Effect::ToolDecision { .. } | Effect::BatchApply { .. }
+        )),
+        "{effects:?}"
+    );
+}
+
+// The ask of a run that is still live is not touched by another run ending,
+// and the queued asks of the ended run go with it.
+#[test]
+fn the_end_of_one_run_closes_only_its_own_asks() {
+    let (mut a, turn) = live();
+    announce_now(&mut a, turn, 1, worker_batch(3, "code ollama>qwen"));
+    announce_now(&mut a, turn, 2, worker_read("/a"));
+    run_ended(&mut a, 2);
+    assert!(a.batch_pending(id2()), "run 1 still waits");
+    assert_eq!(chat(&a, id2()).approvals().waiting(), 1);
+    run_ended(&mut a, 1);
+    assert!(!a.batch_pending(id2()));
+    assert_eq!(
+        chat(&a, id2()).approvals().waiting(),
+        0,
+        "its queue went too"
+    );
+}
+
 // A full queue is said, not swallowed: its own reason and a notice.
 #[test]
 fn a_full_queue_denies_with_its_own_reason_and_a_notice() {
@@ -1020,6 +1080,40 @@ mod orphan {
         // The event of a pane that is gone does nothing.
         let gone = BatchEvent::Review(batch_id(), numbered(2));
         a.update(AppEvent::Batch(PaneId::for_test(99), gone));
+    }
+
+    // The orphan review of a worker's batch belongs to its run: when the run
+    // ends the view closes with a notice, and a late `y` applies nothing.
+    #[test]
+    fn the_orphan_review_of_a_worker_of_an_ended_run_is_closed() {
+        use crate::core::ai::{chat::review::BatchReview, orchestra::WorkerKey};
+        let mut a = orphaned(5);
+        let key = WorkerKey::for_test(1, 1);
+        let id = BatchId {
+            key: StageKey::Worker(id2(), key),
+            generation: 7,
+        };
+        let doc = numbered(5).doc().clone();
+        let review = std::sync::Arc::new(BatchReview::labelled(doc, "code x".into(), key));
+        a.update(AppEvent::Batch(id2(), BatchEvent::Review(id, review)));
+        assert!(a.batch_pending(id2()));
+        super::run_ended(&mut a, 2);
+        assert!(a.batch_pending(id2()), "another run ended");
+        super::run_ended(&mut a, 1);
+        assert!(!a.batch_pending(id2()));
+        assert_eq!(chat(&a, id2()).orphan(), None);
+        assert!(super::said(&a, crate::core::ai::chat::review::RUN_ENDED));
+        let effects = at(&mut a, 60_000, key_y());
+        assert!(
+            effects
+                .iter()
+                .all(|effect| !matches!(effect, Effect::BatchApply { .. })),
+            "{effects:?}"
+        );
+    }
+
+    fn key_y() -> AppEvent {
+        super::key('y')
     }
 
     // A stale orphan id (the view went some other way) never turns the `y` of

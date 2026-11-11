@@ -247,6 +247,8 @@ impl App {
         };
         // A worker that is over takes its waiting asks with it.
         let mut over = None;
+        // The run that ended takes every ask of its workers with it.
+        let mut ended = None;
         // What the run stores in engram once the pane is not borrowed.
         let mut store = None;
         // A worker turn's usage waits in the pane for the usage store.
@@ -490,6 +492,7 @@ impl App {
             // Only the run it names ends: a replaced run ends after the new
             // one started.
             OrchestraEvent::Ended { run } => {
+                ended = Some(run);
                 chat.end_orch_run(run);
                 if chat.waiting_run() == Some(run) {
                     chat.set_waiting_run(None);
@@ -508,6 +511,9 @@ impl App {
         }
         if let Some(key) = over {
             self.withdraw_worker(id, key);
+        }
+        if let Some(run) = ended {
+            self.withdraw_run(id, run);
         }
         self.dirty = true;
         let mut effects = kept;
