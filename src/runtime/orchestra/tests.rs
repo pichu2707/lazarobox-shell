@@ -4075,6 +4075,51 @@ async fn a_surviving_workers_ask_counts_for_both_turns_timers() {
     assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
 }
 
+// `pause` answers `None` only for a worker that has no clock to stop (D5): one
+// that is unknown, of another run, or cancelled. A running worker always gets
+// its guard, and dropping it gives the clock back.
+#[tokio::test]
+async fn a_running_worker_pauses_and_a_gone_one_has_no_clock_to_pause() {
+    let (lab, run, handle) = held_lab().await;
+    let own = |lab: &Lab| {
+        lab.manager
+            .on_run(pane(), run, |live| live.routes[&WorkerId(1)].own.count())
+            .unwrap()
+    };
+    let paused = handle.pause(run, WorkerId(1));
+    assert!(paused.is_some(), "a running worker pauses");
+    assert_eq!(own(&lab), 1);
+    drop(paused);
+    assert_eq!(own(&lab), 0, "the guard gives the clock back");
+
+    assert!(handle.pause(run, WorkerId(9)).is_none(), "unknown worker");
+    assert!(
+        handle.pause(RunId(run.0 + 1), WorkerId(1)).is_none(),
+        "another run"
+    );
+    handle.call(OrchCall::Cancel { id: WorkerId(1) }).await;
+    assert!(
+        handle.pause(run, WorkerId(1)).is_none(),
+        "a cancelled worker has no deadline left"
+    );
+}
+
+// A worker whose turn ended through `finish` has no route and no clock left.
+#[tokio::test]
+async fn a_worker_that_finished_has_no_clock_to_pause() {
+    let (lab, run, handle) = held_lab().await;
+    assert!(handle.pause(run, WorkerId(1)).is_some());
+    let key = WorkerKey {
+        run,
+        worker: WorkerId(1),
+    };
+    let done = WorkerEvent::Done {
+        text: "ok".to_owned(),
+    };
+    lab.manager.finish(pane(), key, Some(vec![done]));
+    assert!(handle.pause(run, WorkerId(1)).is_none());
+}
+
 // Review 2, 4: the orchestrator reads why a document change was refused.
 #[test]
 fn document_refusals_name_their_reason() {

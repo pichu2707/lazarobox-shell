@@ -277,8 +277,7 @@ fn a_failure_pauses_the_orchestrator_until_the_user_decides() {
 fn the_deadline_times_the_worker_out_and_halts_the_run() {
     let (t0, mut run) = (Instant::now(), run());
     let id = run.spawn(t0, Task::Review, "p").unwrap();
-    assert!(run.on_tick(t0 + Duration::from_secs(599)).is_empty());
-    assert_eq!(run.on_tick(t0 + Duration::from_secs(600)), [id]);
+    run.time_out(t0 + Duration::from_secs(600), id);
     assert_eq!(run.status(id), Some(WorkerStatus::TimedOut));
     assert!(matches!(
         run.state(),
@@ -433,16 +432,6 @@ fn collect_hands_over_only_a_done_worker() {
     run.decide(t0, UserChoice::Retry).unwrap();
     run.on_event(t0, one, done());
     assert_eq!(run.collect(one), Ok("ok"));
-}
-
-#[test]
-fn an_enormous_deadline_never_expires_and_does_not_panic() {
-    let (t0, mut run) = (
-        Instant::now(),
-        Run::new(RunId(1), roster(ready("codex", "default")), Duration::MAX),
-    );
-    run.spawn(t0, Task::Review, "p").unwrap();
-    assert!(run.on_tick(t0 + Duration::from_secs(3600)).is_empty());
 }
 
 /// A temp `$HOME` with a project, a secret, links and an outside folder.
@@ -1158,7 +1147,7 @@ fn a_cancelled_or_timed_out_worker_counts_as_missing_a_refused_one_does_not() {
 
     let (t0, mut run) = (Instant::now(), run_with_deadline(Duration::from_secs(5)));
     let id = run.spawn(t0, Task::Review, "p").unwrap();
-    run.on_tick(t0 + Duration::from_secs(6));
+    run.time_out(t0 + Duration::from_secs(6), id);
     assert_eq!(run.status(id), Some(WorkerStatus::TimedOut));
     assert!(run.usage_partial(id));
 

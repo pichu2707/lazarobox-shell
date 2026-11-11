@@ -51,6 +51,9 @@ impl Default for Pending {
 pub struct Waiting(Pending);
 
 impl Drop for Waiting {
+    /// Releases on a panic unwind too, and never panics itself: the count only
+    /// goes down by the one its own `enter` added, and `saturating_sub` keeps
+    /// the arithmetic from wrapping whatever the order of the drops.
     fn drop(&mut self) {
         (self.0).0.send_modify(|n| *n = n.saturating_sub(1));
     }
@@ -131,6 +134,20 @@ mod tests {
         drop(a);
         assert_eq!(pending.count(), 1);
         drop(b);
+        assert_eq!(pending.count(), 0);
+    }
+
+    #[test]
+    fn a_waiting_is_released_when_its_turn_panics() {
+        // Pins release on panic (the guard leaves the count during the
+        // unwind), not the `saturating_sub` arithmetic.
+        let pending = Pending::new();
+        let held = pending.clone();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _wait = held.enter();
+            panic!("a turn that panics while its call waits");
+        }));
+        assert!(unwound.is_err());
         assert_eq!(pending.count(), 0);
     }
 
