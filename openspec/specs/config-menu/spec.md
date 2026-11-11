@@ -57,7 +57,7 @@ Sections, items and tabs MUST come from static descriptor tables; adding a secti
 #### Scenario: Every row is on its tab [auto, TestBackend + insta]
 - GIVEN the AI section attached
 - WHEN each of Models, Tools and Chat is rendered
-- THEN Models reads `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `orchestrate`, `Hugging Face`; Tools reads `Tools`, `Search`, `Write`, `Exec`, `Git`, `Git write`, `Issue draft`, `Approval`, `Orchestrator`; Chat reads `Profile`, `Context`, `Memory`; and no `Notify`, `Sound`, `Updates` or `Feedback` row exists on them
+- THEN Models reads `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `orchestrate`, `simple`, `Hugging Face`; Tools reads `Tools`, `Search`, `Write`, `Exec`, `Git`, `Git write`, `Issue draft`, `Approval`, `Orchestrator`; Chat reads `Profile`, `Context`, `Memory`; and no `Notify`, `Sound`, `Updates` or `Feedback` row exists on them
 
 #### Scenario: No AI keeps one tab [auto]
 - GIVEN the menu without the AI section
@@ -65,7 +65,7 @@ Sections, items and tabs MUST come from static descriptor tables; adding a secti
 - THEN the Settings tab holds `Statusline position`, `Tab bar position`, `Mouse`, `Updates` and `Feedback`, and there is no other tab
 
 ### Requirement: Navigation
-`j`, `k`, Down and Up MUST move the selection between the selectable rows of the ACTIVE tab only, in display order, and MUST wrap around at the ends of that tab (from its last row to its first and back); they MUST NOT cross to another tab, because Tab, Shift+Tab and the jump keys are the only way across tabs. No row is skipped (picker disabled rows are different, see Task picker). Repeat events MUST be handled like Press. The order of each tab is the one in the Tab map: `Settings` ends with `Updates`, `Feedback`; `Models` ends with `orchestrate`, `Hugging Face`; `Tools` ends with `Approval`, `Orchestrator`; `Chat` is `Profile`, `Context`, `Memory`.
+`j`, `k`, Down and Up MUST move the selection between the selectable rows of the ACTIVE tab only, in display order, and MUST wrap around at the ends of that tab (from its last row to its first and back); they MUST NOT cross to another tab, because Tab, Shift+Tab and the jump keys are the only way across tabs. No row is skipped (picker disabled rows are different, see Task picker). Repeat events MUST be handled like Press. The order of each tab is the one in the Tab map: `Settings` ends with `Updates`, `Feedback`; `Models` ends with `orchestrate`, `simple`, `Hugging Face`; `Tools` ends with `Approval`, `Orchestrator`; `Chat` is `Profile`, `Context`, `Memory`.
 
 #### Scenario: Move down and up [auto]
 - GIVEN MENU with the first row selected
@@ -90,7 +90,7 @@ Sections, items and tabs MUST come from static descriptor tables; adding a secti
 #### Scenario: Task rows in order [auto]
 - GIVEN the Models tab active with `Set all tasks` selected
 - WHEN `j` is pressed eight times
-- THEN the selection visits `general`, `code`, `chat`, `review`, `summarize`, `orchestrate`, `Hugging Face` in that order and the eighth press wraps to `Set all tasks`
+- THEN the selection visits `general`, `code`, `chat`, `review`, `summarize`, `orchestrate`, `simple`, `Hugging Face` in that order and the ninth press wraps to `Set all tasks`
 
 #### Scenario: Tools tab in order [auto]
 - GIVEN the Tools tab active with `Tools` selected
@@ -402,7 +402,7 @@ The Models tab MUST show, as its rows (with no section title row while the tab b
 #### Scenario: Task rows rendered [auto, TestBackend + insta]
 - GIVEN general is `claude` / `sonnet`, code is `ollama` / `llama3:8b` (ollama available with that model), the other tasks unassigned, no Hugging Face token, and the Models tab active
 - WHEN the menu is rendered on a normal terminal
-- THEN the rows are visible: `Set all tasks` `(mixed)`, `general` `claude › sonnet`, `code` `ollama › llama3:8b`, `chat` `(default)`, `review` `(default)`, `summarize` `(default)`, `orchestrate` `(default)`, `Hugging Face` `not connected`, and no `Profile`, `Context`, `Memory`, `Tools` or `Orchestrator` row
+- THEN the rows are visible: `Set all tasks` `(mixed)`, `general` `claude › sonnet`, `code` `ollama › llama3:8b`, `chat` `(default)`, `review` `(default)`, `summarize` `(default)`, `orchestrate` `(default)`, `simple` `(default)`, `Hugging Face` `not connected`, and no `Profile`, `Context`, `Memory`, `Tools` or `Orchestrator` row
 
 #### Scenario: Nothing assigned [auto, TestBackend + insta]
 - GIVEN no task is assigned and the Models tab active
@@ -1269,7 +1269,7 @@ While a download runs, the status bar MUST show `↓ <percent>%` after the other
 - THEN the status bar reads `↓ 10%`, then `↓ 55%`, then `downloaded <file>`, and a redetect effect is emitted once
 
 ### Requirement: Hugging Face account row
-The Models tab MUST end with a static row `Hugging Face`, after the `orchestrate` row. Its value is:
+The Models tab MUST end with a static row `Hugging Face`, after the `simple` row. Its value is:
 - `not connected` when no token is found;
 - `token saved` when a token file exists but no account has been checked yet; Enter on the row then checks it with that file's token (nothing is sent when the menu opens);
 - `<name>` once an account is known, from a connect or a check in this session;
@@ -1280,7 +1280,7 @@ Enter on the row opens a field with the hint `paste a Hugging Face token`, follo
 #### Scenario: Account row [auto]
 - GIVEN the Models tab
 - WHEN rendered with no token
-- THEN the last row reads `Hugging Face` with `not connected`, after `orchestrate`
+- THEN the last row reads `Hugging Face` with `not connected`, after `simple`
 
 #### Scenario: Ctrl+O opens the token link [auto]
 - GIVEN the token field, on a host with an opener

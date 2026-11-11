@@ -64,9 +64,12 @@ Twelve delta specs merged into `openspec/specs/{domain}/spec.md`. ADDED requirem
 
 Checks: no `## ADDED` / `## MODIFIED` heading remains in `openspec/specs/`; every requirement header of every delta appears exactly once in its main spec.
 
-### Stale statements left for a follow-up
+### Stale statements reworded in this PR
 
-The deltas of `config-menu`, `ai-task-models` and `agent-orchestrator` list existing statements that the new behaviour makes stale (Models rows scenarios without `simple`, `Runtime use of every task assignment` worker kinds, the S10 scenarios "Small task from the chat" and "Missing dependency"). They were NOT rewritten in this merge; a small follow-up edit of the main specs should reword them.
+Reworded in the main specs (after the merge) so they match the merged deltas:
+- `config-menu`: Models rows now include `simple` before `Hugging Face` in the tab-contents scenario, the Tab map sentence, the navigation scenario (the ninth press wraps), the rows scenario (`simple` `(default)`), and the `Hugging Face` requirement and scenario ("after `simple`").
+- `ai-task-models`: the worker kinds list in "Runtime use of every task assignment" includes `simple`; new scenario "Worker kind uses its own row for simple".
+- `agent-orchestrator` (S10): the end-to-end requirement no longer says tests are never run; a test counts as run only with a collected `run_command` result. "Small task from the chat" and "Missing dependency" reworded likewise, and the reference to the retired test `the_orchestrate_prompts_say_no_worker_can_run_commands_or_tests` was dropped. History paragraphs marked as 1.1.0 or "Delta" (Purpose, Final documentation) were left as they carry their own W6 amendment.
 
 ### Coordination note (for mcp-connectors)
 

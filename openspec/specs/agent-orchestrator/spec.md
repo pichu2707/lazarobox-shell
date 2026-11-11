@@ -611,19 +611,19 @@ The README MUST be updated once, in the final slice, with: how to enable and use
 - THEN it documents the orchestrator, the menu row and the provider note, and the earlier slices' diffs contain no README change for this feature
 
 ### Requirement: Build a project from the chat, end to end [S10]
-With coding-tools M2 built and S1..S7b and S9 merged, a user MUST be able, from one lazarobox chat and without opening an IDE, to take a small programming task through plan, implementation and review: the orchestrator drives the ODD steps, a `code` worker stages files (applied only through the user's batch review and listed in `files changed`), a high-risk change gets a receipt-driven review, and handoffs record each step. Tests are NOT run by the run in 1.1.0: the orchestrator says so, never claims a test ran or passed, and asks the user to run them. The legs "failing test" and "passing test", with red evidence before and green evidence after from `run_command`, belong to S8 and are deferred to 1.2 (user decision, 2026-10-31). If the write tools are missing the requirement is not accepted and the feature is described as drafts only.
+With coding-tools M2 built and S1..S7b and S9 merged, a user MUST be able, from one lazarobox chat and without opening an IDE, to take a small programming task through plan, implementation and review: the orchestrator drives the ODD steps, a `code` worker stages files (applied only through the user's batch review and listed in `files changed`), a high-risk change gets a receipt-driven review, and handoffs record each step. A test counts as run only when a collected `run_command` result shows it (W6, see Worker commands); otherwise the orchestrator says it was not run, never claims it passed, and asks the user to run it. The legs "failing test" and "passing test", with red evidence before and green evidence after from `run_command`, belong to S8 and are deferred to 1.2 (user decision, 2026-10-31). If the write tools are missing the requirement is not accepted and the feature is described as drafts only.
 
 #### Scenario: Small task from the chat [S10, manual]
 - GIVEN the gate on, a chat pane with ORCH on, a scratch project, and `orchestrate`, `code` and `review` assigned to available engines
 - WHEN the user asks for a function with tests in the chat and approves the batch
-- THEN the files (function and tests) are written only after the batch review, a review result is returned, handoffs exist for each ODD step, the orchestrator says it did not run the tests, and the user never left the chat
-- AND (amended 2026-10-31) the user then runs the tests themselves; the recorded failing and passing runs of the original scenario are S8 and deferred to 1.2
+- THEN the files (function and tests) are written only after the batch review, a review result is returned, handoffs exist for each ODD step, and the user never left the chat
+- AND the orchestrator says a test ran only if a collected `run_command` result shows it (Exec on, each command approved by the user); otherwise it says it did not run the tests and the user runs them; the recorded failing and passing runs of the original scenario are S8 and deferred to 1.2
 
 #### Scenario: Missing dependency [S10, auto]
-- GIVEN no write tool or `run_command` tool is registered (in 1.1.0 workers never have `run_command`)
+- GIVEN no write tool or `run_command` tool is registered (a worker has `run_command` only with Exec on, see Worker toolsets)
 - WHEN the end-to-end flow is requested
 - THEN the orchestrator states it can only produce drafts and does not claim code was written or tests passed
-- Covered by `the_orchestrate_prompts_say_no_worker_can_run_commands_or_tests`, `the_orchestrate_prompts_say_only_an_applied_file_was_written` and `the_orchestrate_prompts_hold_the_coordinator_rules` (src/core/ai/chat/prompts/tests.rs); the toolsets themselves are pinned by the `Worker toolsets` tests.
+- Covered by `the_orchestrate_prompts_say_only_an_applied_file_was_written` and `the_orchestrate_prompts_hold_the_coordinator_rules` (src/core/ai/chat/prompts/tests.rs); the toolsets themselves are pinned by the `Worker toolsets` tests.
 
 ### Requirement: No content in logs [S1]
 Worker prompts, worker output, provider error text and paths MUST NOT be written to logs or error values that outlive the screen; logs may carry ids, kinds, statuses and error classes.

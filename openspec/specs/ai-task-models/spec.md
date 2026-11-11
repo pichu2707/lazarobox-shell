@@ -231,7 +231,7 @@ A model that is in use MUST NOT be deleted from the menu, and the refusal MUST s
 - THEN nothing is sent, the screen closes and the notice names who uses it
 
 ### Requirement: Runtime use of every task assignment [S1]
-Each task MUST be used at runtime through its effective assignment (own assignment, else `general`; see Fallback to general), read from the current configuration on every use, so a saved change applies from the next message or the next worker spawn. A chat turn uses `chat`, except in an orchestrating pane (global gate on and the pane's ORCH mode on), where the turn uses `orchestrate`; each orchestrator worker uses the assignment of its kind (`general`, `code`, `chat`, `review`, `summarize`). The model MUST be validated against detection before use: for a server engine the model MUST be non-empty and among the detected models (exact match, with the Ollama tag-less equals `:latest` rule); otherwise the chat shows the model guidance (or the worker is `refused`) and nothing is sent. For a CLI engine the model is not validated (empty and `default` mean the CLI's own default). The runtime MUST NOT change any assignment on its own, MUST NOT pick another engine when the effective one is unusable, and MUST NOT write the config; only a user choice in the menu changes an assignment. The picker opened from a worker failure alert does not change any assignment: its choice is a run-scoped override (see agent-orchestrator) that is never written to the draft or the file.
+Each task MUST be used at runtime through its effective assignment (own assignment, else `general`; see Fallback to general), read from the current configuration on every use, so a saved change applies from the next message or the next worker spawn. A chat turn uses `chat`, except in an orchestrating pane (global gate on and the pane's ORCH mode on), where the turn uses `orchestrate`; each orchestrator worker uses the assignment of its kind (`general`, `code`, `chat`, `review`, `summarize`, `simple`). The model MUST be validated against detection before use: for a server engine the model MUST be non-empty and among the detected models (exact match, with the Ollama tag-less equals `:latest` rule); otherwise the chat shows the model guidance (or the worker is `refused`) and nothing is sent. For a CLI engine the model is not validated (empty and `default` mean the CLI's own default). The runtime MUST NOT change any assignment on its own, MUST NOT pick another engine when the effective one is unusable, and MUST NOT write the config; only a user choice in the menu changes an assignment. The picker opened from a worker failure alert does not change any assignment: its choice is a run-scoped override (see agent-orchestrator) that is never written to the draft or the file.
 
 #### Scenario: Effective assignment used [auto]
 - GIVEN `general` is `claude` / `sonnet` and `chat` is `ollama` / `llama3:8b`, both available
@@ -272,6 +272,11 @@ Each task MUST be used at runtime through its effective assignment (own assignme
 - GIVEN an orchestrating pane, `review` is `codex` / `default` and `code` is `claude` / `sonnet`
 - WHEN a `review` worker and then a `code` worker are spawned
 - THEN they run on codex / `default` and claude / `sonnet` respectively
+
+#### Scenario: Worker kind uses its own row for simple [auto]
+- GIVEN an orchestrating pane, `simple` is `ollama` / `llama3:8b` and `general` is `claude` / `sonnet`
+- WHEN a `simple` worker is spawned
+- THEN it runs on ollama / `llama3:8b`, and with `simple` unassigned it runs on claude / `sonnet`
 
 #### Scenario: Summarize row is now used [auto]
 - GIVEN `summarize` is `claude` / `haiku`
