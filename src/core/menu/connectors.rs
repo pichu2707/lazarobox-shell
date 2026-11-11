@@ -262,17 +262,8 @@ impl Connectors {
         if !server.enabled {
             return "disabled".to_owned();
         }
-        let missing: Vec<&str> = entry
-            .env
-            .iter()
-            .filter(|v| v.secret && v.preset.is_none())
-            .filter(|v| {
-                self.presence
-                    .as_ref()
-                    .is_some_and(|p| !p.has(entry.id, v.name))
-            })
-            .map(|v| v.name)
-            .collect();
+        let missing =
+            entry.missing(|name| self.presence.as_ref().is_none_or(|p| p.has(entry.id, name)));
         if !missing.is_empty() {
             return format!("values missing: {}", missing.join(", "));
         }
