@@ -699,11 +699,7 @@ impl RunManager {
             // A reviewer whose engine cannot run is refused at once and
             // halts the run; the review says so, never another engine (D21).
             if let Some(why) = self.refused_at_start(pane, run, id) {
-                return Err(Stop::Start(format!(
-                    "lens {} (worker {}) was refused: {why}",
-                    lens.id(),
-                    id.0
-                )));
+                return Err(Stop::Start(lens_refused(lens.id(), id.0, &why)));
             }
             lenses.push((lens, id));
         }
@@ -1128,5 +1124,36 @@ mod guard_tests {
             panic!("{event:?}");
         };
         assert!(text.contains("could not be cancelled"), "{text}");
+    }
+}
+
+/// The line saying a lens' worker was refused at start. The reason can carry
+/// an absolute path (a served model file), so it goes through the same
+/// sanitizing and path masking as any refusal and is stored without them.
+fn lens_refused(lens: &str, worker: impl std::fmt::Display, why: &str) -> String {
+    format!(
+        "lens {lens} (worker {worker}) was refused: {}",
+        super::refusal_reason(why)
+    )
+}
+
+#[cfg(test)]
+mod lens_refused_tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_lens_line_hides_the_home_path_of_a_served_model() {
+        let line = lens_refused(
+            "security",
+            3,
+            "llamacpp: the server at 127.0.0.1:8080 does not serve \"qwen\": start llama-server \
+             with --alias qwen; it serves \"/home/ana/models/qwen.gguf\"",
+        );
+        assert!(!line.contains("/home/ana"), "{line}");
+        assert!(
+            line.contains("lens security (worker 3) was refused"),
+            "{line}"
+        );
+        assert!(line.contains("--alias qwen"), "{line}");
     }
 }

@@ -75,6 +75,10 @@ pub fn gates_hint(cols: usize, gate: Gate, step: Step) -> String {
         .unwrap_or(last)
 }
 
+/// The most served ids the not-served guidance lists, and the most characters of each.
+const MAX_SERVED_SHOWN: usize = 3;
+const SERVED_ID_CHARS: usize = 48;
+
 /// The guidance for `availability`, or `None` when the engine is ready.
 pub fn guidance(availability: &Availability) -> Option<String> {
     Some(match availability {
@@ -115,14 +119,30 @@ pub fn guidance(availability: &Availability) -> Option<String> {
             port,
         } => {
             let serves = if served.is_empty() {
-                "serves no model".to_owned()
+                "it serves no model".to_owned()
             } else {
-                let ids: Vec<String> = served.iter().map(|id| format!("\"{id}\"")).collect();
-                format!("serves {}", ids.join(", "))
+                let ids: Vec<String> = served
+                    .iter()
+                    .take(MAX_SERVED_SHOWN)
+                    .map(|id| {
+                        format!(
+                            "\"{}\"",
+                            id.chars().take(SERVED_ID_CHARS).collect::<String>()
+                        )
+                    })
+                    .collect();
+                let more = served.len().saturating_sub(MAX_SERVED_SHOWN);
+                let more = if more > 0 {
+                    format!(" (+{more} more)")
+                } else {
+                    String::new()
+                };
+                format!("it serves {}{more}", ids.join(", "))
             };
             format!(
-                "{engine}: the server at 127.0.0.1:{port} {serves}, not \"{model}\"; \
-                 start llama-server with --alias {model}, or set the model to the served name"
+                "{engine}: the server at 127.0.0.1:{port} does not serve \"{model}\": \
+                 start llama-server with --alias {model}, or set the model to the served name; \
+                 {serves}"
             )
         }
     })
@@ -404,11 +424,12 @@ mod tests {
         for part in [
             "127.0.0.1:8080",
             "\"/models/a.gguf\", \"b.gguf\"",
-            "not \"qwen\"",
+            "\"qwen\"",
             "--alias qwen",
         ] {
             assert!(text.contains(part), "{part}: {text}");
         }
+        assert!(!text.contains("more)"), "{text}");
     }
 
     #[test]
@@ -424,6 +445,28 @@ mod tests {
             text.contains("serves no model") && text.contains("--alias qwen"),
             "{text}"
         );
+    }
+
+    // Many long ids never push the fix out: it comes first, at most three ids
+    // are listed, each clipped, and the rest are counted.
+    #[test]
+    fn many_long_served_ids_keep_the_fix_and_a_bounded_line() {
+        let served: Vec<String> = (0..256)
+            .map(|i| format!("{i}{}", "x".repeat(127)))
+            .collect();
+        let text = guidance(&Availability::ModelNotServed {
+            engine: s("llamacpp"),
+            model: s("qwen"),
+            served,
+            port: 8080,
+        })
+        .unwrap();
+        assert!(text.contains("--alias qwen"), "{text}");
+        assert!(text.contains("(+253 more)"), "{text}");
+        assert!(text.chars().count() < 400, "{}", text.chars().count());
+        let alias = text.find("--alias qwen").unwrap();
+        let first_id = text.find("0xxx").unwrap();
+        assert!(alias < first_id, "the fix comes before the list: {text}");
     }
 
     #[test]
