@@ -748,6 +748,36 @@ Same setup as M1-M10: one Ollama model that supports tools and one llama-server 
 - M16 (W8c, after PR20): Give a deliberately vague brief: the worker calls `needs_specification`; the row shows it and `round 1 of 2`; the coordinator answers and respawns with `answers`. Force a third round: the run stops naming the brief and the limit.
 - M17 (W9b, after PR22): A `simple` worker writes a 450-line `src/x.rs` in approval mode `run`: the ask appears before the review, names the file and the count; `split` discards the batch with the count shown and the coordinator issues two briefs; `keep` proposes it. A write to an unlisted file in scope is in the same ask; `.env` is refused without an ask. A 900-line `tests/a.rs` and `src/a_tests.rs` never ask.
 
+## Manual acceptance results, milestone 3 (recorded 2026-11-11, owner)
+
+Evidence lives outside the repository. Passed items are ticked. PARTIAL and NOT RUN items are not implementation tasks and are deliberately left unticked (plain bullets, reason given) so that the archive checkbox check does not read them as stale work.
+
+- [x] M11a PASS.
+- M11b PARTIAL: the 30 s timeout was shown; the 120 s timeout could not be reached with fast workers.
+- [x] M11c PASS: the run ended as expected and the review survived run expiry. This check found an app bug, fixed in PR #698.
+- M11 CLI 15-minute wait: NOT RUN (skipped by the owner).
+- [x] M12a PASS.
+- [x] M12b PASS.
+- M12c PARTIAL: the wrapped `collect` output is not visible in the UI.
+- M12d PARTIAL: checked for the simple worker tool list only.
+- [x] M12e PASS.
+- [x] M12f PASS.
+- [x] M13a PASS.
+- [x] M13b PASS.
+- [x] M13c PASS.
+- M13d NOT RUN: a review could not be made to exceed `worker_timeout` safely.
+- [x] M13e PASS: a notice flood was found and fixed in PR #700.
+- [x] M14a PASS.
+- [x] M14b PASS: the `(default)` marker on the worker row was added in PR #701.
+- [x] M15a PASS (Ollama run).
+- [x] M15b PASS.
+- [x] M15c PASS.
+- [x] M15d recorded: local models that fill flat briefs are qwen3:14b (thinking 1/3); the others did not.
+- [x] M16 PASS: claude sonnet coordinator, haiku workers; round 1 of 2, answers, round 2 of 2, limit reached, run stopped.
+- [x] M17 PASS: limit ask at 450 lines, keep, split, a later batch asks again, outside-brief ask, `.env` refused, test files not counted.
+
+Follow-ups, not in this change: coordinator without tools (PR #699); typed but not run (PR #702); wording nits (WRITE_OFF text for simple briefs; brief number in the disclosure line), in a separate PR.
+
 ## Review Workload Forecast (milestone 3)
 
 Basis: the design's File Changes figures for each slice multiplied by 2.4 (low) and 3 (high), as the proposal asks; production lines only, tests, fixtures and snapshots excluded. For context, the last column applies milestone 2's observed ratio (real PRs landed at or under the design figure: PR11 about 202 against 200-320, PR12 about 160 against 90-160), design plus 30%.
