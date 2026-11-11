@@ -1,0 +1,7 @@
+---
+source: src/app/app_tests/orchestra_run.rs
+expression: worker_lines(&a)
+---
+» simple ollama>llama3:8b (default) running
+» review codex>gpt-5 running
+» general ollama>llama3:8b running

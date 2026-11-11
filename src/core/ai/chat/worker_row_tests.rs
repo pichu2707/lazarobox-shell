@@ -31,6 +31,7 @@ fn row(id: u32, status: WorkerStatus, elapsed: Option<u64>) -> WorkerRow {
         usage: None,
         partial: false,
         overridden: false,
+        inherited: false,
         clarifying: None,
         split: false,
     }
@@ -423,4 +424,21 @@ fn a_clarifying_row_shows_its_round() {
     let lines = texts(&state);
     let said = |l: &String| l.contains("needs specification, round 2 of 2");
     assert!(lines.iter().any(said), "{lines:?}");
+}
+
+// A worker on the engine of an unassigned task row says `(default)`, like the
+// menu row; the run's override says `(override)` instead.
+#[test]
+fn a_worker_row_marks_a_default_engine_and_an_override() {
+    let mut worker = row(1, WorkerStatus::Running, None);
+    worker.inherited = true;
+    assert_eq!(
+        transcript::worker_line(&worker),
+        "review codex>gpt-5 (default) running"
+    );
+    worker.overridden = true;
+    assert_eq!(
+        transcript::worker_line(&worker),
+        "review codex>gpt-5 (override) running"
+    );
 }
