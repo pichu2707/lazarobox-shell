@@ -904,3 +904,23 @@ fn a_simple_worker_without_write_tools_is_told_to_answer_in_text() {
         assert!(got.is_ascii());
     }
 }
+
+// Spec (prompt-profiles, Orchestrate prompts delegate by default): both
+// profiles say that a request that changes files is done by workers started
+// with spawn_agent, even when the user never names the tool, and that code,
+// a patch or a file's content is never written in the coordinator's reply.
+#[test]
+fn the_orchestrate_prompts_delegate_file_changes_by_default() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "Delegation is the default",
+            "Any request that changes files is done by workers started with spawn_agent",
+            "even when the user does not mention spawn_agent",
+            "never write code, a patch or a file's content in your reply",
+            "You may answer questions, plan and summarise directly",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
+}
