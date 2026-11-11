@@ -71,6 +71,10 @@ const GA4: Entry = Entry {
         ("run_report", Class::Read),
         ("run_funnel_report", Class::Read),
         ("run_realtime_report", Class::Read),
+        ("list_key_events", Class::Read),
+        ("run_conversions_report", Class::Read),
         ("create_property_annotation", Class::Write),
+        ("create_custom_dimension", Class::Write),
+        ("create_key_event", Class::Write),
     ],
 };

@@ -317,6 +317,25 @@ fn report_joins_the_checks_and_a_plain_server_has_no_catalog_line() {
 }
 
 #[test]
+fn ga4_knows_all_thirteen_upstream_tools() {
+    let e = entry("ga4").unwrap();
+    assert_eq!(e.tools.len(), 13);
+    for tool in ["list_key_events", "run_conversions_report"] {
+        assert_eq!(class("ga4", tool), Class::Read, "{tool}");
+    }
+    for tool in ["create_custom_dimension", "create_key_event"] {
+        assert_eq!(class("ga4", tool), Class::Write, "{tool}");
+        assert!(e.tools.iter().any(|(n, _)| *n == tool), "{tool}");
+    }
+}
+
+#[test]
+fn a_tool_with_no_usable_name_is_reported_as_dropped() {
+    let lines = checks::collisions("s", &names(&["ok", "", "fine"]));
+    assert_eq!(lines, ["s: tool with an empty or invalid name dropped"]);
+}
+
+#[test]
 fn names_from_a_server_are_cleaned_in_the_lines() {
     let long = "x".repeat(24);
     let a = format!("{long}\u{1b}[31ma");
