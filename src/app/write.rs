@@ -194,6 +194,16 @@ impl App {
             return Vec::new();
         }
         let id = self.tab().focus;
+        // A view that replaces the conversation would hide the dialog and
+        // swallow its `y`: say so and arm nothing.
+        if self.list_open(id)
+            || self.cost_open(id)
+            || self.memory_view_open(id)
+            || self.tag_editor_open(id)
+        {
+            self.notice = Some(format!("{} works in the conversation view", name(toggle)));
+            return Vec::new();
+        }
         self.grant_open(id, toggle, false)
     }
 

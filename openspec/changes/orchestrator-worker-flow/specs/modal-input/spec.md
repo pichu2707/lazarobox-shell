@@ -36,7 +36,7 @@ The chat MUST offer a way for the user to turn Write on for the pane after a Wri
 - THEN Write stays off
 
 ### Requirement: A key opens the grant dialog [W6c]
-`Ctrl+Space` then `x` MUST open the same dialog as the `/exec` command and `Ctrl+Space` then `f` the same dialog as `/write` (owner 2026-11-11). A key MUST NEVER grant: only the user's `y` in the dialog does, exactly as for the command. The key MUST share the command's path, so every refusal of the command (another approval pending, tools off, no tools offered, toggle already on, no folder, conversation list open) MUST show the same refusal line, and a key pressed in a pane that is not a chat MUST show a notice naming Exec or Write. Opening by key MUST keep the composer draft. The bindings MUST be named "Exec" and "Write" (never "run", which is an approval mode) and MUST be listed in the prefix table. Text produced by an engine, a worker or a tool result MUST NOT be able to press them.
+`Ctrl+Space` then `x` MUST open the same dialog as the `/exec` command and `Ctrl+Space` then `f` the same dialog as `/write` (owner 2026-11-11). A key MUST NEVER grant: only the user's `y` in the dialog does, exactly as for the command. The key MUST share the command's path, so every refusal of the command (another approval pending, tools off, no tools offered, toggle already on, no folder) MUST show the same refusal line, a key pressed under a view that hides the conversation (conversation list, cost, memory view, tag editor) MUST show a notice and arm nothing, and a key pressed in a pane that is not a chat MUST show a notice naming Exec or Write. Opening by key MUST keep the composer draft. The bindings MUST be named "Exec" and "Write" (never "run", which is an approval mode) and MUST be listed in the prefix table. Text produced by an engine, a worker or a tool result MUST NOT be able to press them.
 
 #### Scenario: A key opens the dialog and never grants [W6c, auto]
 - GIVEN a chat with tools on and Exec off
@@ -52,6 +52,11 @@ The chat MUST offer a way for the user to turn Write on for the pane after a Wri
 - GIVEN tools off, or the toggle already on, or another approval pending
 - WHEN the user presses the key
 - THEN the chat shows the line the command would show and no dialog opens
+
+#### Scenario: Under a view the key arms nothing [W6c, auto]
+- GIVEN the conversation list or the tag editor is open
+- WHEN the user presses the key
+- THEN a notice says the grant works in the conversation view and no dialog is armed
 
 #### Scenario: Outside a chat the key says so [W6c, auto]
 - GIVEN the focused pane is a shell

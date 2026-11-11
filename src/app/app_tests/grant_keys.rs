@@ -104,9 +104,47 @@ fn each_refusal_is_the_line_the_command_gives() {
             .unwrap() = crate::core::ai::chat::ChatState::new(None);
         refused(&mut a, key_, command, "this chat has no folder");
     }
-    let mut a = super::github_command::list_app();
+}
+
+// A view that hides the conversation would hide the dialog too: the key says so
+// and arms nothing.
+#[test]
+fn under_a_view_the_keys_give_a_notice_and_arm_nothing() {
+    for key_ in ["x", "f"] {
+        let mut a = super::github_command::list_app();
+        press(&mut a, key_);
+        let notice = a.notice.clone().expect("a notice");
+        assert!(notice.contains("conversation view"), "{notice}");
+        assert_eq!(pending(&a), None);
+        let mut a = super::chat_tags::stored();
+        press(&mut a, "T");
+        let tagging = a.focused();
+        assert!(a.tag_editor_open(tagging));
+        a.notice = None;
+        press(&mut a, key_);
+        let notice = a.notice.clone().expect("a notice");
+        assert!(notice.contains("conversation view"), "{notice}");
+        assert!(!a.approval_pending(tagging));
+    }
+}
+
+#[test]
+fn an_immediate_y_does_not_grant() {
+    let mut a = tools_app();
     press(&mut a, "x");
-    assert!(has_line(&a, "/exec refused: the conversation list is open"));
+    a.update(key('y'));
+    assert!(!granted(&a));
+}
+
+#[test]
+fn the_other_key_while_a_dialog_is_open_changes_nothing() {
+    let mut a = tools_app();
+    press(&mut a, "x");
+    press(&mut a, "f");
+    assert!(has_line(&a, "Answer the pending confirm first"));
+    assert!(dialog_open(&a));
+    assert!(!write_dialog_open(&a));
+    assert!(!granted(&a) && !write_granted(&a));
 }
 
 #[test]
