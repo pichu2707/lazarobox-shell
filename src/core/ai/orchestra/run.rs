@@ -1126,23 +1126,6 @@ impl Run {
         }
     }
 
-    /// Times out the running workers past their deadline. Returns them so
-    /// the runtime kills their processes.
-    pub fn on_tick(&mut self, now: Instant) -> Vec<WorkerId> {
-        let late: Vec<_> = self.ids(WorkerStatus::Running, |slot| {
-            // An overflowing deadline never expires.
-            slot.started.is_some_and(|at| {
-                at.checked_add(slot.spec.deadline)
-                    .is_some_and(|end| now >= end)
-            })
-        });
-        for id in &late {
-            let error = (ErrorClass::Timeout, "deadline passed".to_owned());
-            self.end(now, *id, WorkerStatus::TimedOut, "", Some(error));
-        }
-        late
-    }
-
     /// Worker `id`'s own deadline passed: its turn's clock, which stops while
     /// it waits for the user or its review (D5, D6), is the judge, never the
     /// wall time since it started. Ends it `timed_out` if it still runs.
