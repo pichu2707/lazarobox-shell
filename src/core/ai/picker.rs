@@ -101,6 +101,9 @@ pub enum Mark {
     Downloaded,
     /// Known but not downloaded (`download required`).
     DownloadRequired,
+    /// A llama.cpp model the server serves under another id (`not served`).
+    /// llama.cpp cannot download, so this is never `download required`.
+    NotServed,
     /// No detection result yet (`checking…`).
     Checking,
     /// A CLI model the account's own list does not contain. A warning only:
@@ -547,7 +550,12 @@ fn listed_models(
     for m in missing {
         if !listed.iter().any(|l| same_model(engine, l, m)) {
             listed.push(m);
-            rows.push(row(m, Mark::DownloadRequired, false));
+            let mark = if engine == "llamacpp" {
+                Mark::NotServed
+            } else {
+                Mark::DownloadRequired
+            };
+            rows.push(row(m, mark, false));
         }
     }
     if rows.is_empty() {
@@ -701,7 +709,12 @@ fn detected_label(config: &AiConfig, task: Task, detection: Option<&Detection>) 
             format!("{plain} · {NOT_IN_LIST}")
         }
         Some(model) if is_server && !state.models.iter().any(|m| same_model(id, m, model)) => {
-            format!("{plain} · download required")
+            let mark = if id == "llamacpp" {
+                "not served"
+            } else {
+                "download required"
+            };
+            format!("{plain} · {mark}")
         }
         _ => plain,
     }

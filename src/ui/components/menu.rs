@@ -200,6 +200,7 @@ fn mark_text(mark: &Mark) -> &str {
         Mark::Plain => "",
         Mark::Downloaded => "✓",
         Mark::DownloadRequired => "download required",
+        Mark::NotServed => "not served",
         Mark::Checking => "checking…",
         Mark::NotInList => NOT_IN_LIST,
         Mark::Status(text) => text,

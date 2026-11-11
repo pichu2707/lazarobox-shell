@@ -1108,6 +1108,7 @@ const HINT_CUSTOM: &str = "type a model · Enter ok · Ctrl+U clear · Esc back"
 fn disabled_reason(row: &PickRow) -> &str {
     match row.mark {
         Mark::DownloadRequired => "download required",
+        Mark::NotServed => "not served",
         Mark::Checking => "checking…",
         _ if row.key == PickKey::Info => &row.label,
         _ if matches!(row.key, PickKey::Note { .. }) => &row.label,

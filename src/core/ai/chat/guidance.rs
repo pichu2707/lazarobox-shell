@@ -108,6 +108,23 @@ pub fn guidance(availability: &Availability) -> Option<String> {
         Availability::ModelMissing { engine, model } => {
             format!("{engine}: {model} is not downloaded: download required")
         }
+        Availability::ModelNotServed {
+            engine,
+            model,
+            served,
+            port,
+        } => {
+            let serves = if served.is_empty() {
+                "serves no model".to_owned()
+            } else {
+                let ids: Vec<String> = served.iter().map(|id| format!("\"{id}\"")).collect();
+                format!("serves {}", ids.join(", "))
+            };
+            format!(
+                "{engine}: the server at 127.0.0.1:{port} {serves}, not \"{model}\"; \
+                 start llama-server with --alias {model}, or set the model to the served name"
+            )
+        }
     })
 }
 
@@ -370,6 +387,41 @@ mod tests {
             text.contains("ollama")
                 && text.contains("old:7b")
                 && text.contains("download required"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_model_under_another_served_name_names_both_and_the_fix() {
+        let text = guidance(&Availability::ModelNotServed {
+            engine: s("llamacpp"),
+            model: s("qwen"),
+            served: vec![s("/models/a.gguf"), s("b.gguf")],
+            port: 8080,
+        })
+        .unwrap();
+        assert!(!text.contains("download"), "{text}");
+        for part in [
+            "127.0.0.1:8080",
+            "\"/models/a.gguf\", \"b.gguf\"",
+            "not \"qwen\"",
+            "--alias qwen",
+        ] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_server_that_serves_nothing_says_so() {
+        let text = guidance(&Availability::ModelNotServed {
+            engine: s("llamacpp"),
+            model: s("qwen"),
+            served: Vec::new(),
+            port: 8080,
+        })
+        .unwrap();
+        assert!(
+            text.contains("serves no model") && text.contains("--alias qwen"),
             "{text}"
         );
     }

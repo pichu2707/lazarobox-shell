@@ -436,6 +436,15 @@ pub enum Availability {
         engine: String,
         model: String,
     },
+    /// A llama.cpp server is up but serves other ids than the configured
+    /// model (its `--alias` differs). Nothing is missing: llama.cpp cannot
+    /// download, so this is a naming mismatch. `served` may be empty.
+    ModelNotServed {
+        engine: String,
+        model: String,
+        served: Vec<String>,
+        port: u16,
+    },
 }
 
 /// Resolves the engine of the `chat` task. Pure, never changes the
@@ -566,6 +575,15 @@ pub fn availability_for_with(
             return Availability::NoModel { engine };
         };
         if !state.models.iter().any(|m| same_model(m, &model)) {
+            if engine == "llamacpp" {
+                let port = cfg.servers().port(&engine).unwrap_or_default();
+                return Availability::ModelNotServed {
+                    engine,
+                    model,
+                    served: state.models.clone(),
+                    port,
+                };
+            }
             return Availability::ModelMissing { engine, model };
         }
         return Availability::Ready {

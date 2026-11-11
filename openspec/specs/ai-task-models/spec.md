@@ -164,7 +164,7 @@ A model is downloaded only by those two flows, after the user confirms it.
 - THEN it states that the Ollama catalog is informational and may be out of date, and that a model is downloaded only from the Hugging Face or the Ollama flow, after the user confirms it
 
 ### Requirement: Model marks on task rows
-Where a task row shows an assigned model of an available server engine, a model not among the detected models MUST carry the suffix ` · download required`; a detected model carries no suffix on the row (`✓` is a picker mark). An assigned engine that is not available (status known) MUST carry the suffix ` (not detected)` after the engine id, and then no model mark is applied. While no detection result exists yet, no suffix or mark is applied. CLI assignments never get a model mark.
+Where a task row shows an assigned model of an available server engine, a model not among the detected models MUST carry the suffix ` · download required`; a detected model carries no suffix on the row (`✓` is a picker mark). An assigned engine that is not available (status known) MUST carry the suffix ` (not detected)` after the engine id, and then no model mark is applied. While no detection result exists yet, no suffix or mark is applied. CLI assignments never get a model mark. For `llamacpp` the suffix is ` · not served` instead (llama.cpp cannot download), and its picker row carries the mark `not served`, not selectable.
 
 #### Scenario: Row marks [auto]
 - GIVEN ollama is available with `llama3:8b`; code is `ollama` / `old:7b`, chat is `ollama` / `llama3:8b`, review is `codex` / `default` with codex `not installed`
