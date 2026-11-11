@@ -2,8 +2,10 @@
 //! explicit `Instant`s and nothing here starts a process.
 
 use std::collections::VecDeque;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
+use super::brief::{Brief, BriefError};
 use super::changes::{Change, ChangeLedger, Disclosure};
 use super::claims::Audit;
 use super::commands::{Commands, Ran};
@@ -119,8 +121,11 @@ pub enum UserChoice {
 }
 
 /// Why a spawn did not create a worker.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Refusal {
+    /// The brief of a `simple` worker is incomplete or names a bad path
+    /// (W8b).
+    Brief(BriefError),
     /// `run paused`: a failure is unresolved.
     Paused,
     Ended,
@@ -578,7 +583,22 @@ impl Run {
     /// with the reason, and halts the run like any failure: no other engine
     /// is tried. Only a paused or ended run refuses outright.
     pub fn spawn(&mut self, now: Instant, task: Task, prompt: &str) -> Result<WorkerId, Refusal> {
-        self.spawn_as(now, task, prompt, true)
+        self.spawn_as(now, task, prompt, None, true)
+    }
+
+    /// Creates a `simple` worker from its brief (W8b). A brief that is
+    /// incomplete or names a bad path creates no worker and changes nothing:
+    /// the run stays as it was. The worker's one message is built from the
+    /// brief.
+    pub fn spawn_simple(
+        &mut self,
+        now: Instant,
+        brief: Brief,
+        origin: &Path,
+    ) -> Result<WorkerId, Refusal> {
+        self.check_open()?;
+        let brief = brief.validate(origin).map_err(Refusal::Brief)?;
+        self.spawn_as(now, Task::Simple, &brief.prompt(), Some(brief), true)
     }
 
     /// A worker lazarobox starts itself (a review lens, a correction): the
@@ -589,7 +609,16 @@ impl Run {
         task: Task,
         prompt: &str,
     ) -> Result<WorkerId, Refusal> {
-        self.spawn_as(now, task, prompt, false)
+        self.spawn_as(now, task, prompt, None, false)
+    }
+
+    /// A paused or ended run takes no worker.
+    fn check_open(&self) -> Result<(), Refusal> {
+        match self.state {
+            RunState::Halted { .. } => Err(Refusal::Paused),
+            RunState::Finished | RunState::Cancelled => Err(Refusal::Ended),
+            RunState::Open => Ok(()),
+        }
     }
 
     fn spawn_as(
@@ -597,19 +626,16 @@ impl Run {
         now: Instant,
         task: Task,
         prompt: &str,
+        brief: Option<Brief>,
         gated: bool,
     ) -> Result<WorkerId, Refusal> {
-        match self.state {
-            RunState::Halted { .. } => return Err(Refusal::Paused),
-            RunState::Finished | RunState::Cancelled => return Err(Refusal::Ended),
-            RunState::Open => {}
-        }
-        let (spec, refusal) = self.resolve(task, prompt);
+        self.check_open()?;
+        let (spec, refusal) = self.resolve(task, prompt, brief);
         // A read-only goal is judged by the role, before the menu: turning
-        // Write on would not help.
-        // A `simple` worker is not refused: `resolve` already took its Write
-        // away (W8a, interim until `outputs` in W8b), so it is no writer.
-        let writer = spec.toolset.families().contains(Family::Write) && !self.strips_tools(task);
+        // Write on would not help. A `simple` worker with no `outputs` is no
+        // writer: `resolve` already took its Write away (one rule, W8b).
+        let writer = spec.toolset.families().contains(Family::Write)
+            && !self.strips_tools(task, spec.outputs());
         if self.steps.read_only() && writer {
             return Err(Refusal::ReadOnly);
         }
@@ -697,7 +723,7 @@ impl Run {
             };
             // Starting is a new process: the menu is read again now, and a
             // writer that lost Write meanwhile is refused, not run bare.
-            let strip = self.strips_tools(self.slots[index(next)].spec.task);
+            let strip = self.strips(&self.slots[index(next)].spec);
             let ceiling = self.ceiling;
             let spec = &mut self.slots[index(next)].spec;
             spec.families = Self::capped_families(spec.toolset, ceiling, strip);
@@ -712,11 +738,18 @@ impl Run {
         }
     }
 
-    /// Whether a read-only goal takes Write and Exec away from a worker of
-    /// `task` instead of refusing it: only a `simple` worker (W8a; owner
-    /// decision 2026-11-11, option B: it keeps Read only).
-    fn strips_tools(&self, task: Task) -> bool {
-        self.steps.read_only() && task == Task::Simple
+    /// Whether a worker of `task` starts with Write and Exec taken away
+    /// instead of being refused: only a `simple` worker (owner decision
+    /// 2026-11-11, option B: it keeps Read only). With a brief, it is when
+    /// the brief lists no `outputs` (W8b: a writing `simple` on a read-only
+    /// goal is refused instead); without one, when the goal is read-only (the
+    /// W8a rule for a worker spawned from free text).
+    fn strips_tools(&self, task: Task, outputs: Option<&[String]>) -> bool {
+        task == Task::Simple && outputs.map_or(self.steps.read_only(), <[String]>::is_empty)
+    }
+
+    fn strips(&self, spec: &WorkerSpec) -> bool {
+        self.strips_tools(spec.task, spec.outputs())
     }
 
     /// A toolset under the menu's ceiling, without Write and Exec when
@@ -735,10 +768,15 @@ impl Run {
     /// read-only still holds Write until `promote` strips it, so it is
     /// exempt through [`Self::strips_tools`], the one rule.
     fn refuses_on_read_only(&self, spec: &WorkerSpec) -> bool {
-        spec.writes() && !self.strips_tools(spec.task)
+        spec.writes() && !self.strips(spec)
     }
 
-    fn resolve(&self, task: Task, prompt: &str) -> (WorkerSpec, Option<String>) {
+    fn resolve(
+        &self,
+        task: Task,
+        prompt: &str,
+        brief: Option<Brief>,
+    ) -> (WorkerSpec, Option<String>) {
         let (engine, model, refusal) = match self.roster.get(task) {
             Availability::Ready { engine, model } => (engine.clone(), model.clone(), None),
             Availability::Unassigned => (
@@ -748,27 +786,23 @@ impl Run {
             ),
             other => (String::new(), None, guidance(other)),
         };
+        let strip = self.strips_tools(task, brief.as_ref().map(Brief::outputs));
         let spec = WorkerSpec {
             task,
             prompt: prompt.to_owned(),
             engine,
             model,
             toolset: Toolset::for_kind(task),
-            families: Self::capped_families(
-                Toolset::for_kind(task),
-                self.ceiling,
-                self.strips_tools(task),
-            ),
+            families: Self::capped_families(Toolset::for_kind(task), self.ceiling, strip),
             deadline: self.deadline,
+            brief,
         };
         // A role that writes, under a menu that no longer allows it, is
         // refused and never run read-only without a word. `spawn` refuses it
         // first; this covers the re-resolves of a retry and a relaunch.
         let refusal = refusal.or_else(|| {
-            (spec.toolset.families().contains(Family::Write)
-                && !spec.writes()
-                && !self.strips_tools(task))
-            .then(|| WRITE_OFF.to_owned())
+            (spec.toolset.families().contains(Family::Write) && !spec.writes() && !strip)
+                .then(|| WRITE_OFF.to_owned())
         });
         (spec, refusal)
     }
@@ -1293,7 +1327,8 @@ impl Run {
         let slot = &self.slots[index(worker)];
         // A refused worker has no engine to reuse: it is resolved again.
         let refusal = if reresolve || slot.status == WorkerStatus::Refused {
-            let (spec, refusal) = self.resolve(slot.spec.task, &slot.spec.prompt.clone());
+            let (task, prompt) = (slot.spec.task, slot.spec.prompt.clone());
+            let (spec, refusal) = self.resolve(task, &prompt, slot.spec.brief.clone());
             self.slots[index(worker)].spec = spec;
             // The queued workers refused with it are one failure, said once.
             refusal.map(|reason| match others {
@@ -1303,7 +1338,7 @@ impl Run {
         } else {
             // A retry is a new process: the spec is capped by the menu as it
             // is now, and a writer that lost Write is refused, not run bare.
-            let strip = self.strips_tools(self.slots[index(worker)].spec.task);
+            let strip = self.strips(&self.slots[index(worker)].spec);
             let ceiling = self.ceiling;
             let spec = &mut self.slots[index(worker)].spec;
             spec.families = Self::capped_families(spec.toolset, ceiling, strip);
@@ -1335,7 +1370,8 @@ impl Run {
             if slot.spec.task != task {
                 continue;
             }
-            let (spec, refusal) = self.resolve(task, &slot.spec.prompt.clone());
+            let (spec, refusal) =
+                self.resolve(task, &slot.spec.prompt.clone(), slot.spec.brief.clone());
             self.slots[index(id)].spec = spec;
             if let Some(reason) = refusal {
                 self.enqueue(now, id, Some(reason), false);

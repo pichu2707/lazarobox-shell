@@ -401,6 +401,7 @@ fn a_spec_with_exec_or_write_has_a_batch_key_and_a_reader_has_none() {
         toolset: Toolset::Code,
         families,
         deadline: Duration::from_secs(60),
+        brief: None,
     };
     let read = FamilySet::EMPTY.with(Family::Read);
     assert!(spec(read.with(Family::Exec)).keys_a_batch());

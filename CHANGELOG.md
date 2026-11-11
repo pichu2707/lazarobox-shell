@@ -12,6 +12,11 @@ baseline.
 
 ### Added
 
+- A `simple` worker is started from a brief (`goal`, `inputs`, `outputs`,
+  `done_when`, `out_of_scope`) instead of free text. An incomplete brief or a
+  path outside the project creates no worker and says so in the pane and to
+  the coordinator; its `outputs` decide whether the worker writes, and a
+  `simple` that writes is refused on a read-only goal or with Write off.
 - `Ctrl+Space x` opens the `/exec` dialog and `Ctrl+Space f` the `/write`
   dialog (`w` is the window group). A key never grants: only your `y` in the
   dialog does. A refusal shows the command's line, the composer draft is kept,

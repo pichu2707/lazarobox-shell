@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use serde_json::{Map, Value};
 
 use super::WorkerId;
+use super::brief::Brief;
 use super::ledger::{Judgement, Verdict};
 use super::steps::{Grant, Mark, Size, Step};
 use crate::core::ai::config::Task;
@@ -26,6 +27,12 @@ pub enum OrchCall {
     Spawn {
         task: Task,
         prompt: String,
+    },
+    /// A `simple` worker, started from a brief instead of free text (W8b).
+    /// The brief is not yet checked: `Run::spawn_simple` names what is
+    /// missing.
+    SpawnSimple {
+        brief: Brief,
     },
     /// `timeout` is in seconds, already clamped to [`WAIT_MAX_SECS`].
     Wait {
@@ -80,7 +87,7 @@ impl OrchCall {
     /// The tool's name, as the registry offers it.
     pub fn name(&self) -> &'static str {
         match self {
-            OrchCall::Spawn { .. } => "spawn_agent",
+            OrchCall::Spawn { .. } | OrchCall::SpawnSimple { .. } => "spawn_agent",
             OrchCall::Wait { .. } => "wait",
             OrchCall::Collect { .. } => "collect",
             OrchCall::Cancel { .. } => "cancel",
@@ -98,6 +105,7 @@ impl OrchCall {
     pub fn argument(&self) -> Cow<'_, str> {
         match self {
             OrchCall::Spawn { prompt, .. } => Cow::Borrowed(prompt),
+            OrchCall::SpawnSimple { brief } => Cow::Borrowed(&brief.goal),
             OrchCall::Wait { ids, .. } => Cow::Owned(
                 ids.iter()
                     .map(|id| id.0.to_string())
@@ -182,8 +190,98 @@ pub fn parse(name: &str, args: &Value) -> Result<OrchCall, OrchError> {
     }
 }
 
+/// The keys a `simple` spawn declares; any other key is an extra field.
+pub const BRIEF_KEYS: [&str; 7] = [
+    "kind",
+    "goal",
+    "inputs",
+    "outputs",
+    "done_when",
+    "out_of_scope",
+    "answers",
+];
+
+/// The longest brief text, in bytes, and the limits of its lists and of the
+/// extra fields.
+pub const MAX_BRIEF_TEXT: usize = 4096;
+pub const MAX_BRIEF_FILES: usize = 32;
+pub const MAX_BRIEF_PATH: usize = 512;
+const MAX_EXTRA: usize = 8;
+const MAX_EXTRA_NAME: usize = 32;
+const MAX_EXTRA_TEXT: usize = 512;
+
+/// A `simple` spawn: the flat brief fields, and the unknown keys as extra
+/// fields (D1, D2). Types and sizes are checked here; what is missing is
+/// named by the run, so the refusal reaches the pane too.
+fn spawn_simple(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
+    let field = |key: &str| match object.get(key) {
+        None => Ok(String::new()),
+        Some(value) => value
+            .as_str()
+            .map(str::to_owned)
+            .ok_or(OrchError::WrongType),
+    };
+    let files = |key: &str| -> Result<Option<Vec<String>>, OrchError> {
+        let Some(value) = object.get(key) else {
+            return Ok(None);
+        };
+        let list = value.as_array().ok_or(OrchError::WrongType)?;
+        let paths: Option<Vec<String>> =
+            list.iter().map(|v| v.as_str().map(str::to_owned)).collect();
+        Ok(Some(paths.ok_or(OrchError::WrongType)?))
+    };
+    let answers = match object.get("answers") {
+        None => None,
+        Some(value) => {
+            let n = value.as_u64().and_then(|n| u32::try_from(n).ok());
+            Some(n.ok_or(OrchError::WrongType)?)
+        }
+    };
+    let mut extra = Vec::new();
+    for (name, value) in object
+        .iter()
+        .filter(|(k, _)| !BRIEF_KEYS.contains(&k.as_str()))
+    {
+        let plain = name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        if name.is_empty() || name.len() > MAX_EXTRA_NAME || !plain {
+            return Err(OrchError::ExtraArgument);
+        }
+        let text = value
+            .as_str()
+            .map_or_else(|| value.to_string(), str::to_owned);
+        if text.len() > MAX_EXTRA_TEXT || extra.len() >= MAX_EXTRA {
+            return Err(OrchError::TooLong);
+        }
+        extra.push((name.clone(), text));
+    }
+    let brief = Brief {
+        goal: field("goal")?,
+        inputs: files("inputs")?.unwrap_or_default(),
+        outputs: files("outputs")?,
+        done_when: field("done_when")?,
+        out_of_scope: field("out_of_scope")?,
+        extra,
+        answers,
+        free_text: object.contains_key("prompt"),
+    };
+    let texts = [&brief.goal, &brief.done_when, &brief.out_of_scope];
+    let paths = brief.inputs.iter().chain(brief.outputs());
+    if texts.iter().any(|t| t.len() > MAX_BRIEF_TEXT)
+        || paths.clone().any(|p| p.len() > MAX_BRIEF_PATH)
+        || brief.inputs.len().max(brief.outputs().len()) > MAX_BRIEF_FILES
+    {
+        return Err(OrchError::TooLong);
+    }
+    Ok(OrchCall::SpawnSimple { brief })
+}
+
 fn spawn(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
     let kind = text(object, "kind")?;
+    if kind == Task::Simple.id() {
+        return spawn_simple(object);
+    }
     let prompt = text(object, "prompt")?;
     no_extra(object, 2)?;
     let task = spawnable()

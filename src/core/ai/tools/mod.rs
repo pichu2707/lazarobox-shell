@@ -31,11 +31,14 @@ pub mod wiring;
 
 use std::borrow::Cow;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::orchestra::{
     Toolset,
-    tools::{MAX_PROMPT_BYTES, MAX_WAIT_IDS, OrchCall, WAIT_MAX_SECS, parse as parse_orchestra},
+    tools::{
+        BRIEF_KEYS, MAX_BRIEF_FILES, MAX_BRIEF_PATH, MAX_BRIEF_TEXT, MAX_PROMPT_BYTES,
+        MAX_WAIT_IDS, OrchCall, WAIT_MAX_SECS, parse as parse_orchestra,
+    },
 };
 use registry::{ArgDef, ArgKind, ArgValue, Family, FamilySet, ToolDef, parse_args, schema};
 
@@ -495,6 +498,31 @@ const fn field(name: &'static str, max: usize) -> ArgDef {
 /// (a test pins it).
 const KIND_MAX_BYTES: usize = 16;
 
+/// One optional text of a `simple` brief.
+const fn brief_text(name: &'static str) -> ArgDef {
+    ArgDef {
+        name,
+        kind: ArgKind::Str {
+            max: MAX_BRIEF_TEXT,
+        },
+        required: false,
+        gate: None,
+    }
+}
+
+/// One optional list of files of a `simple` brief.
+const fn brief_files(name: &'static str) -> ArgDef {
+    ArgDef {
+        name,
+        kind: ArgKind::StrList {
+            items: MAX_BRIEF_FILES,
+            each: MAX_BRIEF_PATH,
+        },
+        required: false,
+        gate: None,
+    }
+}
+
 /// A worker id: a positive integer.
 const fn id(name: &'static str, required: bool) -> ArgDef {
     ArgDef {
@@ -777,7 +805,7 @@ const BUILT_INS: [ToolDef; 29] = [
     // touch no file, the host routes them to the run manager.
     ToolDef {
         name: "spawn_agent",
-        description: "Start a worker of one kind (general, code, chat, review, summarize or simple) on the engine the user assigned to it. Returns its id at once.",
+        description: "Start a worker of one kind (general, code, chat, review, summarize or simple) on the engine the user assigned to it. Returns its id at once. Every kind takes a prompt, except simple, which takes a brief: goal, inputs and outputs (file lists), done_when and out_of_scope, all required (outputs may be an empty list).",
         access: Access::Read,
         family: Family::Orchestra,
         args: &[
@@ -789,12 +817,28 @@ const BUILT_INS: [ToolDef; 29] = [
                 required: true,
                 gate: None,
             },
+            // Optional in the table: the parse asks for `prompt` of every
+            // kind but `simple`, and for the brief of `simple` only (W8b).
             ArgDef {
                 name: "prompt",
                 kind: ArgKind::Str {
                     max: MAX_PROMPT_BYTES,
                 },
-                required: true,
+                required: false,
+                gate: None,
+            },
+            brief_text("goal"),
+            brief_files("inputs"),
+            brief_files("outputs"),
+            brief_text("done_when"),
+            brief_text("out_of_scope"),
+            ArgDef {
+                name: "answers",
+                kind: ArgKind::Int {
+                    min: 1,
+                    max: u32::MAX as i64,
+                },
+                required: false,
                 gate: None,
             },
         ],
@@ -998,6 +1042,10 @@ pub fn parse_call(name: &str, args: &Value) -> Result<Call, ToolError> {
     parse_built_in(name, args, FamilySet::LEGACY)
 }
 
+fn is_simple_spawn(object: &Map<String, Value>) -> bool {
+    object.get("kind").and_then(Value::as_str) == Some(crate::core::ai::config::Task::Simple.id())
+}
+
 /// A built-in call by name. One whose family is not in `set` is an unknown
 /// tool, the same refusal as a name that does not exist.
 fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, ToolError> {
@@ -1009,7 +1057,21 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
     if name == "read_pane" {
         read_pane_range(args)?;
     }
-    let parsed = parse_args(def.args, args, set)?;
+    // A `simple` spawn may carry fields the table does not declare (extra
+    // brief fields): the table checks the declared ones, and the orchestra
+    // parse checks the rest. Every other kind keeps refusing unknown keys.
+    let declared = match args {
+        Value::Object(object) if name == "spawn_agent" && is_simple_spawn(object) => {
+            let kept = object
+                .iter()
+                .filter(|(key, _)| BRIEF_KEYS.contains(&key.as_str()) || key.as_str() == "prompt");
+            Cow::Owned(Value::Object(
+                kept.map(|(k, v)| (k.clone(), v.clone())).collect(),
+            ))
+        }
+        _ => Cow::Borrowed(args),
+    };
+    let parsed = parse_args(def.args, &declared, set)?;
     if def.family == Family::Github {
         return Ok(Call::Github(github::parse(name, args, &parsed)?));
     }
@@ -2485,9 +2547,19 @@ mod tests {
         let tools = registry_for(Toolset::Orchestrator);
         let schema = |name: &str| &tools.iter().find(|t| t.name == name).unwrap().schema;
         let spawn = schema("spawn_agent");
-        assert_eq!(spawn["required"], json!(["kind", "prompt"]));
+        // `prompt` and the brief fields are optional in the table: the parse
+        // asks for `prompt` of every kind but `simple`, and for the brief of
+        // `simple` (W8b).
+        assert_eq!(spawn["required"], json!(["kind"]));
         assert_eq!(spawn["properties"]["kind"]["type"], "string");
         assert_eq!(spawn["properties"]["prompt"]["type"], "string");
+        for text in ["goal", "done_when", "out_of_scope"] {
+            assert_eq!(spawn["properties"][text]["type"], "string", "{text}");
+        }
+        for list in ["inputs", "outputs"] {
+            assert_eq!(spawn["properties"][list]["type"], "array", "{list}");
+        }
+        assert_eq!(spawn["properties"]["answers"]["type"], "integer");
         let wait = schema("wait");
         assert_eq!(wait["required"], json!(["ids"]));
         assert_eq!(wait["properties"]["ids"]["type"], "array");
@@ -2508,6 +2580,30 @@ mod tests {
     fn the_kind_cap_fits_the_longest_kind() {
         let longest = Task::ALL.iter().map(|t| t.id().len()).max().unwrap();
         assert!(KIND_MAX_BYTES >= longest, "{KIND_MAX_BYTES} < {longest}");
+    }
+
+    // W8b (D1, D2): at the registry layer a `simple` spawn takes its brief
+    // and keeps undeclared keys as `extra`; every other kind still refuses
+    // an unknown key.
+    #[test]
+    fn a_simple_spawn_keeps_unknown_keys_and_other_kinds_refuse_them() {
+        let simple = json!({"kind": "simple", "goal": "g", "priority": "high"});
+        let call = orch("spawn_agent", simple, Toolset::Orchestrator).unwrap();
+        let Call::Orchestra(OrchCall::SpawnSimple { brief }) = call else {
+            panic!("{call:?}");
+        };
+        assert_eq!(brief.goal, "g");
+        assert_eq!(brief.extra, [("priority".to_owned(), "high".to_owned())]);
+        let code = json!({"kind": "code", "prompt": "p", "priority": "high"});
+        assert_eq!(
+            orch("spawn_agent", code, Toolset::Orchestrator),
+            Err(ToolError::ExtraArgument)
+        );
+        let typed = json!({"kind": "simple", "goal": 1});
+        assert_eq!(
+            orch("spawn_agent", typed, Toolset::Orchestrator),
+            Err(ToolError::WrongType)
+        );
     }
 
     #[test]

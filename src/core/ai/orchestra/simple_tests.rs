@@ -89,16 +89,21 @@ fn the_simple_toolset_is_read_write_and_exec_under_the_ceiling() {
 // 18.6: `simple` is a spawnable kind; `deploy` and `orchestrate` are not.
 #[test]
 fn spawn_agent_accepts_simple_and_still_refuses_deploy_and_orchestrate() {
-    assert_eq!(
+    // W8b: `simple` takes a brief, and free text is refused.
+    assert!(matches!(
+        parse(
+            "spawn_agent",
+            &json!({ "kind": "simple", "goal": "rename x" })
+        ),
+        Ok(OrchCall::SpawnSimple { .. })
+    ));
+    assert!(matches!(
         parse(
             "spawn_agent",
             &json!({ "kind": "simple", "prompt": "rename x to y in a.rs" })
         ),
-        Ok(OrchCall::Spawn {
-            task: Task::Simple,
-            prompt: "rename x to y in a.rs".to_owned()
-        })
-    );
+        Ok(OrchCall::SpawnSimple { brief }) if brief.free_text
+    ));
     for kind in ["deploy", "orchestrate"] {
         assert_eq!(
             parse("spawn_agent", &json!({ "kind": kind, "prompt": "p" })),

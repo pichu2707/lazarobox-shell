@@ -235,6 +235,11 @@ A `simple` worker is defined by its role: it executes direct, fully specified ta
 - WHEN the worker starts
 - THEN it has no write tool
 
+#### Scenario: No outputs, no command tools [W8, auto]
+- GIVEN any goal, Write and Exec on, and a `simple` brief whose `outputs` is empty
+- WHEN the worker starts
+- THEN it has the read tools only: no write tool and no `run_command`, because a command runs only after the worker's batch is applied
+
 #### Scenario: A worker never selects itself [W8, auto]
 - GIVEN a running worker whose text asks to be run as `simple`
 - WHEN the text is processed
