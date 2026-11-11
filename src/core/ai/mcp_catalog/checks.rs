@@ -41,12 +41,17 @@ pub fn too_many(server: &str, admitted: usize) -> Option<String> {
 }
 
 /// One line per tool whose qualified name equals an earlier one's: the
-/// registry keeps the first, so the later one is the one dropped.
+/// registry keeps the first, so the later one is the one dropped. A name that
+/// cannot be qualified at all gets its own line.
 pub fn collisions(server: &str, names: &[String]) -> Vec<String> {
     let mut seen: Vec<(String, &str)> = Vec::new();
     let mut lines = Vec::new();
     for name in names {
         let Some(qualified) = qualified_name(server, name) else {
+            lines.push(format!(
+                "{}: tool with an empty or invalid name dropped",
+                shown(server)
+            ));
             continue;
         };
         match seen.iter().find(|(q, _)| *q == qualified) {
