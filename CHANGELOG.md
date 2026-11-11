@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Google Search Console joins the `Connectors` area (`gsc`), connected with a
+  service account: `GSC_CREDENTIALS_PATH` (a path, in `secrets.toml`) and
+  `GSC_SKIP_OAUTH = "true"`, no login step, and `GSC_ALLOW_DESTRUCTIVE` is
+  never declared. See "Conectar un servicio" in the README.
+
 ### Fixed
 
 - When an orchestrator run ends (`run_timeout_mins`, a stop or a cancel), the
