@@ -12,6 +12,9 @@ use crate::core::ai::sanitize::clean;
 /// The longest server or tool part of a qualified name, in characters.
 pub const MAX_PART: usize = 24;
 
+/// Most tools kept from one server.
+pub const MAX_TOOLS: usize = 64;
+
 /// The servers a chat opened under `origin_root` (the git root of its origin
 /// cwd, `None` outside a repository) uses: the enabled global ones, then the
 /// entries declared for exactly that root, which decide for that root. An

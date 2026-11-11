@@ -44,11 +44,10 @@ use crate::core::ai::{
         ExternalTool,
         label::OUTPUT_CAP,
         mcp::{Frame, MAX_LINE_BYTES, OLDER_VERSIONS, PROTOCOL_VERSION},
+        servers::MAX_TOOLS,
     },
 };
 
-/// Most tools kept from one server.
-const MAX_TOOLS: usize = 64;
 /// Most characters kept of a tool description.
 const DESCRIPTION_MAX: usize = 1024;
 /// Most bytes of a tool schema; a bigger one is replaced by a bare object.
