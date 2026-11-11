@@ -30,6 +30,11 @@ baseline.
 
 ### Fixed
 
+- With ORCH on, the claude coordinator no longer answers a file change with a
+  shell command and the code. Its tools block told it "you cannot change files
+  yourself; any change needs a command the user reviews and runs", after the
+  delegation rule; it now says a worker started with `spawn_agent` makes every
+  change.
 - The orchestrator's model review no longer starts a correction worker for
   every re-proposal. Each proposal had its own "one correction", so a small
   local model that kept finding trivial blockers caused dozens of them. A
