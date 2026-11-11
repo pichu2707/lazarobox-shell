@@ -92,7 +92,7 @@ Compatibilidad de plataformas:
 
 - **Linux:** soportado. Es la única plataforma probada a mano.
 - **macOS:** sin soporte oficial. El CI compila lazarobox y pasa todos sus tests en macOS (arm64 e Intel), y prueba el codex real dentro de la jaula Seatbelt, pero nadie ha usado la interfaz a mano en un Mac. El directorio de trabajo de los paneles se obtiene en Linux mediante `/proc`; en macOS solo se actualiza si el shell emite OSC 7.
-- **Windows (WSL):** se usa lazarobox dentro de WSL, en la consola de WSL (por ejemplo Windows Terminal); no hay versión nativa de Windows. Una terminal solo se considera soportada cuando tiene un registro de pruebas en [docs/terminals](docs/terminals/README.md), y el de Windows Terminal (WSL) está pendiente. `install-desktop` en WSL imprime notas sobre el lanzador: una entrada de usuario puede no aparecer en el menú Inicio de Windows (WSLg), y entonces se arranca desde la consola de WSL.
+- **Windows (WSL):** se usa lazarobox dentro de WSL, en la consola de WSL (por ejemplo Windows Terminal); no hay versión nativa de Windows. Una terminal solo se considera soportada cuando tiene un registro de pruebas en [docs/terminals](docs/terminals/README.md); Windows Terminal (WSL) tiene el suyo. En Windows Terminal, `Alt+Enter` pone la ventana a pantalla completa y no llega a lazarobox: usa `Ctrl+J` para un salto de línea en el chat. `install-desktop` en WSL imprime notas sobre el lanzador: una entrada de usuario puede no aparecer en el menú Inicio de Windows (WSLg), y entonces se arranca desde la consola de WSL.
 
 Desde el código fuente:
 
@@ -536,6 +536,8 @@ cache_prompt = true     # reutiliza la parte del prompt que no cambia
 - `keep_alive` admite una duración como las de Ollama (`"30m"`, `"1h30m"`, `"45s"`), un número entero de segundos, o `-1` para no descargarlo nunca y `0` para descargarlo al terminar. Sin la clave, lazarobox envía `30m` a Ollama (Ollama, por su cuenta, lo descarga a los 5 minutos); un valor puesto se envía tal cual.
 - `cache_prompt` es `true` o `false`; se envía tanto al llama-server gestionado como a uno que arranques tú.
 - Cada clave va solo a su servidor, en el chat, los resúmenes, la compactación y los agentes del orquestador. Un valor incorrecto se ignora con un aviso al arrancar. Se leen al arrancar lazarobox: un cambio en el archivo se aplica al reiniciar.
+
+**El nombre del modelo debe coincidir con `--alias`.** Un `llama-server` anuncia su modelo en `/v1/models` con el id que le pongas con `--alias`; sin `--alias` usa la ruta o el nombre del archivo GGUF. lazarobox compara ese id con el modelo configurado: si no coinciden, el chat dice `llamacpp: the server at 127.0.0.1:<puerto> does not serve "<modelo>": start llama-server with --alias <modelo>, …` y después los ids que sirve (como mucho tres) (la fila de la tarea y el selector marcan `not served`). No hay nada que descargar: arranca `llama-server` con `--alias <modelo>` (por ejemplo `llama-server -m qwen.gguf --alias qwen`) o configura el modelo con el nombre que sirve.
 
 **llama.cpp gestionado por lazarobox.** Si no quieres tener una pestaña abierta con `llama-server`, lazarobox puede arrancarlo y pararlo por ti:
 
