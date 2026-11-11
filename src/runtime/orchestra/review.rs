@@ -1025,7 +1025,7 @@ impl RunManager {
                     Refusal::WriteOff => WRITE_OFF_CORRECTION.to_owned(),
                     Refusal::WorkerCap(cap) => format!("max_workers is {cap}"),
                     Refusal::Brief(error) => error.text(),
-                    Refusal::Overlap { worker, path } => overlap_text(worker, &path),
+                    Refusal::Overlap { worker, path, held } => overlap_text(worker, &path, &held),
                     Refusal::Gate(_) => "a step gate refused an internal worker".to_owned(),
                 })?;
             if let Some(system) = system {
