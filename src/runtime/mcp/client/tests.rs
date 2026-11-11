@@ -183,6 +183,40 @@ async fn the_filter_runs_before_the_cap_and_counts_what_it_admits() {
 }
 
 #[tokio::test]
+async fn the_gmail_filter_and_hidden_tools_of_a_declared_google_run_before_the_cap() {
+    use crate::core::ai::{config::McpServer, mcp_catalog::admits};
+    let server = |name: &str| McpServer {
+        name: name.to_owned(),
+        command: "x".to_owned(),
+        args: Vec::new(),
+        env: Vec::new(),
+        project: None,
+        enabled: true,
+    };
+    let mut names = vec![
+        "send_gmail_message".to_owned(),
+        "start_google_auth".to_owned(),
+    ];
+    names.extend((0..6).map(|i| format!("odd_gmail_{i}")));
+    names.extend((0..62).map(|i| format!("t{i}")));
+    let many: Vec<Value> = names.iter().map(|n| json!({ "name": n })).collect();
+    for (declared, kept) in [("google", 62), ("mail", 64)] {
+        let (mut client, mut fake) = pair(timeouts());
+        let s = server(declared);
+        let (listed, ()) = tokio::join!(
+            client.list_tools_with(|tool| admits(&s, tool)),
+            fake.answer_list(json!(many))
+        );
+        let listed = listed.unwrap();
+        assert_eq!(listed.tools.len(), kept, "{declared}");
+        assert_eq!(listed.admitted, if declared == "google" { 62 } else { 70 });
+        let has = |n: &str| listed.tools.iter().any(|t| t.name == n);
+        assert_eq!(has("send_gmail_message"), declared != "google");
+        assert_eq!(has("t61"), declared == "google");
+    }
+}
+
+#[tokio::test]
 async fn hostile_metadata_is_sanitized_and_capped() {
     let (mut client, mut fake) = pair(timeouts());
     let huge = "x".repeat(100 * 1024);
