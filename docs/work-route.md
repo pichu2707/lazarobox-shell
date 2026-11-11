@@ -29,11 +29,11 @@ Fixed or in a PR:
 | A batch review stayed open after its run ended, and a late `y` wrote the files | M11c | Fixed, #698 |
 | Secret values in MCP failure text, tool results, tool names and `[table]` headers | Review of #695/#696 | Fixed, #695, #696 |
 | A Connectors prompt confirmed on `Ctrl+y`/`Alt+y`, and showed a clipped command on a narrow terminal | Review of #697 | Fixed in #697 |
-| A coordinator on a CLI engine ran as plain text when the jail refused its tools | M14b | #699 |
-| The model said a typed (not run) command had created a file | Owner, chat | #702 |
-| A review notice repeated 22 times while a run was paused | M13e | #700 |
-| The worker row did not say `(default)` | M14b | #701 |
-| `esc_stops_the_probe...` and `shutdown_leaves_no_orphan_grandchild` fail under load | CI, review | In progress |
+| A coordinator on a CLI engine ran as plain text when the jail refused its tools | M14b | Fixed, #699 |
+| The model said a typed (not run) command had created a file | Owner, chat | Fixed, #702 |
+| A review notice repeated 22 times while a run was paused | M13e | Fixed, #700 |
+| The worker row did not say `(default)` | M14b | Fixed, #701 |
+| Process-gone tests fail now and then on the Ubuntu 24.04 runner (four different tests) | CI | Shared 20 s wait and diagnostics, #707. Latest diagnostic: alive for 20 s, gone an instant later; no production timer or kill bug found, likely a stalled runner. Stall-aware wait: in progress |
 
 Open, not started:
 
@@ -46,6 +46,9 @@ Open, not started:
 | `gemini` and `codex` are found in `/usr/local/bin` even with a stripped `PATH` | Manual tests sent synthetic diffs to Google by accident | Document engine discovery; tests must pin every task row |
 | Closing the menu during a probe loses its Esc | Review of #696 | Accepted: the probe ends within 20 s. Optional: cancel on close |
 | Clarity "delete token" wording | README "Desconectar" | Check the control in the Clarity UI |
+| Mandatory review of a local author with a small model starts dozens of correction workers (about 48) on trivial blockers | M8.4 run, Qwen2.5-7B on llama-server | Bound the corrections per batch, or end the review with the blockers shown to the user |
+| llama-server without `--alias` equal to the configured model makes lazarobox say "download required" | M8.4 run | Say the server's model name does not match, and document `--alias` |
+| A 7B coordinator in a long conversation describes tool calls instead of making them | M8.4 run | Document: use a fresh conversation or a larger coordinator model |
 
 ## 3. Next, in order
 

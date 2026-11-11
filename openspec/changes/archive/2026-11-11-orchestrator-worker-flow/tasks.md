@@ -776,6 +776,8 @@ Evidence lives outside the repository. Passed items are ticked. PARTIAL and NOT 
 - [x] M16 PASS: claude sonnet coordinator, haiku workers; round 1 of 2, answers, round 2 of 2, limit reached, run stopped.
 - [x] M17 PASS: limit ask at 450 lines, keep, split, a later batch asks again, outside-brief ask, `.env` refused, test files not counted.
 
+- [x] M8.4 PASS (run after the archive, 2026-11-11, on main 93921c94): two parallel `code` workers on one local llama-server (Qwen2.5-7B-Instruct Q4_K_M, `-np 2`), `max_parallel = 2`. A logging proxy recorded 38 lens requests: each named only its own proposer's files, including lenses of the two workers running within a second of each other. The two review screens showed only `b.py` and only `a.py`. The only lens prompts holding both files belonged to a third worker whose own batch held both. This was the owner's gate for archiving (decision of 2026-11-08); it was missed before the archive PR and run afterwards.
+
 Follow-ups, not in this change: coordinator without tools (PR #699); typed but not run (PR #702); wording nits (WRITE_OFF text for simple briefs; brief number in the disclosure line), in a separate PR.
 
 ## Review Workload Forecast (milestone 3)
