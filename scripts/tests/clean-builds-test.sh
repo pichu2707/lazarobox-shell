@@ -172,6 +172,34 @@ check "--apply says it never removes build folders on their own" \
 run --apply --cap 0K
 check "a worktree is removed once its binary stopped" "$([ ! -e "$scratch/wt/busy" ]; echo $?)"
 
+# A worktree registered through a symlinked path is still found: /proc shows
+# the real path of the binary.
+fixture
+mkdir -p "$scratch/real"
+ln -s "$scratch/real" "$scratch/link"
+git -C "$repo" worktree add -q -b linked "$scratch/link/linked" main
+commit "$scratch/link/linked" linked.txt 1000000020
+git -C "$repo" merge -q --no-ff -m "merge linked" linked
+mkdir -p "$scratch/link/linked/target/release"
+cp "$(command -v sleep)" "$scratch/link/linked/target/release/sleep"
+"$scratch/link/linked/target/release/sleep" 300 &
+link_pid=$!
+sleep 0.3
+run --apply --cap 0K
+kill "$link_pid" 2> /dev/null || true
+wait "$link_pid" 2> /dev/null || true
+check "a symlinked worktree path with a running binary is kept" \
+  "$([ -d "$scratch/real/linked" ] && has_branch linked; echo $?)"
+git -C "$repo" worktree remove --force "$scratch/link/linked" 2> /dev/null || true
+
+# Another user's process cannot be read: the listing says so (Linux, non-root).
+if [ -d /proc/1 ] && [ "$(id -u)" != 0 ] && ! readlink /proc/1/exe > /dev/null 2>&1; then
+  fixture
+  run --cap 0K
+  check "unreadable processes are reported" \
+    "$(grep -q 'some processes could not be read: a binary they run is not detected' <<< "$out"; echo $?)"
+fi
+
 # Bad arguments stop before anything is listed.
 fixture
 run --cap lots

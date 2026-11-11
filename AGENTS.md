@@ -29,8 +29,10 @@ when the branch merges.
   changes or untracked files, one whose commits are not all in the base ref
   (`--base`, default `origin/main`), or one where a process is running a binary
   from inside it (for example `target/release/lazarobox`): it lists it as
-  `running` and says which binary. The check reads `/proc` on Linux and `ps`
-  elsewhere; if neither works it prints a note that it was skipped. Ignored
+  `running` and says which binary. Only a running executable counts, not a
+  shell whose cwd is inside the worktree. The check reads `/proc` on Linux and
+  `ps` on macOS; on other systems it prints a note that it was skipped, and on
+  Linux a note when some processes (other users') could not be read. Ignored
   files, such as build output, go with a removed worktree.
 - It never removes a build folder on its own, including a stray top-level
   `target-*`: those are listed only. Free one with `cargo clean`, after

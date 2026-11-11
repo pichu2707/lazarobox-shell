@@ -9,7 +9,8 @@
 # changes (untracked files included, whatever the git config), a worktree
 # whose commits are not all in the base ref, and a worktree with a running
 # process whose executable lives inside it (a release binary in target/). That
-# check reads /proc on Linux and `ps` elsewhere; when neither works it says so.
+# check reads /proc on Linux and `ps` on macOS; on other systems, or when
+# some process cannot be read, it prints a note saying so.
 # Build folders are only listed, never removed on their own: removing one
 # costs a rebuild and nothing else (`cargo clean`).
 #
@@ -67,24 +68,40 @@ size_kib() {
   if [ -e "$1" ]; then du -sk "$1" 2>/dev/null | awk '{ print $1 }'; else echo 0; fi
 }
 
-# running_in <dir>: prints one running executable under <dir> and succeeds, or
-# fails when there is none. Sets proc_check=0 when no way to list running
-# executables works here, so the listing can say the check was skipped.
+# running_in <dir>: sets `running` to one running executable under <dir> and
+# succeeds, or fails when there is none. Not called in a subshell: it sets
+# proc_check=0 when running executables cannot be listed here, and
+# proc_unreadable=1 when some process could not be read, so the listing can
+# say the check is incomplete. Only an executable counts, not a shell whose
+# cwd is inside <dir>.
 proc_check=1
+proc_unreadable=0
+running=""
 running_in() {
-  local dir="${1%/}" link exe
+  local given="${1%/}" canon link exe pid
+  canon="$(cd "$1" 2> /dev/null && pwd -P)" || canon="$given"
+  running=""
   if [ -r /proc/self/exe ]; then
     for link in /proc/[0-9]*/exe; do
-      exe="$(readlink "$link" 2> /dev/null)" || continue
+      if ! exe="$(readlink "$link" 2> /dev/null)"; then
+        pid="${link%/exe}"
+        [ -e "$pid" ] && proc_unreadable=1
+        continue
+      fi
       exe="${exe% (deleted)}"
-      case "$exe" in "$dir"/*) echo "$exe"; return 0 ;; esac
+      case "$exe" in
+        "$canon"/* | "$given"/*) running="$exe"; return 0 ;;
+      esac
     done
     return 1
   fi
-  if exe="$(ps -axo comm= 2> /dev/null)"; then
-    exe="$(printf '%s\n' "$exe" | awk -v d="$dir/" 'index($0, d) == 1 { print; exit }')"
-    [ -n "$exe" ] && { echo "$exe"; return 0; }
-    return 1
+  # macOS: `comm` is the full path of the executable. Other systems report a
+  # basename, so it could never match: say the check is skipped instead.
+  if [ "$(uname -s)" = Darwin ] && exe="$(ps -axo comm= 2> /dev/null)"; then
+    running="$(printf '%s\n' "$exe" \
+      | awk -v a="$canon/" -v b="$given/" 'index($0, a) == 1 || index($0, b) == 1 { print; exit }')"
+    [ -n "$running" ]
+    return
   fi
   proc_check=0
   return 1
@@ -136,7 +153,7 @@ while IFS="$(printf '\t')" read -r path branch locked; do
   elif ! git merge-base --is-ancestor "$(git -C "$path" rev-parse HEAD)" "$base"; then
     state="unmerged"
     effect="commits not in $base: not removed"
-  elif running="$(running_in "$path")"; then
+  elif running_in "$path"; then
     state="running"
     effect="running process: not removed ($running)"
   else
@@ -160,6 +177,9 @@ EOF
 echo
 if [ "$proc_check" = 0 ]; then
   echo "note: cannot list running processes here: a running binary is not detected"
+fi
+if [ "$proc_unreadable" = 1 ]; then
+  echo "note: some processes could not be read: a binary they run is not detected"
 fi
 echo "total $(human "$total"), cap $(human "$cap_kib")"
 if [ "$total" -le "$cap_kib" ]; then
