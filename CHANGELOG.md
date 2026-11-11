@@ -22,7 +22,10 @@ baseline.
 - A review that cannot start while the author keeps re-proposing no longer
   floods the pane: the same notice (and its blocked receipt) is one line with
   a count, `(22 times)`. A different cause is still its own line.
-
+- A command typed into a pane without Enter (`y` on a half-typed line in `run`
+  mode, `ask`, `auto`) is now reported to the model as `NOT RUN YET`, with the
+  reason, instead of a result that read as done, so it no longer claims a file
+  was written when nothing ran. The result row says `typed, not run`.
 - When an orchestrator run ends (`run_timeout_mins`, a stop or a cancel), the
   batch reviews and asks of its workers still on screen close with `review
   closed: the run ended; nothing was written`, and a late `y` no longer writes

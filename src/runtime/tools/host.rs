@@ -500,9 +500,23 @@ const RECORDED: &str =
 /// What a correction worker is told when it proposes the batch.
 const CORRECTION_PROPOSES: &str = "a correction only stages its fixes: the worker whose change is under review proposes the batch";
 
-/// What the model is told when its command was typed.
-const TYPED_TEXT: &str = "The command was typed into the user's pane. Enter was not pressed: \
-                          the user runs it themselves.";
+/// What the model is told when its command was typed: it has not run, so there
+/// is no output and nothing has changed. `why` is what stopped `y` in `run`
+/// mode from running it, when there is one.
+fn typed_text(why: Option<&str>) -> String {
+    // Enter would reach the program that is running there.
+    let busy = why.is_some_and(|why| why.contains("running"));
+    let advice = if busy {
+        "the user must run it once the program in that pane has finished"
+    } else {
+        "Tell the user to press Enter in that pane to run it"
+    };
+    let why = why.map_or_else(String::new, |why| format!(" ({why})"));
+    format!(
+        "NOT RUN YET: the command was typed into the user's pane without Enter{why}. Nothing \
+         has changed: no file was written and no output exists. {advice}; do not say it is done."
+    )
+}
 
 /// The result of a command the app ran in the pane: the words of the report,
 /// with the output cleaned, redacted and wrapped here, off the UI thread.
@@ -1084,16 +1098,23 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 ),
                 (Decision::Typed(number), Call::RunInPane { .. }) => ended(
                     ToolStatus::Ok,
-                    TYPED_TEXT.to_owned(),
-                    &format!("typed into pane {number} \u{2014} no Enter"),
+                    typed_text(None),
+                    &format!("typed into pane {number} \u{2014} not run"),
                 ),
-                (Decision::Sent, Call::RunInPane { .. }) => {
-                    ended(ToolStatus::Ok, TYPED_TEXT.to_owned(), "typed, no Enter")
+                (Decision::Sent | Decision::SentNotRun(_), Call::RunInPane { .. }) => {
+                    let why = match decision {
+                        Decision::SentNotRun(why) => Some(why),
+                        _ => None,
+                    };
+                    ended(ToolStatus::Ok, typed_text(why), "typed, not run")
                 }
                 // Only the frozen text releases a screen, never a plain `y` or
                 // a mode's answer.
                 (
-                    Decision::Sent | Decision::Typed(_) | Decision::Unprompted,
+                    Decision::Sent
+                    | Decision::SentNotRun(_)
+                    | Decision::Typed(_)
+                    | Decision::Unprompted,
                     Call::ReadPane { .. },
                 ) => ended(
                     ToolStatus::Denied,
@@ -1181,32 +1202,34 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     format!("denied: {NOT_APPROVED}"),
                     NOT_APPROVED,
                 ),
-                (Decision::Sent | Decision::Typed(_), call) => match (scoped, &call) {
-                    // Exactly what the scope allowed, paged like any read:
-                    // resolving the request again would reopen the race it
-                    // closed.
-                    //
-                    // A review worker (read-only, with its proposer's batch to
-                    // look at, S7b) reads through the staged view instead,
-                    // kept in the root: the staged text is not on disk.
-                    (_, Call::ReadFile { .. }) if scope.sees_stage() => {
-                        files::run_within(&host, &scope, call, Within::Root).await
-                    }
-                    (Some((roots, real)), Call::ReadFile { lines, .. }) => {
-                        let limits = host.limits.clone();
-                        match super::read_in_scope(roots, real, *lines, limits).await {
-                            Ok(text) => {
-                                let summary = format!("{} bytes", text.len());
-                                ended(ToolStatus::Ok, text, &summary)
-                            }
-                            Err(failure) => {
-                                let reason = failure.message();
-                                ended(ToolStatus::Error, reason.to_owned(), reason)
+                (Decision::Sent | Decision::SentNotRun(_) | Decision::Typed(_), call) => {
+                    match (scoped, &call) {
+                        // Exactly what the scope allowed, paged like any read:
+                        // resolving the request again would reopen the race it
+                        // closed.
+                        //
+                        // A review worker (read-only, with its proposer's batch to
+                        // look at, S7b) reads through the staged view instead,
+                        // kept in the root: the staged text is not on disk.
+                        (_, Call::ReadFile { .. }) if scope.sees_stage() => {
+                            files::run_within(&host, &scope, call, Within::Root).await
+                        }
+                        (Some((roots, real)), Call::ReadFile { lines, .. }) => {
+                            let limits = host.limits.clone();
+                            match super::read_in_scope(roots, real, *lines, limits).await {
+                                Ok(text) => {
+                                    let summary = format!("{} bytes", text.len());
+                                    ended(ToolStatus::Ok, text, &summary)
+                                }
+                                Err(failure) => {
+                                    let reason = failure.message();
+                                    ended(ToolStatus::Error, reason.to_owned(), reason)
+                                }
                             }
                         }
+                        _ => files::run(&host, &scope, call).await,
                     }
-                    _ => files::run(&host, &scope, call).await,
-                },
+                }
             }
         }
     };

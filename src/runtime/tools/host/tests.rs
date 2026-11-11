@@ -387,6 +387,59 @@ async fn a_sent_run_says_that_enter_is_the_users() {
     assert_eq!(pair(&events(&mut rx)).2, ToolStatus::Ok);
 }
 
+// The model must never read a typed command as a done one: the result says it
+// has not run, and why when `y` in `run` mode typed it instead of running it.
+#[tokio::test]
+async fn a_typed_run_tells_the_model_it_has_not_run_and_why() {
+    const WHY: &str = "the pane has a half-typed line";
+    let cases = [
+        (Decision::SentNotRun(WHY), Some(WHY)),
+        (Decision::Sent, None),
+        (Decision::Typed(3), None),
+    ];
+    for (decision, why) in cases {
+        let (_dir, home, host) = fixture();
+        let (mut scope, mut rx) = scope(Locality::Cloud, &home);
+        scope.approver = Scripted::new(decision);
+        let out = host
+            .dispatch(scope)
+            .call(run_cmd("echo hola > a.txt"))
+            .await;
+        assert!(!out.is_error, "{decision:?}: {out:?}");
+        assert!(
+            out.text.starts_with("NOT RUN YET"),
+            "{decision:?}: {}",
+            out.text
+        );
+        assert!(out.text.contains("Enter"), "{decision:?}: {}", out.text);
+        assert_eq!(why.is_none(), !out.text.contains(WHY), "{decision:?}");
+        if let Some(why) = why {
+            assert!(out.text.contains(why), "{}", out.text);
+        }
+        let (_, _, status, summary) = pair(&events(&mut rx));
+        assert_eq!(status, ToolStatus::Ok);
+        assert!(summary.contains("not run"), "{decision:?}: {summary}");
+        assert!(!summary.starts_with("ok"), "{summary}");
+    }
+}
+
+// Enter would go to the running program, so the advice waits for it to end.
+#[tokio::test]
+async fn a_typed_run_in_a_busy_pane_does_not_say_to_press_enter() {
+    for why in [
+        "a command is still running in the pane",
+        "the pane is running a program",
+    ] {
+        let (_dir, home, host) = fixture();
+        let (mut scope, _rx) = scope(Locality::Cloud, &home);
+        scope.approver = Scripted::new(Decision::SentNotRun(why));
+        let out = host.dispatch(scope).call(run_cmd("cargo build")).await;
+        assert!(out.text.starts_with("NOT RUN YET") && out.text.contains(why));
+        assert!(out.text.contains("has finished"), "{}", out.text);
+        assert!(!out.text.contains("press Enter"), "{}", out.text);
+    }
+}
+
 // Spec (agent-tools, auto-type): the rows name the pane.
 #[tokio::test]
 async fn an_auto_typed_run_names_the_pane_in_its_result_row() {
@@ -398,7 +451,7 @@ async fn an_auto_typed_run_names_the_pane_in_its_result_row() {
     let (_, _, status, summary) = pair(&events(&mut rx));
     assert_eq!(
         (status, summary.as_str()),
-        (ToolStatus::Ok, "typed into pane 3 \u{2014} no Enter")
+        (ToolStatus::Ok, "typed into pane 3 \u{2014} not run")
     );
 }
 

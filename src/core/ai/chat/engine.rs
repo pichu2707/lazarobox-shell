@@ -203,6 +203,10 @@ pub enum Decision {
     /// A check that fails (a full-screen app, a shell that cannot take a
     /// multi-line paste) is a `Denied` with the reason instead.
     Sent,
+    /// `Sent` for a command typed, not run, with the reason `y` in `run` mode
+    /// did not run it (a half-typed line, a program in the pane...); the model
+    /// is told it has not run and why.
+    SentNotRun(&'static str),
     /// `Sent` for a command typed without a prompt (design D18) into the pane
     /// the user knows as number `.0`; the result row names it.
     Typed(usize),

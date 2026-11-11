@@ -154,7 +154,11 @@ fn a_run_on_y_that_is_not_written_is_typed_with_the_reason() {
         effects,
         vec![
             Effect::WritePty(PaneId::FIRST, b"cargo build".to_vec()),
-            decision(turn, 1, Decision::Sent),
+            decision(
+                turn,
+                1,
+                Decision::SentNotRun("the pane is running a program")
+            ),
         ]
     );
     assert_eq!(pending(&a), None, "no second prompt");
@@ -201,7 +205,7 @@ fn y_types_with_the_reason_when_the_command_cannot_run() {
         let effects = y_on(&mut a, turn, command);
         assert!(
             matches!(&effects[..], [Effect::WritePty(PaneId::FIRST, bytes), last]
-                if !bytes.ends_with(b"\r") && *last == decision(turn, 1, Decision::Sent)),
+                if !bytes.ends_with(b"\r") && *last == decision(turn, 1, Decision::SentNotRun(why))),
             "{why}: {effects:?}"
         );
         assert_eq!(slot(&a), None, "{why}");
@@ -226,7 +230,7 @@ fn y_types_into_a_pane_that_still_runs_a_command() {
         a.update(key('y')),
         vec![
             Effect::WritePty(PaneId::FIRST, b"npm test".to_vec()),
-            decision(turn, 2, Decision::Sent),
+            decision(turn, 2, Decision::SentNotRun(RUNNING)),
         ]
     );
     assert_eq!(slot(&a).map(|s| s.2), Some(CallId(1)));

@@ -188,7 +188,7 @@ async fn consent(
         // Cancelled or expired: nobody declined, and it is not recorded so.
         Answer::Decided(Decision::Denied(reason)) => Answered::Unanswered(reason.to_owned()),
         Answer::Decided(Decision::Busy(_)) => Answered::Unanswered("busy".to_owned()),
-        Answer::Decided(Decision::Typed(_) | Decision::Unprompted)
+        Answer::Decided(Decision::Typed(_) | Decision::SentNotRun(_) | Decision::Unprompted)
         | Answer::Ran(_)
         | Answer::Screen(_) => Answered::Unanswered("no user answer".to_owned()),
     };

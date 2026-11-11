@@ -874,7 +874,7 @@ pub(super) async fn answered(
         Decision::Denied(reason) => return denied(reason),
         // A batch is only ever sent or denied by the user, never typed, busy
         // or answered by the approval mode.
-        Decision::Busy(_) | Decision::Typed(_) | Decision::Unprompted => {
+        Decision::Busy(_) | Decision::Typed(_) | Decision::SentNotRun(_) | Decision::Unprompted => {
             return denied(NOT_APPROVED);
         }
     }

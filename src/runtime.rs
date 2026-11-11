@@ -1931,7 +1931,11 @@ impl Panes {
                     if let Some(chats) = self.chats.as_ref() {
                         let session = worker
                             .map_or(SessionKey::Pane(pane), |key| SessionKey::Worker(pane, key));
-                        let sent = decision == crate::core::ai::chat::engine::Decision::Sent;
+                        let sent = matches!(
+                            decision,
+                            crate::core::ai::chat::engine::Decision::Sent
+                                | crate::core::ai::chat::engine::Decision::SentNotRun(_)
+                        );
                         // A `y` for a worker that ended meanwhile reaches no
                         // wait: said, never dropped without a word.
                         if !chats.decide(session, turn, call, decision) && sent && worker.is_some()
