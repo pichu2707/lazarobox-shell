@@ -88,6 +88,29 @@ impl Lab {
         server
     }
 
+    /// A server that says its own `CLARITY_API_TOKEN` on stderr and dies.
+    pub fn noisy(&self, name: &str) -> McpServer {
+        let mut server = self.server(name, "ping", "pong");
+        server.args[1] = "echo \"the token is $CLARITY_API_TOKEN, sorry\" >&2; exit 1".to_owned();
+        server.env = vec!["CLARITY_API_TOKEN".to_owned()];
+        server
+    }
+
+    /// A server that answers `initialize` and then `tools/list` with an error
+    /// whose text is `pad` characters and then its `CLARITY_API_TOKEN`: the 200
+    /// character cut of a message would show the start of the token.
+    pub fn leaky(&self, name: &str, pad: usize) -> McpServer {
+        let mut server = self.server(name, "ping", "pong");
+        let pad = "x".repeat(pad);
+        server.args[1] = format!(
+            "read l; printf '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocolVersion\":\"%s\"}}}}\\n' \"$1\"; \
+             read l; read l; \
+             printf '{{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{{\"code\":-1,\"message\":\"{pad}%s\"}}}}\\n' \"$CLARITY_API_TOKEN\"; sleep 5"
+        );
+        server.env = vec!["CLARITY_API_TOKEN".to_owned()];
+        server
+    }
+
     /// Like [`Lab::server`], naming `env`, and first writing its whole
     /// environment to [`Lab::env_of`] (a recorder).
     pub fn recorder(&self, name: &str, env: &[&str]) -> McpServer {

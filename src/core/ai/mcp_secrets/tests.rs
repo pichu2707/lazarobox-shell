@@ -17,6 +17,31 @@ fn parse(text: &str) -> Loaded {
     Secrets::parse(text.as_bytes())
 }
 
+#[test]
+fn values_of_lists_the_non_empty_values_the_server_is_given() {
+    let loaded = parse(
+        "[clarity]\nCLARITY_API_TOKEN = \"sk-1\"\nOTHER = \"unlisted\"\nEMPTY = \"\"\n\
+         [ga4]\nGOOGLE_CLOUD_PROJECT = \"proj\"\n",
+    );
+    let s = server("clarity", &["CLARITY_API_TOKEN", "EMPTY"]);
+    assert_eq!(loaded.secrets.values_of(&s), ["sk-1"]);
+    assert!(loaded.secrets.values_of(&server("none", &["X"])).is_empty());
+}
+
+#[test]
+fn redact_values_replaces_every_occurrence_longest_first_and_skips_empty() {
+    let values = ["ab".to_owned(), String::new(), "abcd".to_owned()];
+    assert_eq!(
+        redact_values("x abcd y ab z abcd", &values),
+        "x [redacted] y [redacted] z [redacted]"
+    );
+    assert_eq!(redact_values("nothing here", &values), "nothing here");
+    assert_eq!(redact_values("keep", &[]), "keep");
+    // A value that is a piece of the placeholder is not matched in it.
+    let odd = ["ed".to_owned()];
+    assert_eq!(redact_values("ed ed", &odd), "[redacted] [redacted]");
+}
+
 /// The host of these tests: `CLARITY_API_TOKEN=host`, `GITHUB_TOKEN=gh` and a
 /// `PATH`, nothing else.
 fn host(name: &str) -> Option<OsString> {

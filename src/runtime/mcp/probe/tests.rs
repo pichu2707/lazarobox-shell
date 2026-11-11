@@ -150,17 +150,44 @@ async fn the_prober_answers_with_one_event_and_esc_stops_it() {
     let lab = lab();
     let (tx, mut rx) = tokio::sync::mpsc::channel(4);
     let mut prober = Prober::new(lab.home.clone(), None, tx);
-    prober.start(lab.mute("clarity"));
+    prober.start(1, lab.mute("clarity"));
     let pid_file = format!("{}.pid", lab.calls("clarity").display());
     while !Path::new(&pid_file).exists() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     prober.cancel();
-    let Some(AppEvent::McpProbe(report)) = rx.recv().await else {
+    let Some(AppEvent::McpProbe(1, report)) = rx.recv().await else {
         panic!("one McpProbe event");
     };
     assert_eq!(report.verdict, Verdict::Stopped);
     assert_reaped(&lab, "clarity");
+}
+
+#[tokio::test]
+async fn a_new_probe_replaces_the_old_one_which_reports_nothing() {
+    let lab = lab();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let mut prober = Prober::new(lab.home.clone(), None, tx);
+    prober.start(1, lab.mute("clarity"));
+    let pid_file = format!("{}.pid", lab.calls("clarity").display());
+    while !Path::new(&pid_file).exists() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    prober.start(2, lab.listing("ga4", &["a"], "ok", "0"));
+    let Some(AppEvent::McpProbe(id, report)) = rx.recv().await else {
+        panic!("one McpProbe event");
+    };
+    assert_eq!((id, report.verdict), (2, Verdict::Started));
+    assert_reaped(&lab, "clarity");
+    assert!(rx.try_recv().is_err(), "the replaced probe says nothing");
+}
+
+#[tokio::test]
+async fn a_probe_that_panics_still_reports_a_failure() {
+    let report = guarded("clarity", async { panic!("boom") }).await;
+    assert_eq!(report.verdict, Verdict::Failed);
+    assert_eq!(report.lines, ["mcp: clarity unavailable: the probe failed"]);
+    assert!(!format!("{report:?}").contains("boom"));
 }
 
 #[tokio::test]

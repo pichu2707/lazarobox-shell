@@ -109,13 +109,15 @@ fn no_pane_and_no_write_exist_without_the_command() {
 }
 
 #[test]
-fn a_line_with_a_control_character_is_refused_with_a_notice() {
-    let mut a = launched(80, 25);
-    let panes = a.panes.len();
-    let effects = a.on_menu_command(MenuCommand::Connector("ls\nrm x".to_owned()));
-    assert_eq!(effects, []);
-    assert_eq!(a.panes.len(), panes);
-    assert!(a.notice.is_some());
+fn a_line_with_a_control_or_format_character_is_refused_with_a_notice() {
+    for line in ["ls\nrm x", "ls\u{1b}[2J", "ls \u{202e}xr mr"] {
+        let mut a = launched(80, 25);
+        let panes = a.panes.len();
+        let effects = a.on_menu_command(MenuCommand::Connector(line.to_owned()));
+        assert_eq!(effects, [], "{line:?}");
+        assert_eq!(a.panes.len(), panes);
+        assert!(a.notice.is_some());
+    }
 }
 
 #[test]
@@ -141,7 +143,7 @@ fn a_probe_command_becomes_an_effect_and_esc_a_cancel() {
         enabled: true,
     };
     let effects = a.on_menu_command(MenuCommand::Probe(Box::new(server.clone())));
-    assert_eq!(effects, [Effect::McpProbe(Box::new(server))]);
+    assert_eq!(effects, [Effect::McpProbe(1, Box::new(server))]);
     assert_eq!(
         a.on_menu_command(MenuCommand::CancelProbe),
         [Effect::CancelMcpProbe]
@@ -151,15 +153,50 @@ fn a_probe_command_becomes_an_effect_and_esc_a_cancel() {
 #[test]
 fn a_probe_reply_is_kept_for_the_session_and_redraws() {
     let mut a = launched(80, 25);
+    ask_probe(&mut a);
     a.take_dirty();
-    let report = Probed {
-        server: "clarity".to_owned(),
-        verdict: Verdict::Started,
-        lines: vec!["mcp: started clarity (3 tools)".to_owned()],
-        problems: Vec::new(),
-    };
-    assert_eq!(a.update(AppEvent::McpProbe(report.clone())), []);
+    let report = report(Verdict::Started);
+    assert_eq!(a.update(AppEvent::McpProbe(1, report.clone())), []);
     assert_eq!(a.mcp_probe("clarity"), Some(&report));
     assert_eq!(a.mcp_probe("ga4"), None);
     assert!(a.take_dirty());
+}
+
+fn report(verdict: Verdict) -> Probed {
+    Probed {
+        server: "clarity".to_owned(),
+        verdict,
+        lines: vec![format!("{verdict:?}")],
+        problems: Vec::new(),
+    }
+}
+
+fn ask_probe(a: &mut App) -> Vec<Effect> {
+    let server = crate::core::ai::config::McpServer {
+        name: "clarity".to_owned(),
+        command: "clarity-mcp-server".to_owned(),
+        args: Vec::new(),
+        env: Vec::new(),
+        project: None,
+        enabled: true,
+    };
+    a.on_menu_command(MenuCommand::Probe(Box::new(server)))
+}
+
+#[test]
+fn a_late_report_of_a_superseded_probe_does_not_overwrite_the_newer_one() {
+    let mut a = launched(80, 25);
+    ask_probe(&mut a);
+    let second = ask_probe(&mut a);
+    assert!(matches!(second[0], Effect::McpProbe(2, _)), "{second:?}");
+    a.update(AppEvent::McpProbe(2, report(Verdict::Started)));
+    a.update(AppEvent::McpProbe(1, report(Verdict::Stopped)));
+    assert_eq!(a.mcp_probe("clarity"), Some(&report(Verdict::Started)));
+}
+
+#[test]
+fn a_report_nobody_asked_for_is_dropped() {
+    let mut a = launched(80, 25);
+    a.update(AppEvent::McpProbe(7, report(Verdict::Started)));
+    assert_eq!(a.mcp_probe("clarity"), None);
 }

@@ -39,6 +39,7 @@ use super::{
     session::{Line, read_line},
 };
 use crate::core::ai::{
+    mcp_secrets::redact_values,
     sanitize::clean,
     tools::{
         ExternalTool,
@@ -129,6 +130,9 @@ pub struct McpClient {
     /// Set while a frame is being written. A write cut short by a timeout or
     /// a cancel never clears it, which marks the stream as holding half a frame.
     writing: bool,
+    /// The values of `secrets.toml` this server was given: removed from what
+    /// it says (an error message) before that text is cut or shown.
+    redact: Vec<String>,
 }
 
 /// How one request ended, before the cancel notice is written.
@@ -153,6 +157,7 @@ impl McpClient {
             timeouts,
             dead: false,
             writing: false,
+            redact: Vec::new(),
         }
     }
 
@@ -339,8 +344,13 @@ impl McpClient {
                 Ok(Frame::Error {
                     id: got, message, ..
                 }) if got == *id => {
+                    // Redacted before the cut, so a cut cannot leave the start of
+                    // a value; again after `clean`, which can join the pieces
+                    // of one.
+                    let message = redact_values(&message, &self.redact);
+                    let message = redact_values(&clean(&message), &self.redact);
                     return Err(ClientError::Remote(
-                        clean(&message).chars().take(MESSAGE_MAX).collect(),
+                        message.chars().take(MESSAGE_MAX).collect(),
                     ));
                 }
                 Ok(Frame::Request { id, method, .. }) => {

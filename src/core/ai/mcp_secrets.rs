@@ -149,6 +149,21 @@ impl Secrets {
         self.tables.get(server)?.get(name).map(String::as_str)
     }
 
+    /// The non-empty values the child of `server` gets from the file: those of
+    /// the names its entry lists in `env`. What [`redact_values`] removes.
+    pub fn values_of(&self, server: &McpServer) -> Vec<String> {
+        let Some(table) = self.tables.get(&server.name) else {
+            return Vec::new();
+        };
+        server
+            .env
+            .iter()
+            .filter_map(|name| table.get(name))
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .collect()
+    }
+
     /// The value lookup of one server: a name its entry lists in `env` takes
     /// its value from the server's own table, else from `host` (lazarobox's
     /// environment); any other name comes from `host` only, so the base
@@ -167,6 +182,39 @@ impl Secrets {
                 .or_else(|| host(name))
         }
     }
+}
+
+/// What replaces a value in text that a server said.
+pub const REDACTED: &str = "[redacted]";
+
+/// `text` with every occurrence of each non-empty `values` entry replaced by
+/// [`REDACTED`], the longest value first so a value that holds another is not
+/// left half shown. Call it on the WHOLE text, before any cut: a cut may split
+/// a value and leave its start in view. Text a server says (stderr, an RPC
+/// error) can echo a value in a shape no pattern knows.
+pub fn redact_values(text: &str, values: &[String]) -> String {
+    let mut ordered: Vec<&str> = values
+        .iter()
+        .map(String::as_str)
+        .filter(|v| !v.is_empty())
+        .collect();
+    ordered.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    // One pass, so a value that sits inside `[redacted]` is never matched.
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(first) = rest.chars().next() {
+        match ordered.iter().find(|v| rest.starts_with(**v)) {
+            Some(value) => {
+                out.push_str(REDACTED);
+                rest = &rest[value.len()..];
+            }
+            None => {
+                out.push(first);
+                rest = &rest[first.len_utf8()..];
+            }
+        }
+    }
+    out
 }
 
 /// The problem of text that is not UTF-8 or not TOML, by the line of byte
