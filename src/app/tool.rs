@@ -12,14 +12,14 @@
 use super::*;
 use crate::core::ai::chat::{
     approval::{
-        Approval, ApprovalAsk, AutoCtx, DRIVE_GRANT_DENIED, GITHUB_GRANT_DENIED, Origin,
-        QUEUE_FULL, Route, TOOL_GRANT_DENIED, answers_itself, blocked_read_reason,
+        Approval, ApprovalAsk, AutoCtx, DRIVE_GRANT_DENIED, EXEC_GRANT_DENIED, GITHUB_GRANT_DENIED,
+        Origin, QUEUE_FULL, Route, TOOL_GRANT_DENIED, answers_itself, blocked_read_reason,
         counts_toward_pause, reason_line, route,
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
 use crate::core::ai::{
-    config::ApprovalMode,
+    config::{ApprovalMode, ToolToggle},
     sanitize::clean,
     tools::{
         exec::Fallback,
@@ -189,9 +189,13 @@ impl App {
         if matches!(ask, ApprovalAsk::GithubGrant { .. }) {
             return Self::deny_for(id, worker, turn, call, GITHUB_GRANT_DENIED);
         }
-        // Only the user's `/write` opens the Write dialog, never a tool call.
-        if matches!(ask, ApprovalAsk::ToolGrant { .. }) {
-            return Self::deny_for(id, worker, turn, call, TOOL_GRANT_DENIED);
+        // Only the user's `/write` or `/exec` opens a grant dialog, never a tool call.
+        if let ApprovalAsk::ToolGrant { toggle, .. } = &ask {
+            let why = match toggle {
+                ToolToggle::Exec => EXEC_GRANT_DENIED,
+                _ => TOOL_GRANT_DENIED,
+            };
+            return Self::deny_for(id, worker, turn, call, why);
         }
         // Only the user's choice of a Windows drive folder opens its grant.
         if matches!(ask, ApprovalAsk::DriveGrant { .. }) {

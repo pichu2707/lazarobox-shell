@@ -470,10 +470,10 @@ pub struct ChatState {
     /// The user granted the GitHub tools to this chat with `/github`. Never
     /// stored: it ends with the pane, a resume and the events of the spec.
     github_granted: bool,
-    /// The user turned Write on for this chat with `/write`. Never stored or
-    /// saved to the config: it ends with the pane, a resume, a folder change
-    /// and the tools going off.
-    write_granted: bool,
+    /// The toggles the user turned on for this chat with `/write` and
+    /// `/exec`. Never stored or saved to the config: each ends with the pane,
+    /// a resume, a folder change and the tools going off.
+    tool_grants: Vec<crate::core::ai::config::ToolToggle>,
     /// The Windows drive folder the user let this chat write in, from the
     /// grant prompt's `y` (openspec `wsl-drive-access` D7). Never stored:
     /// cleared on every folder change and a resume, never inherited.
@@ -618,7 +618,7 @@ impl ChatState {
             block_why: BlockWhy::Marker,
             github_unmarked: false,
             github_granted: false,
-            write_granted: false,
+            tool_grants: Vec::new(),
             drive_grant: None,
             issue_draft: None,
             feedback_hint: None,
@@ -1120,14 +1120,28 @@ impl ChatState {
         self.github_granted = granted;
     }
 
+    /// Whether the user turned `toggle` on for this chat with `/write` or
+    /// `/exec`.
+    pub fn tool_granted(&self, toggle: crate::core::ai::config::ToolToggle) -> bool {
+        self.tool_grants.contains(&toggle)
+    }
+
+    /// Only the dialog's `y` sets one (the app's key handler).
+    pub fn set_tool_granted(&mut self, toggle: crate::core::ai::config::ToolToggle, on: bool) {
+        self.tool_grants.retain(|held| *held != toggle);
+        if on {
+            self.tool_grants.push(toggle);
+        }
+    }
+
     /// Whether the user turned Write on for this chat with `/write`.
     pub fn write_granted(&self) -> bool {
-        self.write_granted
+        self.tool_granted(crate::core::ai::config::ToolToggle::Write)
     }
 
     /// Only the `/write` dialog's `y` sets it (the app's key handler).
     pub fn set_write_granted(&mut self, granted: bool) {
-        self.write_granted = granted;
+        self.set_tool_granted(crate::core::ai::config::ToolToggle::Write, granted);
     }
 
     /// The Windows drive folder the user let this chat write in.
