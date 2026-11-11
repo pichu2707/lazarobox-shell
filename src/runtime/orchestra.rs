@@ -1687,6 +1687,7 @@ impl RunManager {
             usage: live.run.usage(id),
             partial: live.run.usage_partial(id),
             overridden: false,
+            clarifying: live.run.clarifying(id),
         };
         self.send(pane, OrchestraEvent::Worker(row));
     }
@@ -1938,22 +1939,23 @@ impl RunManager {
         let host = self.tooling.as_ref().map(|tooling| &tooling.host);
         let batch = review::batch_of(pane, live.run.id(), id);
         let unproposed = || host.is_some_and(|host| host.unproposed(batch));
-        let (Some(what), Some(spec)) = (live.run.disclosure(id, unproposed), live.run.spec(id))
-        else {
+        let Some(spec) = live.run.spec(id) else {
             return;
         };
-        self.send(
-            pane,
-            OrchestraEvent::Disclosed {
-                run: live.run.id(),
-                worker: id,
-                workers: live.run.worker_count(),
-                kind: spec.task,
-                engine: spec.engine.clone(),
-                model: spec.model.clone(),
-                what,
-            },
-        );
+        for what in live.run.disclosures(id, unproposed) {
+            self.send(
+                pane,
+                OrchestraEvent::Disclosed {
+                    run: live.run.id(),
+                    worker: id,
+                    workers: live.run.worker_count(),
+                    kind: spec.task,
+                    engine: spec.engine.clone(),
+                    model: spec.model.clone(),
+                    what,
+                },
+            );
+        }
     }
 }
 
@@ -2104,6 +2106,24 @@ impl Orchestra for Bound {
         if let Some(manager) = self.manager.upgrade() {
             manager.on_run(self.pane, run, |live| live.run.ran(worker, ran));
         }
+    }
+
+    fn clarify(&self, run: RunId, worker: WorkerId, what: &str) -> bool {
+        // Redacted and masked like a refusal's reason before the run keeps it.
+        let what = refusal_reason(what);
+        let manager = self.manager.upgrade();
+        manager
+            .and_then(|manager| {
+                manager.on_run(self.pane, run, |live| live.run.clarify(worker, &what))
+            })
+            .unwrap_or(false)
+    }
+
+    fn clarifying(&self, run: RunId, worker: WorkerId) -> bool {
+        let manager = self.manager.upgrade();
+        manager
+            .and_then(|manager| manager.on_run(self.pane, run, |live| live.run.clarifying(worker)))
+            .unwrap_or(false)
     }
 
     fn receipt_line(&self, run: RunId, worker: WorkerId, current: &[Change]) -> Option<String> {

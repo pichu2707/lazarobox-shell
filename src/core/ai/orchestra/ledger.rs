@@ -132,6 +132,9 @@ pub struct Handoff {
     /// separated; empty when it had none (W8b). Names lazarobox validated,
     /// not worker text.
     pub extra: String,
+    /// What a `simple` worker asked through `needs_specification`, one clean
+    /// line; empty when it did not (W8c). The worker's text, so inert data.
+    pub clarification: String,
 }
 
 impl Handoff {
@@ -166,6 +169,7 @@ impl Handoff {
             decisions: judgement.decisions,
             audit,
             extra: facts.extra,
+            clarification: facts.clarification,
         }
     }
 
@@ -202,6 +206,8 @@ pub(super) struct Facts {
     pub prior: Option<Audit>,
     /// The extra fields of the worker's brief, by name.
     pub extra: String,
+    /// The worker's recorded question (W8c); empty for none.
+    pub clarification: String,
 }
 
 /// Why a handoff was not stored.

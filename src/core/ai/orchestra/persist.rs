@@ -93,6 +93,9 @@ impl Item {
         if !handoff.extra.is_empty() {
             content.push_str(&format!("\nbrief extra fields: {}", handoff.extra));
         }
+        if !handoff.clarification.is_empty() {
+            content.push_str(&format!("\nclarification: {}", handoff.clarification));
+        }
         Self {
             key,
             note: Note {

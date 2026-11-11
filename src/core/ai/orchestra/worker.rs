@@ -46,6 +46,17 @@ impl WorkerSpec {
     }
 }
 
+/// How lazarobox records that a worker's work ended on a call of its own
+/// (D3), not on text: a `simple` worker that asked for a clearer brief.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Closing {
+    /// `needs_specification`: the worker's question, cleaned to one line.
+    Clarify(String),
+}
+
+/// The longest question kept, in characters.
+pub const CLARIFY_MAX: usize = 200;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WorkerStatus {
     Queued,

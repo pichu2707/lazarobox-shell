@@ -89,8 +89,8 @@ pub enum Toolset {
     /// through the user's review; a command runs only after that batch is
     /// applied, and asks the user every time. The menu caps Write and Exec.
     Code,
-    /// The `simple` worker (W8a): the same families as `Code`, for a direct,
-    /// fully specified task. Kept apart from `Code` so a read-only goal can
+    /// The `simple` worker (W8a): the families of `Code` and `needs_specification`
+    /// (W8c), for a direct, fully specified task. Kept apart from `Code` so a read-only goal can
     /// start it without Write instead of refusing it.
     Simple,
     /// The orchestration tools and the pane reads (`list_panes`,
@@ -107,7 +107,12 @@ impl Toolset {
         let read = FamilySet::EMPTY.with(Family::Read);
         match self {
             Self::ReadOnly => read,
-            Self::Code | Self::Simple => read.with(Family::Write).with(Family::Exec),
+            Self::Code => read.with(Family::Write).with(Family::Exec),
+            // `Clarify` has no toggle: the ceiling never takes it away.
+            Self::Simple => read
+                .with(Family::Write)
+                .with(Family::Exec)
+                .with(Family::Clarify),
             Self::Orchestrator => read.with(Family::PaneRead).with(Family::Orchestra),
         }
     }
@@ -145,6 +150,8 @@ mod ceiling_exec_tests;
 mod ceiling_tests;
 #[cfg(test)]
 mod claims_tests;
+#[cfg(test)]
+mod clarify_tests;
 #[cfg(test)]
 mod feature_tests;
 #[cfg(test)]

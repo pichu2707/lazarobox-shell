@@ -431,6 +431,8 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         // The host reads the index and builds the commit review itself.
         | Call::GitCommit { .. }
         | Call::Github(_)
+        // It records the worker's question on the run: nothing to approve.
+        | Call::NeedsSpecification { .. }
         | Call::Orchestra(_) => None,
     }
 }

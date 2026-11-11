@@ -141,6 +141,11 @@ pub enum Call {
     RunCommand {
         args: Value,
     },
+    /// A `simple` worker's brief is not enough (W8c): `what` is the worker's
+    /// own text, so it stays out of logs; the run records it cleaned.
+    NeedsSpecification {
+        what: String,
+    },
     /// What each pane runs: read-only metadata, no argument.
     ListPanes,
     /// The text of another pane's screen, plus up to `scrollback` lines of
@@ -229,6 +234,10 @@ impl std::fmt::Debug for Call {
                 .field("new_len", &new.len())
                 .finish(),
             Call::ProposeBatch => f.write_str("ProposeBatch"),
+            Call::NeedsSpecification { what } => f
+                .debug_struct("NeedsSpecification")
+                .field("what_len", &what.len())
+                .finish(),
             Call::Orchestra(call) => f.debug_tuple("Orchestra").field(call).finish(),
             Call::Github(call) => f.debug_tuple("Github").field(call).finish(),
             Call::IssueDraft(draft) => f
@@ -325,6 +334,7 @@ impl Call {
             Call::WriteFile { .. } => "write_file",
             Call::EditFile { .. } => "edit_file",
             Call::ProposeBatch => "propose_batch",
+            Call::NeedsSpecification { .. } => "needs_specification",
             Call::RunCommand { .. } => "run_command",
             Call::ListPanes => "list_panes",
             Call::ReadPane { .. } => "read_pane",
@@ -408,6 +418,7 @@ impl Call {
             Call::ReadPane { pane, .. } => Cow::Owned(pane.to_string()),
             Call::GitAdd { paths } => Cow::Owned(paths.join(" ")),
             Call::GitCommit { message } => Cow::Borrowed(message),
+            Call::NeedsSpecification { what } => Cow::Borrowed(what),
             Call::Glob { pattern, dir } | Call::Grep { pattern, dir } => match dir {
                 Some(dir) => Cow::Owned(format!("{pattern} in {dir}")),
                 None => Cow::Borrowed(pattern),
@@ -538,7 +549,7 @@ const fn id(name: &'static str, required: bool) -> ArgDef {
 
 /// The built-ins in offer order. `Access::Read` is only a classification,
 /// not an approval rule: see [`Access`].
-const BUILT_INS: [ToolDef; 29] = [
+const BUILT_INS: [ToolDef; 30] = [
     ToolDef {
         name: "find_dir",
         description: "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
@@ -695,6 +706,13 @@ const BUILT_INS: [ToolDef; 29] = [
         access: Access::Write,
         family: Family::Write,
         args: &[],
+    },
+    ToolDef {
+        name: "needs_specification",
+        description: "Say that the brief is not enough to do the task, instead of guessing. `what` is the one question you need answered, in one line. Calling it ends your work: write no more files, then reply with a short text. The coordinator answers or asks the user, and starts a new worker with the answer.",
+        access: Access::Read,
+        family: Family::Clarify,
+        args: &[text("what")],
     },
     ToolDef {
         name: "run_command",
@@ -1132,6 +1150,7 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
             new: field("new"),
         }),
         "propose_batch" => Ok(Call::ProposeBatch),
+        "needs_specification" => Ok(Call::NeedsSpecification { what: text }),
         "run_command" => Ok(Call::RunCommand { args: args.clone() }),
         "list_panes" => Ok(Call::ListPanes),
         "read_pane" => Ok(Call::ReadPane {
@@ -1669,6 +1688,37 @@ mod tests {
 
     fn only(family: Family) -> FamilySet {
         FamilySet::EMPTY.with(family)
+    }
+
+    // W8c 20.1: `needs_specification` takes one `what`, and only the family
+    // `Clarify` parses or lists it.
+    #[test]
+    fn needs_specification_parses_only_with_the_clarify_family() {
+        let q = qualified();
+        let args = json!({"what": "which file?"});
+        let set = only(Family::Clarify);
+        assert_eq!(
+            parse_call_in("needs_specification", &args, &q, set),
+            Ok(Call::NeedsSpecification {
+                what: "which file?".into()
+            })
+        );
+        for other in [FamilySet::LEGACY, FamilySet::ALL] {
+            assert_eq!(
+                parse_call_in("needs_specification", &args, &q, other),
+                Err(ToolError::UnknownTool)
+            );
+        }
+        assert_eq!(
+            parse_call_in("needs_specification", &json!({}), &q, set),
+            Err(ToolError::MissingArgument)
+        );
+        let extra = json!({"what": "x", "more": "y"});
+        assert_eq!(
+            parse_call_in("needs_specification", &extra, &q, set),
+            Err(ToolError::ExtraArgument)
+        );
+        assert_eq!(names(&registry_with(&[], set)), ["needs_specification"]);
     }
 
     // P0b.1: the offered list is a filter over families, in table order.

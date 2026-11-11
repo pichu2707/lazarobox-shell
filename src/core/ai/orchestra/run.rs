@@ -15,11 +15,12 @@ use super::receipt::{self, Evidence};
 use super::review;
 use super::steps::{Gate, Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
 use super::textcall;
-use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
+use super::worker::{CLARIFY_MAX, Closing, ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::{Availability, Usage, locality};
 use crate::core::ai::chat::guidance::guidance;
 use crate::core::ai::config::Task;
+use crate::core::ai::sanitize::clean;
 use crate::core::ai::tools::Locality;
 use crate::core::ai::tools::github::forwards_off_machine;
 use crate::core::ai::tools::label;
@@ -199,6 +200,12 @@ pub const EXTRA_PREFIX: &str = "lazarobox: brief extra fields: ";
 /// What lazarobox says before the check of a handoff, outside the wrapper.
 const CHECK_PREFIX: &str = "lazarobox: handoff check: ";
 
+/// What lazarobox says before the result of a worker that called
+/// `needs_specification` (W8c), outside the wrapper: text that only says the
+/// phrase does not get it.
+const CLARIFIED: &str =
+    "lazarobox: this worker called needs_specification; its question is in its data below.";
+
 /// A receipt and the counts the ledger line is made of.
 #[derive(Clone, Debug)]
 struct Stored {
@@ -233,6 +240,8 @@ struct Slot {
     parked: bool,
     /// The current turn runs without tools: no write tool was offered to it.
     no_tools: bool,
+    /// The call the worker's attempt ended on (W8c); dropped by a retry.
+    closing: Option<Closing>,
     /// Started by lazarobox itself (a review lens, the refuter, a
     /// correction): outside `max_workers` and with no handoff to wait for
     /// (D22), still shown with its row.
@@ -522,6 +531,29 @@ impl Run {
         id: WorkerId,
         unproposed: impl FnOnce() -> bool,
     ) -> Option<Disclosure> {
+        self.disclosures(id, unproposed).into_iter().next()
+    }
+
+    /// Every fact [`Self::disclosure`] could say: a worker that asked for a
+    /// clearer brief (W8c) says so, and an unproposed batch it staged is
+    /// still said beside it. An empty ledger is expected of it and silent.
+    pub fn disclosures(&self, id: WorkerId, unproposed: impl FnOnce() -> bool) -> Vec<Disclosure> {
+        let Some(slot) = self.slot(id) else {
+            return Vec::new();
+        };
+        let asked = slot.status == WorkerStatus::Done && slot.closing.is_some();
+        let mut said = Vec::new();
+        if asked {
+            said.push(Disclosure::NeedsSpecification);
+        }
+        said.extend(
+            self.silent(id, unproposed)
+                .filter(|what| !asked || matches!(what, Disclosure::StagedNotProposed { .. })),
+        );
+        said
+    }
+
+    fn silent(&self, id: WorkerId, unproposed: impl FnOnce() -> bool) -> Option<Disclosure> {
         let slot = self.slot(id)?;
         if matches!(slot.status, WorkerStatus::Queued | WorkerStatus::Running) {
             return None;
@@ -562,6 +594,33 @@ impl Run {
         if let Some(slot) = self.slots.get_mut(index(id)) {
             slot.commands.ran(ran);
         }
+    }
+
+    /// Worker `id` called `needs_specification` (D3): its closing is recorded,
+    /// the question cleaned to one line and capped. `false` when nothing was
+    /// recorded: the worker is not running, was not offered the tool or had
+    /// already closed (the first question stands).
+    pub fn clarify(&mut self, id: WorkerId, what: &str) -> bool {
+        let Some(slot) = self.slots.get_mut(index(id)) else {
+            return false;
+        };
+        let offered = slot.spec.families.contains(Family::Clarify);
+        if slot.status != WorkerStatus::Running || !offered || slot.closing.is_some() {
+            return false;
+        }
+        let flat = clean(what).split_whitespace().collect::<Vec<_>>().join(" ");
+        slot.closing = Some(Closing::Clarify(flat.chars().take(CLARIFY_MAX).collect()));
+        true
+    }
+
+    /// Whether worker `id` has called `needs_specification` in this attempt.
+    pub fn clarifying(&self, id: WorkerId) -> bool {
+        self.closing(id).is_some()
+    }
+
+    /// The call worker `id`'s attempt ended on, if any.
+    pub fn closing(&self, id: WorkerId) -> Option<&Closing> {
+        self.slot(id)?.closing.as_ref()
     }
 
     /// The user's batch review applied a batch holding `paths` that worker
@@ -683,6 +742,7 @@ impl Run {
             handoff: None,
             parked: false,
             no_tools: false,
+            closing: None,
             internal: !gated,
         });
         let id = WorkerId(self.slots.len() as u32);
@@ -718,6 +778,9 @@ impl Run {
     fn enqueue(&mut self, now: Instant, id: WorkerId, refusal: Option<String>, front: bool) {
         // A new attempt starts the clock over, so a refusal reports no time.
         self.slots[index(id)].started = None;
+        // A new attempt starts over, even one refused at once: the closing of
+        // the last attempt must not show in `collect`.
+        self.slots[index(id)].closing = None;
         // A read-only goal starts no code worker, however it got here (a
         // retry, a relaunch).
         let code = self.refuses_on_read_only(&self.slots[index(id)].spec);
@@ -934,10 +997,20 @@ impl Run {
         // it, then the commands the worker ran (W6), then its text.
         let ledger = self.ledger(id).and_then(ChangeLedger::render);
         let commands = self.slot(id).and_then(|slot| slot.commands.render());
-        let body: Vec<&str> = [ledger.as_deref(), commands.as_deref(), Some(text)]
-            .into_iter()
-            .flatten()
-            .collect();
+        let asked = self.slot(id).and_then(|slot| {
+            let closing = slot.closing.as_ref();
+            closing.map(|Closing::Clarify(what)| format!("needs specification: {what}"))
+        });
+        let called = asked.is_some();
+        let body: Vec<&str> = [
+            asked.as_deref(),
+            ledger.as_deref(),
+            commands.as_deref(),
+            Some(text),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         let wrapped = label::wrap(&nonce, &body.join("\n\n"));
         // How its commands ended is lazarobox's own word, outside the
         // wrapper, so the worker's text cannot pass for it (W6).
@@ -951,6 +1024,11 @@ impl Run {
         let wrapped = match self.brief_extra(id) {
             Some(names) => format!("{EXTRA_PREFIX}{names}\n\n{wrapped}"),
             None => wrapped,
+        };
+        let wrapped = if called {
+            format!("{CLARIFIED}\n\n{wrapped}")
+        } else {
+            wrapped
         };
         let said = self.slot(id).is_some_and(Slot::said_calls_as_text);
         let wrapped = if said {
@@ -1077,6 +1155,10 @@ impl Run {
                 .as_ref()
                 .map(Brief::extra_names)
                 .unwrap_or_default(),
+            clarification: match &slot.closing {
+                Some(Closing::Clarify(what)) => what.clone(),
+                None => String::new(),
+            },
         }
     }
 
@@ -1137,6 +1219,7 @@ impl Run {
             ledger: None,
             prior: None,
             extra: String::new(),
+            clarification: String::new(),
         };
         // A step closes even while the run is halted, its verdict forced to
         // `blocked`: the same rule as a worker's handoff (D17).

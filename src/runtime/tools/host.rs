@@ -464,6 +464,24 @@ impl Unprompted {
 /// What a review worker is told when it reads outside the run's scope.
 const OUT_OF_REVIEW_SCOPE: &str = "that path is outside the run's scope: the review cannot read it";
 
+/// What a worker is told when it writes or runs after `needs_specification`.
+const CLARIFYING: &str =
+    "you asked for a clearer brief: write and run nothing more; end with a short text";
+
+/// Whether `call` is a write or a command of a worker that already called
+/// `needs_specification`: it is refused, before it asks and after it waited.
+fn closed(scope: &TurnScope, call: &Call) -> bool {
+    (call.is_write() || matches!(call, Call::RunCommand { .. }))
+        && (scope.read_scope.as_ref()).is_some_and(|w| w.handle.clarifying(w.run, w.worker))
+}
+
+/// What a worker is told when `needs_specification` recorded nothing.
+const NOT_RECORDED: &str = "your question was not recorded: a first one stands";
+
+/// What a worker is told once its question is recorded.
+const RECORDED: &str =
+    "recorded: the coordinator gets your question; write nothing more and end with a short text";
+
 /// What a correction worker is told when it proposes the batch.
 const CORRECTION_PROPOSES: &str = "a correction only stages its fixes: the worker whose change is under review proposes the batch";
 
@@ -622,6 +640,8 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let mut checked: Result<Call, Cow<'static, str>> = match &call {
         // What the turn does not offer is refused as the parse refuses it.
         call if !scope.offers(call) => Err(refusal_text(ToolError::UnknownTool).into()),
+        // A worker that asked for a clearer brief writes and runs nothing.
+        call if closed(&scope, call) => Err(CLARIFYING.into()),
         Call::RunInPane { command } => command::validate(command)
             .map(|valid| Call::RunInPane {
                 command: valid.as_str().to_owned(),
@@ -940,6 +960,26 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             if let Some(batch) = sealed.as_mut() {
                 batch.resumed();
             }
+            // A parallel call of the same turn may have recorded the
+            // worker's `needs_specification` while this one waited: it is
+            // judged again, and a batch is denied and discarded as the
+            // user's `n` would.
+            if closed(&scope, &call) {
+                record_denied(denied_command.take());
+                let (outcome, status, summary) = match call {
+                    Call::ProposeBatch => {
+                        let no = Decision::Denied(CLARIFYING);
+                        files::answered(&host, &scope, sealed.take(), no).await
+                    }
+                    _ => ended(
+                        ToolStatus::Denied,
+                        format!("denied: {CLARIFYING}"),
+                        CLARIFYING,
+                    ),
+                };
+                owed.answer(status, &summary);
+                return outcome;
+            }
             let decision = match answer {
                 Answer::Decided(decision) => {
                     if let (Some(shown), Decision::Sent) = (approves, decision) {
@@ -1058,6 +1098,17 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 // `offers` let it through only with a run manager to go to.
                 (Decision::Sent, Call::Orchestra(call)) => match &scope.orchestra {
                     Some(handle) => orchestrate(handle, call).await,
+                    None => {
+                        let reason = refusal_text(ToolError::UnknownTool);
+                        ended(ToolStatus::Error, reason.to_owned(), reason)
+                    }
+                },
+                // The worker's question goes to its run, which records it.
+                (Decision::Sent, Call::NeedsSpecification { what }) => match &scope.read_scope {
+                    Some(worker) if worker.handle.clarify(worker.run, worker.worker, &what) => {
+                        ended(ToolStatus::Ok, RECORDED.to_owned(), "needs specification")
+                    }
+                    Some(_) => ended(ToolStatus::Error, NOT_RECORDED.to_owned(), NOT_RECORDED),
                     None => {
                         let reason = refusal_text(ToolError::UnknownTool);
                         ended(ToolStatus::Error, reason.to_owned(), reason)

@@ -887,6 +887,7 @@ async fn a_review_worker_runs_on_the_review_assignment_and_ends_done() {
             usage: None,
             partial: false,
             overridden: false,
+            clarifying: false,
         })
     };
     assert_eq!(lab.next().await, row(WorkerStatus::Running));
@@ -6247,7 +6248,9 @@ async fn a_simple_worker_on_a_read_only_goal_launches_with_read_tools_and_a_note
         fine("worker 1: running")
     );
     let request = lab.seen.first().await;
-    assert_eq!(request.families, FamilySet::EMPTY.with(Family::Read));
+    // Read, and `needs_specification` (W8c): a stripped worker may still ask.
+    let reads = FamilySet::EMPTY.with(Family::Read).with(Family::Clarify);
+    assert_eq!(request.families, reads);
     assert!(
         request.system.contains("not available to you"),
         "{}",

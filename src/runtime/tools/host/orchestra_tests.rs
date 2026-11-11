@@ -391,6 +391,8 @@ struct Scoped {
     own: Pending,
     /// That count as each review began.
     held: Mutex<Vec<usize>>,
+    /// The worker called `needs_specification` (W8c).
+    closed: std::sync::atomic::AtomicBool,
 }
 
 impl Scoped {
@@ -424,6 +426,7 @@ impl Scoped {
             tier: None,
             own: Pending::new(),
             held: Mutex::default(),
+            closed: Default::default(),
         })
     }
 
@@ -446,6 +449,10 @@ const RECEIPT: &str = "review: high · consent granted · clean";
 impl Orchestra for Scoped {
     fn call(&self, _: OrchCall) -> BoxFuture<'static, Outcome> {
         std::future::pending().boxed()
+    }
+
+    fn clarifying(&self, _: RunId, _: WorkerId) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn allows(
@@ -2223,4 +2230,155 @@ async fn the_orphan_review_of_a_plain_chat_batch_has_no_label() {
     assert!(!d.call(write_call("new.rs", "fn x() {}")).await.is_error);
     let (_, review) = host.review_batch(PANE, false).expect("an orphan to review");
     assert_eq!(review.label(), None);
+}
+
+/// A run manager that records `needs_specification` and says the worker has
+/// closed once it did.
+struct Clarifies {
+    asked: Mutex<Vec<String>>,
+}
+
+impl Clarifies {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            asked: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+impl Orchestra for Clarifies {
+    fn call(&self, _: OrchCall) -> BoxFuture<'static, Outcome> {
+        async { unreachable!("no orchestration call") }.boxed()
+    }
+
+    fn allows(&self, _: RunId, _: WorkerId, _: &SecretRoots, _: &Path, _: &str) -> Option<PathBuf> {
+        None
+    }
+
+    fn clarify(&self, _: RunId, _: WorkerId, what: &str) -> bool {
+        let mut asked = self.asked.lock().unwrap();
+        asked.push(what.to_owned());
+        asked.len() == 1
+    }
+
+    fn clarifying(&self, _: RunId, _: WorkerId) -> bool {
+        !self.asked.lock().unwrap().is_empty()
+    }
+}
+
+fn needs(what: &str) -> Call {
+    Call::NeedsSpecification { what: what.into() }
+}
+
+// W8c 20.1: only a `simple` worker has the tool; a `code` or `review`
+// worker and the coordinator get an unknown tool, and nothing is recorded.
+#[tokio::test]
+async fn only_a_simple_worker_may_call_needs_specification() {
+    let (_dir, home, host) = fixture();
+    let cases: [(&str, Option<Toolset>); 4] = [
+        ("code", Some(Toolset::Code)),
+        ("review", Some(Toolset::ReadOnly)),
+        ("coordinator", None),
+        ("simple", Some(Toolset::Simple)),
+    ];
+    for (what, toolset) in cases {
+        let handle = Clarifies::new();
+        let (mut scope, mut rx) = match toolset {
+            Some(toolset) => {
+                let (mut scope, rx) = worker(Locality::Local, &home, handle.clone());
+                scope.families = toolset.families();
+                (scope, rx)
+            }
+            None => orchestrator(&home, Some(handle.clone())),
+        };
+        scope.approver = Scripted::new(Decision::Sent);
+        let out = host.dispatch(scope).call(needs("which file?")).await;
+        let recorded = handle.asked.lock().unwrap().len();
+        if what == "simple" {
+            assert!(!out.is_error, "{out:?}");
+            assert_eq!(recorded, 1);
+            let (_, ask, status, _) = pair(&events(&mut rx));
+            assert_eq!((ask, status), (None, ToolStatus::Ok));
+        } else {
+            refused_unknown(&out, &mut rx, what);
+            assert_eq!(recorded, 0, "{what}");
+        }
+    }
+}
+
+// W8c 20.2: after the call, a write tool and a command are refused with a
+// fixed text, unasked and unstaged; a second question is not recorded.
+#[tokio::test]
+async fn a_worker_that_asked_writes_and_runs_nothing_more() {
+    let (_dir, home, host) = fixture();
+    let handle = Clarifies::new();
+    let (mut scope, mut rx) = worker(Locality::Local, &home, handle.clone());
+    scope.families = Toolset::Simple.families();
+    let approver = Scripted::new(Decision::Sent);
+    scope.approver = approver.clone();
+    let d = host.dispatch(scope);
+    assert!(!d.call(needs("which file?")).await.is_error);
+    let calls = [
+        write_call("a.rs", "fn x() {}"),
+        Call::ProposeBatch,
+        Call::RunCommand {
+            args: json!({"program": "cargo", "args": ["test"]}),
+        },
+    ];
+    for call in calls {
+        let out = d.call(call).await;
+        assert!(
+            out.is_error && out.text.contains("clearer brief"),
+            "{out:?}"
+        );
+    }
+    let again = d.call(needs("another")).await;
+    assert!(again.is_error, "{again:?}");
+    assert!(approver.asked.lock().unwrap().is_empty());
+    let _ = events(&mut rx);
+}
+
+/// An approver whose ask first records the worker's `needs_specification`
+/// (a parallel call of the same turn), then approves.
+struct Closes(Arc<Scoped>);
+
+impl Approver for Closes {
+    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
+        self.0
+            .closed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        async { Decision::Sent.into() }.boxed()
+    }
+}
+
+// W8c review fix: a call that passed the pre-flight and waited for the user
+// is judged again after the answer. A batch approved after the worker asked
+// for a clearer brief is not applied: it is denied and discarded, visibly.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_batch_approved_after_the_worker_asked_is_not_applied() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let d = writer(
+        &host,
+        Locality::Cloud,
+        &home,
+        handle.clone(),
+        Arc::new(Closes(handle.clone())),
+    );
+    assert!(!d.call(write_call("new.rs", "fn x() {}")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(
+        out.is_error && out.text.starts_with("denied") && out.text.contains("clearer brief"),
+        "{out:?}"
+    );
+    assert!(!home.join("dev/app/new.rs").exists());
+    // A write after the closing is refused too.
+    let late = d.call(write_call("later.rs", "fn y() {}")).await;
+    assert!(
+        late.is_error && late.text.contains("clearer brief"),
+        "{late:?}"
+    );
 }
