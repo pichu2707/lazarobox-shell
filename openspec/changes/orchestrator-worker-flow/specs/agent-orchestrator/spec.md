@@ -207,6 +207,11 @@ A change staged by a cheap author MUST be reviewed by a model before it reaches 
 - WHEN the review starts
 - THEN a visible notice says the staged diff goes to `claude>opus`
 
+#### Scenario: A new vendor receiving the diff is announced [W7, auto]
+- GIVEN a cloud author on `claude` and a Review row on another engine (`gemini>pro`)
+- WHEN the review starts
+- THEN a visible notice says the staged diff goes to `gemini>pro`; a Review row on the author's own engine says nothing about the diff
+
 #### Scenario: Reviewer unavailable stops visibly [W7, auto]
 - GIVEN a cheap author's change and a Review row whose engine is not installed
 - WHEN the review is due
