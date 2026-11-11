@@ -17,7 +17,7 @@ use crate::core::ai::config::Task;
 use crate::core::ai::tools::registry::{Family, FamilySet};
 use crate::core::ai::tools::registry_with;
 
-fn run() -> Run {
+pub(super) fn run() -> Run {
     let ready = Availability::Ready {
         engine: "ollama".to_owned(),
         model: Some("llama3:8b".to_owned()),
@@ -31,7 +31,7 @@ fn run() -> Run {
     })
 }
 
-fn brief(outputs: &[&str]) -> Brief {
+pub(super) fn brief(outputs: &[&str]) -> Brief {
     Brief {
         goal: "add a flag".to_owned(),
         inputs: vec!["src/a.rs".to_owned()],
@@ -42,17 +42,17 @@ fn brief(outputs: &[&str]) -> Brief {
     }
 }
 
-fn simple(run: &mut Run, outputs: &[&str]) -> WorkerId {
+pub(super) fn simple(run: &mut Run, outputs: &[&str]) -> WorkerId {
     run.spawn_simple(Instant::now(), brief(outputs), Path::new("/work/app"))
         .unwrap()
 }
 
-fn done(run: &mut Run, id: WorkerId, text: &str) {
+pub(super) fn done(run: &mut Run, id: WorkerId, text: &str) {
     let event = WorkerEvent::Done { text: text.into() };
     run.on_event(Instant::now(), id, event);
 }
 
-fn note() -> Judgement {
+pub(super) fn note() -> Judgement {
     Judgement {
         verdict: Verdict::OnCourse,
         reason: "fits".to_owned(),

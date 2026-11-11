@@ -10,8 +10,11 @@ use super::changes::{Change, ChangeLedger, Disclosure};
 use super::claims::Audit;
 use super::commands::{Commands, Ran};
 use super::feature::{FeatureDoc, FeatureError};
-use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
+use super::ledger::{
+    Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Trail, Unit,
+};
 use super::receipt::{self, Evidence};
+use super::rounds::{ROUNDS, RoundError};
 use super::steps::{Gate, Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
 use super::textcall;
 use super::worker::{CLARIFY_MAX, Closing, ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
@@ -92,6 +95,9 @@ pub enum NextTurn {
     Continue(usize),
     /// Work is pending but `max_turns` turns were taken: the run ends.
     Capped(usize),
+    /// A brief asked a third time: the run ends, naming the brief by its
+    /// first worker (W8c, D4).
+    Limit(WorkerId),
     /// Nothing is pending but a spawn refusal of a step gate stands, naming
     /// this step: the run stays open for the user's reply, who may lift the
     /// gates (W3, option B). The reply turn is counted here.
@@ -126,6 +132,9 @@ pub enum Refusal {
     /// The brief of a `simple` worker is incomplete or names a bad path
     /// (W8b).
     Brief(BriefError),
+    /// `answers` of a `simple` spawn is missing, or names what cannot be
+    /// answered (W8c, D4).
+    Round(RoundError),
     /// The outputs of a `simple` brief overlap a live worker's: two workers
     /// would write the same file (D10). `path` is the path as the new brief
     /// wrote it.
@@ -241,6 +250,14 @@ struct Slot {
     no_tools: bool,
     /// The call the worker's attempt ended on (W8c); dropped by a retry.
     closing: Option<Closing>,
+    /// The clarification rounds the worker's brief had before it (W8c, D4):
+    /// 0 for a fresh brief, its parent's plus one when it carried `answers`.
+    /// Kept across a retry; in memory only (D26).
+    round: u32,
+    /// The first worker of the worker's brief, 0 for a worker with no brief.
+    brief: u32,
+    /// A later spawn answered this worker's clarification.
+    answered: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -563,6 +580,54 @@ impl Run {
         true
     }
 
+    /// The round of worker `id`'s clarification, 1 for the first of its brief
+    /// (W8c), once it called `needs_specification` in this attempt.
+    pub fn clarify_round(&self, id: WorkerId) -> Option<u32> {
+        let slot = self.slot(id)?;
+        matches!(slot.closing, Some(Closing::Clarify(_))).then_some(slot.round + 1)
+    }
+
+    /// What the handoff of worker `id` keeps of its brief's rounds (20.7).
+    fn trail(&self, id: WorkerId) -> Trail {
+        let Some(slot) = self.slot(id) else {
+            return Trail::default();
+        };
+        let asked = u32::from(matches!(slot.closing, Some(Closing::Clarify(_))));
+        let split = match &slot.closing {
+            Some(Closing::Split(files)) => {
+                let line = clean(&files.join(", "));
+                line.split_whitespace().collect::<Vec<_>>().join(" ")
+            }
+            _ => String::new(),
+        };
+        Trail {
+            brief: slot.brief,
+            rounds: slot.round + asked,
+            split,
+        }
+    }
+
+    /// What the turn cap adds to its line while a clarification is open:
+    /// the brief and its round, or nothing.
+    pub fn open_note(&self) -> String {
+        let Some(id) = self.open_clarifications().into_iter().next() else {
+            return String::new();
+        };
+        let slot = &self.slots[index(id)];
+        format!(
+            "; brief {} still waits for an answer (round {} of {ROUNDS})",
+            slot.brief,
+            slot.round + 1
+        )
+    }
+
+    /// A worker ended on a split (W9b): its brief opens no clarification.
+    #[cfg(test)]
+    pub(super) fn split_for_tests(&mut self, id: WorkerId, files: &[&str]) {
+        let files = files.iter().map(|f| (*f).to_owned()).collect();
+        self.slots[index(id)].closing = Some(Closing::Split(files));
+    }
+
     /// Whether worker `id` has called `needs_specification` in this attempt.
     pub fn clarifying(&self, id: WorkerId) -> bool {
         self.closing(id).is_some()
@@ -621,7 +686,63 @@ impl Run {
         self.check_open()?;
         let brief = brief.validate(origin).map_err(Refusal::Brief)?;
         let brief = brief.relative_to(origin);
-        self.spawn_as(now, Task::Simple, &brief.prompt(), Some(brief), true)
+        let parent = self.check_answers(brief.answers).map_err(Refusal::Round)?;
+        let prompt = brief.prompt();
+        let id = self.spawn_as(now, Task::Simple, &prompt, Some(brief), true)?;
+        // The parent's clarification is answered and the chain goes on; a
+        // spawn with no `answers` starts a brief of its own.
+        let (round, first) = match parent {
+            Some(parent) => {
+                self.slots[index(parent)].answered = true;
+                (
+                    self.slots[index(parent)].round + 1,
+                    self.slots[index(parent)].brief,
+                )
+            }
+            None => (0, id.0),
+        };
+        let slot = &mut self.slots[index(id)];
+        slot.round = round;
+        slot.brief = first;
+        Ok(id)
+    }
+
+    /// The workers whose clarification is open: they ended done on a call of
+    /// `needs_specification` and no spawn answered them (D4). A run that
+    /// ended holds none.
+    fn open_clarifications(&self) -> Vec<WorkerId> {
+        if matches!(self.state, RunState::Finished | RunState::Cancelled) {
+            return Vec::new();
+        }
+        let open = |slot: &Slot| {
+            let asked = matches!(slot.closing, Some(Closing::Clarify(_)));
+            asked && slot.status == WorkerStatus::Done && !slot.answered
+        };
+        let numbered = self.slots.iter().enumerate();
+        numbered
+            .filter(|(_, slot)| open(slot))
+            .map(|(i, _)| WorkerId(i as u32 + 1))
+            .collect()
+    }
+
+    /// Checks the `answers` of a `simple` spawn against the open
+    /// clarifications (D4): the worker it answers, or why it is refused.
+    fn check_answers(&self, answers: Option<u32>) -> Result<Option<WorkerId>, RoundError> {
+        let open = self.open_clarifications();
+        let Some(n) = answers else {
+            return open.first().map_or(Ok(None), |w| Err(RoundError::Open(*w)));
+        };
+        let id = WorkerId(n);
+        let Some(slot) = self.slot(id) else {
+            return Err(RoundError::Unknown(n));
+        };
+        if !open.contains(&id) {
+            return Err(RoundError::NotAsked(n));
+        }
+        if slot.round >= ROUNDS {
+            return Err(RoundError::Over(WorkerId(slot.brief)));
+        }
+        Ok(Some(id))
     }
 
     /// A worker lazarobox starts itself (a review lens, a correction): the
@@ -693,6 +814,9 @@ impl Run {
             parked: false,
             no_tools: false,
             closing: None,
+            round: 0,
+            brief: 0,
+            answered: false,
         });
         let id = WorkerId(self.slots.len() as u32);
         if writer {
@@ -944,9 +1068,9 @@ impl Run {
         // it, then the commands the worker ran (W6), then its text.
         let ledger = self.ledger(id).and_then(ChangeLedger::render);
         let commands = self.slot(id).and_then(|slot| slot.commands.render());
-        let asked = self.slot(id).and_then(|slot| {
-            let closing = slot.closing.as_ref();
-            closing.map(|Closing::Clarify(what)| format!("needs specification: {what}"))
+        let asked = self.slot(id).and_then(|slot| match slot.closing.as_ref() {
+            Some(Closing::Clarify(what)) => Some(format!("needs specification: {what}")),
+            _ => None,
         });
         let called = asked.is_some();
         let body: Vec<&str> = [
@@ -1104,8 +1228,9 @@ impl Run {
                 .unwrap_or_default(),
             clarification: match &slot.closing {
                 Some(Closing::Clarify(what)) => what.clone(),
-                None => String::new(),
+                _ => String::new(),
             },
+            trail: self.trail(id),
         }
     }
 
@@ -1167,6 +1292,7 @@ impl Run {
             prior: None,
             extra: String::new(),
             clarification: String::new(),
+            trail: Trail::default(),
         };
         // A step closes even while the run is halted, its verdict forced to
         // `blocked`: the same rule as a worker's handoff (D17).
@@ -1325,6 +1451,16 @@ impl Run {
     /// running, or a finished worker with no handoff, continues in a new turn
     /// until `max_turns` turns were taken (D8); the turn is counted here.
     pub fn next_turn(&mut self) -> NextTurn {
+        // A brief that asked a third time ends the run (D4).
+        let third = self.slots.iter().find(|slot| {
+            let asked = matches!(slot.closing, Some(Closing::Clarify(_)));
+            asked && slot.status == WorkerStatus::Done && slot.round >= ROUNDS
+        });
+        if self.state == RunState::Open
+            && let Some(slot) = third
+        {
+            return NextTurn::Limit(WorkerId(slot.brief));
+        }
         let live = [WorkerStatus::Queued, WorkerStatus::Running]
             .iter()
             .any(|status| !self.ids(*status, |_| true).is_empty());

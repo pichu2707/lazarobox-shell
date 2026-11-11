@@ -27,6 +27,7 @@ fn handoff(worker: u32) -> Handoff {
         audit: None,
         extra: String::new(),
         clarification: String::new(),
+        trail: Default::default(),
     }
 }
 

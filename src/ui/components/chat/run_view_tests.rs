@@ -38,7 +38,7 @@ fn viewing() -> ChatState {
         usage: None,
         partial: false,
         overridden: false,
-        clarifying: false,
+        clarifying: None,
     });
     chat.set_orch_run(Some(RUN));
     assert!(chat.open_run_view(WorkerId(1)));

@@ -70,8 +70,8 @@ pub struct WorkerRow {
     /// never does).
     pub overridden: bool,
     /// The worker ended on a call of `needs_specification` (W8c): its row
-    /// says it needs specification.
-    pub clarifying: bool,
+    /// says it needs specification, in this round of its brief.
+    pub clarifying: Option<u32>,
 }
 
 /// A continuation turn (S4, D8): turn `turn` of at most `max` of run `run`

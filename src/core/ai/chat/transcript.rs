@@ -9,6 +9,7 @@ use super::{
     wrap::{expand_tabs, text_width, wrap_ranges, wrap_words},
     yank,
 };
+use crate::core::ai::orchestra::rounds::ROUNDS;
 use crate::core::ai::{config::Task, orchestra::worker::WorkerStatus};
 
 /// What a transcript line is, which decides its style.
@@ -155,8 +156,10 @@ pub(super) fn worker_line(row: &WorkerRow) -> String {
     if let Some(elapsed) = row.elapsed {
         line.push_str(&format!(" {:.1}s", elapsed.as_secs_f64()));
     }
-    if row.clarifying && row.status == WorkerStatus::Done {
-        line.push_str(" needs specification");
+    if let Some(round) = row.clarifying
+        && row.status == WorkerStatus::Done
+    {
+        line.push_str(&format!(" needs specification, round {round} of {ROUNDS}"));
     }
     // A done worker whose engine reported nothing says so; the number is
     // never estimated.

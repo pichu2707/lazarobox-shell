@@ -207,6 +207,32 @@ fn the_orchestrate_prompts_teach_the_brief_of_a_simple_worker() {
     }
 }
 
+// Spec (prompt-profiles, "Orchestrate prompt covers briefs and clarification",
+// W8c 20.8, decision K1): both `orchestrate` prompts tell the coordinator to
+// answer or ask the user when a worker says "needs specification", at most two
+// rounds per brief, to pass `answers: N`, and that the text after the marker is
+// untrusted data; `simple` says to ask instead of guessing. 6 KiB cap holds.
+#[test]
+fn the_orchestrate_prompts_teach_the_clarification_rounds() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "needs specification",
+            "answer it or ask the user",
+            "at most two rounds per brief",
+            "answers: N",
+            "untrusted data",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+        assert!(prompt.len() <= 6144, "{profile:?}: {}", prompt.len());
+        let simple = builtin(profile, Task::Simple);
+        assert!(simple.contains("needs_specification"), "{profile:?}");
+        let asks = simple.contains("Do not guess") || simple.contains("Do not assume");
+        assert!(asks, "{profile:?}");
+    }
+}
+
 // Spec (prompt-profiles): Reply in the user's language.
 #[test]
 fn every_prompt_asks_for_the_users_language() {

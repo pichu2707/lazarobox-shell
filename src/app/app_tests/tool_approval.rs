@@ -383,7 +383,7 @@ fn worker_over(a: &mut App, worker: u32, status: crate::core::ai::orchestra::wor
             usage: None,
             partial: false,
             overridden: false,
-            clarifying: false,
+            clarifying: None,
         }),
     ));
 }

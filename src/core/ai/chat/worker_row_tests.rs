@@ -31,7 +31,7 @@ fn row(id: u32, status: WorkerStatus, elapsed: Option<u64>) -> WorkerRow {
         usage: None,
         partial: false,
         overridden: false,
-        clarifying: false,
+        clarifying: None,
     }
 }
 
@@ -369,7 +369,7 @@ fn a_refused_worker_never_ran_so_it_does_not_make_the_run_partial() {
 #[test]
 fn a_worker_row_says_it_needs_specification() {
     let mut asked = row(1, WorkerStatus::Done, Some(3));
-    asked.clarifying = true;
+    asked.clarifying = Some(1);
     let mut state = chat();
     state.worker_row(asked);
     state.worker_row(row(2, WorkerStatus::Done, Some(3)));
@@ -382,4 +382,17 @@ fn a_worker_row_says_it_needs_specification() {
         "{lines:?}"
     );
     assert_eq!(lines.iter().filter(said).count(), 1, "{lines:?}");
+}
+
+// Spec (chat-pane, "Row shows the round", W8c 20.3): the row of a worker that
+// ended "needs specification" in round 2 says `round 2 of 2`.
+#[test]
+fn a_clarifying_row_shows_its_round() {
+    let mut second = row(2, WorkerStatus::Done, Some(3));
+    second.clarifying = Some(2);
+    let mut state = chat();
+    state.worker_row(second);
+    let lines = texts(&state);
+    let said = |l: &String| l.contains("needs specification, round 2 of 2");
+    assert!(lines.iter().any(said), "{lines:?}");
 }
