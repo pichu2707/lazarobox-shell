@@ -84,16 +84,16 @@ async fn a_mandatory_review_runs_and_its_receipt_says_mandatory() {
 
 /// A worker deadline the review below outlasts. Not shorter: applying the
 /// batch after the user's `y` is the author's work time, and its fsyncs take
-/// over a second on a loaded machine.
+/// several seconds on a loaded machine.
 #[cfg(target_os = "linux")]
-const DEADLINE: Duration = Duration::from_millis(3000);
+const DEADLINE: Duration = Duration::from_millis(6000);
 
 /// How long each lens of the review takes: within the deadline, which a
 /// lens worker has too. The two lenses run one after the other (one worker
 /// at once; the parked author does not count), so the review outlasts the
 /// author's deadline.
 #[cfg(target_os = "linux")]
-const LENS: Duration = Duration::from_millis(2000);
+const LENS: Duration = Duration::from_millis(4000);
 
 /// The longest any of these tests may take: a hang fails here.
 #[cfg(target_os = "linux")]
@@ -177,9 +177,9 @@ async fn batch_ask(lab: &mut Lab) -> Option<(CallId, Arc<BatchReview>)> {
 
 // Spec "Cheap author, no consent" (17.2, D21) and "A model review does not
 // time out its author" (17.4, D6, owner item 3): an Ollama author with a
-// 3 s deadline stages a `passive` change and proposes it. A review runs on
-// the Review row (claude) with no consent ask and lasts 4 s (two lenses of
-// 2 s, one at a time); then the batch
+// 6 s deadline stages a `passive` change and proposes it. A review runs on
+// the Review row (claude) with no consent ask and lasts 8 s (two lenses of
+// 4 s, one at a time); then the batch
 // review waits for the user, and shows the receipt (`mandatory`). The author
 // is not `timed_out`: neither the review nor the wait counted. Only the menu's
 // engines ran.
@@ -224,7 +224,7 @@ async fn a_cheap_authors_review_runs_unasked_and_does_not_time_it_out() {
 }
 
 // Spec "A model review does not time out its author" (17.4): the review's
-// own lens deadlines still apply. A lens that outlasts its 3 s deadline
+// own lens deadlines still apply. A lens that outlasts its 6 s deadline
 // ends `timed_out` and the run halts as for any failure; its timeout does
 // not end the author, whose own clock stopped for the review (the deadline
 // of a worker is its own turn's, never a sibling's wall-clock sweep). The

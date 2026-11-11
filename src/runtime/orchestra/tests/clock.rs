@@ -13,7 +13,7 @@ const DEADLINE: Duration = Duration::from_millis(1500);
 
 /// The deadline of a writer, whose apply after the answer counts.
 #[cfg(target_os = "linux")]
-const WRITER_DEADLINE: Duration = Duration::from_millis(2500);
+const WRITER_DEADLINE: Duration = Duration::from_millis(5000);
 
 /// The longest any of these tests may take: a hang fails here.
 const BOUND: Duration = Duration::from_secs(20);
@@ -200,11 +200,11 @@ async fn the_wall_clock_ends_the_run_while_a_worker_waits() {
 }
 
 // Spec "A long review does not time out the worker" and "Review time does
-// not count against the deadline" (15.2): a `code` worker with a 2.5 s
-// deadline whose batch waits 4 s for the user, then is approved, is not
+// not count against the deadline" (15.2): a `code` worker with a 5 s
+// deadline whose batch waits 6.5 s for the user, then is approved, is not
 // `timed_out` and its turn goes on to its answer. The deadline is longer
 // than the others' because applying the batch is work time and its fsyncs
-// took about 1.2 s here.
+// took over 2.5 s under a parallel test load.
 // Needs the write primitives (`openat2`, `renameat2`): Linux only.
 #[cfg(target_os = "linux")]
 #[tokio::test]
