@@ -10,10 +10,10 @@ use crate::core::ai::{
     chat::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
-            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, ISSUE_DRAFT_KEYS, MULTI_LINE, NO_CWD,
-            NON_UTF8, Origin, PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS,
-            RUNNING, Reply, SEARCH_KEYS, drive_grant_prompt, exec_notice, grant_prompt,
-            run_sent_line, tool_grant_prompt,
+            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, ISSUE_DRAFT_KEYS, LIMIT_KEYS, LimitFile,
+            MULTI_LINE, NO_CWD, NON_UTF8, Origin, PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED,
+            RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS, drive_grant_prompt, exec_notice,
+            grant_prompt, run_sent_line, tool_grant_prompt,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -768,6 +768,23 @@ impl App {
                 why: None,
                 notice: None,
             }),
+            // Paths and label were made one clean line when asked.
+            ApprovalAsk::Limit {
+                label,
+                over,
+                outside,
+                ..
+            } => Some(ApprovalPrompt {
+                target: worker_target(Some(label), "line limit?"),
+                command: limit_text(over, outside),
+                keys: LIMIT_KEYS,
+                armed,
+                why: None,
+                notice: Some(format!(
+                    "the limit is {} counted lines in one file; split discards the staged batch",
+                    crate::core::ai::orchestra::limit::LIMIT
+                )),
+            }),
             ApprovalAsk::Folder {
                 from,
                 to,
@@ -815,6 +832,25 @@ impl App {
             None => format!("run in pane {number}"),
         })
     }
+}
+
+/// What a limit ask lists: each file with its counted lines, then the files
+/// outside the brief.
+fn limit_text(over: &[LimitFile], outside: &[String]) -> String {
+    let mut parts: Vec<String> = over
+        .iter()
+        .map(|file| {
+            if file.every_line {
+                format!("{}: {} lines, every line counted", file.path, file.lines)
+            } else {
+                format!("{}: {} counted lines", file.path, file.lines)
+            }
+        })
+        .collect();
+    if !outside.is_empty() {
+        parts.push(format!("outside the brief: {}", outside.join(", ")));
+    }
+    parts.join("; ")
 }
 
 /// The first line of an ask's prompt: `what`, after `worker <label>: ` when a

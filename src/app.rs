@@ -9070,6 +9070,7 @@ mod app_tests {
     mod orchestra_gates;
     /// The handoffs of a run in engram, and the degraded mode.
     mod orchestra_handoffs;
+    mod orchestra_limit;
     /// The one-time provider notice of an orchestrating pane.
     mod orchestra_notice;
     /// The run-scoped override picked from a failure alert.

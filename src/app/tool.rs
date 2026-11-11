@@ -271,6 +271,7 @@ impl App {
             | ApprovalAsk::Batch(_)
             | ApprovalAsk::Screen { .. }
             | ApprovalAsk::Consent { .. }
+            | ApprovalAsk::Limit { .. }
             | ApprovalAsk::IssueDraft(_)
             | ApprovalAsk::Folder { .. } => None,
         };

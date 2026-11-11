@@ -3,6 +3,9 @@
 
 use std::collections::BTreeMap;
 
+use super::WorkerKey;
+use super::ledger::one_line;
+use crate::core::ai::chat::approval::{ApprovalAsk, LimitFile};
 use crate::core::ai::tools::diff::{Diff, Kind, diff};
 
 /// The most counted lines one brief may write to one file without an ask.
@@ -23,6 +26,30 @@ impl Count {
     /// Whether the write goes over the limit and must ask.
     pub fn over(&self) -> bool {
         !self.test && self.lines > LIMIT
+    }
+}
+
+/// The limit ask of a `simple` worker's batch, for the user's chat pane: the
+/// files over the limit (`over`, with their counted lines) and the staged
+/// files outside the brief, every path one clean line. It is aimed at the
+/// worker's session.
+pub fn limit_ask(
+    worker: WorkerKey,
+    label: &str,
+    over: &[(String, Count)],
+    outside: &[String],
+) -> ApprovalAsk {
+    ApprovalAsk::Limit {
+        worker,
+        label: one_line(label),
+        over: (over.iter())
+            .map(|(path, count)| LimitFile {
+                path: one_line(path),
+                lines: count.lines,
+                every_line: count.every_line,
+            })
+            .collect(),
+        outside: outside.iter().map(|path| one_line(path)).collect(),
     }
 }
 

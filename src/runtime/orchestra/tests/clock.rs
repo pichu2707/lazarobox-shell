@@ -303,3 +303,49 @@ async fn a_worker_cut_at_the_cli_cap_leaves_its_batch_as_an_orphan() {
     assert_eq!(review.counts(), "1 file, +1 -0");
     assert!(!lab.app().join("a.txt").exists());
 }
+
+// Review fix 4 (risk 4): the limit ask raised through the worker's real
+// approver (`Rerouted`) stops the worker's own clock while it waits, and the
+// count returns to zero after every way it can end: `y`, `n`, a cancel and an
+// ended chat.
+#[tokio::test]
+async fn a_limit_ask_holds_the_workers_own_count_until_it_is_answered() {
+    use crate::core::ai::{
+        chat::approval::ApprovalAsk,
+        orchestra::limit::{Count, limit_ask},
+    };
+    let answers = [
+        Decision::Sent,
+        Decision::Denied(crate::app::DECLINED),
+        Decision::Denied(crate::app::CANCELLED),
+        Decision::Denied(crate::runtime::tools::approver::ENDED),
+    ];
+    for answer in answers {
+        let lab = reading_lab();
+        let waits = Waits::new();
+        let (run, handle, _turn) = reviewers(&lab, &waits, 1, DEADLINE, Duration::MAX);
+        handle.call(spawn(Task::Review, "check")).await;
+        let route = lab
+            .manager
+            .on_run(pane(), run, |live| live.routes[&WorkerId(1)].clone())
+            .unwrap();
+        let over = [(
+            "src/a.rs".to_owned(),
+            Count {
+                lines: 401,
+                every_line: false,
+                test: false,
+            },
+        )];
+        let ask: ApprovalAsk = limit_ask(route.key, "1/1 review x>y", &over, &[]);
+        let wait = Rerouted(route).ask(CallId(77), &ask);
+        assert_eq!(
+            own_count(&lab, run, 1),
+            1,
+            "{answer:?}: held while it waits"
+        );
+        assert!(waits.decide(session_of(run, 1), 7, CallId(77), answer));
+        wait.await;
+        assert_eq!(own_count(&lab, run, 1), 0, "{answer:?}: let go after");
+    }
+}

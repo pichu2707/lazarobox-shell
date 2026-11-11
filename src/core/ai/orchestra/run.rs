@@ -13,6 +13,7 @@ use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{
     Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Trail, Unit,
 };
+use super::limit::{Count, Written};
 use super::receipt::{self, Evidence};
 use super::review;
 use super::rounds::{ROUNDS, RoundError};
@@ -259,6 +260,10 @@ struct Slot {
     brief: u32,
     /// A later spawn answered this worker's clarification.
     answered: bool,
+    /// The counted lines of the batches the worker's brief applied (W9, B).
+    written: Written,
+    /// The counts of the batch the worker proposed last, until it is applied.
+    counted: Vec<(String, Count)>,
     /// The worker whose clarification this one answers: it is reopened when
     /// this one ends without completing, so the round count goes on.
     parent: Option<WorkerId>,
@@ -676,11 +681,41 @@ impl Run {
         )
     }
 
-    /// A worker ended on a split (W9b): its brief opens no clarification.
-    #[cfg(test)]
-    pub(super) fn split_for_tests(&mut self, id: WorkerId, files: &[&str]) {
-        let files = files.iter().map(|f| (*f).to_owned()).collect();
-        self.slots[index(id)].closing = Some(Closing::Split(files));
+    /// The files of worker `id`'s proposed batch (`counts`, per project
+    /// path) that go over the limit with what the worker already applied (W9,
+    /// B), with the counted lines they would hold. Only a `simple` worker has
+    /// a cap (assumption D). The counts are kept until the batch is applied.
+    pub fn over_limit(&mut self, id: WorkerId, counts: &[(String, Count)]) -> Vec<(String, Count)> {
+        let Some(slot) = self.slots.get_mut(index(id)) else {
+            return Vec::new();
+        };
+        if slot.spec.task != Task::Simple {
+            return Vec::new();
+        }
+        slot.counted = counts.to_vec();
+        let each = counts.iter();
+        let total = each.map(|(path, count)| (path.clone(), slot.written.with(path, *count)));
+        total.filter(|(_, count)| count.over()).collect()
+    }
+
+    /// Worker `id` chose to split its brief (W9b): `files` are the files over
+    /// the limit, cleaned to one line each and capped like a clarification
+    /// question. It ends the worker's writes and opens no clarification.
+    /// `false` when nothing was recorded: it is not running or had closed.
+    pub fn split(&mut self, id: WorkerId, files: &[String]) -> bool {
+        let Some(slot) = self.slots.get_mut(index(id)) else {
+            return false;
+        };
+        if slot.status != WorkerStatus::Running || slot.closing.is_some() {
+            return false;
+        }
+        let one_line = |file: &String| {
+            let flat = clean(file).split_whitespace().collect::<Vec<_>>().join(" ");
+            flat.chars().take(CLARIFY_MAX).collect::<String>()
+        };
+        slot.closing = Some(Closing::Split(files.iter().map(one_line).collect()));
+        slot.ledger.discard_pending();
+        true
     }
 
     /// Whether worker `id` has called `needs_specification` in this attempt.
@@ -698,6 +733,11 @@ impl Run {
     pub fn applied(&mut self, id: WorkerId, paths: &[String]) {
         if let Some(slot) = self.slots.get_mut(index(id)) {
             slot.ledger.applied(paths);
+            for (path, count) in std::mem::take(&mut slot.counted) {
+                if paths.contains(&path) {
+                    slot.written.add(&path, count);
+                }
+            }
         }
     }
 
@@ -880,6 +920,8 @@ impl Run {
             brief: 0,
             answered: false,
             parent: None,
+            written: Written::default(),
+            counted: Vec::new(),
             internal: !gated,
         });
         let id = WorkerId(self.slots.len() as u32);
@@ -1140,6 +1182,9 @@ impl Run {
         let commands = self.slot(id).and_then(|slot| slot.commands.render());
         let asked = self.slot(id).and_then(|slot| match slot.closing.as_ref() {
             Some(Closing::Clarify(what)) => Some(format!("needs specification: {what}")),
+            Some(Closing::Split(files)) => {
+                Some(format!("split chosen: {} (discarded)", files.join(", ")))
+            }
             _ => None,
         });
         let called = asked.is_some();

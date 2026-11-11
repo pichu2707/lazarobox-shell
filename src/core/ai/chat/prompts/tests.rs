@@ -233,6 +233,24 @@ fn the_orchestrate_prompts_teach_the_clarification_rounds() {
     }
 }
 
+// Spec (prompt-profiles, "Orchestrate prompt covers briefs and clarification",
+// split half, W9b 22.8, decision K1): after a split the coordinator issues two
+// new briefs, and the 6 KiB cap holds.
+#[test]
+fn the_orchestrate_prompts_teach_the_split() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "split chosen",
+            "two new briefs",
+            "not a clarification round",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+        assert!(prompt.len() <= 6144, "{profile:?}: {}", prompt.len());
+    }
+}
+
 // Spec (prompt-profiles): Reply in the user's language.
 #[test]
 fn every_prompt_asks_for_the_users_language() {

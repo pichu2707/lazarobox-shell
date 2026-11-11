@@ -822,18 +822,26 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 checked = Err(CORRECTION_PROPOSES.into());
             }
             // A batch is sealed before the ask: the user reviews what was
-            // sealed. A high-risk change is reviewed first, with the user's
+            // sealed. A `simple` worker's file over the line limit asks first
+            // (W9b), then a high-risk change is reviewed first, with the user's
             // consent (S7b); the batch review follows whatever it found.
-            (Call::ProposeBatch, _, _) => {
-                review::before_batch(&host, &scope).await;
-                match files::seal(&host, &scope).await {
-                    Ok((batch, review)) => {
-                        ask = Some(ApprovalAsk::Batch(review));
-                        sealed = Some(batch);
+            (Call::ProposeBatch, _, _) => match limit::check(&host, &scope, &[]).await {
+                limit::Limited::Go(asked) => {
+                    review::before_batch(&host, &scope).await;
+                    // What the review staged is counted again before the seal.
+                    match limit::check(&host, &scope, &asked).await {
+                        limit::Limited::Go(_) => match files::seal(&host, &scope).await {
+                            Ok((batch, review)) => {
+                                ask = Some(ApprovalAsk::Batch(review));
+                                sealed = Some(batch);
+                            }
+                            Err(why) => checked = Err(why.into()),
+                        },
+                        limit::Limited::Stop(why) => checked = Err(why.into()),
                     }
-                    Err(why) => checked = Err(why.into()),
                 }
-            }
+                limit::Limited::Stop(why) => checked = Err(why.into()),
+            },
             // A search asks with how concrete the root it walks is: the
             // approval mode lets only the search of a concrete root go.
             (Call::Grep { .. }, locality, _) if scope.reads_ask(locality) => {
@@ -1222,6 +1230,7 @@ mod files;
 mod gate;
 mod git;
 mod github;
+mod limit;
 pub(crate) use git::locate_git;
 mod orphan;
 mod review;

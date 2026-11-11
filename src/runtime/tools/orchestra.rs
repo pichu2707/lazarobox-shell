@@ -20,6 +20,7 @@ use crate::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
             commands::Ran,
+            limit::Count,
             review::{self, Assessment},
             tools::OrchCall,
         },
@@ -187,6 +188,24 @@ pub trait Orchestra: Send + Sync {
     /// The user's batch review applied a batch holding `paths` that `worker`
     /// of `run` proposed.
     fn applied(&self, _run: RunId, _worker: WorkerId, _paths: &[String]) {}
+
+    /// The files of the batch `worker` proposes (`counts`, per project path)
+    /// that go over the line limit with what it applied before (W9). Only a
+    /// `simple` worker has a cap: the default lists nothing. `None` when the
+    /// run cannot be reached: the lines cannot be counted, and the host must
+    /// not propose the batch unasked.
+    fn over_limit(
+        &self,
+        _run: RunId,
+        _worker: WorkerId,
+        _counts: Vec<(String, Count)>,
+    ) -> Option<Vec<(String, Count)>> {
+        Some(Vec::new())
+    }
+
+    /// `worker` chose to split its brief: `files` are the files over the
+    /// limit. The run records it as the worker's closing (W9b).
+    fn split(&self, _run: RunId, _worker: WorkerId, _files: Vec<String>) {}
 }
 
 /// The run manager of a turn.
