@@ -17,13 +17,16 @@ use crate::core::ai::chat::{
         counts_toward_pause, reason_line, route,
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
+    review::RUN_ENDED,
 };
 use crate::core::ai::{
     config::{ApprovalMode, ToolToggle},
+    orchestra::RunId,
     sanitize::clean,
     tools::{
         exec::Fallback,
         registry::{Family, FamilySet},
+        stage::StageKey,
     },
 };
 
@@ -602,6 +605,43 @@ impl App {
         self.withdraw_where(id, |approval| {
             approval.call().is_some() && approval.ask().worker() == Some(key)
         });
+    }
+
+    /// Run `run` of chat `id` ended: every ask of its workers goes, the
+    /// shown one and the queued ones, and so does the orphan review of one of
+    /// its workers' batches. The run denied them, so nothing waits for an
+    /// answer and none is sent; a `y` found no batch to write. Always said,
+    /// never a silent close.
+    pub(super) fn withdraw_run(&mut self, id: PaneId, run: RunId) {
+        let ours = |approval: &Approval| match approval.ask() {
+            ApprovalAsk::Batch(review) => review.worker().is_some_and(|key| key.run == run),
+            ask => approval.call().is_some() && ask.worker().is_some_and(|key| key.run == run),
+        };
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        let held: Vec<&Approval> = (chat.approvals().pending().into_iter())
+            .chain(chat.approvals().queued())
+            .filter(|approval| ours(approval))
+            .collect();
+        let reviews = held
+            .iter()
+            .filter(|approval| matches!(approval.ask(), ApprovalAsk::Batch(_)))
+            .count();
+        let asks = held.len() - reviews;
+        if chat
+            .orphan()
+            .is_some_and(|batch| matches!(batch.key, StageKey::Worker(_, key) if key.run == run))
+        {
+            chat.set_orphan(None);
+        }
+        if reviews > 0 {
+            chat.push_system_line(RUN_ENDED.to_owned());
+        }
+        if asks > 0 {
+            chat.push_system_line("ask closed: the run ended".to_owned());
+        }
+        self.withdraw_where(id, ours);
     }
 
     fn withdraw_where(&mut self, id: PaneId, stale: impl Fn(&Approval) -> bool) {

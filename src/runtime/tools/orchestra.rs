@@ -170,6 +170,12 @@ pub trait Orchestra: Send + Sync {
         None
     }
 
+    /// Whether `run` is still the live run of its pane: a proposal of a run
+    /// that ended is refused, since the run already denied its batches.
+    fn live(&self, _run: RunId) -> bool {
+        true
+    }
+
     /// Whether `worker` is the correction of a review: it stages fixes but
     /// the worker whose change is under review proposes the batch.
     fn corrects(&self, _run: RunId, _worker: WorkerId) -> bool {

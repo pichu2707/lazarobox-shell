@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- When an orchestrator run ends (`run_timeout_mins`, a stop or a cancel), the
+  batch reviews and asks of its workers still on screen close with `review
+  closed: the run ended; nothing was written`, and a late `y` no longer writes
+  a batch the run had already denied.
+
 ## [1.18.0] - 2026-11-11
 
 ### Added
