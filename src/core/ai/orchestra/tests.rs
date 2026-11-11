@@ -1287,7 +1287,10 @@ fn an_internal_worker_is_outside_the_worker_cap() {
     run.spawn(t0, Task::Review, "1").unwrap();
     run.spawn(t0, Task::Review, "2").unwrap();
     let internal = run.spawn_internal(t0, Task::Review, "lens").unwrap();
-    assert_eq!(run.spawn_internal(t0, Task::Review, "lens").map(|_| ()), Ok(()));
+    assert_eq!(
+        run.spawn_internal(t0, Task::Review, "lens").map(|_| ()),
+        Ok(())
+    );
     assert!(run.is_internal(internal));
     assert!(!run.is_internal(WorkerId(1)));
     assert_eq!(run.spawn(t0, Task::Review, "3"), Err(Refusal::WorkerCap(2)));

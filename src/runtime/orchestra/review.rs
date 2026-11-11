@@ -675,9 +675,14 @@ impl RunManager {
         };
         // The lenses, the refuter and the correction are internal workers
         // (D22): `max_workers` bounds the coordinator's, not these.
-        let profile = self
-            .on_run(pane, run, |live| live.profile)
+        let (profile, notices) = self
+            .on_run(pane, run, |live| {
+                (live.profile, live.run.review_notices(worker))
+            })
             .ok_or_else(|| Stop::Start(ENDED.to_owned()))?;
+        for notice in notices {
+            self.say(pane, run, notice);
+        }
         let diff = self.diff_text(pane, run, worker).await;
         let mut lenses = Vec::new();
         for lens in DEFAULT_LENSES {

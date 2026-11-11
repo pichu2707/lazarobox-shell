@@ -11,8 +11,11 @@
 
 use std::fmt;
 
+use super::WorkerId;
 use super::changes::Change;
 use super::ledger::{REASON_BYTES, cut, one_line};
+use super::run::cheap;
+use crate::core::ai::catalog::same_model;
 use crate::core::ai::tools::paths::is_excluded_name;
 
 /// How much a change needs a second look. Ordered: `Passive < Medium < High`.
@@ -323,4 +326,38 @@ fn risky(parts: &[String]) -> bool {
             .rsplit_once('.')
             .is_some_and(|(stem, ext)| !stem.is_empty() && RISKY_EXTENSIONS.contains(&ext))
         || is_excluded_name(name)
+}
+
+/// An engine and the model it runs, as the roster resolved them.
+pub type Side<'a> = (&'a str, Option<&'a str>);
+
+/// The notices said once when a review starts (D22), each a transcript line:
+/// the reviewer is the author's own model; the reviewer is a local model
+/// (what that cannot promise); a local author's diff goes to a cloud
+/// reviewer. A cloud author on a cloud reviewer, or two different models,
+/// say nothing. ASCII, because they reach the terminal as they are.
+pub fn notices(worker: WorkerId, author: Side, reviewer: Side) -> Vec<String> {
+    let of = format!("review of worker {}", worker.0);
+    let named = |(engine, model): Side| format!("{engine}>{}", model.unwrap_or("default"));
+    let same = author.0 == reviewer.0
+        && match (author.1, reviewer.1) {
+            (Some(a), Some(b)) => same_model(author.0, a, b),
+            (a, b) => a == b,
+        };
+    let mut said = Vec::new();
+    if same {
+        said.push(format!(
+            "{of}: author and reviewer are the same model ({})",
+            named(reviewer)
+        ));
+    }
+    if cheap(reviewer.0, reviewer.1) {
+        said.push(format!(
+            "{of}: the reviewer is a local model ({}); it can miss what a larger model would catch, so read the diff yourself",
+            named(reviewer)
+        ));
+    } else if cheap(author.0, author.1) {
+        said.push(format!("{of}: the staged diff goes to {}", named(reviewer)));
+    }
+    said
 }

@@ -20,10 +20,15 @@ baseline.
   judged by the engine it was spawned with, not the menu now. If the Review
   row's engine cannot run, its worker ends `refused`, the run stops with the
   failure alert, and the batch reaches you `not reviewed` with the reason in
-  the receipt; no other engine is tried. The review still needs room for
-  three more workers under `max_workers` (two lenses and the refuter): with
-  less it does not start, says so, and the batch goes on unreviewed, so keep
-  `max_workers` high enough when authors are local.
+  the receipt; no other engine is tried. The review's workers (the lenses, the
+  refuter and a correction) are internal: they never count against
+  `max_workers`, so a review never lacks room, but a run can start more model
+  calls than the visible cap, which can cost money on a cloud Review row.
+  They still show in the worker rows and are never waited on for a handoff.
+- A review says one notice at its start, in the transcript: when author and
+  reviewer are the same model; when the Review row is a local model (it can
+  miss what a larger model catches); and when a local author's staged diff
+  goes to a cloud reviewer, naming it.
 
 ### Changed
 

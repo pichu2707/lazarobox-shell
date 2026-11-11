@@ -4494,9 +4494,15 @@ async fn a_review_runs_with_the_worker_cap_used_up() {
     let (mut lab, run, _handle) = reviewed(quiet, Answered::Granted, limits).await;
     let kept = lab.manager.reviews(pane(), run);
     assert!(kept[0].outcome.is_some(), "the review concluded");
-    assert!(lab.seen.requests().len() >= 3, "the code worker and the lenses");
+    assert!(
+        lab.seen.requests().len() >= 3,
+        "the code worker and the lenses"
+    );
     let lines = review_lines(&mut lab);
-    assert!(!lines.iter().any(|l| l.contains("max_workers")), "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("max_workers")),
+        "{lines:?}"
+    );
 }
 
 // The orchestrator raises the tier; it cannot lower it, and a passive or an

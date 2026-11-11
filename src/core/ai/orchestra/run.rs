@@ -10,6 +10,7 @@ use super::commands::{Commands, Ran};
 use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
 use super::receipt::{self, Evidence};
+use super::review;
 use super::steps::{Gate, Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
 use super::textcall;
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
@@ -436,6 +437,19 @@ impl Run {
     pub fn cheap(&self, id: WorkerId) -> bool {
         self.spec(id)
             .is_some_and(|spec| cheap(&spec.engine, spec.model.as_deref()))
+    }
+
+    /// The notices a review of worker `id`'s change says as it starts (D22):
+    /// the Review row as the roster resolved it against the author's spec.
+    /// Empty when the row cannot run (the lens is refused, and that says so).
+    pub fn review_notices(&self, id: WorkerId) -> Vec<String> {
+        let (Some(author), Availability::Ready { engine, model }) =
+            (self.spec(id), self.roster.get(Task::Review))
+        else {
+            return Vec::new();
+        };
+        let author = (author.engine.as_str(), author.model.as_deref());
+        review::notices(id, author, (engine.as_str(), model.as_deref()))
     }
 
     /// What worker `id` reported using so far; `None` when its engine

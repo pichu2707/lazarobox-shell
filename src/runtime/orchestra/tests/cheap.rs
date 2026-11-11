@@ -330,7 +330,12 @@ async fn a_mandatory_review_that_cannot_start_says_why_and_the_batch_goes_on() {
     let changes = lock_change();
     let assessment = handle.assess(run, &changes);
     let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Mandatory);
-    assert!(timeout(Duration::from_secs(10), done).await.unwrap().is_ok());
+    assert!(
+        timeout(Duration::from_secs(10), done)
+            .await
+            .unwrap()
+            .is_ok()
+    );
     let kept = lab.manager.reviews(pane(), run);
     assert_eq!(kept[0].outcome, None);
     let events = lab.sent();
@@ -352,5 +357,55 @@ async fn a_mandatory_review_that_cannot_start_says_why_and_the_batch_goes_on() {
     assert!(
         line.contains("not reviewed (a prompt cannot be wrapped now"),
         "{line}"
+    );
+}
+
+/// [`reviewed`] on `roster`: its Review row and Code worker decide which
+/// notices the review start says.
+async fn reviewed_on(roster: Roster) -> Vec<String> {
+    let mut lab = lab_with(Script::By(quiet), |m, home| RunManager {
+        scratch: |_| false,
+        diff: Some(staged_text),
+        ..tooled(m, home)
+    });
+    let (run, handle) = lab.begin(lab.scope(roster, &[])).unwrap();
+    handle.call(spawn(Task::Code, "write a")).await;
+    lab.seen.first().await;
+    let changes = lock_change();
+    let assessment = handle.assess(run, &changes);
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Mandatory);
+    assert!(
+        timeout(Duration::from_secs(10), done)
+            .await
+            .unwrap()
+            .is_ok()
+    );
+    review_lines(&mut lab)
+}
+
+// D22 (17.6): one notice per review start, in the transcript. The Review row
+// on the author's own model warns.
+#[tokio::test]
+async fn a_review_on_the_authors_own_model_warns_once() {
+    let lines = reviewed_on(codex_both()).await;
+    let warned: Vec<_> = lines.iter().filter(|l| l.contains("same model")).collect();
+    assert_eq!(
+        warned,
+        ["review of worker 1: author and reviewer are the same model (codex>default)"],
+        "{lines:?}"
+    );
+}
+
+// A local author on a cloud Review row: the diff goes to that model, said.
+// GUARD: a local author on another local row only states the limits.
+#[tokio::test]
+async fn a_local_authors_diff_going_to_a_cloud_reviewer_is_announced() {
+    let lines = reviewed_on(local_code(("claude", "opus"))).await;
+    let said = "review of worker 1: the staged diff goes to claude>opus";
+    assert!(lines.iter().any(|l| l == said), "{lines:?}");
+    assert!(lines.iter().all(|l| l.is_ascii()), "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("local model")),
+        "{lines:?}"
     );
 }
