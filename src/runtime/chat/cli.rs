@@ -81,9 +81,11 @@ pub const CANNOT_PREPARE_HOME: &str = "cannot prepare the private home of the CL
 const REASON_CAP: usize = 160;
 /// Starts the error of an orchestrator turn that could not get its tools.
 const COORDINATOR_NO_TOOLS: &str = "the coordinator cannot get its tools";
-/// What to do about it.
-const COORDINATOR_FIX: &str = "; run lazarobox from a folder not writable by group or others, \
-     or assign another engine to orchestrate";
+/// What to do about it when the cause is a path others could write.
+const COORDINATOR_FIX_PERMISSIONS: &str = "; run lazarobox from a folder not writable by group or \
+     others, or assign another engine to orchestrate";
+/// What to do about any other cause.
+const COORDINATOR_FIX_ENGINE: &str = "; assign another engine to orchestrate";
 
 pub const CANNOT_PREPARE: &str = "cannot prepare the private working directory";
 
@@ -1152,8 +1154,8 @@ struct Plan {
     cwd: Option<PathBuf>,
     /// The bit of `CliEnv::noticed` to set once `notice` is delivered.
     noticed_bit: u8,
-    /// Why the tools are off, when they are: an orchestrator turn ends with it
-    /// instead of running as text.
+    /// Why the tools are off and what to do, when they are: an orchestrator
+    /// turn ends with it instead of running as text.
     tools_why: Option<String>,
 }
 
@@ -1427,8 +1429,16 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
                 match jailed(env, job, &full, &binary, &dirs, attempt.as_ref()) {
                     Ok((program, argv)) => {
                         let why_off = match &tools_refusal {
-                            Some(why) => why.hint(home),
-                            None => "the tools could not be set up".to_owned(),
+                            Some(
+                                why @ JailRefusal::UntrustedInterpreter {
+                                    why: Untrusted::Writable { .. } | Untrusted::Unchecked { .. },
+                                    ..
+                                },
+                            ) => format!("{}{COORDINATOR_FIX_PERMISSIONS}", why.hint(home)),
+                            Some(why) => format!("{}{COORDINATOR_FIX_ENGINE}", why.hint(home)),
+                            None => {
+                                format!("the tools could not be set up{COORDINATOR_FIX_ENGINE}")
+                            }
                         };
                         let notice = tools_off(None)
                             .filter(|_| attempt.is_none())
@@ -1489,7 +1499,7 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
         wired: false,
         cwd: home_cwd,
         noticed_bit,
-        tools_why: Some(reason.clone()),
+        tools_why: Some(format!("{reason}{COORDINATOR_FIX_ENGINE}")),
         notice: joined(
             tools_off(Some(format!(
                 "{} runs without the jail here: {reason}",
@@ -1753,7 +1763,7 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
         // anyway only burns tokens on "I have no spawn_agent tool".
         if job.mcp.is_some() {
             let why = plan.tools_why.take().unwrap_or_default();
-            let text = format!("{COORDINATOR_NO_TOOLS}: {why}{COORDINATOR_FIX}");
+            let text = format!("{COORDINATOR_NO_TOOLS}: {why}");
             return send(tx, StreamEvent::Error(ChatError::Jail(text))).await;
         }
     }

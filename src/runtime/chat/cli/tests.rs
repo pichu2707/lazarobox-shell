@@ -2442,13 +2442,22 @@ fn assert_coordinator_refused(lab: &Lab, events: &[StreamEvent], cause: Option<&
         text.starts_with("the coordinator cannot get its tools: "),
         "{text}"
     );
-    assert!(
-        text.ends_with(
-            "; run lazarobox from a folder not writable by group or others, \
-             or assign another engine to orchestrate"
-        ),
-        "{text}"
-    );
+    // The advice matches the cause: permissions only when permissions are it.
+    if cause == Some(" writable by ") {
+        assert!(
+            text.ends_with(
+                "; run lazarobox from a folder not writable by group or others, \
+                 or assign another engine to orchestrate"
+            ),
+            "{text}"
+        );
+    } else {
+        assert!(
+            text.ends_with("; assign another engine to orchestrate"),
+            "{text}"
+        );
+        assert!(!text.contains("folder not writable"), "{text}");
+    }
     if let Some(cause) = cause {
         assert!(text.contains(cause), "{text}");
     }
