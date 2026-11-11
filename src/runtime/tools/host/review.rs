@@ -76,6 +76,9 @@ pub(super) async fn before_batch_with(
     // change is reviewed with no ask, whatever the tier (D21).
     let cheap = worker.handle.cheap(worker.run, worker.worker);
     if cheap || assessment.tier >= Tier::High {
+        // The consent and the review are not the worker's own work: its
+        // deadline stops until the review returns (D6, owner item 3).
+        let _paused = worker.handle.pause(worker.run, worker.worker);
         let answered = if cheap {
             Answered::Mandatory
         } else {

@@ -1586,3 +1586,33 @@ fn a_queued_retried_or_relaunched_cheap_author_stays_cheap() {
     run.decide(t0, UserChoice::Relaunch(cloud)).unwrap();
     assert!(!run.cheap(two), "relaunched on a cloud model");
 }
+
+// D6 (17.4): a worker's own deadline ends it alone. A sibling whose started
+// time is as old keeps running: its clock may have stopped for the user or
+// its review, which only its own turn knows. A worker that already ended is
+// left as it was.
+#[test]
+fn a_time_out_ends_only_its_own_worker() {
+    let (t0, mut run) = (Instant::now(), cheap_run());
+    let limits = RunLimits {
+        parallel: 2,
+        ..RunLimits::default()
+    };
+    run = run.with_limits(limits);
+    let one = run.spawn(t0, Task::Review, "1").unwrap();
+    let two = run.spawn(t0, Task::Review, "2").unwrap();
+    let late = t0 + Duration::from_secs(601);
+    run.time_out(late, one);
+    assert_eq!(run.status(one), Some(WorkerStatus::TimedOut));
+    assert_eq!(run.status(two), Some(WorkerStatus::Running));
+    assert!(matches!(
+        run.state(),
+        RunState::Halted {
+            class: ErrorClass::Timeout,
+            ..
+        }
+    ));
+    run.on_event(late, two, done());
+    run.time_out(late, two);
+    assert_eq!(run.status(two), Some(WorkerStatus::Done));
+}

@@ -5,6 +5,8 @@
 //! cannot run stops the run visibly.
 
 use super::*;
+#[cfg(target_os = "linux")]
+use crate::core::ai::chat::review::BatchReview;
 
 /// `code` on Ollama (a cheap author), `review` on `review`, `orchestrate` on
 /// claude; claude, codex and Ollama are found.
@@ -73,4 +75,175 @@ async fn a_mandatory_review_runs_and_its_receipt_says_mandatory() {
         .expect("a line");
     assert!(line.contains("consent mandatory"), "{line}");
     assert!(line.contains("clean"), "{line}");
+}
+
+// The cheap author end to end: an Ollama `code` worker that writes and
+// proposes through its tool session. These drive real tool calls and the
+// write primitives, so real short deadlines, never a paused clock, and
+// Linux only.
+
+/// A worker deadline the review below outlasts. Not shorter: applying the
+/// batch after the user's `y` is the author's work time, and its fsyncs take
+/// over a second on a loaded machine.
+#[cfg(target_os = "linux")]
+const DEADLINE: Duration = Duration::from_millis(3000);
+
+/// How long each lens of the review takes: within the deadline, which a
+/// lens worker has too. The two lenses run one after the other (one worker
+/// at once; the parked author does not count), so the review outlasts the
+/// author's deadline.
+#[cfg(target_os = "linux")]
+const LENS: Duration = Duration::from_millis(2000);
+
+/// The longest any of these tests may take: a hang fails here.
+#[cfg(target_os = "linux")]
+const BOUND: Duration = Duration::from_secs(20);
+
+#[cfg(target_os = "linux")]
+fn session_of(run: RunId, worker: u32) -> SessionKey {
+    SessionKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(worker),
+        },
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn status(lab: &Lab, worker: u32) -> Option<WorkerStatus> {
+    lock(&lab.manager.runs)[&pane()]
+        .run
+        .status(WorkerId(worker))
+}
+
+/// Waits until worker `worker` ends, or `BOUND` passes.
+#[cfg(target_os = "linux")]
+async fn ended(lab: &Lab, worker: u32) -> WorkerStatus {
+    let until = Instant::now() + BOUND;
+    while Instant::now() < until {
+        match status(lab, worker) {
+            Some(WorkerStatus::Queued | WorkerStatus::Running) | None => {}
+            Some(other) => return other,
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("worker {worker} did not end within {BOUND:?}");
+}
+
+/// A writing lab whose run has a local `code` author, each worker with
+/// `deadline`, the Review row on `review`, one worker at once and its asks
+/// in `waits` under turn 7.
+#[cfg(target_os = "linux")]
+fn local_run(
+    lens: Duration,
+    review: (&str, &str),
+    deadline: Duration,
+    waits: &Arc<Waits>,
+) -> (Lab, RunId, OrchHandle) {
+    let lab = writing_lab(Script::LocalAuthor { lens });
+    let pending = Pending::new();
+    let scope = OrchScope {
+        origin: lab.app(),
+        approver: waits.approver(pane(), 7, pending.clone()),
+        pending,
+        deadline,
+        ..lab.scope(local_code(review), &["~/dev/app"])
+    };
+    let (run, handle) = lab.begin(scope).unwrap();
+    (lab, run, handle)
+}
+
+/// The asks the worker's tool calls raise on the turn, up to the batch
+/// review: its id and review; `None` when none came within `BOUND`. A
+/// consent ask fails the test.
+#[cfg(target_os = "linux")]
+async fn batch_ask(lab: &mut Lab) -> Option<(CallId, Arc<BatchReview>)> {
+    loop {
+        let event = timeout(BOUND, lab.turn.1.recv()).await.ok()?;
+        if let Some(StreamEvent::ToolCall {
+            id,
+            approval: Some(ask),
+            ..
+        }) = event
+        {
+            match *ask {
+                ApprovalAsk::Batch(review) => return Some((id, review)),
+                other => panic!("only the batch review asks: {other:?}"),
+            }
+        }
+    }
+}
+
+// Spec "Cheap author, no consent" (17.2, D21) and "A model review does not
+// time out its author" (17.4, D6, owner item 3): an Ollama author with a
+// 3 s deadline stages a `passive` change and proposes it. A review runs on
+// the Review row (claude) with no consent ask and lasts 4 s (two lenses of
+// 2 s, one at a time); then the batch
+// review waits for the user, and shows the receipt (`mandatory`). The author
+// is not `timed_out`: neither the review nor the wait counted. Only the menu's
+// engines ran.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cheap_authors_review_runs_unasked_and_does_not_time_it_out() {
+    let waits = Waits::new();
+    let (mut lab, run, handle) = local_run(LENS, ("claude", "opus"), DEADLINE, &waits);
+    let started = Instant::now();
+    handle.call(spawn(Task::Code, "write a")).await;
+    let Some((id, review)) = batch_ask(&mut lab).await else {
+        panic!("no batch review; worker 1 is {:?}", status(&lab, 1));
+    };
+    assert!(started.elapsed() >= 2 * LENS, "{:?}", started.elapsed());
+    let receipt = review.receipt().expect("the receipt line");
+    assert!(receipt.contains("consent mandatory"), "{receipt}");
+    assert!(receipt.contains("clean"), "{receipt}");
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert_eq!(
+        status(&lab, 1),
+        Some(WorkerStatus::Running),
+        "not timed out"
+    );
+    assert!(waits.decide(session_of(run, 1), 7, id, Decision::Sent));
+    assert_eq!(ended(&lab, 1).await, WorkerStatus::Done);
+    assert!(lab.app().join("a.txt").exists());
+    let proposed = lab.seen.proposed.lock().unwrap().clone();
+    assert!(!proposed[0].is_error, "{proposed:?}");
+    let requests = lab.seen.requests();
+    let lenses: Vec<_> = requests.iter().filter(|r| is_lens(r)).collect();
+    assert_eq!(lenses.len(), 2);
+    assert!(
+        lenses
+            .iter()
+            .all(|r| r.engine == "claude" && r.model.as_deref() == Some("opus"))
+    );
+    let mut engines = lab.seen.engines();
+    engines.dedup();
+    engines.sort();
+    engines.dedup();
+    assert_eq!(engines, ["claude", "ollama"]);
+}
+
+// Spec "A model review does not time out its author" (17.4): the review's
+// own lens deadlines still apply. A lens that outlasts its 3 s deadline
+// ends `timed_out` and the run halts as for any failure; its timeout does
+// not end the author, whose own clock stopped for the review (the deadline
+// of a worker is its own turn's, never a sibling's wall-clock sweep). The
+// batch still reaches the user, not reviewed, and the author finishes.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_lens_past_its_deadline_times_out_and_not_its_author() {
+    let waits = Waits::new();
+    let slow = Duration::from_secs(10);
+    let (mut lab, run, handle) = local_run(slow, ("claude", "opus"), DEADLINE, &waits);
+    handle.call(spawn(Task::Code, "write a")).await;
+    let Some((id, review)) = batch_ask(&mut lab).await else {
+        panic!("no batch review; worker 1 is {:?}", status(&lab, 1));
+    };
+    assert_eq!(status(&lab, 2), Some(WorkerStatus::TimedOut), "the lens");
+    assert_eq!(status(&lab, 1), Some(WorkerStatus::Running), "the author");
+    let receipt = review.receipt().expect("the receipt line");
+    assert!(receipt.contains("consent mandatory"), "{receipt}");
+    assert!(!receipt.contains("clean"), "{receipt}");
+    assert!(waits.decide(session_of(run, 1), 7, id, Decision::Sent));
+    assert_eq!(ended(&lab, 1).await, WorkerStatus::Done);
 }

@@ -24,7 +24,7 @@ use crate::{
         },
         tools::paths::SecretRoots,
     },
-    runtime::mcp::Outcome,
+    runtime::{mcp::Outcome, tools::pending::Waiting},
 };
 
 /// What the consent ask came back with.
@@ -140,6 +140,14 @@ pub trait Orchestra: Send + Sync {
     /// default) for an unknown run or worker.
     fn cheap(&self, _run: RunId, _worker: WorkerId) -> bool {
         false
+    }
+
+    /// Holds `worker`'s own count of asks that wait for the user (its route's,
+    /// D5) until the guard is dropped: its deadline does not run while the
+    /// consent and the model review of its batch last (D6). `None` (the
+    /// default) when the worker has no route here.
+    fn pause(&self, _run: RunId, _worker: WorkerId) -> Option<Waiting> {
+        None
     }
 
     /// Whether `worker` is the correction of a review: it stages fixes but

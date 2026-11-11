@@ -387,6 +387,10 @@ struct Scoped {
     cheap: bool,
     /// The tier every assessment says, instead of the path rules.
     tier: Option<Tier>,
+    /// The worker's own count of asks, which `pause` holds.
+    own: Pending,
+    /// That count as each review began.
+    held: Mutex<Vec<usize>>,
 }
 
 impl Scoped {
@@ -418,6 +422,8 @@ impl Scoped {
             sibling: Mutex::new(None),
             cheap: false,
             tier: None,
+            own: Pending::new(),
+            held: Mutex::default(),
         })
     }
 
@@ -482,6 +488,10 @@ impl Orchestra for Scoped {
         self.cheap
     }
 
+    fn pause(&self, _: RunId, _: WorkerId) -> Option<crate::runtime::tools::pending::Waiting> {
+        Some(self.own.enter())
+    }
+
     fn review(
         &self,
         _: RunId,
@@ -494,6 +504,7 @@ impl Orchestra for Scoped {
             .lock()
             .unwrap()
             .push(format!("review {answered:?}"));
+        self.held.lock().unwrap().push(self.own.count());
         let error = self.start_error;
         let sibling = self.sibling.lock().unwrap().clone();
         Box::pin(async move {
@@ -1495,6 +1506,33 @@ async fn a_cheap_authors_change_is_reviewed_at_every_tier_with_no_consent_ask() 
                 .any(|ask| matches!(ask, ApprovalAsk::Consent { .. })),
             "{asks:?}"
         );
+    }
+}
+
+// Spec "A model review does not time out its author" (17.4, D6): the host
+// holds the worker's own count through the run manager for the consent and
+// review span, a cheap author's and a strong author's `high` one alike, and
+// lets go when the review returns. A change that is not reviewed holds
+// nothing.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_review_span_holds_the_authors_own_clock_and_only_it() {
+    for (cheap, path, held) in [
+        (true, "new.rs", vec![1]),
+        (false, "Cargo.lock", vec![1]),
+        (false, "new.rs", vec![]),
+    ] {
+        let (_dir, home, host) = fixture();
+        project(&home);
+        let mut fake = Scoped::over(&home, &["~/dev/app"]);
+        Arc::get_mut(&mut fake).unwrap().cheap = cheap;
+        let user = ByAsk::new(&fake, Decision::Sent, Decision::Sent);
+        let d = writer(&host, Locality::Cloud, &home, fake.clone(), user);
+        assert!(!d.call(write_call(path, "x")).await.is_error);
+        assert!(!d.call(Call::ProposeBatch).await.is_error);
+        assert_eq!(*fake.held.lock().unwrap(), held, "{path} cheap={cheap}");
+        assert_eq!(fake.own.count(), 0, "let go after the review");
     }
 }
 

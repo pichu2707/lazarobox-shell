@@ -730,6 +730,16 @@ impl Run {
         late
     }
 
+    /// Worker `id`'s own deadline passed: its turn's clock, which stops while
+    /// it waits for the user or its review (D5, D6), is the judge, never the
+    /// wall time since it started. Ends it `timed_out` if it still runs.
+    pub fn time_out(&mut self, now: Instant, id: WorkerId) {
+        if self.status(id) == Some(WorkerStatus::Running) {
+            let error = (ErrorClass::Timeout, "deadline passed".to_owned());
+            self.end(now, id, WorkerStatus::TimedOut, "", Some(error));
+        }
+    }
+
     /// The status of each id. While a failure is unresolved every id answers
     /// `awaiting_user`, without the error text.
     pub fn wait_report(&self, ids: &[WorkerId]) -> Vec<(WorkerId, &'static str)> {
