@@ -10,6 +10,14 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- With ORCH on, the coordinator now delegates by default: a request that
+  changes files is done by workers started with `spawn_agent`, even when you
+  do not mention it, and the coordinator no longer writes the code in its
+  reply (quoting code to answer a question is still fine). It still answers
+  questions, plans and summarises directly.
+
 ## [1.19.0] - 2026-11-11
 
 ### Added
