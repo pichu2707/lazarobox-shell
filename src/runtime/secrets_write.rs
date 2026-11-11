@@ -16,6 +16,7 @@ use std::{
         unix::fs::{DirBuilderExt, MetadataExt},
     },
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, PoisonError},
 };
 
 use tokio::sync::mpsc;
@@ -247,17 +248,26 @@ impl SaveFs for RealFs {
 pub struct Writer {
     secrets: Option<PathBuf>,
     events: mpsc::Sender<AppEvent>,
+    /// One write at a time: two saves would read the same file and the second
+    /// would see "changed on disk".
+    turn: Arc<Mutex<()>>,
 }
 
 impl Writer {
     pub fn new(secrets: Option<PathBuf>, events: mpsc::Sender<AppEvent>) -> Self {
-        Self { secrets, events }
+        Self {
+            secrets,
+            events,
+            turn: Arc::default(),
+        }
     }
 
     pub fn save(&self, server: &'static str, name: &'static str, value: SecretText) {
         let (secrets, events) = (self.secrets.clone(), self.events.clone());
+        let turn = Arc::clone(&self.turn);
         tokio::spawn(async move {
             let done = tokio::task::spawn_blocking(move || {
+                let _turn = turn.lock().unwrap_or_else(PoisonError::into_inner);
                 save_secret(secrets.as_deref(), server, name, value.expose())
             })
             .await;

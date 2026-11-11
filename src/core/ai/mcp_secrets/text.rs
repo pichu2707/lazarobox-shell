@@ -3,8 +3,26 @@
 //! when it drops (best effort: a moved copy or the allocator may keep some; no
 //! `zeroize` crate is added).
 
-#[derive(Clone, Default, PartialEq, Eq)]
+/// The longest value a field takes: reserved up front, so a push never moves
+/// the buffer and leaves a copy of the text behind.
+pub const CAPACITY: usize = 4096;
+
+#[derive(PartialEq, Eq)]
 pub struct SecretText(String);
+
+impl Default for SecretText {
+    fn default() -> Self {
+        Self(String::with_capacity(CAPACITY))
+    }
+}
+
+impl Clone for SecretText {
+    fn clone(&self) -> Self {
+        let mut copy = Self::default();
+        copy.push_str(&self.0);
+        copy
+    }
+}
 
 impl std::fmt::Debug for SecretText {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -14,8 +32,7 @@ impl std::fmt::Debug for SecretText {
 
 impl Drop for SecretText {
     fn drop(&mut self) {
-        // SAFETY: zero bytes are valid UTF-8, and the string is dropped next.
-        wipe(unsafe { self.0.as_bytes_mut() });
+        wipe_capacity(&mut self.0);
     }
 }
 
@@ -26,6 +43,10 @@ impl SecretText {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.0.capacity()
     }
 
     pub fn len(&self) -> usize {
@@ -51,10 +72,18 @@ impl SecretText {
     }
 }
 
-/// Volatile writes, so the optimizer does not drop them as dead stores.
-pub(super) fn wipe(bytes: &mut [u8]) {
-    for byte in bytes {
-        // SAFETY: `byte` is a valid, aligned, exclusive reference.
-        unsafe { std::ptr::write_volatile(byte, 0) };
+/// Zeroes the whole buffer, the bytes past the length included (what `pop`
+/// removed), and leaves an empty string.
+pub(super) fn wipe_capacity(text: &mut String) {
+    // SAFETY: bytes are written only; the length is set to 0 first, so no
+    // invalid UTF-8 is ever readable through the string.
+    unsafe {
+        let bytes = text.as_mut_vec();
+        let cap = bytes.capacity();
+        bytes.set_len(0);
+        let ptr = bytes.as_mut_ptr();
+        for i in 0..cap {
+            std::ptr::write_volatile(ptr.add(i), 0);
+        }
     }
 }

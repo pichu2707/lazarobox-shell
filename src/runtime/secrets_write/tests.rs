@@ -769,3 +769,20 @@ async fn the_writer_deletes_the_backup_and_says_when_there_is_none() {
         AppEvent::BackupDeleted(Err("secrets.toml.bak: there is no backup".to_owned()))
     );
 }
+
+#[tokio::test]
+async fn saves_sent_together_all_succeed_instead_of_racing_into_changed_on_disk() {
+    let lab = lab();
+    lab.write(OLD, 0o600);
+    let (tx, mut rx) = mpsc::channel(16);
+    let writer = Writer::new(Some(lab.path()), tx);
+    for _ in 0..8 {
+        writer.save("clarity", "CLARITY_API_TOKEN", secret("tok"));
+    }
+    for _ in 0..8 {
+        let AppEvent::SecretSaved(reply) = answer(&mut rx).await else {
+            panic!("a reply")
+        };
+        assert!(reply.is_ok(), "{reply:?}");
+    }
+}
