@@ -625,8 +625,14 @@ Tool sessions, tokens, scopes and pending approvals MUST be keyed by a session k
 - WHEN one calls with the other's token
 - THEN the call is refused
 
-### Requirement: Toolsets by session role [S1]
-The tool registry MUST offer by role: chat session = chat tools as before; orchestrator session = chat read tools plus `spawn_agent`, `wait`, `collect`, `cancel` ([S4] and `finish`), plus the tools of the user's MCP servers, each call asking `y` exactly as in a chat (user decision, 2026-10-29), and never `run_in_pane`; worker session = read tools only (until write tools exist), never `run_in_pane`, never user server tools, never orchestration tools. Orchestration tools MUST NOT be reachable from user MCP servers, from a chat pane whose ORCH mode is off, or while the global orchestrator gate is off. The orchestrator session exists only for a turn of an orchestrating pane.
+### Requirement: Toolsets by session role [S1, W2, W6, W8, W11]
+The tool registry MUST offer by role: chat session = chat tools as before; orchestrator session = chat read tools plus `list_panes` and `read_pane` with the same asks as in a chat [W11], plus `spawn_agent`, `wait`, `collect`, `cancel` ([S4] and `finish`), plus the tools of the user's MCP servers, each call asking `y` exactly as in a chat (user decision, 2026-10-29), and never `run_in_pane` and never write tools or `run_command` (the coordinator keeps Read plus Orchestra whatever the toggles say); worker session = read tools for every kind, plus the coding-tools write tools for a `code` or `simple` worker, plus `run_command` for a `code` or `simple` worker ([W6]), never `run_in_pane`, never user server tools, never orchestration tools. [W2] The Write and Exec toggles are a per-role ceiling: a write tool is offered to a worker only when Write is on, `run_command` only when Exec is on, and a toggle never adds a tool the role does not have (a `review` worker stays read-only with both on). Orchestration tools MUST NOT be reachable from user MCP servers, from a chat pane whose ORCH mode is off, or while the global orchestrator gate is off. The orchestrator session exists only for a turn of an orchestrating pane.
+(Previously: "worker session = read tools only (until write tools exist)"; the menu toggles did not limit workers; no worker could be offered `run_command`)
+
+#### Scenario: The coordinator reads panes but never types in them [W11, auto]
+- GIVEN an orchestrator turn, a `code` worker and a `review` worker
+- WHEN each tool list is built and the orchestrator calls `run_in_pane`
+- THEN the orchestrator holds `list_panes` and `read_pane` and not `run_in_pane`, its `run_in_pane` call is refused unasked, and neither worker holds any of the three
 
 #### Scenario: Role toolsets [auto]
 - GIVEN each role
@@ -637,6 +643,21 @@ The tool registry MUST offer by role: chat session = chat tools as before; orche
 - GIVEN an orchestrator turn and a user MCP server with tool `search`
 - WHEN the tool list is built and `search` is called
 - THEN `search` is listed beside the orchestration tools, the call asks `y`, and the server is contacted only after `y`; a worker's call to it is refused unasked
+
+#### Scenario: Ceiling limits a writer [W2, auto]
+- GIVEN Write off and Exec off
+- WHEN the tool lists of a `code` worker, a `simple` worker and a `review` worker are built
+- THEN each holds the read tools only
+
+#### Scenario: Ceiling never widens [W2, auto]
+- GIVEN Write and Exec on
+- WHEN the tool lists of a `review` worker and of the orchestrator are built
+- THEN the `review` worker holds the read tools only and the orchestrator holds no write tool and no `run_command`
+
+#### Scenario: A forged call is refused visibly [W2, auto]
+- GIVEN a worker without `run_command` because Exec is off
+- WHEN it calls `run_command` anyway
+- THEN the call returns an error result naming the cause, no ask opens and nothing starts
 
 ### Requirement: Pre-approved read scope [S1]
 A session MAY carry a run-scoped read scope (its roots default to the chat origin folder). `read_file` for a path inside it MUST run without asking, also on a cloud engine; a worker read of a path outside it MUST follow the chat's approval mode exactly as a chat read does, and when it asks, it asks with the worker label (an empty or expired scope grants nothing, so every read follows the mode). The scope MUST be evaluated with the Path policy on both the requested and the resolved path; an excluded path is refused whatever the scope, and no scope entry may make an excluded path readable. `find_dir` and `list_dir` keep their rules.
@@ -726,8 +747,8 @@ Once a conversation is blocked (see pane-execution, Auto-run block after a GitHu
 - WHEN `list_panes` and then a GitHub tool are called
 - THEN `list_panes` runs without asking and the GitHub tool asks
 
-### Requirement: read_pane tool
-A read-only tool `read_pane` of the `Pane` family MUST let a chat read the text of one pane. It MUST be part of the default tool list and MUST NOT be offered to a `Toolset::Code` worker, an orchestrator (coordinator) session or a worker session. Arguments: `pane` (integer, required) and `scrollback` (integer, optional, a number of lines). The target MUST be a pane that `list_panes` lists, EXCLUDING the chat's own pane; any other number returns an error result and reads nothing.
+### Requirement: read_pane tool [W11]
+A read-only tool `read_pane` of the `PaneRead` family (with `list_panes`; `Pane` keeps only `run_in_pane`) MUST let a chat or the orchestrator (coordinator) session read the text of one pane. It MUST be part of the default tool list and MUST NOT be offered to a `Toolset::Code` worker or a worker session. The coordinator's call asks exactly as a chat's. Arguments: `pane` (integer, required) and `scrollback` (integer, optional, a number of lines). The target MUST be a pane that `list_panes` lists, EXCLUDING the chat's own pane; any other number returns an error result and reads nothing.
 
 By default the text is the visible screen. With `scrollback` it also holds scrollback lines, at most 200 lines and 8 KiB. The cap MUST also bound a large visible screen. When the text is over a cap the TAIL is kept and the text MUST say it was cut. There is no paging and nothing is stored.
 
@@ -768,15 +789,21 @@ The call MUST ask on EVERY call, on every engine (local included, an Ollama `*-c
 - WHEN `read_pane` is called with pane 1, with 9 and with 2
 - THEN pane 1 and 9 return an error and read nothing; pane 2 asks
 
-#### Scenario: Not offered to other roles [auto]
-- GIVEN a worker, an orchestrator and a `Toolset::Code` session
+#### Scenario: Not offered to workers [auto]
+- GIVEN a worker and a `Toolset::Code` session
 - WHEN each tool list is built
-- THEN none holds `read_pane`, and a call to it is refused unasked
+- THEN neither holds `read_pane`, and a call to it is refused unasked
+
+#### Scenario: The coordinator reads a pane [W11, auto]
+- GIVEN an orchestrator turn and `nvim` in pane 2
+- WHEN the coordinator calls `read_pane` with pane 2
+- THEN it asks exactly as in a chat, and after `y` the result is the previewed text, wrapped as untrusted
 
 #### Scenario: Bad arguments [auto]
 - GIVEN `read_pane` with no `pane`, `pane: "2"`, `scrollback: "x"` and an extra key
 - WHEN each is dispatched
 - THEN each returns an error result and no pane is read
+(Previously: "MUST NOT be offered to a `Toolset::Code` worker, an orchestrator (coordinator) session or a worker session".)
 
 ### Requirement: WSL drive read policy
 Under WSL only (detected as today), a real path on a Windows drive MUST be judged by this policy instead of the outside-`$HOME` rule. A Windows drive is a mount point `/mnt/<one ASCII letter>` listed in `/proc/mounts` with type `drvfs`, or `9p` with `aname=drvfs` in its options, read once at startup; a read failure means no drives, and on plain Linux or macOS no path is ever on a drive. A path on a drive MUST be allowed unless, comparing every component below the mount point ASCII case-insensitively, it is or lies under: `Windows`, `Program Files`, `Program Files (x86)`, `ProgramData`, `$Recycle.Bin`, `System Volume Information`, `Recovery`, `Windows.old`, `$Windows.~BT`, `$Windows.~WS` or `$WinREAgent` directly on the drive; any component that looks like a DOS 8.3 alias (a `~` followed by a digit, such as `PROGRA~3`), because drvfs resolves it and the real path keeps it; the files `pagefile.sys`, `hiberfil.sys` or `swapfile.sys` on the drive; a folder `Users/<name>` that is neither the user's own Windows profile nor `Public`; or, under the own profile or `Public`, `AppData`, a file whose name starts with `NTUSER.DAT`, or any secret root that the Path policy refuses under `$HOME`, taken relative to that profile (`.ssh`, `.gnupg`, each `CREDENTIAL_DIRS` entry, `.config/gh`, `.config/gcloud`, `.local/share/keyrings`, `.config/lazarobox`, `.local/share/lazarobox`). The excluded file names of the Path policy (`.env`, `.netrc`, history files…) MUST apply on drives as well, ASCII case-insensitively. The own profile MUST be found with one call to `cmd.exe /d /c echo %USERPROFILE%`, at startup, in the background, capped at 2 s; its answer is accepted only when it reads `<letter>:\Users\<name>`, with `<name>` free of `\`, `/`, `%` and NUL and not `.` or `..`, and it becomes `/mnt/<letter lowercased>/Users/<name>`. Until that call answers, or when it fails or is refused, only `Public` is readable among the profiles. Listing tools MUST omit refused entries on drives and MUST NOT descend into them, as under `$HOME`.
