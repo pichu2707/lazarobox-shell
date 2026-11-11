@@ -14,7 +14,7 @@ use crate::core::ai::{
         checks::{Probed, Verdict},
         presence::Presence,
     },
-    mcp_secrets::Secrets,
+    mcp_secrets::{Loaded, Secrets, mode_problem},
 };
 
 pub(super) fn declared(name: &str, enabled: bool) -> McpServer {
@@ -49,10 +49,7 @@ pub(super) fn area(servers: Vec<McpServer>) -> MenuState {
 
 /// What `config.toml` and `secrets.toml` hold, as the runtime reads them.
 pub(super) fn presence(config: &str, secrets: &str) -> Presence {
-    Presence::read(
-        Ok(config.to_owned()),
-        &Secrets::parse(secrets.as_bytes()).secrets,
-    )
+    Presence::read(Ok(config.to_owned()), &Secrets::parse(secrets.as_bytes()))
 }
 
 pub(super) fn texts(m: &MenuState) -> Vec<String> {
@@ -219,7 +216,7 @@ fn a_config_that_cannot_be_read_keeps_the_startup_list_and_says_so() {
     let mut m = area(vec![declared("clarity", true)]);
     m.presence_reply(Presence::read(
         Err(io::Error::from(io::ErrorKind::PermissionDenied)),
-        &Secrets::parse(b"[clarity]\nCLARITY_API_TOKEN = \"t\"\n").secrets,
+        &Secrets::parse(b"[clarity]\nCLARITY_API_TOKEN = \"t\"\n"),
     ));
     assert_eq!(texts(&m)[1], "Clarity: declared");
     assert!(
@@ -457,6 +454,129 @@ fn a_dirty_draft_is_named_in_the_prompt_and_a_clean_one_is_not() {
     );
 }
 
+fn key_with(m: &mut MenuState, code: KeyCode, mods: KeyModifiers) -> MenuCommand {
+    m.on_key(&KeyEvent::new(code, mods), false, &mut Config::default())
+}
+
+// Only a plain `y` confirms: Ctrl+y and Alt+y are other keys.
+#[test]
+fn ctrl_y_and_alt_y_confirm_nothing() {
+    for ask in ['i', 'l', 'p'] {
+        for mods in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyModifiers::SUPER,
+        ] {
+            let mut m = entry(vec![declared("ga4", true)], 1);
+            press(&mut m, ask);
+            let command = key_with(&mut m, KeyCode::Char('y'), mods);
+            assert_eq!(command, MenuCommand::None, "{ask} {mods:?}");
+            assert_eq!(m.notice.as_deref(), Some("cancelled"));
+            // The prompt is gone: a plain `y` now is an ordinary key.
+            assert_eq!(press(&mut m, 'y'), MenuCommand::None);
+        }
+    }
+}
+
+// A key that closes a prompt says so.
+#[test]
+fn any_other_key_cancels_with_a_visible_notice() {
+    let mut m = entry(Vec::new(), 0);
+    press(&mut m, 'i');
+    assert_eq!(press(&mut m, 'n'), MenuCommand::None);
+    assert_eq!(m.notice.as_deref(), Some("cancelled"));
+    assert!(texts(&m)[0].starts_with("State:") || texts(&m)[0].starts_with("Clarity"));
+}
+
+/// The command rows of the open prompt: the text rows indented by two spaces,
+/// without the leading space the renderer adds.
+fn command_rows(m: &MenuState) -> String {
+    m.rows(&Config::default())
+        .into_iter()
+        .skip(2)
+        .filter_map(|row| match row {
+            Row::Text(t) => t.strip_prefix("  ").map(str::to_owned),
+            _ => None,
+        })
+        .collect()
+}
+
+// Every catalog install and login line is shown whole, spaces kept.
+#[test]
+fn every_catalog_line_renders_verbatim_in_its_prompt() {
+    for cols in [62u16, 80, 40] {
+        for (at, entry_) in crate::core::ai::mcp_catalog::entries().iter().enumerate() {
+            let lines = [
+                Some(('i', entry_.install)),
+                entry_.login.map(|l| ('l', l.line)),
+            ];
+            for (ask, line) in lines.into_iter().flatten() {
+                let mut m = entry(Vec::new(), at);
+                m.set_term(cols, 40);
+                press(&mut m, ask);
+                let shown = m.rows(&Config::default());
+                assert!(shown.len() <= VIEW_BODY, "{cols} {line}");
+                assert_eq!(command_rows(&m), line, "{cols} {line}");
+                assert_eq!(
+                    press(&mut m, 'y'),
+                    MenuCommand::Connector(line.to_owned()),
+                    "{cols}"
+                );
+            }
+        }
+    }
+}
+
+// Spec (Install and login): a command that cannot be read whole is not asked.
+#[test]
+fn a_narrow_terminal_refuses_the_prompt_with_a_notice() {
+    let mut m = entry(Vec::new(), 1);
+    m.set_term(20, 40);
+    assert_eq!(press(&mut m, 'l'), MenuCommand::None);
+    assert_eq!(
+        m.notice.as_deref(),
+        Some("widen the terminal to read the command")
+    );
+    assert!(!texts(&m).iter().any(|l| l.contains("(y/n)")));
+    // Asked while wide, then the terminal shrinks: `y` runs nothing.
+    let mut m = entry(Vec::new(), 1);
+    press(&mut m, 'l');
+    m.set_term(20, 40);
+    assert_eq!(texts(&m), ["widen the terminal to read the command"]);
+    assert_eq!(press(&mut m, 'y'), MenuCommand::None);
+    assert_eq!(
+        m.notice.as_deref(),
+        Some("widen the terminal to read the command")
+    );
+}
+
+// A command whose rows would not fit the body is refused, never clipped.
+#[test]
+fn a_command_taller_than_the_body_is_refused() {
+    let mut server = declared("clarity", true);
+    server.args = vec!["x".repeat(900)];
+    let mut m = entry(vec![server], 0);
+    press(&mut m, 'p');
+    assert_eq!(
+        m.notice.as_deref(),
+        Some("widen the terminal to read the command")
+    );
+    assert!(!texts(&m).iter().any(|l| l.contains("(y/n)")));
+}
+
+// The probe prompt names what it will spawn.
+#[test]
+fn the_probe_prompt_shows_the_command_and_its_arguments() {
+    let mut server = declared("clarity", true);
+    server.command = "clarity-mcp-server".to_owned();
+    server.args = vec!["--flag".to_owned(), "a b".to_owned()];
+    let mut m = entry(vec![server], 0);
+    press(&mut m, 'p');
+    assert_eq!(texts(&m)[0], "probe clarity? (y/n)");
+    assert_eq!(command_rows(&m), "clarity-mcp-server --flag a b");
+}
+
 // Spec (Probe from the area): `probe <name>? (y/n)`, then footer and Esc.
 #[test]
 fn the_probe_asks_then_runs_then_esc_stops_it() {
@@ -542,4 +662,31 @@ fn an_unbound_key_in_the_list_shows_a_notice() {
     let mut m = area(Vec::new());
     assert_eq!(press(&mut m, 'z'), MenuCommand::None);
     assert_eq!(m.notice.as_deref(), Some("no such key here"));
+}
+
+// A reordered file is the same list: no false restart. A changed entry is not.
+#[test]
+fn reordering_the_entries_asks_for_no_restart_and_changing_one_does() {
+    let startup = vec![declared("clarity", true), declared("ga4", true)];
+    let mut m = area(startup.clone());
+    let reordered = "[[ai.mcp.servers]]\nname = \"ga4\"\ncommand = \"x\"\n\
+                     [[ai.mcp.servers]]\nname = \"clarity\"\ncommand = \"x\"\n";
+    m.presence_reply(presence(reordered, ""));
+    assert!(!texts(&m).iter().any(|l| l.contains("restart lazarobox")));
+    let changed = reordered.replacen("command = \"x\"", "command = \"y\"", 1);
+    m.presence_reply(presence(&changed, ""));
+    assert!(texts(&m).iter().any(|l| l.contains("restart lazarobox")));
+}
+
+// Spec (visible notices): `values missing` says why when the file is not used.
+#[test]
+fn a_secrets_file_that_is_not_used_is_named_next_to_the_missing_values() {
+    let mut m = area(Vec::new());
+    let loaded = Loaded::problem(mode_problem(std::path::Path::new("/h/secrets.toml")));
+    m.presence_reply(Presence::read(Ok(CLARITY.to_owned()), &loaded));
+    assert_eq!(texts(&m)[1], "Clarity: values missing: CLARITY_API_TOKEN");
+    let all = texts(&m).join(" ");
+    assert!(all.contains("secrets.toml: mode must be 0600"), "{all}");
+    assert!(all.contains("chmod 600 /h/secrets.toml"), "{all}");
+    assert!(!format!("{m:?}").contains("sk-"));
 }

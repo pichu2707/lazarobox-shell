@@ -8,8 +8,8 @@ expression: "text(&draw(62, POPUP_H, &connectors_entry(0)))"
 │ State: declared                                            │
 │ Guide                                                      │
 │   1. In the Clarity project settings, open Data Export.    │
-│   2. Generate a new API token with project admin rights    │
-│   and copy it.                                             │
+│   2. Generate a new API token with project admin rights and│
+│   copy it.                                                 │
 │   3. Put it in secrets.toml under [clarity] as             │
 │   CLARITY_API_TOKEN.                                       │
 │   Limits of the Clarity API: 10 requests per project per   │

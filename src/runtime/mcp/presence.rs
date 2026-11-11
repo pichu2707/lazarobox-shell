@@ -46,7 +46,7 @@ impl Reader {
                 None => Err(std::io::ErrorKind::NotFound.into()),
             };
             let loaded = load_for_start(secrets).await;
-            let presence = Presence::read(text, &loaded.secrets);
+            let presence = Presence::read(text, &loaded);
             let _ = events.send(AppEvent::McpPresence(presence)).await;
         });
     }

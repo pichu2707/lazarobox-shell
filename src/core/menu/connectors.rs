@@ -15,10 +15,13 @@ use crate::core::ai::{
         snippet,
     },
     mcp_secrets::FILE as SECRETS_FILE,
+    sanitize::clean,
 };
 
-/// Text is cut here; the popup is 62 wide and the renderer clips.
-const WRAP: usize = 56;
+/// The narrowest text column a prompt is shown in.
+const MIN_ROOM: usize = 24;
+const CANCELLED: &str = "cancelled";
+const WIDEN: &str = "widen the terminal to read the command";
 pub(super) const RESTART: &str = "restart lazarobox to use it in chats";
 const UNREAD: &str = "config.toml could not be read; showing the list loaded at startup";
 const NOT_DECLARED: &str = "not declared: paste the entry into config.toml first";
@@ -60,33 +63,108 @@ pub(super) struct Connectors {
     notice: Option<&'static str>,
 }
 
-/// `text` cut at `WRAP` characters on word boundaries (a long word is split).
-fn wrap(text: &str, indent: &str) -> Vec<Row> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
+/// `text` cut at `room` columns on word boundaries (a long word is split).
+/// Spaces between words are collapsed: for prose, never for a command.
+fn wrap(text: &str, indent: &str, room: usize) -> Vec<Row> {
+    let room = room.saturating_sub(indent.chars().count()).max(1);
+    let mut lines = vec![String::new()];
     for word in text.split_whitespace() {
         let mut word = word.to_owned();
-        while word.chars().count() > WRAP - indent.len() {
-            let head: String = word.chars().take(WRAP - indent.len()).collect();
-            word = word.chars().skip(head.chars().count()).collect();
-            lines.push(std::mem::take(&mut line));
+        while word.chars().count() > room {
+            let head: String = word.chars().take(room).collect();
+            word = word.chars().skip(room).collect();
             lines.push(head);
         }
-        let room = WRAP - indent.len();
-        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > room {
-            lines.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
+        let line = lines.last_mut().expect("one line");
+        if line.is_empty() {
+            *line = word;
+        } else if line.chars().count() + 1 + word.chars().count() > room {
+            lines.push(word);
+        } else {
             line.push(' ');
+            line.push_str(&word);
         }
-        line.push_str(&word);
     }
-    lines.push(line);
     lines
         .into_iter()
         .filter(|l| !l.is_empty())
-        .map(|l| Row::Text(Cow::Owned(format!("{indent}{l}"))))
+        .map(|l| text_row(format!("{indent}{l}")))
         .collect()
+}
+
+/// `text` in rows of at most `room` columns, breaking after a space when it
+/// can and keeping every character: the rows, joined, are `text` exactly (a
+/// command is shown as it is typed).
+fn verbatim(text: &str, indent: &str, room: usize) -> Vec<Row> {
+    let room = room.saturating_sub(indent.chars().count()).max(1);
+    let chars: Vec<char> = text.chars().collect();
+    let mut rows = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let mut end = (start + room).min(chars.len());
+        if end < chars.len()
+            && let Some(space) = chars[start..end].iter().rposition(|c| *c == ' ')
+        {
+            end = start + space + 1;
+        }
+        let piece: String = chars[start..end].iter().collect();
+        rows.push(text_row(format!("{indent}{piece}")));
+        start = end;
+    }
+    rows
+}
+
+fn text_row(line: String) -> Row {
+    Row::Text(Cow::Owned(line))
+}
+
+/// The rows of a prompt, or `None` when its command does not fit whole in
+/// the body at this width: it is then never asked, because the user would
+/// confirm a command they could not read.
+fn prompt_rows(prompt: &Prompt, room: usize) -> Option<Vec<Row>> {
+    if room < MIN_ROOM {
+        return None;
+    }
+    let mut rows = match prompt {
+        Prompt::Run {
+            what,
+            id,
+            line,
+            discards,
+        } => {
+            let mut rows = vec![
+                title(format!("{what} {id}? (y/n)")),
+                text("Runs in a new tab, with Enter:"),
+            ];
+            rows.extend(verbatim(line, "  ", room));
+            if *discards {
+                rows.push(text("Unsaved menu changes are discarded."));
+            }
+            rows
+        }
+        Prompt::Probe(server) => {
+            let mut rows = vec![
+                title(format!("probe {}? (y/n)", server.name)),
+                text("Starts, without a shell:"),
+            ];
+            rows.extend(verbatim(&command_of(server), "  ", room));
+            rows
+        }
+    };
+    (rows.len() <= VIEW_BODY).then(|| {
+        rows.shrink_to_fit();
+        rows
+    })
+}
+
+/// What a probe spawns, as one line: the command and its arguments.
+fn command_of(server: &McpServer) -> String {
+    let mut line = clean(&server.command);
+    for arg in &server.args {
+        line.push(' ');
+        line.push_str(&clean(arg));
+    }
+    line
 }
 
 fn text(line: impl Into<String>) -> Row {
@@ -162,12 +240,18 @@ impl Connectors {
         self.notice.take()
     }
 
-    /// The disk copy differs from what the chats loaded at startup.
+    /// The disk copy differs from what the chats loaded at startup. The order
+    /// of the entries does not matter.
     fn restart(&self) -> bool {
+        let sorted = |list: &[McpServer]| {
+            let mut list = list.to_vec();
+            list.sort_by(|a, b| (&a.name, &a.project).cmp(&(&b.name, &b.project)));
+            list
+        };
         self.presence
             .as_ref()
             .and_then(|p| p.servers.as_ref())
-            .is_some_and(|disk| *disk != self.startup)
+            .is_some_and(|disk| sorted(disk) != sorted(&self.startup))
     }
 
     /// The state of an entry, as the list shows it.
@@ -200,18 +284,18 @@ impl Connectors {
         }
     }
 
-    pub(super) fn rows(&self) -> Vec<Row> {
+    pub(super) fn rows(&self, room: usize) -> Vec<Row> {
         let mut rows = match (&self.prompt, self.screen) {
-            (Some(prompt), _) => Self::prompt_rows(prompt),
-            (None, Some(Screen::Entry { at, scroll })) => self.entry_rows(at, scroll),
-            (None, Some(Screen::List(cursor))) => self.list_rows(cursor),
+            (Some(prompt), _) => prompt_rows(prompt, room).unwrap_or_else(|| vec![text(WIDEN)]),
+            (None, Some(Screen::Entry { at, scroll })) => self.entry_rows(at, scroll, room),
+            (None, Some(Screen::List(cursor))) => self.list_rows(cursor, room),
             (None, None) => Vec::new(),
         };
         rows.truncate(VIEW_BODY);
         rows
     }
 
-    fn list_rows(&self, cursor: usize) -> Vec<Row> {
+    fn list_rows(&self, cursor: usize, room: usize) -> Vec<Row> {
         let mut rows = Vec::new();
         let mut group = None;
         for (at, entry) in mcp_catalog::entries().iter().enumerate() {
@@ -229,73 +313,52 @@ impl Connectors {
                 enabled: true,
             });
         }
-        self.notes(&mut rows);
+        self.notes(&mut rows, room);
         rows
     }
 
     /// The lines about where the list came from.
-    fn notes(&self, rows: &mut Vec<Row>) {
+    fn notes(&self, rows: &mut Vec<Row>, room: usize) {
         if self.presence.as_ref().is_some_and(|p| p.servers.is_none()) {
-            rows.extend(wrap(UNREAD, ""));
+            rows.extend(wrap(UNREAD, "", room));
         } else if self.restart() {
             rows.push(text(RESTART));
         }
-    }
-
-    fn prompt_rows(prompt: &Prompt) -> Vec<Row> {
-        match prompt {
-            Prompt::Run {
-                what,
-                id,
-                line,
-                discards,
-            } => {
-                let mut rows = vec![
-                    title(format!("{what} {id}? (y/n)")),
-                    text("Runs in a new tab, with Enter:"),
-                ];
-                rows.extend(wrap(line, "  "));
-                if *discards {
-                    rows.push(text("Unsaved menu changes are discarded."));
-                }
-                rows
-            }
-            Prompt::Probe(server) => vec![
-                title(format!("probe {}? (y/n)", server.name)),
-                text("Starts the server and lists its tools."),
-            ],
+        // Why a value may be missing: the file is not used, or has errors.
+        for problem in self.presence.iter().flat_map(|p| &p.problems).take(3) {
+            rows.extend(wrap(problem, "", room));
         }
     }
 
     /// The entry screen: a fixed title, then the content from `scroll`.
-    fn entry_rows(&self, at: usize, scroll: usize) -> Vec<Row> {
+    fn entry_rows(&self, at: usize, scroll: usize, room: usize) -> Vec<Row> {
         let entry = &mcp_catalog::entries()[at];
         let mut rows = vec![title(format!(
             "{} · {} ({})",
             entry.title, entry.project, entry.license
         ))];
         let window = VIEW_BODY - 1;
-        let content = self.entry_content(entry);
+        let content = self.entry_content(entry, room);
         let top = scroll.min(content.len().saturating_sub(window));
         rows.extend(content.into_iter().skip(top).take(window));
         rows
     }
 
-    fn entry_content(&self, entry: &Entry) -> Vec<Row> {
+    fn entry_content(&self, entry: &Entry, room: usize) -> Vec<Row> {
         let mut rows = vec![text(format!("State: {}", self.state(entry)))];
-        self.notes(&mut rows);
+        self.notes(&mut rows, room);
         if let Some(probe) = self.probes.get(entry.id) {
             rows.push(title("Last probe"));
             for line in probe.lines.iter().chain(&probe.problems) {
-                rows.extend(wrap(line, "  "));
+                rows.extend(wrap(line, "  ", room));
             }
         }
         rows.push(title("Guide"));
         for step in entry.guide {
-            rows.extend(wrap(step, "  "));
+            rows.extend(wrap(step, "  ", room));
         }
         for (n, link) in entry.links.iter().enumerate() {
-            rows.extend(wrap(&format!("[{}] {link}", n + 1), "  "));
+            rows.extend(wrap(&format!("[{}] {link}", n + 1), "  ", room));
         }
         rows.push(title("Paste into config.toml"));
         rows.extend(snippet(entry).lines().map(|l| text(format!("  {l}"))));
@@ -316,19 +379,27 @@ impl Connectors {
         }
         rows.push(title("Files"));
         if let Some(config) = &self.config_path {
-            rows.extend(wrap(&format!("config.toml: {}", config.display()), "  "));
+            rows.extend(wrap(
+                &format!("config.toml: {}", config.display()),
+                "  ",
+                room,
+            ));
             let secrets = config.with_file_name(SECRETS_FILE);
-            rows.extend(wrap(&format!("secrets.toml: {}", secrets.display()), "  "));
+            rows.extend(wrap(
+                &format!("secrets.toml: {}", secrets.display()),
+                "  ",
+                room,
+            ));
         }
         rows.push(title("Actions"));
-        rows.extend(wrap(&format!("i install: {}", entry.install), "  "));
+        rows.extend(wrap(&format!("i install: {}", entry.install), "  ", room));
         if let Some(login) = entry.login {
-            rows.extend(wrap(&format!("l log in: {}", login.line), "  "));
+            rows.extend(wrap(&format!("l log in: {}", login.line), "  ", room));
         }
         if self.server(entry.id).is_some() {
             rows.push(text("  p probe"));
         } else {
-            rows.extend(wrap(NOT_DECLARED, "  "));
+            rows.extend(wrap(NOT_DECLARED, "  ", room));
         }
         rows.push(text("  1-9 open a link · c copy the entry"));
         if secrets_template(entry).is_some() {
@@ -348,17 +419,25 @@ impl Connectors {
         })
     }
 
-    pub(super) fn key(&mut self, key: &KeyEvent, dirty: bool) -> MenuCommand {
+    pub(super) fn key(&mut self, key: &KeyEvent, dirty: bool, room: usize) -> MenuCommand {
         if let Some(prompt) = self.prompt.take() {
-            return match (key.code, prompt) {
-                (KeyCode::Char('y'), Prompt::Run { line, .. }) => {
-                    MenuCommand::Connector(line.to_owned())
-                }
-                (KeyCode::Char('y'), Prompt::Probe(server)) => {
+            // Only a plain `y` confirms (not Ctrl+y or Alt+y), and only while
+            // the command is shown whole at this width.
+            let plain_y = key.code == KeyCode::Char('y') && key.modifiers.is_empty();
+            if plain_y && prompt_rows(&prompt, room).is_none() {
+                self.notice = Some(WIDEN);
+                return MenuCommand::None;
+            }
+            return match (plain_y, prompt) {
+                (true, Prompt::Run { line, .. }) => MenuCommand::Connector(line.to_owned()),
+                (true, Prompt::Probe(server)) => {
                     self.probing = Some(server.name.clone());
                     MenuCommand::Probe(server)
                 }
-                _ => MenuCommand::None,
+                _ => {
+                    self.notice = Some(CANCELLED);
+                    MenuCommand::None
+                }
             };
         }
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
@@ -371,7 +450,7 @@ impl Connectors {
         }
         match screen {
             Screen::List(cursor) => self.list_key(key.code, cursor),
-            Screen::Entry { at, scroll } => self.entry_key(key.code, at, scroll, dirty),
+            Screen::Entry { at, scroll } => self.entry_key(key.code, (at, scroll), dirty, room),
         }
     }
 
@@ -396,7 +475,13 @@ impl Connectors {
         MenuCommand::None
     }
 
-    fn entry_key(&mut self, code: KeyCode, at: usize, scroll: usize, dirty: bool) -> MenuCommand {
+    fn entry_key(
+        &mut self,
+        code: KeyCode,
+        (at, scroll): (usize, usize),
+        dirty: bool,
+        room: usize,
+    ) -> MenuCommand {
         let entry = &mcp_catalog::entries()[at];
         let run = |what, line| Prompt::Run {
             what,
@@ -408,19 +493,19 @@ impl Connectors {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 let last = self
-                    .entry_content(entry)
+                    .entry_content(entry, room)
                     .len()
                     .saturating_sub(VIEW_BODY - 1);
                 self.screen = Some(moved((scroll + 1).min(last)));
             }
             KeyCode::Char('k') | KeyCode::Up => self.screen = Some(moved(scroll.saturating_sub(1))),
             KeyCode::Esc => self.screen = Some(Screen::List(at)),
-            KeyCode::Char('i') => self.prompt = Some(run("install", entry.install)),
+            KeyCode::Char('i') => self.ask(run("install", entry.install), room),
             KeyCode::Char('l') => match entry.login {
-                Some(login) => self.prompt = Some(run("log in to", login.line)),
+                Some(login) => self.ask(run("log in to", login.line), room),
                 None => self.notice = Some("this entry has no login"),
             },
-            KeyCode::Char('p') => return self.ask_probe(entry),
+            KeyCode::Char('p') => return self.ask_probe(entry, room),
             KeyCode::Char('c') => return MenuCommand::Copy(snippet(entry)),
             KeyCode::Char('t') => match secrets_template(entry) {
                 Some(template) => return MenuCommand::Copy(template),
@@ -435,14 +520,23 @@ impl Connectors {
         MenuCommand::None
     }
 
-    fn ask_probe(&mut self, entry: &Entry) -> MenuCommand {
+    /// Asks `prompt`, unless its command cannot be shown whole at this width.
+    fn ask(&mut self, prompt: Prompt, room: usize) {
+        if prompt_rows(&prompt, room).is_some() {
+            self.prompt = Some(prompt);
+        } else {
+            self.notice = Some(WIDEN);
+        }
+    }
+
+    fn ask_probe(&mut self, entry: &Entry, room: usize) -> MenuCommand {
         if self.probing.is_some() {
             self.notice = Some("a probe is already running");
         } else {
             match self.server(entry.id) {
                 None => self.notice = Some(NOT_DECLARED),
                 Some(server) if !server.enabled => self.notice = Some("disabled in config.toml"),
-                Some(server) => self.prompt = Some(Prompt::Probe(Box::new(server.clone()))),
+                Some(server) => self.ask(Prompt::Probe(Box::new(server.clone())), room),
             }
         }
         MenuCommand::None

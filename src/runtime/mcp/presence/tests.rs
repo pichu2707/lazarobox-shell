@@ -37,6 +37,8 @@ async fn a_secrets_file_that_is_not_used_has_no_values() {
     let (_dir, config, secrets) = files(0o644);
     let presence = asked(config, secrets).await;
     assert!(!presence.has("clarity", "CLARITY_API_TOKEN"));
+    assert_eq!(presence.problems.len(), 1, "{presence:?}");
+    assert!(presence.problems[0].contains("mode must be 0600"));
 }
 
 #[tokio::test]

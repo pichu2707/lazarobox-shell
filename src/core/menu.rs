@@ -1305,6 +1305,13 @@ impl MenuState {
         self.connectors.probe_reply(report);
     }
 
+    /// The columns of text a row of the area can show: the popup is at most
+    /// `WANT_WIDTH_AI` wide, less two borders and the space a row starts with.
+    fn connectors_room(&self) -> usize {
+        let cols = self.term.map_or(WANT_WIDTH_AI, |(cols, _)| cols);
+        usize::from(cols.min(WANT_WIDTH_AI)).saturating_sub(3)
+    }
+
     fn on_connectors_row(&self) -> bool {
         matches!(self.selected_kind(), Some(ItemKind::Connectors))
     }
@@ -1319,7 +1326,7 @@ impl MenuState {
             return MenuCommand::None;
         }
         let dirty = !self.edits(config).is_empty();
-        let command = self.connectors.key(key, dirty);
+        let command = self.connectors.key(key, dirty, self.connectors_room());
         if let Some(notice) = self.connectors.take_notice() {
             self.notice = Some(notice.to_owned());
         }
@@ -2165,7 +2172,7 @@ impl MenuState {
             Some(SubView::AccountField) => self.account_rows(),
             Some(SubView::Feedback) => self.feedback_rows(),
             Some(SubView::Usage) => self.usage_rows(),
-            Some(SubView::Connectors) => Some(self.connectors.rows()),
+            Some(SubView::Connectors) => Some(self.connectors.rows(self.connectors_room())),
             None => None,
         };
         if let Some(rows) = view {
