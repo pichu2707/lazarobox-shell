@@ -1511,3 +1511,21 @@ fn a_run_is_undelegated_only_with_no_worker_and_no_cancel() {
     refused.spawn(t0, Task::Review, "x").unwrap_err();
     assert!(refused.undelegated(), "a refusal made no worker");
 }
+
+// Spec "Mandatory review for a cheap author, optional for a strong one"
+// (17.1, D20): a cheap author is a local server that keeps the model on the
+// machine. An Ollama `*-cloud` model, a CLI engine, an unknown engine and an
+// empty one are not.
+#[test]
+fn a_cheap_engine_is_local_and_keeps_the_model_on_the_machine() {
+    use super::run::cheap;
+    assert!(cheap("ollama", Some("llama3:8b")));
+    assert!(cheap("llamacpp", Some("model.gguf")));
+    assert!(cheap("llamacpp", None));
+    assert!(!cheap("ollama", Some("gpt-oss:120b-cloud")));
+    assert!(!cheap("ollama", Some("gpt-oss:cloud")));
+    assert!(!cheap("claude", Some("opus")));
+    assert!(!cheap("claude", None));
+    assert!(!cheap("deploybot", Some("x")));
+    assert!(!cheap("", None));
+}

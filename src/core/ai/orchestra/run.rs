@@ -21,6 +21,13 @@ use crate::core::ai::tools::github::forwards_off_machine;
 use crate::core::ai::tools::label;
 use crate::core::ai::tools::registry::{Family, FamilySet};
 
+/// Whether a worker on `engine` and `model` is a cheap author (design D20):
+/// a local server that keeps the model on the machine. An Ollama `*-cloud`
+/// model is not, nor is a CLI engine, an unknown engine or an empty one.
+pub fn cheap(engine: &str, model: Option<&str>) -> bool {
+    locality(engine) == Some(Locality::Local) && !forwards_off_machine(engine, model)
+}
+
 /// What bounds a run: the workers that run at once, the workers it may spawn
 /// in all and its wall clock (`max_parallel`, `max_workers`,
 /// `run_timeout_mins`) and the orchestrator turns it may take, the first
@@ -391,11 +398,9 @@ impl Run {
     /// off the machine (an Ollama `*-cloud` model is not).
     pub fn shares_engine(&self, id: WorkerId) -> Option<WorkerId> {
         let local = |slot: &Slot| {
-            let spec = &slot.spec;
             slot.status == WorkerStatus::Running
                 && !slot.parked
-                && locality(&spec.engine) == Some(Locality::Local)
-                && !forwards_off_machine(&spec.engine, spec.model.as_deref())
+                && cheap(&slot.spec.engine, slot.spec.model.as_deref())
         };
         let mine = self.slot(id).filter(|slot| local(slot))?;
         let other = |(n, slot): &(usize, &Slot)| {
