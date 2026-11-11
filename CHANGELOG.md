@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Windows Terminal under WSL has a test record (`docs/terminals/windows-terminal/`)
+  and counts as a recorded terminal. `Alt+Enter` is taken by Windows Terminal
+  for fullscreen: use `Ctrl+J` for a newline in the chat, or unbind the key.
+
 ## [1.19.0] - 2026-11-11
 
 ### Added
