@@ -106,8 +106,9 @@ const GSC: Entry = Entry {
     guide: &[
         "1. In your own Google Cloud project, enable the Google Search Console API and create a service account.",
         "2. Create a JSON key for it and save it as ~/.config/lazarobox/gsc-service-account.json with mode 0600 (lazarobox refuses to read it).",
-        "3. In Search Console, open Settings, Users and permissions, and add the service account e-mail as a user of the property (Restricted is enough to read).",
+        "3. In Search Console, open Settings, Users and permissions, and add the service account e-mail as a user of the property (Restricted is enough for search analytics; if URL inspection is denied, use Full).",
         "4. Put the path of the JSON file in secrets.toml under [gsc] as GSC_CREDENTIALS_PATH; GSC_SKIP_OAUTH is already \"true\". There is no login step.",
+        "Warning: the reauthenticate tool is useless with a service account (it deletes the token and starts a browser OAuth flow); answer n if a model asks for it.",
     ],
     links: &[
         "https://console.cloud.google.com/iam-admin/serviceaccounts",
