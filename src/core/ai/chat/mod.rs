@@ -354,8 +354,10 @@ struct ContextFill {
 pub struct ChatState {
     origin_cwd: Option<PathBuf>,
     entries: Vec<Entry>,
-    /// The system lines that collapse their repeats: key to (line shown, times).
-    collapsed: std::collections::HashMap<String, (String, u32)>,
+    /// How many times each collapsing system line has come in this run.
+    collapsed: std::collections::HashMap<String, u32>,
+    /// The collapsing lines at the very end of `entries`, as shown.
+    collapse_tail: Vec<(String, String)>,
     phase: Phase,
     turn: u64,
     composer: Composer,
@@ -568,6 +570,7 @@ impl ChatState {
             origin_cwd,
             entries: Vec::new(),
             collapsed: std::collections::HashMap::new(),
+            collapse_tail: Vec::new(),
             phase: Phase::Idle,
             turn: 0,
             composer: Composer::new(),
@@ -688,6 +691,7 @@ impl ChatState {
         if self.orch_run != run {
             self.selected = None;
             self.cancel_armed = None;
+            self.forget_collapsed();
         }
         // A refusal belongs to its live run: another run, or none, ends it.
         if self.gate_offer.is_some_and(|offer| Some(offer.run) != run) {
@@ -923,6 +927,7 @@ impl ChatState {
         }
         self.ended_workers.retain(|key| key.run != run);
         if self.orch_run == Some(run) {
+            self.forget_collapsed();
             self.selected = None;
             self.cancel_armed = None;
         }
@@ -1281,26 +1286,50 @@ impl ChatState {
     }
 
     /// A system line that may come again under the same `key` (a worker and a
-    /// cause, say): the first is shown as it is; each repeat rewrites that
-    /// line to carry the count (`(N times)`) instead of adding another. A
-    /// different key is a new line, so a new cause is never hidden.
+    /// cause, say). The first is shown as it is. A repeat that comes while the
+    /// line is still in the block of such lines at the bottom of the pane
+    /// rewrites it to carry the count (`(N times)`); one that comes after
+    /// other lines is printed again at the bottom (`(N times so far)`), never
+    /// bumped out of sight. A different key is a new line, so a new cause is
+    /// never hidden. The counts end with the run.
     pub fn push_collapsing_line(&mut self, key: String, line: String) {
-        if let Some((shown, times)) = self.collapsed.get_mut(&key) {
-            let at = self
-                .entries
+        let total = self.collapsed.entry(key.clone()).or_insert(0);
+        *total += 1;
+        let times = *total;
+        // The block is only trusted while it still is the end of the pane.
+        let first = self.entries.len().checked_sub(self.collapse_tail.len());
+        let intact = first.is_some_and(|first| {
+            self.collapse_tail
                 .iter()
-                .rposition(|e| matches!(e, Entry::System(s) if s == shown));
-            if let Some(at) = at {
-                *times += 1;
-                let next = format!("{line} ({times} times)");
-                *shown = next.clone();
-                self.entries[at] = Entry::System(next);
-                self.generation += 1;
-                return;
-            }
+                .zip(&self.entries[first..])
+                .all(|((_, shown), entry)| matches!(entry, Entry::System(s) if s == shown))
+        });
+        if !intact {
+            self.collapse_tail.clear();
         }
-        self.collapsed.insert(key, (line.clone(), 1));
-        self.push_system_line(line);
+        if let (Some(first), Some(at)) = (
+            first,
+            self.collapse_tail.iter().position(|(k, _)| *k == key),
+        ) {
+            let next = format!("{line} ({times} times)");
+            self.entries[first + at] = Entry::System(next.clone());
+            self.collapse_tail[at].1 = next;
+            self.generation += 1;
+            return;
+        }
+        let shown = if times > 1 {
+            format!("{line} ({times} times so far)")
+        } else {
+            line
+        };
+        self.collapse_tail.push((key, shown.clone()));
+        self.push_system_line(shown);
+    }
+
+    /// The counts of the collapsing lines belong to a run.
+    fn forget_collapsed(&mut self) {
+        self.collapsed.clear();
+        self.collapse_tail.clear();
     }
 
     /// The pending approval of this chat.

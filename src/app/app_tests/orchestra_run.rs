@@ -789,6 +789,79 @@ fn a_new_review_cause_still_prints_and_the_first_notice_has_no_counter() {
     let all = system_lines(&a);
     assert!(all.lines().any(|l| l == format!("{first} (2 times)")));
     assert!(all.lines().any(|l| l == other), "{all}");
+    assert!(!all.contains("(2 times) (2 times)"), "{all}");
+}
+
+const COULD_NOT_START: &str = "review of worker 1 could not start: engine missing; the change goes to your batch review unreviewed";
+
+// A repeat that comes after an unrelated line is NOT a count bump far above
+// the bottom: it is printed again where the user is looking.
+#[test]
+fn a_repeat_after_an_unrelated_line_prints_at_the_bottom() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(review_line(COULD_NOT_START)));
+    a.update(event(OrchestraEvent::Notice {
+        text: "something else happened".to_owned(),
+    }));
+    a.update(event(review_line(COULD_NOT_START)));
+    let all = system_lines(&a);
+    let last = all.lines().last().unwrap();
+    assert_eq!(last, format!("{COULD_NOT_START} (2 times so far)"), "{all}");
+    assert_eq!(
+        all.lines().filter(|l| *l == COULD_NOT_START).count(),
+        1,
+        "the first line stays as it was: {all}"
+    );
+}
+
+// The notice and its blocked receipt come as a pair, again and again: both
+// collapse, the pair stays at the bottom.
+#[test]
+fn a_repeated_notice_and_receipt_pair_stays_two_lines() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    for n in 1..=22 {
+        a.update(event(review_line(COULD_NOT_START)));
+        a.update(event(blocked_receipt(n, "no review ran")));
+    }
+    let all = system_lines(&a);
+    let kept: Vec<_> = all
+        .lines()
+        .filter(|l| l.contains("could not start") || l.starts_with("handoff receipt"))
+        .collect();
+    // The first pair as it was; the rest are one pair with the count.
+    assert_eq!(kept.len(), 4, "{all}");
+    assert!(
+        kept[2..].iter().all(|l| l.ends_with("(22 times)")),
+        "{kept:?}"
+    );
+}
+
+// The count belongs to its run: the next run's first notice is a fresh line.
+#[test]
+fn the_same_notice_in_a_new_run_prints_fresh() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(review_line(COULD_NOT_START)));
+    a.update(event(review_line(COULD_NOT_START)));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    a.update(event(row(RunId(9), 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Review {
+        run: RunId(9),
+        text: COULD_NOT_START.to_owned(),
+    }));
+    let all = system_lines(&a);
+    assert_eq!(
+        all.lines().last().unwrap(),
+        COULD_NOT_START,
+        "a fresh line, no count: {all}"
+    );
+    assert!(
+        all.lines()
+            .any(|l| l == format!("{COULD_NOT_START} (2 times)")),
+        "the old run keeps its own: {all}"
+    );
 }
 
 // The blocked receipt that comes with each notice collapses too, though its
@@ -809,6 +882,9 @@ fn a_repeated_blocked_receipt_collapses_and_a_new_reason_prints() {
     assert_eq!(
         said,
         [
+            // The first one is as it was; the privacy note the first handoff
+            // brings ends its block, so the next starts a fresh line.
+            "handoff receipt 1 of worker 1 blocked: no review ran",
             "handoff receipt 5 of worker 1 blocked: no review ran (5 times)",
             "handoff receipt 6 of worker 1 blocked: another cause",
         ]
