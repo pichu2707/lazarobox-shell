@@ -58,10 +58,11 @@ impl Step {
 pub const READ_ONLY: &str = "a read-only goal spawns no code worker and no simple worker with files to write; \
      a simple worker with no files to write starts with the read tools only";
 
-/// The reason a `code` worker is refused while Write is off. The step is the
+/// The reason a worker that writes files (a `code` worker, or a `simple` one
+/// whose brief lists `outputs`) is refused while Write is off. The step is the
 /// chat's: the user types `/write`. The backticks keep the coordinator-bound
 /// text from masking it as a path (a word that starts with `/`).
-pub const WRITE_OFF: &str = "worker not started: a code worker needs the Write tools and Write is off; \
+pub const WRITE_OFF: &str = "worker not started: a worker that writes files needs the Write tools and Write is off; \
      the user can type `/write` in this chat to turn it on, then spawn it again";
 
 /// The reason a review correction (a `code` worker lazarobox starts itself)

@@ -203,6 +203,17 @@ fn the_refusal_text_names_the_toggle_and_says_no_worker_started() {
     assert!(WRITE_OFF.is_ascii());
 }
 
+// A `simple` worker with files to write is refused by the same text, so it
+// must not call it a `code` worker.
+#[test]
+fn the_refusal_text_fits_a_simple_worker_that_writes_files() {
+    assert!(
+        WRITE_OFF.contains("a worker that writes files"),
+        "{WRITE_OFF}"
+    );
+    assert!(!WRITE_OFF.contains("code worker"), "{WRITE_OFF}");
+}
+
 fn failed() -> WorkerEvent {
     WorkerEvent::Failed {
         class: ErrorClass::Other,

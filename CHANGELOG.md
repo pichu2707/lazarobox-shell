@@ -16,6 +16,10 @@ baseline.
   batch reviews and asks of its workers still on screen close with `review
   closed: the run ended; nothing was written`, and a late `y` no longer writes
   a batch the run had already denied.
+- Orchestrator notices name the right thing: the Write-off refusal says "a
+  worker that writes files" (it also fires for a `simple` brief with
+  `outputs`), and the "needs specification" line of a clarification round
+  names the original brief, as the run-stop message does.
 
 ## [1.18.0] - 2026-11-11
 

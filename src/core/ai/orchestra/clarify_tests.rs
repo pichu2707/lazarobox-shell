@@ -199,12 +199,12 @@ fn the_user_is_told_once_the_worker_ended() {
     done(&mut run, id, "stopped");
     assert_eq!(
         run.disclosure(id, || false),
-        Some(Disclosure::NeedsSpecification)
+        Some(Disclosure::NeedsSpecification { brief: 2 })
     );
     done(&mut run, plain, "ok");
     assert_ne!(
         run.disclosure(plain, || false),
-        Some(Disclosure::NeedsSpecification)
+        Some(Disclosure::NeedsSpecification { brief: 1 })
     );
 }
 
@@ -275,7 +275,7 @@ fn a_clarifying_worker_with_an_unproposed_batch_discloses_both() {
     assert_eq!(
         run.disclosures(id, || true),
         [
-            Disclosure::NeedsSpecification,
+            Disclosure::NeedsSpecification { brief: 2 },
             Disclosure::StagedNotProposed { files: 1 }
         ]
     );
@@ -284,6 +284,6 @@ fn a_clarifying_worker_with_an_unproposed_batch_discloses_both() {
     done(&mut run, bare, "stopped");
     assert_eq!(
         run.disclosures(bare, || true),
-        [Disclosure::NeedsSpecification]
+        [Disclosure::NeedsSpecification { brief: 1 }]
     );
 }
