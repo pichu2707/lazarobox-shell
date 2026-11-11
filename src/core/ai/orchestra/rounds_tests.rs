@@ -64,6 +64,21 @@ fn an_open_clarification_refuses_a_spawn_that_does_not_answer_it() {
     assert!(run.spawn(Instant::now(), Task::Review, "x").is_ok());
 }
 
+// The disclosure of a respawned worker names the brief it belongs to (its
+// first worker), as the run-stop message does, not the respawn's own id.
+#[test]
+fn a_round_two_disclosure_names_the_original_brief() {
+    use super::changes::Disclosure;
+    let mut run = run();
+    asked(&mut run, &["src/a.rs"], None);
+    let second = asked(&mut run, &["src/a.rs"], Some(1));
+    assert_eq!(second, WorkerId(2));
+    assert_eq!(
+        run.disclosures(second, || false),
+        [Disclosure::NeedsSpecification { brief: 1 }]
+    );
+}
+
 // 20.4: with `answers: N` the new worker's round is the parent's plus one,
 // and the clarification is closed for the next spawn.
 #[test]
@@ -249,7 +264,7 @@ fn a_split_closing_blocks_writes_but_discloses_no_clarification() {
     done(&mut run, id, "split");
     assert!(
         !run.disclosures(id, || false)
-            .contains(&Disclosure::NeedsSpecification)
+            .contains(&Disclosure::NeedsSpecification { brief: 1 })
     );
 }
 

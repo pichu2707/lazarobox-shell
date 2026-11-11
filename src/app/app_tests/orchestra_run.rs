@@ -947,6 +947,18 @@ fn disclosed(id: u32, what: Disclosure) -> OrchestraEvent {
     }
 }
 
+#[test]
+fn a_respawned_worker_disclosure_names_its_original_brief() {
+    let (mut a, _) = running();
+    a.update(event(disclosed(
+        2,
+        Disclosure::NeedsSpecification { brief: 1 },
+    )));
+    let lines = system_lines(&a);
+    assert!(lines.contains("worker 2/3"), "{lines}");
+    assert!(lines.contains("brief 1 needs an answer"), "{lines}");
+}
+
 /// The system lines of the pane's transcript, one per line.
 fn system_lines(a: &App) -> String {
     let lines: Vec<_> = chat_of(a)

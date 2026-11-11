@@ -40,6 +40,10 @@ baseline.
   has no `spawn_agent` tool. The advice fits the cause: permissions only for
   a path others can write, otherwise to assign another engine. Plain tool
   chats and workers still degrade to text with the notice.
+- Orchestrator notices name the right thing: the Write-off refusal says "a
+  worker that writes files" (it also fires for a `simple` brief with
+  `outputs`), and the "needs specification" line of a clarification round
+  names the original brief, as the run-stop message does.
 
 ## [1.18.0] - 2026-11-11
 

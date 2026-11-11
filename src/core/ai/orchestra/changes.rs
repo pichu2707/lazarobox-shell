@@ -111,8 +111,9 @@ pub enum Disclosure {
     /// pane holds it as an orphan.
     StagedNotProposed { files: usize },
     /// A `simple` worker called `needs_specification` and ended (W8c): its
-    /// brief needs an answer.
-    NeedsSpecification,
+    /// brief needs an answer. `brief` is the first worker of that brief, so a
+    /// respawn of a clarification round names the same brief as the run stop.
+    NeedsSpecification { brief: u32 },
 }
 
 /// A short fingerprint of a staged change: FNV-1a 64 over the text it

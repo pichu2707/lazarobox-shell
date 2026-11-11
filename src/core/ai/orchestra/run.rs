@@ -570,7 +570,7 @@ impl Run {
         let asked = slot.status == WorkerStatus::Done && clarified;
         let mut said = Vec::new();
         if asked {
-            said.push(Disclosure::NeedsSpecification);
+            said.push(Disclosure::NeedsSpecification { brief: slot.brief });
         }
         said.extend(
             self.silent(id, unproposed)
