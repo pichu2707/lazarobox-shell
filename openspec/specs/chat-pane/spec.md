@@ -379,7 +379,8 @@ Before a message is sent, and again on every send attempt, the engine for the ch
 - unsupported (`opencode`): `not supported in chat yet`;
 - no jail (`codex` or `gemini` on a system without a working CLI jail, see chat-engines): `<engine>: not available on this system yet`;
 - CLI gated off (an adapter exists but a manual gate failed, see chat-engines): the engine id and `gated off`;
-- server with no model, or a model that is not detected: the engine id, the model name when set, and `no model` or `download required`.
+- server with no model, or a model that is not detected: the engine id, the model name when set, and `no model` or `download required`;
+- `llamacpp` with a model the server does not serve under that name (llama.cpp cannot download): the engine id, the server address (`127.0.0.1:<port>`), the configured model, the fix (`--alias <model>` or setting the model to the served name) and then at most three served ids in quotes, each clipped, with `(+N more)` for the rest (or `it serves no model`). The fix MUST come before the ids so a long list never cuts it. It MUST NOT say `download required`.
 While the first detection result has not arrived, the pane MUST show `checking engines…` and a send MUST wait for the result instead of failing.
 
 #### Scenario: Unassigned [auto]
@@ -411,6 +412,11 @@ While the first detection result has not arrived, the pane MUST show `checking e
 - GIVEN `chat` is `ollama` / `old:7b` and ollama lists only `llama3:8b`
 - WHEN send is attempted
 - THEN the guidance names `old:7b` and `download required` and no ChatSend is emitted
+
+#### Scenario: llama.cpp serves the model under another id [auto]
+- GIVEN `chat` is `llamacpp` / `qwen` and the server lists only `/models/qwen2.5-7b.gguf`
+- WHEN send is attempted
+- THEN the guidance says the server at `127.0.0.1:8080` does not serve `"qwen"`, names `--alias qwen` and then the served `"/models/qwen2.5-7b.gguf"`, does not contain `download`, and no ChatSend is emitted
 
 #### Scenario: Checking engines [auto]
 - GIVEN no detection result has arrived and `chat` is `ollama` / `llama3:8b`

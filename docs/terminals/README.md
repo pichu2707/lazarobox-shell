@@ -14,7 +14,7 @@ change a result, so each record names both.
 | :-- | :-- | :-- |
 | Kitty | recorded | [kitty/](kitty/README.md) |
 | zutty | recorded | [zutty/](zutty/README.md) |
-| Windows Terminal (WSL) | pending, not yet in `RECORDED_TERMINALS` | [windows-terminal/](windows-terminal/README.md) |
+| Windows Terminal (WSL) | recorded | [windows-terminal/](windows-terminal/README.md) |
 | WezTerm | deferred, no record yet | - |
 
 Only a terminal listed in `RECORDED_TERMINALS` (`src/core/desktop.rs`) is
@@ -29,6 +29,10 @@ folder here, a filled record, and that constant, in the same change.
   it to its initial value on exit); zutty then sends ESC LF, read as
   Alt+Ctrl+J, which inserts a newline in the chat. The Linux console and GNU
   screen are untested.
+- **Windows Terminal and Alt+Enter.** Windows Terminal binds `Alt+Enter` to
+  fullscreen by default, so it never reaches lazarobox. Use `Ctrl+J` for a
+  newline in the chat, or add `{ "command": "unbound", "keys": "alt+enter" }`
+  to `actions` in the Windows Terminal settings.
 
 ## Record header
 

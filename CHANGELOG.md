@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Windows Terminal under WSL has a test record (`docs/terminals/windows-terminal/`)
+  and counts as a recorded terminal. `Alt+Enter` is taken by Windows Terminal
+  for fullscreen: use `Ctrl+J` for a newline in the chat, or unbind the key.
+
 ### Changed
 
 - With ORCH on, the coordinator now delegates by default: a request that
@@ -17,6 +23,7 @@ baseline.
   do not mention it, and the coordinator no longer writes the code in its
   reply (quoting code to answer a question is still fine). It still answers
   questions, plans and summarises directly.
+
 ### Fixed
 
 - The orchestrator's model review no longer starts a correction worker for
@@ -34,6 +41,15 @@ baseline.
   batch stages that folder, and a `cwd` that is not a folder is named in the
   refusal, the same text whatever is there. Secret and hidden places keep the
   bare refusal.
+### Fixed
+
+- A llama.cpp server that serves its model under another id (for example the
+  GGUF path, because `llama-server` runs without `--alias`) no longer reads
+  `download required`: llama.cpp cannot download anything. The chat now says
+  that the server at `127.0.0.1:<port>` does not serve the configured model,
+  to start `llama-server` with `--alias <model>` or set the model to the
+  served name, and then lists up to three ids it serves. The task row and the model list read
+  `not served`.
 
 ## [1.19.0] - 2026-11-11
 
