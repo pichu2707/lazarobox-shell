@@ -1283,14 +1283,15 @@ impl MenuState {
         }
     }
 
-    /// The servers loaded at startup and this session's probe reports, for
-    /// the Connectors area.
+    /// The servers loaded at startup, this session's probe reports and the
+    /// path of `config.toml`, for the Connectors area.
     pub fn with_connectors(
         mut self,
         servers: Vec<crate::core::ai::config::McpServer>,
         probes: Vec<Probed>,
+        config_path: Option<std::path::PathBuf>,
     ) -> Self {
-        self.connectors = connectors::Connectors::new(servers, probes);
+        self.connectors = connectors::Connectors::new(servers, probes, config_path);
         self
     }
 
@@ -1302,6 +1303,13 @@ impl MenuState {
     /// A probe ended.
     pub fn probe_reply(&mut self, report: Probed) {
         self.connectors.probe_reply(report);
+    }
+
+    /// The columns of text a row of the area can show: the popup is at most
+    /// `WANT_WIDTH_AI` wide, less two borders and the space a row starts with.
+    fn connectors_room(&self) -> usize {
+        let cols = self.term.map_or(WANT_WIDTH_AI, |(cols, _)| cols);
+        usize::from(cols.min(WANT_WIDTH_AI)).saturating_sub(3)
     }
 
     fn on_connectors_row(&self) -> bool {
@@ -1318,7 +1326,7 @@ impl MenuState {
             return MenuCommand::None;
         }
         let dirty = !self.edits(config).is_empty();
-        let command = self.connectors.key(key, dirty);
+        let command = self.connectors.key(key, dirty, self.connectors_room());
         if let Some(notice) = self.connectors.take_notice() {
             self.notice = Some(notice.to_owned());
         }
@@ -2164,7 +2172,7 @@ impl MenuState {
             Some(SubView::AccountField) => self.account_rows(),
             Some(SubView::Feedback) => self.feedback_rows(),
             Some(SubView::Usage) => self.usage_rows(),
-            Some(SubView::Connectors) => Some(self.connectors.rows()),
+            Some(SubView::Connectors) => Some(self.connectors.rows(self.connectors_room())),
             None => None,
         };
         if let Some(rows) = view {
