@@ -199,6 +199,7 @@ fn the_ai_descriptors_are_well_formed() {
 // Spec: Task rows in order, Wrap (tab-local), Mouse row is selectable.
 #[test]
 fn navigation_visits_each_tab_in_order_and_wraps_inside_it() {
+    let _hidden = super::tabs_tests::Mcp::hidden();
     let mut m = menu(None, None, Some(machine()));
     for (rows, tab) in [
         (&SETTINGS_ORDER[..], 0),
@@ -335,6 +336,7 @@ fn ai_rows(menu: &MenuState) -> Vec<(&'static str, String)> {
 // Engine/Model/Status.
 #[test]
 fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
+    let _hidden = super::tabs_tests::Mcp::hidden();
     let m = assigned(&[(Task::General, "ollama", "llama3:8b")], Some(machine()));
     let got: Vec<_> = ai_rows(&m)
         .iter()

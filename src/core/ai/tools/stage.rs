@@ -178,6 +178,8 @@ pub struct Batch {
     /// A proposal of the owner is waiting for the user's answer. A proposed
     /// batch without one (its ask ended with the turn) may be asked again.
     asking: bool,
+    /// A worker's proposal asked the user about it at some point.
+    asked: bool,
 }
 
 impl Batch {
@@ -190,6 +192,7 @@ impl Batch {
             state: State::Staging,
             entries: Vec::new(),
             asking: false,
+            asked: false,
         }
     }
 
@@ -337,7 +340,14 @@ impl Batch {
             self.propose()?;
         }
         self.asking = true;
+        self.asked = true;
         Ok(self.id)
+    }
+
+    /// Whether a worker's proposal put this batch before the user (as
+    /// opposed to an orphan the user asked to see): a run that ends denies it.
+    pub fn asked(&self) -> bool {
+        self.asked
     }
 
     /// The ask of the owner is over without an answer (its call was dropped,

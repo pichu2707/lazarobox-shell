@@ -247,6 +247,8 @@ impl App {
         };
         // A worker that is over takes its waiting asks with it.
         let mut over = None;
+        // The run that ended takes every ask of its workers with it.
+        let mut ended = None;
         // What the run stores in engram once the pane is not borrowed.
         let mut store = None;
         // A worker turn's usage waits in the pane for the usage store.
@@ -284,10 +286,15 @@ impl App {
                 }
                 chat.set_orch_run(Some(row.run));
                 chat.keep_override();
-                let menu = self.ai.resolve(row.kind).0.engine;
+                let (resolved, unassigned) = self.ai.resolve(row.kind);
+                let menu = resolved.engine;
+                // `(default)` only when the worker really runs on what
+                // `general` names.
+                let unassigned = unassigned && menu.as_deref() == Some(row.engine.as_str());
                 row.overridden = chat.orch_overrides().is_some_and(|over| {
                     over.is_on(row.kind, &row.engine, row.model.as_deref(), menu.as_deref())
                 });
+                row.inherited = unassigned && !row.overridden;
                 chat.worker_row(row.clone());
                 kept = self.keep_worker(id, &row);
             }
@@ -359,7 +366,9 @@ impl App {
             // Where a worker's review stands (S7b): lazarobox's own words.
             OrchestraEvent::Review { run, text } => {
                 if chat.orch_run().is_none_or(|current| current == run) {
-                    chat.push_system_line(text);
+                    // The same line again (a review that cannot start while
+                    // the author re-proposes) is one line with a count.
+                    chat.push_collapsing_line(text.clone(), text);
                 }
             }
             // A fact about a worker's end: a system line, never history.
@@ -445,18 +454,27 @@ impl App {
             OrchestraEvent::Handoff { run, handoff } => {
                 store = Some((run, Item::of_handoff(&handoff)));
                 if matches!(handoff.verdict, Verdict::OffCourse | Verdict::Blocked) {
-                    let subject = match handoff.unit {
+                    let (subject, same) = match handoff.unit {
                         Unit::Worker(worker) => {
-                            format!("worker {} {}", worker.0, handoff.kind.id())
+                            let s = format!("worker {} {}", worker.0, handoff.kind.id());
+                            (s.clone(), s)
                         }
-                        Unit::Step(step) => format!("step {}", step.label()),
-                        Unit::Receipt(worker, n) => format!("receipt {n} of worker {}", worker.0),
+                        Unit::Step(step) => {
+                            let s = format!("step {}", step.label());
+                            (s.clone(), s)
+                        }
+                        // The receipt number grows with each repeat: it is
+                        // not part of what makes two of them the same.
+                        Unit::Receipt(worker, n) => (
+                            format!("receipt {n} of worker {}", worker.0),
+                            format!("receipt of worker {}", worker.0),
+                        ),
                     };
-                    chat.push_system_line(format!(
-                        "handoff {subject} {}: {}",
-                        handoff.verdict.label(),
-                        handoff.reason
-                    ));
+                    let verdict = handoff.verdict.label();
+                    chat.push_collapsing_line(
+                        format!("handoff {same} {verdict}: {}", handoff.reason),
+                        format!("handoff {subject} {verdict}: {}", handoff.reason),
+                    );
                 }
             }
             // The feature document of a large goal: one note, one key, stored
@@ -485,6 +503,7 @@ impl App {
             // Only the run it names ends: a replaced run ends after the new
             // one started.
             OrchestraEvent::Ended { run } => {
+                ended = Some(run);
                 chat.end_orch_run(run);
                 if chat.waiting_run() == Some(run) {
                     chat.set_waiting_run(None);
@@ -503,6 +522,9 @@ impl App {
         }
         if let Some(key) = over {
             self.withdraw_worker(id, key);
+        }
+        if let Some(run) = ended {
+            self.withdraw_run(id, run);
         }
         self.dirty = true;
         let mut effects = kept;

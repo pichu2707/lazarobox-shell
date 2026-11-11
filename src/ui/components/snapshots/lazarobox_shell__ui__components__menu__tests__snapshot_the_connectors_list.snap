@@ -1,0 +1,22 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(62, POPUP_H, &menu))"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
+│ Analytics                                                  │
+│ Clarity                                           declared │
+│ GA4                                           not declared │
+│ Search Console                                not declared │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ j/k move · Enter open · Esc back                           │
+└────────────────────────────────────────────────────────────┘

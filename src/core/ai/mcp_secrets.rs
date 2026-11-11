@@ -118,7 +118,7 @@ impl Secrets {
             let Value::Table(values) = values else {
                 loaded.problems.push(clean(&format!(
                     "secrets.toml: {}: expected a table",
-                    shown(&server)
+                    redact_tokens(&shown(&server))
                 )));
                 continue;
             };
@@ -136,7 +136,7 @@ impl Secrets {
                 };
                 loaded.problems.push(clean(&format!(
                     "secrets.toml: {}.{key}: {problem}",
-                    shown(&server)
+                    redact_tokens(&shown(&server))
                 )));
             }
             loaded.secrets.tables.insert(server, kept);

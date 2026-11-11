@@ -151,7 +151,12 @@ pub fn kind_label(kind: Task, engine: &str, model: Option<&str>) -> String {
 /// A worker row as text: `review codex>gpt-5 running`, then how long it ran
 /// once it ended (`done 12.3s`).
 pub(super) fn worker_line(row: &WorkerRow) -> String {
-    let marker = if row.overridden { " (override)" } else { "" };
+    // The menu's own word for a task row left unassigned.
+    let marker = match (row.overridden, row.inherited) {
+        (true, _) => " (override)",
+        (false, true) => " (default)",
+        (false, false) => "",
+    };
     let mut line = format!("{}{marker} {}", worker_label(row), row.status.label());
     if let Some(elapsed) = row.elapsed {
         line.push_str(&format!(" {:.1}s", elapsed.as_secs_f64()));

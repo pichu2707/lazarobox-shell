@@ -406,6 +406,8 @@ struct Scoped {
     gone: bool,
     /// The rows the sibling writes during the review (0: `late`).
     late: usize,
+    /// The run ended (`live` says so).
+    ended: std::sync::atomic::AtomicBool,
 }
 
 impl Scoped {
@@ -446,6 +448,7 @@ impl Scoped {
             splitted: Default::default(),
             gone: false,
             late: 0,
+            ended: Default::default(),
         })
     }
 
@@ -572,6 +575,10 @@ impl Orchestra for Scoped {
 
     fn corrects(&self, _: RunId, _: WorkerId) -> bool {
         self.corrector
+    }
+
+    fn live(&self, _: RunId) -> bool {
+        !self.ended.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn applied(&self, _: RunId, _: WorkerId, paths: &[String]) {
@@ -1533,6 +1540,30 @@ async fn a_declined_consent_goes_on_unreviewed_and_the_batch_review_still_decide
     assert_eq!(
         std::fs::read_to_string(app.join("Cargo.lock")).unwrap(),
         "x"
+    );
+}
+
+// A proposal that reaches the host after its run ended (a call that was in
+// flight when the run ended) opens no review and leaves no asked batch for
+// the pane to reopen: it is refused, said, and the batch is dropped.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_proposal_of_a_run_that_ended_opens_no_review() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let fake = Scoped::over(&home, &["~/dev/app"]);
+    let user = ByAsk::new(&fake, Decision::Sent, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    assert!(!d.call(write_call("new.rs", "fn x() {}")).await.is_error);
+    fake.ended.store(true, std::sync::atomic::Ordering::SeqCst);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.is_error, "{out:?}");
+    assert!(out.text.contains("the run ended"), "{out:?}");
+    assert!(user.asks.lock().unwrap().is_empty(), "no review was asked");
+    assert!(
+        host.review_batch(PANE, false).is_none(),
+        "no orphan is left for a later y"
     );
 }
 

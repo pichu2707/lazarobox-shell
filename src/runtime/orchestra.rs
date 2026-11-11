@@ -886,6 +886,14 @@ impl RunManager {
         }
     }
 
+    /// Whether run `run` of `pane` is the live one: it has not ended and was
+    /// not replaced.
+    pub fn is_live(&self, pane: PaneId, run: RunId) -> bool {
+        lock(&self.runs)
+            .get(&pane)
+            .is_some_and(|live| live.run.id() == run)
+    }
+
     /// The orchestrator turn of run `run` of `pane` ended. With work pending
     /// (a worker live, or a finished one with no handoff) the run continues
     /// in a new turn, or stops at `max_turns` (S4, D8). Otherwise it ends by
@@ -1122,6 +1130,11 @@ impl RunManager {
             .collect();
         self.sync(pane, &mut live);
         self.announce_built(pane, run, built);
+        // The run denied the batches its workers proposed: none stays as an
+        // orphan for a later `y`. The app closes the views on `Ended`.
+        if let Some(tooling) = &self.tooling {
+            tooling.host.end_run_batches(pane, run);
+        }
         self.send(pane, OrchestraEvent::Ended { run });
         tasks
     }
@@ -1695,6 +1708,7 @@ impl RunManager {
             usage: live.run.usage(id),
             partial: live.run.usage_partial(id),
             overridden: false,
+            inherited: false,
             clarifying: live.run.clarify_round(id),
             split: live.run.split_chosen(id),
         };
@@ -2096,6 +2110,11 @@ impl Orchestra for Bound {
             live.routes.get(&worker).map(|route| route.own.clone())
         });
         own.flatten().map(|own| own.enter())
+    }
+
+    fn live(&self, run: RunId) -> bool {
+        run == self.run
+            && (self.manager.upgrade()).is_some_and(|manager| manager.is_live(self.pane, run))
     }
 
     fn corrects(&self, run: RunId, worker: WorkerId) -> bool {

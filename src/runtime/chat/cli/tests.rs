@@ -15,6 +15,7 @@ use tempfile::TempDir;
 use tokio::{sync::mpsc, time::timeout};
 
 use super::*;
+use crate::runtime::proc::{stopped, wait_gone};
 use crate::{
     core::{
         ai::{
@@ -265,23 +266,6 @@ fn failure(events: &[StreamEvent]) -> String {
         Some(StreamEvent::Error(ChatError::Failed(text))) => text.clone(),
         other => panic!("a failure expected, got {other:?} in {events:?}"),
     }
-}
-
-fn gone(pid: libc::pid_t) -> bool {
-    matches!(crate::runtime::proc::process_state(pid), None | Some('Z'))
-}
-
-/// How long a process may take to die after its group was signalled. Polling
-/// returns as soon as it is gone, so a generous bound costs nothing on a pass
-/// and keeps a loaded CI runner from failing the tests.
-const GONE: Duration = Duration::from_secs(20);
-
-async fn wait_gone(pid: libc::pid_t, bound: Duration) -> bool {
-    let end = Instant::now() + bound;
-    while !gone(pid) && Instant::now() < end {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    gone(pid)
 }
 
 fn pid_of(lab: &Lab, name: &str) -> libc::pid_t {
@@ -885,8 +869,8 @@ async fn no_first_byte_in_time_fails_and_kills_the_group() {
     env.timeouts.first_byte = Duration::from_millis(400);
     let events = run(env, request()).await;
     assert_eq!(failure(&events), "no answer from the engine");
-    assert!(wait_gone(pid_of(&lab, "leader"), GONE).await);
-    assert!(wait_gone(pid_of(&lab, "child"), GONE).await);
+    assert!(wait_gone(pid_of(&lab, "leader")).await);
+    assert!(wait_gone(pid_of(&lab, "child")).await);
 }
 
 #[tokio::test]
@@ -1000,10 +984,10 @@ async fn cancelling_a_turn_kills_the_whole_group() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let (leader, child) = (pid_of(&lab, "leader"), pid_of(&lab, "child"));
-    assert!(!gone(leader) && !gone(child));
+    assert!(!stopped(leader) && !stopped(child));
     chats.cancel(PaneId::for_test(1));
-    assert!(wait_gone(leader, GONE).await, "leader");
-    assert!(wait_gone(child, GONE).await, "grandchild");
+    assert!(wait_gone(leader).await, "leader");
+    assert!(wait_gone(child).await, "grandchild");
     while let Ok((_, _, event)) = rx.try_recv() {
         assert!(matches!(event, StreamEvent::Notice(_)), "{event:?}");
     }
@@ -1019,7 +1003,7 @@ async fn a_cli_that_lingers_after_its_result_is_stopped_and_the_answer_stands() 
     env.grace = Duration::from_millis(300);
     let events = run(env, request()).await;
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
-    assert!(wait_gone(pid_of(&lab, "child"), GONE).await);
+    assert!(wait_gone(pid_of(&lab, "child")).await);
 }
 
 #[tokio::test]
@@ -1030,7 +1014,7 @@ async fn background_children_of_a_cli_that_exits_normally_are_killed() {
     ));
     let events = run(lab.env(), request()).await;
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
-    assert!(wait_gone(pid_of(&lab, "child"), GONE).await);
+    assert!(wait_gone(pid_of(&lab, "child")).await);
 }
 
 #[test]
@@ -1402,7 +1386,7 @@ async fn a_tool_call_ends_the_codex_turn_and_stops_the_process() {
             "codex tried to use a tool".into()
         ))]
     );
-    assert!(wait_gone(pid_of(&lab, "leader"), GONE).await);
+    assert!(wait_gone(pid_of(&lab, "leader")).await);
 }
 
 #[tokio::test]
@@ -1443,8 +1427,8 @@ async fn a_decoder_error_kills_the_group_at_once_without_the_exit_grace() {
             ),
             "{events:?}"
         );
-        assert!(wait_gone(pid_of(&lab, "leader"), GONE).await);
-        assert!(wait_gone(pid_of(&lab, "child"), GONE).await);
+        assert!(wait_gone(pid_of(&lab, "leader")).await);
+        assert!(wait_gone(pid_of(&lab, "child")).await);
     }
 }
 

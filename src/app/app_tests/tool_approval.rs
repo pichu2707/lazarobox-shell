@@ -387,6 +387,7 @@ pub(super) fn worker_over(
             usage: None,
             partial: false,
             overridden: false,
+            inherited: false,
             clarifying: None,
             split: false,
         }),

@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::json;
 
@@ -6,16 +6,12 @@ use super::{
     fake::{host_env, lab, timeouts},
     *,
 };
-use crate::runtime::proc::process_state;
+use crate::runtime::proc::{stopped, wait_gone};
 
 const LONG: Duration = Duration::from_secs(10);
 
 async fn never() {
     std::future::pending::<()>().await;
-}
-
-fn gone(pid: libc::pid_t) -> bool {
-    matches!(process_state(pid), None | Some('Z'))
 }
 
 #[tokio::test]
@@ -124,17 +120,15 @@ async fn shutdown_stops_every_server() {
                 .unwrap()
         })
         .collect();
-    assert!(pids.iter().all(|p| !gone(*p)), "both run");
+    assert!(pids.iter().all(|p| !stopped(*p)), "both run");
     // Through an `Arc`, as the host holds it; a call after it is refused.
     let set = std::sync::Arc::new(set);
     set.shutdown().await;
     let after = set.call("one__a", json!({}), never()).await;
     assert!(after.is_error, "{after:?}");
-    let end = Instant::now() + LONG;
-    while !pids.iter().all(|p| gone(*p)) && Instant::now() < end {
-        tokio::time::sleep(Duration::from_millis(20)).await;
+    for pid in &pids {
+        assert!(wait_gone(*pid).await, "both are stopped");
     }
-    assert!(pids.iter().all(|p| gone(*p)), "both are stopped");
 }
 
 #[tokio::test]

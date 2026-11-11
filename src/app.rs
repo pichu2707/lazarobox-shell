@@ -323,6 +323,8 @@ pub enum AppEvent {
     /// The probe numbered `.0` ended (see `Effect::McpProbe`). A report whose
     /// number is not the last asked for is a superseded probe's and is dropped.
     McpProbe(u64, crate::core::ai::mcp_catalog::checks::Probed),
+    /// What `Effect::LoadPresence` read.
+    McpPresence(crate::core::ai::mcp_catalog::presence::Presence),
     /// What became of the `Effect::CopyLocal` numbered `seq`: `Err` carries
     /// the short reason.
     Clipboard {
@@ -387,6 +389,9 @@ pub enum Effect {
     McpProbe(u64, Box<crate::core::ai::config::McpServer>),
     /// Stop the MCP probe that runs (Esc).
     CancelMcpProbe,
+    /// The Connectors area opened: read `config.toml` and `secrets.toml`
+    /// (read only); the runtime answers with one `AppEvent::McpPresence`.
+    LoadPresence,
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
     /// Like `DetectEngines`, but the codex model listing is read again even
@@ -2275,6 +2280,13 @@ impl App {
             AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
             AppEvent::McpProbe(id, report) => self.on_mcp_probe(id, report),
+            AppEvent::McpPresence(presence) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.presence_reply(presence);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
@@ -2405,6 +2417,11 @@ impl App {
                 .with_opener(self.opener)
                 .with_sandbox(self.jail.runs_commands())
                 .with_build_machine(self.build_machine.unwrap_or_default())
+                .with_connectors(
+                    self.ai.mcp_servers().to_vec(),
+                    self.mcp_probes.values().cloned().collect(),
+                    self.config_path.clone(),
+                )
                 .with_feedback(crate::core::menu::feedback::Facts {
                     engines: self
                         .engines
@@ -2577,6 +2594,7 @@ impl App {
             MenuCommand::SendIssue(issue) => vec![Effect::SendIssue(issue)],
             MenuCommand::Probe(server) => self.start_mcp_probe(server),
             MenuCommand::CancelProbe => vec![Effect::CancelMcpProbe],
+            MenuCommand::LoadPresence => vec![Effect::LoadPresence],
             MenuCommand::Connector(line) => self.start_connector(line),
             MenuCommand::None => Vec::new(),
         }
@@ -3559,6 +3577,10 @@ impl App {
 
     fn on_resize(&mut self, cols: u16, rows: u16) -> Vec<Effect> {
         self.term = (cols, rows);
+        // An open menu wraps its text to this width now, not at the next key.
+        if let Some(menu) = self.menu.as_mut() {
+            menu.set_term(cols, rows);
+        }
         self.refresh_screen();
         let effects = self.relayout();
         self.dirty = true;
@@ -8991,7 +9013,7 @@ mod app_tests {
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
         to_level_two(&mut a);
-        let before = a.menu().cloned();
+        let mut before = a.menu().cloned();
         a.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Exited));
         a.update(AppEvent::SpawnFailed(pid(9), "boom".into()));
         a.update(AppEvent::Resize {
@@ -8999,6 +9021,8 @@ mod app_tests {
             rows: 30,
         });
         assert_still_open(&a);
+        // Only the size the menu wraps to follows the resize.
+        before.as_mut().unwrap().set_term(100, 30);
         assert_eq!(a.menu().cloned(), before);
         // One Esc goes back to level 1, not out of the picker.
         a.update(esc());
@@ -9250,6 +9274,7 @@ mod app_tests {
 
     /// Install and login panes of a connector, probe replies (mcp-connect).
     mod connectors;
+    mod connectors_area;
 
     /// The Hugging Face account row of the Models tab (config-menu).
     mod hf_account;

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::*;
+use crate::runtime::proc::wait_gone;
 
 fn script(text: &str) -> Run {
     Run {
@@ -83,22 +84,6 @@ async fn a_program_that_does_not_exist_is_an_error() {
     assert!(spawn_core(run).await.is_err());
 }
 
-/// No such process, or only a zombie nobody has collected yet.
-fn gone(pid: libc::pid_t) -> bool {
-    matches!(crate::runtime::proc::process_state(pid), None | Some('Z'))
-}
-
-/// Polls until `pid` is gone; the group was signalled, so this is quick.
-async fn wait_gone(pid: libc::pid_t) -> bool {
-    for _ in 0..2000 {
-        if gone(pid) {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    false
-}
-
 fn first_pid(done: &Done) -> libc::pid_t {
     done.capture
         .text()
@@ -113,7 +98,8 @@ fn first_pid(done: &Done) -> libc::pid_t {
 #[tokio::test]
 async fn a_timeout_kills_the_group_with_its_grandchild_and_says_so() {
     let mut run = script("sleep 300 & echo $!; wait");
-    run.timeout = Duration::from_millis(300);
+    // Long enough for a starved runner to start the shell and print its pid.
+    run.timeout = Duration::from_millis(1500);
     let done = spawn_core(run).await.unwrap();
     assert!(done.ended.timed_out);
     assert_eq!((done.ended.exit, done.ended.signal), (None, Some(9)));
@@ -185,7 +171,7 @@ async fn a_grandchild_that_left_the_group_cannot_hold_the_run() {
     assert!(done.capture.text().ends_with("out\n"));
     // A documented limit: it survives. Clean it up.
     assert!(
-        !gone(pid),
+        !crate::runtime::proc::stopped(pid),
         "setsid left the group, the kill cannot reach it"
     );
     // SAFETY: a signal to the sleep this test started.
@@ -797,7 +783,8 @@ async fn stderr_is_capped_at_8_kib_without_blocking_the_program() {
 #[tokio::test]
 async fn a_hang_is_killed_at_the_bound_with_no_survivor() {
     let mut run = script("sleep 300 & echo $! >&2; wait");
-    run.timeout = Duration::from_millis(300);
+    // Long enough for a starved runner to start the shell and print its pid.
+    run.timeout = Duration::from_millis(1500);
     let split = spawn_capped(run, 1024).await.unwrap();
     assert!(split.ended.timed_out);
     let pid = String::from_utf8_lossy(&split.stderr)
