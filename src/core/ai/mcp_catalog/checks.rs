@@ -76,3 +76,51 @@ pub fn unknown(server: &str, entry: &Entry, names: &[String]) -> Option<String> 
         )
     })
 }
+
+/// How a probe ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Verdict {
+    Started,
+    Failed,
+    Stopped,
+}
+
+/// A probe's report: lines that are safe to show (no `secrets.toml` value is
+/// ever in one) and the `secrets.toml` problems, which name a table or a key
+/// only.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Probed {
+    pub server: String,
+    pub verdict: Verdict,
+    pub lines: Vec<String>,
+    pub problems: Vec<String>,
+}
+
+/// The success line, then every line of [`report`].
+pub fn started(
+    server: &str,
+    entry: Option<&Entry>,
+    admitted: usize,
+    names: &[String],
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "mcp: started {} ({} tools)",
+        shown(server),
+        names.len()
+    )];
+    lines.extend(report(server, entry, admitted, names));
+    lines
+}
+
+/// What a client says when a request ran out of time.
+const TIMED_OUT: &str = "timed out";
+
+/// The failure line. A reason that starts with the timeout text says how long
+/// the handshake may take (the chat notice stays `timed out`).
+pub fn failed(server: &str, reason: &str, handshake_secs: u64) -> String {
+    let reason = match reason.strip_prefix(TIMED_OUT) {
+        Some(rest) => format!("{TIMED_OUT} after {handshake_secs} s{rest}"),
+        None => reason.to_owned(),
+    };
+    format!("mcp: {} unavailable: {}", shown(server), shown(&reason))
+}

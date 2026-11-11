@@ -9,7 +9,7 @@ use std::{
     fs::OpenOptions,
     io::{ErrorKind, Read},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use crate::core::ai::mcp_secrets::{
@@ -23,6 +23,18 @@ pub fn load(path: &Path) -> Loaded {
         Ok(Some(bytes)) => Secrets::parse(&bytes),
         Ok(None) => Loaded::default(),
         Err(problem) => Loaded::problem(problem),
+    }
+}
+
+/// [`load`] off the UI thread, shared by a chat start and the probe. A read
+/// that panicked uses no value and says so, like a file that cannot be read;
+/// `None` (no config folder) is no values and no problem.
+pub async fn load_for_start(path: Option<PathBuf>) -> Loaded {
+    match path {
+        Some(path) => tokio::task::spawn_blocking(move || load(&path))
+            .await
+            .unwrap_or_else(|_| Loaded::problem(UNREADABLE.to_owned())),
+        None => Loaded::default(),
     }
 }
 

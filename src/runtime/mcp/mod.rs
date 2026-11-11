@@ -26,6 +26,7 @@
 pub mod active;
 pub mod client;
 pub mod external;
+pub mod probe;
 mod session;
 pub mod shim;
 

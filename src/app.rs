@@ -63,6 +63,7 @@ mod auto_run;
 mod chat;
 mod chat_copy;
 mod compact;
+mod connector;
 mod context;
 mod cost;
 mod folder;
@@ -319,6 +320,8 @@ pub enum AppEvent {
     IssueSent(crate::core::menu::feedback::SendReply),
     /// The opener of `Effect::OpenUrl` failed on this link.
     OpenFailed(String),
+    /// A connector probe ended (see `Effect::McpProbe`).
+    McpProbe(crate::core::ai::mcp_catalog::checks::Probed),
     /// What became of the `Effect::CopyLocal` numbered `seq`: `Err` carries
     /// the short reason.
     Clipboard {
@@ -378,6 +381,11 @@ pub enum Effect {
     /// answers with one `AppEvent::IssueSent`. Only emitted on the user's
     /// Ctrl+S or Enter, one at a time.
     SendIssue(Box<crate::core::menu::feedback::Request>),
+    /// Probe this declared MCP server, after the user's `y`; the runtime
+    /// answers with one `AppEvent::McpProbe`. One at a time.
+    McpProbe(Box<crate::core::ai::config::McpServer>),
+    /// Stop the MCP probe that runs (Esc).
+    CancelMcpProbe,
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
     /// Like `DetectEngines`, but the codex model listing is read again even
@@ -836,6 +844,9 @@ enum NewPane {
         path: std::ffi::OsString,
     },
     Chat(Box<ChatState>),
+    /// A shell tab in `$HOME` for the install or login of a connector. What
+    /// is typed into it is kept by [`App::start_connector`].
+    Connector,
 }
 
 /// A pane's content and the size it was last laid out at (for a PTY pane, the
@@ -1061,6 +1072,10 @@ pub struct App {
     cwd_readable: bool,
     /// The first-run prefix probe of this terminal, when the runtime set one.
     probe: Option<Probe>,
+    /// The connector lines waiting for their shell to speak (see
+    /// `app/connector.rs`) and this session's MCP probe reports.
+    typing: Vec<connector::Typing>,
+    mcp_probes: std::collections::HashMap<String, crate::core::ai::mcp_catalog::checks::Probed>,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
     /// A fresh engram session id, injected so the core does no IO: the
@@ -1215,6 +1230,8 @@ impl App {
             tool_glyph: ToolGlyph::default(),
             cwd_readable: cfg!(target_os = "linux"),
             probe: None,
+            typing: Vec::new(),
+            mcp_probes: std::collections::HashMap::new(),
             clock: Instant::now,
             session_id: || None,
             token_check: || false,
@@ -2109,7 +2126,14 @@ impl App {
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),
             // Events for panes that no longer exist are dropped.
             // A chat pane has no PTY, so no PTY event is meant for it either.
-            AppEvent::Pty(id, event) if self.is_shell(id) => self.on_pty(id, event),
+            AppEvent::Pty(id, event) if self.is_shell(id) => {
+                let spoke = matches!(event, PtyEvent::Output(_));
+                let mut effects = self.on_pty(id, event);
+                if spoke {
+                    effects.extend(self.type_connector(id));
+                }
+                effects
+            }
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
             AppEvent::Run(id, event) => self.on_run(id, event),
@@ -2246,6 +2270,7 @@ impl App {
             AppEvent::InstallWarning(warning) => self.on_install_warning(warning),
             AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
+            AppEvent::McpProbe(report) => self.on_mcp_probe(report),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
@@ -2546,6 +2571,9 @@ impl App {
                 vec![Effect::OpenUrl(url)]
             }
             MenuCommand::SendIssue(issue) => vec![Effect::SendIssue(issue)],
+            MenuCommand::Probe(server) => vec![Effect::McpProbe(server)],
+            MenuCommand::CancelProbe => vec![Effect::CancelMcpProbe],
+            MenuCommand::Connector(line) => self.start_connector(line),
             MenuCommand::None => Vec::new(),
         }
     }
@@ -2983,6 +3011,13 @@ impl App {
                 spec.env_os.push(("PATH".into(), path.clone()));
                 spec
             }
+            // Home, else the root, as for an update; `~` in the line is the
+            // shell's own. The environment is the shell's: no `BROWSER` is
+            // set (D18).
+            NewPane::Connector => {
+                let home = self.home.as_deref().filter(|h| (self.dir_exists)(h));
+                self.spawn_spec(Some(home.unwrap_or(Path::new("/")).to_path_buf()), size)
+            }
             NewPane::Shell | NewPane::Chat(_) => self.spawn_spec(cwd, size),
         }
     }
@@ -3060,7 +3095,7 @@ impl App {
 
     fn new_state(&self, kind: NewPane, size: PaneSize) -> PaneState {
         match kind {
-            NewPane::Shell => PaneState::new(size, self.hostname.as_deref()),
+            NewPane::Shell | NewPane::Connector => PaneState::new(size, self.hostname.as_deref()),
             NewPane::Update {
                 program,
                 args,
@@ -9208,6 +9243,9 @@ mod app_tests {
     /// A Hugging Face download from the llamacpp picker (config-menu).
     mod hf_download;
     mod ollama_download;
+
+    /// Install and login panes of a connector, probe replies (mcp-connect).
+    mod connectors;
 
     /// The Hugging Face account row of the Models tab (config-menu).
     mod hf_account;

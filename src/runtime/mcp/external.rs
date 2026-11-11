@@ -26,16 +26,14 @@ use tokio::{sync::Mutex, time::timeout};
 
 use super::{
     Outcome,
-    client::{ClientError, McpClient, Timeouts},
+    client::{ClientError, Listed, McpClient, Timeouts},
 };
 use crate::core::ai::{
     config::McpServer,
+    mcp_catalog::admits,
     mcp_secrets::Secrets,
     sanitize::clean,
-    tools::{
-        ExternalTool,
-        servers::{Qualified, qualify},
-    },
+    tools::servers::{Qualified, qualify},
 };
 
 /// What the model is told when a name reaches no running server.
@@ -64,14 +62,14 @@ pub struct ExternalSet {
 }
 
 /// Starts one server and reads its tools, or says why it cannot.
-async fn connect(
+pub(crate) async fn connect(
     server: &McpServer,
     home: &Path,
     lookup: &impl Fn(&str) -> Option<OsString>,
     timeouts: Timeouts,
-) -> Result<(McpClient, Vec<ExternalTool>), String> {
+) -> Result<(McpClient, Listed), String> {
     let mut client = McpClient::start(server, home, lookup, timeouts).await?;
-    match client.list_tools().await {
+    match client.list_tools_with(|tool| admits(server, tool)).await {
         Ok(tools) => Ok((client, tools)),
         Err(error) => {
             client.shutdown().await;
@@ -87,7 +85,7 @@ async fn start_one(
     lookup: &impl Fn(&str) -> Option<OsString>,
     secrets: &Secrets,
     timeouts: Timeouts,
-) -> (String, Result<(McpClient, Vec<ExternalTool>), String>) {
+) -> (String, Result<(McpClient, Listed), String>) {
     // This server's own values only: a value never reaches another server.
     let own = secrets.lookup_for(server, lookup);
     (
@@ -132,7 +130,7 @@ impl ExternalSet {
         let mut unavailable = Vec::new();
         for (name, result) in started {
             match result {
-                Ok((client, tools)) => {
+                Ok((client, Listed { tools, .. })) => {
                     listed.push((name.clone(), tools));
                     clients.push((name, Mutex::new(Some(client))));
                 }
