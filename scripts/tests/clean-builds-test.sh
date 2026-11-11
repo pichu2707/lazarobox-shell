@@ -130,6 +130,24 @@ out="$(cd "$scratch/wt/new" && "$script" --base main --apply --cap 0K 2>&1)" || 
 check "the worktree the script runs from is kept" \
   "$([ "$code" = 0 ] && [ -d "$scratch/wt/new" ] && grep -q ' current ' <<< "$out"; echo $?)"
 
+# Untracked files count as work even when the user's config hides them.
+fixture
+git -C "$repo" config status.showUntrackedFiles no
+echo notes > "$scratch/wt/old/notes.txt"
+run --apply --cap 0K
+check "untracked files keep a worktree with status.showUntrackedFiles=no" \
+  "$([ -f "$scratch/wt/old/notes.txt" ] && grep -q 'uncommitted changes' <<< "$out"; echo $?)"
+
+# The base's own branch, checked out in a worktree, is never "merged" into
+# itself: neither the worktree nor the branch goes.
+fixture
+git -C "$repo" checkout -q -b side
+git -C "$repo" worktree add -q "$scratch/wt/base" main
+commit "$scratch/wt/base" only-here.txt 1000000500
+run --apply --cap 0K
+check "the worktree of the base branch is kept" "$([ -f "$scratch/wt/base/only-here.txt" ]; echo $?)"
+check "the base branch is not deleted" "$(has_branch main; echo $?)"
+
 # Bad arguments stop before anything is listed.
 fixture
 run --cap lots

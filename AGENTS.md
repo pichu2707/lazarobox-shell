@@ -25,8 +25,10 @@ when the branch merges.
   worktrees, with their local branches, until the total is under `--cap`
   (default 40G).
 - It never removes the main checkout, the worktree it runs from, a locked
-  worktree, a worktree with uncommitted changes, or one whose commits are not
-  all in the base ref (`--base`, default `origin/main`).
+  worktree, the worktree of the base branch, a worktree with uncommitted
+  changes or untracked files, or one whose commits are not all in the base ref
+  (`--base`, default `origin/main`). Ignored files, such as build output, go
+  with a removed worktree.
 - A build folder holds compiler output only: removing it (`cargo clean`)
   costs a rebuild and nothing else. A worktree can hold uncommitted work:
   check it first, as the script does.

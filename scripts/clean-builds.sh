@@ -5,8 +5,9 @@
 # local branches, until the total is under the size cap.
 #
 # Never touched: the main checkout, the worktree this runs from, a locked
-# worktree, a worktree with uncommitted changes, and a worktree whose commits
-# are not all in the base ref. Build folders of the kept checkouts are only
+# worktree, the worktree of the base branch, a worktree with uncommitted
+# changes (untracked files included, whatever the git config), and a worktree
+# whose commits are not all in the base ref. Build folders of the kept checkouts are only
 # listed: removing one costs a rebuild and nothing else (`cargo clean`).
 #
 # Usage: scripts/clean-builds.sh [--apply] [--cap SIZE] [--base REF]
@@ -68,6 +69,8 @@ git rev-parse --git-dir > /dev/null 2>&1 || { echo "clean-builds: not in a git r
 git rev-parse --verify --quiet "$base^{commit}" > /dev/null \
   || { echo "clean-builds: base ref not found: $base" >&2; exit 2; }
 here="$(git rev-parse --show-toplevel)"
+# The base's own branch is in the base by definition: never "merged".
+base_branch="$(git rev-parse --symbolic-full-name "$base")"
 
 # One line per worktree: path, branch (or "-"), locked (0/1). The first one
 # git lists is the main checkout.
@@ -95,10 +98,13 @@ while IFS="$(printf '\t')" read -r path branch locked; do
   elif [ "$locked" = 1 ]; then
     state="locked"
     effect="locked worktree: not removed"
+  elif [ "refs/heads/$branch" = "$base_branch" ]; then
+    state="base"
+    effect="holds the base branch: not removed"
   elif [ ! -d "$path" ]; then
     state="missing"
     effect="folder is gone: run git worktree prune"
-  elif [ -n "$(git -C "$path" status --porcelain 2> /dev/null)" ]; then
+  elif [ -n "$(git -C "$path" status --porcelain --untracked-files=normal 2> /dev/null)" ]; then
     state="dirty"
     effect="uncommitted changes: not removed"
   elif ! git merge-base --is-ancestor "$(git -C "$path" rev-parse HEAD)" "$base"; then
@@ -106,7 +112,7 @@ while IFS="$(printf '\t')" read -r path branch locked; do
     effect="commits not in $base: not removed"
   else
     state="merged"
-    effect="removing it loses nothing: its commits are in $base"
+    effect="its commits are in $base; ignored files (build output) go with it"
     when="$(git -C "$path" log -1 --format=%ct HEAD)"
     candidates="$candidates$when	$kib	$path	$branch
 "
