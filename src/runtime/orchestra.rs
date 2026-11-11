@@ -2080,8 +2080,8 @@ impl Orchestra for Bound {
             })
     }
 
-    /// `None` is never a missed pause: a worker holds a route from its spawn
-    /// until it ends (`finish`, a cancel, or a new turn dropping the ones that
+    /// `None` is never a missed pause: a worker holds a route from its launch
+    /// (when it starts running; a queued one has none, and no clock) until it ends (`finish`, a cancel, or a new turn dropping the ones that
     /// are over), and only a worker that runs has a clock to stop. Every
     /// `None` is therefore a run or worker that is gone (the app closing, a
     /// replaced run, an ended or cancelled worker), whose deadline cannot fire

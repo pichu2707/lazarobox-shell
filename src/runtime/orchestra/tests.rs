@@ -4075,9 +4075,9 @@ async fn a_surviving_workers_ask_counts_for_both_turns_timers() {
     assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
 }
 
-// Review of #675: `pause` answers `None` only for a worker that has no clock
-// to stop (D5): one that is unknown, of another run, or that ended. A running
-// worker always gets its guard, and dropping it gives the clock back.
+// `pause` answers `None` only for a worker that has no clock to stop (D5): one
+// that is unknown, of another run, or cancelled. A running worker always gets
+// its guard, and dropping it gives the clock back.
 #[tokio::test]
 async fn a_running_worker_pauses_and_a_gone_one_has_no_clock_to_pause() {
     let (lab, run, handle) = held_lab().await;
@@ -4102,6 +4102,22 @@ async fn a_running_worker_pauses_and_a_gone_one_has_no_clock_to_pause() {
         handle.pause(run, WorkerId(1)).is_none(),
         "a cancelled worker has no deadline left"
     );
+}
+
+// A worker whose turn ended through `finish` has no route and no clock left.
+#[tokio::test]
+async fn a_worker_that_finished_has_no_clock_to_pause() {
+    let (lab, run, handle) = held_lab().await;
+    assert!(handle.pause(run, WorkerId(1)).is_some());
+    let key = WorkerKey {
+        run,
+        worker: WorkerId(1),
+    };
+    let done = WorkerEvent::Done {
+        text: "ok".to_owned(),
+    };
+    lab.manager.finish(pane(), key, Some(vec![done]));
+    assert!(handle.pause(run, WorkerId(1)).is_none());
 }
 
 // Review 2, 4: the orchestrator reads why a document change was refused.
