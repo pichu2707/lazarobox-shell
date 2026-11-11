@@ -44,6 +44,10 @@ baseline.
   files have no cap; an unknown language counts every line and says so. After
   a split `collect` marks the discarded files `discarded`; a batch whose lines
   cannot be counted is not proposed.
+- `Ctrl+Space x` opens the `/exec` dialog and `Ctrl+Space f` the `/write`
+  dialog (`w` is the window group). A key never grants: only your `y` in the
+  dialog does. A refusal shows the command's line, the composer draft is kept,
+  and outside a chat a notice says Exec (or Write) is for chat panes.
 - `/exec` turns Exec on for one chat, on the same path as `/write`: type it
   in the composer and a dialog names Exec and the folder and says every
   command still asks. Only a lowercase `y` grants it; `n` and Esc say `Exec
@@ -62,10 +66,20 @@ baseline.
   judged by the engine it was spawned with, not the menu now. If the Review
   row's engine cannot run, its worker ends `refused`, the run stops with the
   failure alert, and the batch reaches you `not reviewed` with the reason in
-  the receipt; no other engine is tried. The review still needs room for
-  three more workers under `max_workers` (two lenses and the refuter): with
-  less it does not start, says so, and the batch goes on unreviewed, so keep
-  `max_workers` high enough when authors are local.
+  the receipt; no other engine is tried. The review's workers (the lenses, the
+  refuter and a correction) are internal: they never count against
+  `max_workers`, so a review never lacks room, but a run can start more model
+  calls than the visible cap, which can cost money on a cloud Review row.
+  Each review start spawns at most 5 internal workers (two lenses, the
+  refuter, a correction and its check), and a review starts for each proposal
+  of an author, so a re-proposal repeats it; `max_parallel`, the worker
+  deadlines, the run's wall clock and `max_turns` still bound it.
+  They still show in the worker rows and are never waited on for a handoff.
+- A review says one notice at its start, in the transcript: when author and
+  reviewer are the same model; when the Review row is a local model (it can
+  miss what a larger model catches); and when the staged diff goes to a
+  reviewer on another engine than the author's (or a local author's diff to a
+  cloud one), naming it.
 - A new `simple` task for direct, fully specified work. The Models tab gets a
   `simple` row (`[ai.tasks.simple]`) after `orchestrate`; unassigned it uses
   `general`, `Set all tasks` leaves it alone, and a local server engine on it
