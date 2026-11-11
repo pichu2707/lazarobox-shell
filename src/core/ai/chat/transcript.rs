@@ -155,6 +155,9 @@ pub(super) fn worker_line(row: &WorkerRow) -> String {
     if let Some(elapsed) = row.elapsed {
         line.push_str(&format!(" {:.1}s", elapsed.as_secs_f64()));
     }
+    if row.clarifying && row.status == WorkerStatus::Done {
+        line.push_str(" needs specification");
+    }
     // A done worker whose engine reported nothing says so; the number is
     // never estimated.
     match (row.usage, row.status) {

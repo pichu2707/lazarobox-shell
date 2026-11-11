@@ -785,6 +785,7 @@ fn the_simple_prompts_hold_the_simple_worker_rules() {
             "never design, analyse, review or delegate",
             "The brief is the whole assignment",
             "needs specification:",
+            "needs_specification",
             "Never write outside the listed files unless the user asks",
             "under 400 counted lines",
             "say so when you cannot",

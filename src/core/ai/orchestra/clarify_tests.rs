@@ -178,7 +178,10 @@ fn collect_shows_the_question_inside_the_wrapper_and_the_call_outside() {
         "{text}"
     );
     assert!(!outside.contains("which file?"), "{text}");
-    assert!(inside.contains("needs specification: which file?"), "{text}");
+    assert!(
+        inside.contains("needs specification: which file?"),
+        "{text}"
+    );
     let plain = simple(&mut run, &["src/b.rs"]);
     done(&mut run, plain, "needs specification: which file?");
     let text = run.collect_wrapped([7; 8], plain).unwrap();

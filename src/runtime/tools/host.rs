@@ -465,13 +465,15 @@ impl Unprompted {
 const OUT_OF_REVIEW_SCOPE: &str = "that path is outside the run's scope: the review cannot read it";
 
 /// What a worker is told when it writes or runs after `needs_specification`.
-const CLARIFYING: &str = "you asked for a clearer brief: write and run nothing more; end with a short text";
+const CLARIFYING: &str =
+    "you asked for a clearer brief: write and run nothing more; end with a short text";
 
 /// What a worker is told when `needs_specification` recorded nothing.
 const NOT_RECORDED: &str = "your question was not recorded: a first one stands";
 
 /// What a worker is told once its question is recorded.
-const RECORDED: &str = "recorded: the coordinator gets your question; write nothing more and end with a short text";
+const RECORDED: &str =
+    "recorded: the coordinator gets your question; write nothing more and end with a short text";
 
 /// What a correction worker is told when it proposes the batch.
 const CORRECTION_PROPOSES: &str = "a correction only stages its fixes: the worker whose change is under review proposes the batch";
@@ -1082,18 +1084,16 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     }
                 },
                 // The worker's question goes to its run, which records it.
-                (Decision::Sent, Call::NeedsSpecification { what }) => {
-                    match &scope.read_scope {
-                        Some(worker) if worker.handle.clarify(worker.run, worker.worker, &what) => {
-                            ended(ToolStatus::Ok, RECORDED.to_owned(), "needs specification")
-                        }
-                        Some(_) => ended(ToolStatus::Error, NOT_RECORDED.to_owned(), NOT_RECORDED),
-                        None => {
-                            let reason = refusal_text(ToolError::UnknownTool);
-                            ended(ToolStatus::Error, reason.to_owned(), reason)
-                        }
+                (Decision::Sent, Call::NeedsSpecification { what }) => match &scope.read_scope {
+                    Some(worker) if worker.handle.clarify(worker.run, worker.worker, &what) => {
+                        ended(ToolStatus::Ok, RECORDED.to_owned(), "needs specification")
                     }
-                }
+                    Some(_) => ended(ToolStatus::Error, NOT_RECORDED.to_owned(), NOT_RECORDED),
+                    None => {
+                        let reason = refusal_text(ToolError::UnknownTool);
+                        ended(ToolStatus::Error, reason.to_owned(), reason)
+                    }
+                },
                 // After the consent, if the engine needed one: `gh` starts here.
                 (Decision::Sent, Call::Github(gh)) => match github_plan.take() {
                     Some(planned) => github::run(&host, &scope, &gh, planned).await,

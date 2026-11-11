@@ -22,6 +22,11 @@ baseline.
   fields: <names>` in the spawn result, in `collect` and in the handoff. The
   `orchestrate` prompts now tell the coordinator to delegate a change and to
   give a `simple` worker a brief.
+- A `simple` worker can call `needs_specification` when its brief is not
+  enough. It can then write and run nothing more; its row says `needs
+  specification`, the pane names the worker and the brief, the coordinator
+  gets the question inside the untrusted-data wrapper (with a lazarobox line
+  saying the tool was called) and the handoff stores it as `clarification`.
 - `/exec` turns Exec on for one chat, on the same path as `/write`: type it
   in the composer and a dialog names Exec and the folder and says every
   command still asks. Only a lowercase `y` grants it; `n` and Esc say `Exec

@@ -149,9 +149,9 @@ mod ceiling_exec_tests;
 #[cfg(test)]
 mod ceiling_tests;
 #[cfg(test)]
-mod clarify_tests;
-#[cfg(test)]
 mod claims_tests;
+#[cfg(test)]
+mod clarify_tests;
 #[cfg(test)]
 mod feature_tests;
 #[cfg(test)]

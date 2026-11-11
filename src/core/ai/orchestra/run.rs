@@ -19,10 +19,10 @@ use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::{Availability, Usage, locality};
 use crate::core::ai::chat::guidance::guidance;
 use crate::core::ai::config::Task;
+use crate::core::ai::sanitize::clean;
 use crate::core::ai::tools::Locality;
 use crate::core::ai::tools::github::forwards_off_machine;
 use crate::core::ai::tools::label;
-use crate::core::ai::sanitize::clean;
 use crate::core::ai::tools::registry::{Family, FamilySet};
 
 /// Whether a worker on `engine` and `model` is a cheap author (design D20):
@@ -202,7 +202,8 @@ const CHECK_PREFIX: &str = "lazarobox: handoff check: ";
 /// What lazarobox says before the result of a worker that called
 /// `needs_specification` (W8c), outside the wrapper: text that only says the
 /// phrase does not get it.
-const CLARIFIED: &str = "lazarobox: this worker called needs_specification; its question is in its data below.";
+const CLARIFIED: &str =
+    "lazarobox: this worker called needs_specification; its question is in its data below.";
 
 /// A receipt and the counts the ledger line is made of.
 #[derive(Clone, Debug)]
@@ -943,9 +944,9 @@ impl Run {
         // it, then the commands the worker ran (W6), then its text.
         let ledger = self.ledger(id).and_then(ChangeLedger::render);
         let commands = self.slot(id).and_then(|slot| slot.commands.render());
-        let asked = self.slot(id).and_then(|slot| match &slot.closing {
-            Some(Closing::Clarify(what)) => Some(format!("needs specification: {what}")),
-            None => None,
+        let asked = self.slot(id).and_then(|slot| {
+            let closing = slot.closing.as_ref();
+            closing.map(|Closing::Clarify(what)| format!("needs specification: {what}"))
         });
         let called = asked.is_some();
         let body: Vec<&str> = [
@@ -955,8 +956,8 @@ impl Run {
             Some(text),
         ]
         .into_iter()
-            .flatten()
-            .collect();
+        .flatten()
+        .collect();
         let wrapped = label::wrap(&nonce, &body.join("\n\n"));
         // How its commands ended is lazarobox's own word, outside the
         // wrapper, so the worker's text cannot pass for it (W6).

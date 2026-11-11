@@ -1690,6 +1690,37 @@ mod tests {
         FamilySet::EMPTY.with(family)
     }
 
+    // W8c 20.1: `needs_specification` takes one `what`, and only the family
+    // `Clarify` parses or lists it.
+    #[test]
+    fn needs_specification_parses_only_with_the_clarify_family() {
+        let q = qualified();
+        let args = json!({"what": "which file?"});
+        let set = only(Family::Clarify);
+        assert_eq!(
+            parse_call_in("needs_specification", &args, &q, set),
+            Ok(Call::NeedsSpecification {
+                what: "which file?".into()
+            })
+        );
+        for other in [FamilySet::LEGACY, FamilySet::ALL] {
+            assert_eq!(
+                parse_call_in("needs_specification", &args, &q, other),
+                Err(ToolError::UnknownTool)
+            );
+        }
+        assert_eq!(
+            parse_call_in("needs_specification", &json!({}), &q, set),
+            Err(ToolError::MissingArgument)
+        );
+        let extra = json!({"what": "x", "more": "y"});
+        assert_eq!(
+            parse_call_in("needs_specification", &extra, &q, set),
+            Err(ToolError::ExtraArgument)
+        );
+        assert_eq!(names(&registry_with(&[], set)), ["needs_specification"]);
+    }
+
     // P0b.1: the offered list is a filter over families, in table order.
     #[test]
     fn registry_with_offers_only_the_tools_of_the_set() {

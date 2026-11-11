@@ -2112,7 +2112,9 @@ impl Orchestra for Bound {
         let what = refusal_reason(what);
         let manager = self.manager.upgrade();
         manager
-            .and_then(|manager| manager.on_run(self.pane, run, |live| live.run.clarify(worker, &what)))
+            .and_then(|manager| {
+                manager.on_run(self.pane, run, |live| live.run.clarify(worker, &what))
+            })
             .unwrap_or(false)
     }
 
