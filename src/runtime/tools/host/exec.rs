@@ -175,7 +175,12 @@ pub(super) async fn plan(host: &ToolHost, scope: &TurnScope, call: &Call) -> Res
             Ok(()) if worker && !lock(&stages).applied(key) => Some(NOT_APPLIED.into()),
             Ok(()) => None,
         };
-        let found = inspect(&env, &origin, &args, pending.clone())?;
+        let under: Vec<PathBuf> = lock(&stages).batch(key).map_or_else(Vec::new, |batch| {
+            (batch.entries().iter())
+                .map(|entry| entry.target.real.clone())
+                .collect()
+        });
+        let found = inspect(&env, &origin, &args, pending.clone(), &under)?;
         pending.map_or(Ok::<_, Cow<'static, str>>(found), Err)
     })
     .await
@@ -298,6 +303,7 @@ fn inspect(
     origin: &Path,
     args: &Value,
     pending: Option<Cow<'static, str>>,
+    staged_paths: &[PathBuf],
 ) -> Result<(RunRequest, PathBuf, PathBuf, Option<Pin>), Cow<'static, str>> {
     let (roots, root) = root_of(env, origin)?;
     let rel = match args["cwd"].as_str() {
@@ -307,7 +313,7 @@ fn inspect(
     let cwd = fs::canonicalize(root.join(&rel))
         .ok()
         .filter(|cwd| cwd.starts_with(&root) && cwd.is_dir() && roots.judge_real(cwd))
-        .ok_or_else(|| missing_folder(env, &root, &rel, pending))?;
+        .ok_or_else(|| not_a_folder(env, &roots, &root.join(&rel), &rel, pending, staged_paths))?;
     let package = Package::read(&cwd);
     // A manager walks up to a parent `package.json` that nothing here would
     // show or pin, so a script runs only from the folder that has its own.
@@ -329,36 +335,32 @@ fn inspect(
     Ok((request, root, cwd, pin))
 }
 
-/// Why `root/rel` cannot be the folder of a command. When it is simply not on
-/// disk (inside the root, nothing followed to get there) the text names it, or
-/// is what the worker's own batch says when that is pending: the folder may
-/// be staged. Anything else (a link out, a file, a refused place) stays the
-/// bare refusal, so nothing about places outside the root leaks.
-fn missing_folder(
+/// Why `target` (`root` plus the plain relative `rel`) cannot be the folder of
+/// a command. A refused place (a secret, a hidden name) is the bare refusal
+/// whether it exists or not, judged on the path as written, so the text is no
+/// oracle for what exists. Any other path gets one text whatever is there
+/// (nothing, a file, a link out), or what the worker's own batch says when
+/// that batch stages the folder or something below it.
+fn not_a_folder(
     env: &ToolEnv,
-    root: &Path,
+    roots: &SecretRoots,
+    target: &Path,
     rel: &Path,
     pending: Option<Cow<'static, str>>,
+    staged_paths: &[PathBuf],
 ) -> Cow<'static, str> {
-    let target = root.join(rel);
-    // The deepest part that exists is a real folder inside the root, and the
-    // part below it is not there (no link is followed to the missing part).
-    let absent = target
-        .ancestors()
-        .find(|up| fs::symlink_metadata(up).is_ok())
-        .and_then(|up| fs::canonicalize(up).ok())
-        .is_some_and(|up| up.starts_with(root) && up.is_dir())
-        && fs::symlink_metadata(&target).is_err();
-    match (absent, pending) {
-        (false, _) => REFUSED.into(),
-        (true, Some(why)) => why,
-        (true, None) => format!(
-            "{REFUSED}: the folder {}/ does not exist (paths are relative to the chat's folder {})",
-            rel.display(),
-            super::files::chat_folder(env)
-        )
-        .into(),
+    if !roots.judge_real(target) {
+        return REFUSED.into();
     }
+    if let Some(why) = pending.filter(|_| staged_paths.iter().any(|at| at.starts_with(target))) {
+        return why;
+    }
+    format!(
+        "{REFUSED}: the folder {}/ is not a folder inside the chat's folder (paths are relative to the chat's folder {})",
+        rel.display(),
+        super::files::chat_folder(env)
+    )
+    .into()
 }
 
 /// A command runs against the disk, never against staged content.

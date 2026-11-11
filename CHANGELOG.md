@@ -14,9 +14,10 @@ baseline.
 
 - A worker's first `run_command` in a folder it had only staged was answered
   with a bare `path not available`, and the same call ran once its batch was
-  applied. It now gets the real reason (`propose them first`), and a folder
-  that is not on disk is named in the refusal. A link out of the project
-  keeps the bare refusal.
+  applied. It now gets the real reason (`propose them first`) when its own
+  batch stages that folder, and a `cwd` that is not a folder is named in the
+  refusal, the same text whatever is there. Secret and hidden places keep the
+  bare refusal.
 
 ## [1.19.0] - 2026-11-11
 

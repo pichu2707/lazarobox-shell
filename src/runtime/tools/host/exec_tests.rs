@@ -235,7 +235,7 @@ async fn a_folder_outside_the_root_and_a_broad_root_are_refused() {
     let w = world();
     std::fs::create_dir_all(w.proj.join("src")).unwrap();
     std::os::unix::fs::symlink(&w.home, w.proj.join("out")).unwrap();
-    for cwd in ["..", "/tmp", "out", "src/../.."] {
+    for cwd in ["..", "/tmp", "src/../.."] {
         let call = command("cargo", &["test"], Some(cwd));
         assert_eq!(
             refused(&w, call).await,
@@ -1721,17 +1721,64 @@ async fn a_worker_running_in_a_staged_folder_is_told_to_propose_first() {
     assert!(asks.asked().is_empty(), "no prompt opened");
 }
 
-// A folder that is not there says so, and which one: a bare refusal gave the
-// next occurrence nothing to diagnose. A link out, `..` and an absolute path
-// stay bare, so nothing about places outside the root leaks.
+// A folder that is not available says so, and which one: a bare refusal gave
+// the next occurrence nothing to diagnose.
 #[tokio::test]
 async fn a_missing_folder_is_named_in_the_refusal() {
     let w = world();
     let (text, asked) = refused(&w, command("cargo", &["test"], Some("web/app"))).await;
     assert!(!asked);
     assert!(
-        text.starts_with("path not available: the folder web/app/ does not exist"),
+        text.starts_with("path not available: the folder web/app/ is not a folder"),
         "{text}"
     );
     assert!(text.contains("relative to the chat's folder"), "{text}");
+}
+
+// The text must not tell a model what exists. A refused place (a secret
+// folder or file, a hidden name) is the bare refusal whether it exists or
+// not, and an allowed name gives one text whatever is there: nothing, a
+// file, or a link out.
+#[tokio::test]
+async fn the_refusal_is_no_oracle_for_what_exists() {
+    let w = world();
+    std::fs::create_dir_all(w.proj.join(".env.d")).unwrap();
+    std::fs::write(w.proj.join(".env"), "K=1\n").unwrap();
+    std::fs::write(w.proj.join("afile"), "x").unwrap();
+    std::os::unix::fs::symlink(&w.home, w.proj.join("out")).unwrap();
+    for refused_set in [
+        [".env.d", ".env.d/x", ".env.d/y", ".env.d/y/z"],
+        [".env", ".env/x", ".env.local", ".env.local/x"],
+    ] {
+        for cwd in refused_set {
+            let (text, _) = refused(&w, command("cargo", &["test"], Some(cwd))).await;
+            assert_eq!(text, "path not available", "{cwd}");
+        }
+    }
+    let mut texts = Vec::new();
+    for cwd in ["afile", "afile/x", "nofile", "nofile/x", "out", "out/x"] {
+        let (text, _) = refused(&w, command("cargo", &["test"], Some(cwd))).await;
+        assert!(text.contains("is not a folder"), "{cwd}: {text}");
+        texts.push(text.replace(cwd, "<cwd>"));
+    }
+    texts.dedup();
+    assert_eq!(texts.len(), 1, "{texts:?}");
+}
+
+// A worker with a staged batch and a typo in `cwd`: the batch is not the
+// reason, so the folder is named and nothing says `propose them first`.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_worker_with_a_staged_batch_and_a_typo_cwd_gets_the_folder_named() {
+    let w = world();
+    let asks = Asks::new(Decision::Sent);
+    let (d, _rx) = w.worker_turn(asks, Arc::default());
+    let made = d.call(Call::CreateDir { path: "web".into() }).await;
+    assert!(!made.is_error, "{made:?}");
+    let out = d.call(command("cargo", &["test"], Some("wbe"))).await;
+    assert!(
+        out.text.contains("the folder wbe/ is not a folder"),
+        "{out:?}"
+    );
+    assert!(!out.text.contains("propose them first"), "{out:?}");
 }

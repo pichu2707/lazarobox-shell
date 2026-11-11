@@ -91,10 +91,10 @@ Every `run_command` call MUST need an explicit user `y`, every time, in every ap
 - WHEN each is validated
 - THEN each is refused with the refusal text `path not available`
 
-#### Scenario: Cwd that is not on disk is named [auto]
-- GIVEN a `cwd` inside the root that does not exist, for instance a folder the worker only staged
+#### Scenario: Cwd that is not a folder is named [auto]
+- GIVEN a `cwd` that is not an existing folder inside the root (missing, a file, or a link out)
 - WHEN the call is validated
-- THEN a worker whose own batch is staged or not applied gets that batch's text (`propose them first`, or the not-applied text), before the disk check; any other caller gets `path not available: the folder <cwd>/ does not exist (paths are relative to the chat's folder <folder>)`; a `cwd` that links out of the root, or any other refused place, keeps the bare `path not available`
+- THEN a path the root policy refuses (a secret, a hidden name) gets the bare `path not available`, whether it exists or not; any other gets one text, `path not available: the folder <cwd>/ is not a folder inside the chat's folder (paths are relative to the chat's folder <folder>)`, whatever is there, so it reveals nothing; and a worker whose own staged or unapplied batch stages that folder or something below it gets that batch's text (`propose them first`, or the not-applied text) instead
 
 ### Requirement: Jail profile
 The child MUST run inside the jail through the existing helper. The profile MUST grant: read and execute on the toolchain directories and system directories; read, write and execute on the root; read and write on a private temp directory and on the package caches; and nothing on `~/.ssh`, `~/.gnupg`, `~/.aws` or other credential locations. The write-and-execute class for the root MUST NOT be reachable from the CLI jail or from any other profile. Outbound network MUST stay open (a visible notice covers it). The child MUST NOT be able to read a credential directory even when the project asks for it. When the root is on a Windows drive, the jail's broad-root check MUST also refuse, ASCII case-insensitively, a drive root, `<drive>/Users`, any `<drive>/Users/<name>`, the Windows system folders, a profile's `AppData` and `NTUSER.DAT*`, and any path with a DOS 8.3 short name, so none of them can become the read, write and execute root. The jail helper cannot know the user's own Windows profile, so the other folders the WSL drive read policy refuses (another user's profile, the secret folders of a profile) are refused earlier, by the root policy, before the jail starts.
