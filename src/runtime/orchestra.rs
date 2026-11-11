@@ -1241,6 +1241,7 @@ impl RunManager {
                         Refusal::ReadOnly => READ_ONLY.to_owned(),
                         Refusal::WriteOff => WRITE_OFF.to_owned(),
                         Refusal::Brief(error) => error.text(),
+                        Refusal::Overlap { worker, path } => overlap_text(worker, &path),
                         Refusal::WorkerCap(cap) => {
                             format!("worker limit reached: max_workers is {cap}")
                         }
@@ -1266,7 +1267,10 @@ impl RunManager {
                 let shown = reason.unwrap_or_else(|| status.label().to_owned());
                 return self.refused(pane, live, task, shown, text);
             }
-            let text = format!("worker {}: {}", id.0, status.label());
+            let mut text = format!("worker {}: {}", id.0, status.label());
+            if let Some(names) = live.run.brief_extra(id) {
+                text.push_str(&format!("; brief extra fields: {names}"));
+            }
             Outcome {
                 text,
                 is_error: false,
@@ -1394,6 +1398,9 @@ impl RunManager {
                     let lines = handoff.audit.iter().flat_map(|audit| audit.lines());
                     for line in lines {
                         text.push_str(&format!("; {line}"));
+                    }
+                    if !handoff.extra.is_empty() {
+                        text.push_str(&format!("; brief extra fields: {}", handoff.extra));
                     }
                     self.announce_handoff(pane, run, handoff);
                     fine(text)
@@ -2302,6 +2309,14 @@ fn nonce_bytes() -> Option<[u8; 8]> {
 
 /// A refusal's reason as the coordinator gets it: one line, sanitized, with
 /// any token redacted, paths masked and at most `ERROR_CAP` characters.
+/// The refusal of a `simple` brief whose outputs overlap a live worker's.
+fn overlap_text(worker: WorkerId, path: &str) -> String {
+    format!(
+        "outputs overlap worker {}: {path} is already its output; wait for it or pick other files",
+        worker.0
+    )
+}
+
 fn refusal_reason(reason: &str) -> String {
     let flat = clean(reason)
         .split_whitespace()

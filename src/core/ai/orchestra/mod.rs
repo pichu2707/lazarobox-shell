@@ -134,6 +134,8 @@ impl Toolset {
 }
 
 #[cfg(test)]
+mod brief_extra_tests;
+#[cfg(test)]
 mod brief_spawn_tests;
 #[cfg(test)]
 mod brief_tests;

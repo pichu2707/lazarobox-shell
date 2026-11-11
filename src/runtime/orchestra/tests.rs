@@ -6278,3 +6278,65 @@ async fn a_simple_worker_on_a_read_only_goal_launches_with_read_tools_and_a_note
         request.system
     );
 }
+
+fn simple_roster() -> Roster {
+    let assigned = [
+        (Task::Orchestrate, "claude", "opus"),
+        (Task::Simple, "ollama", "llama3:8b"),
+    ];
+    let engines = vec![found("claude", &[]), found("ollama", &["llama3:8b"])];
+    roster(&assigned, engines, JAIL)
+}
+
+fn writing_brief(output: &str) -> crate::core::ai::orchestra::brief::Brief {
+    crate::core::ai::orchestra::brief::Brief {
+        goal: "add a flag".into(),
+        inputs: vec!["src/a.rs".into()],
+        outputs: Some(vec![output.into()]),
+        done_when: "it parses".into(),
+        out_of_scope: "docs".into(),
+        ..Default::default()
+    }
+}
+
+// Spec ("Extra field flagged"; D10): the spawn result says which brief fields
+// were extra, and a second brief writing the same file is refused naming the
+// worker, with the same text in the pane.
+#[tokio::test]
+async fn a_simple_spawn_flags_extra_fields_and_refuses_an_overlapping_output() {
+    let mut lab = writing_lab(Script::Hang);
+    let scope = OrchScope {
+        origin: lab.app(),
+        ceiling: FamilySet::ALL,
+        ..lab.scope(simple_roster(), &["~/dev/app"])
+    };
+    let (run, handle) = lab.begin(scope).unwrap();
+    let mut first = writing_brief("src/b.rs");
+    first.extra = vec![("priority".into(), "high".into())];
+    assert_eq!(
+        handle.call(OrchCall::SpawnSimple { brief: first }).await,
+        fine("worker 1: running; brief extra fields: priority")
+    );
+    let refused = handle
+        .call(OrchCall::SpawnSimple {
+            brief: writing_brief("src/b.rs"),
+        })
+        .await;
+    assert!(refused.is_error, "{refused:?}");
+    assert!(refused.text.contains("overlap worker 1"), "{}", refused.text);
+    assert!(refused.text.contains("src/b.rs"), "{}", refused.text);
+    assert_eq!(
+        refusal(&mut lab).await,
+        OrchestraEvent::SpawnRefused {
+            run,
+            kind: Task::Simple,
+            reason: refused.text,
+        }
+    );
+    let other = handle
+        .call(OrchCall::SpawnSimple {
+            brief: writing_brief("src/c.rs"),
+        })
+        .await;
+    assert!(!other.is_error, "{other:?}");
+}

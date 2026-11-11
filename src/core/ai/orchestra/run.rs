@@ -125,6 +125,10 @@ pub enum Refusal {
     /// The brief of a `simple` worker is incomplete or names a bad path
     /// (W8b).
     Brief(BriefError),
+    /// The outputs of a `simple` brief overlap a live worker's: two workers
+    /// would write the same file (D10). `path` is the path as the new brief
+    /// wrote it.
+    Overlap { worker: WorkerId, path: String },
     /// `run paused`: a failure is unresolved.
     Paused,
     Ended,
@@ -183,6 +187,10 @@ pub struct NotHalted;
 const CALLS_AS_TEXT: &str = "lazarobox: this worker changed no file, and its reply holds tool calls written as text. Do not report its files as created.";
 
 /// What lazarobox says before the check of a handoff, outside the wrapper.
+/// What lazarobox says before the result of a worker whose brief held fields
+/// it does not know (W8b), outside the wrapper.
+pub const EXTRA_PREFIX: &str = "lazarobox: brief extra fields: ";
+
 const CHECK_PREFIX: &str = "lazarobox: handoff check: ";
 
 /// A receipt and the counts the ledger line is made of.
@@ -617,6 +625,9 @@ impl Run {
         if writer && !spec.writes() {
             return Err(Refusal::WriteOff);
         }
+        if let Some((worker, path)) = self.overlap(spec.outputs().unwrap_or_default()) {
+            return Err(Refusal::Overlap { worker, path });
+        }
         self.slots.push(Slot {
             spec,
             status: WorkerStatus::Queued,
@@ -639,6 +650,21 @@ impl Run {
         self.enqueue(now, id, refusal, false);
         self.promote(now);
         Ok(id)
+    }
+
+    /// The first live (queued or running) worker whose brief outputs overlap
+    /// `outputs`, and the path of `outputs` that does (D10). A directory
+    /// covers the files under it. An ended worker blocks nothing.
+    fn overlap(&self, outputs: &[String]) -> Option<(WorkerId, String)> {
+        let live = |s: &&Slot| matches!(s.status, WorkerStatus::Queued | WorkerStatus::Running);
+        let held = self.slots.iter().enumerate().filter(|(_, s)| live(s));
+        held.flat_map(|(i, s)| {
+            let mine = s.spec.outputs().unwrap_or_default();
+            let id = WorkerId(i as u32 + 1);
+            let taken = move |path: &String| mine.iter().any(|m| covers(m, path));
+            outputs.iter().filter(move |p| taken(p)).map(move |p| (id, p.clone()))
+        })
+        .next()
     }
 
     /// A worker waits in the queue, at the back for a new one and at the
@@ -876,6 +902,10 @@ impl Run {
         };
         // lazarobox's own word, outside the worker's wrapper: the worker
         // cannot forge it, and the coordinator must not claim files exist.
+        let wrapped = match self.brief_extra(id) {
+            Some(names) => format!("{EXTRA_PREFIX}{names}\n\n{wrapped}"),
+            None => wrapped,
+        };
         let said = self.slot(id).is_some_and(Slot::said_calls_as_text);
         let wrapped = if said {
             format!("{CALLS_AS_TEXT}\n\n{wrapped}")
@@ -893,6 +923,13 @@ impl Run {
         } else {
             format!("{CHECK_PREFIX}{}\n\n{wrapped}", lines.join("; "))
         })
+    }
+
+    /// The names of the extra fields of worker `id`'s brief, `None` when it
+    /// had none (W8b).
+    pub fn brief_extra(&self, id: WorkerId) -> Option<String> {
+        let brief = self.slot(id)?.spec.brief.as_ref()?;
+        (!brief.extra.is_empty()).then(|| brief.extra_names())
     }
 
     /// The claim check of worker `id`'s stored handoff, against its ledger as
@@ -988,6 +1025,7 @@ impl Run {
             status: slot.status,
             ledger: slot.writer_ledger().cloned(),
             prior: slot.handoff.as_ref().and_then(|h| h.audit.clone()),
+            extra: slot.spec.brief.as_ref().map(Brief::extra_names).unwrap_or_default(),
         }
     }
 
@@ -1047,6 +1085,7 @@ impl Run {
             status: WorkerStatus::Done,
             ledger: None,
             prior: None,
+            extra: String::new(),
         };
         // A step closes even while the run is halted, its verdict forced to
         // `blocked`: the same rule as a worker's handoff (D17).
@@ -1461,6 +1500,16 @@ fn shown(usage: Usage, partial: bool) -> Usage {
 }
 
 /// Worker ids start at 1; id 0 maps to no slot.
+/// Whether one of two output paths is the other or a directory above it.
+fn covers(a: &str, b: &str) -> bool {
+    let parts = |p: &str| -> Vec<String> {
+        let parts = p.split('/').filter(|c| !c.is_empty() && *c != ".");
+        parts.map(str::to_owned).collect()
+    };
+    let (a, b) = (parts(a), parts(b));
+    a.starts_with(&b) || b.starts_with(&a)
+}
+
 fn index(id: WorkerId) -> usize {
     (id.0 as usize).wrapping_sub(1)
 }
