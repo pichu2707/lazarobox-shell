@@ -662,7 +662,7 @@ Files: new `src/core/ai/orchestra/brief.rs`, `src/core/ai/orchestra/tools.rs` (`
 - [x] 19.9 Docs: README orchestrator section (the brief, its fields, what is refused, extra fields); CHANGELOG `Unreleased`. Done: README `simple` row paragraph (the brief, what is refused, extra fields, outputs) and CHANGELOG `Unreleased`; the extra-field flag, the overlap refusal and the prompts are documented in cut (2).
 - Done when: `cargo test --locked` green; manual M15 passes.
 - Production forecast: see the table. Cut point: (1) 19.1-19.4 and 19.6 brief and its checks, (2) 19.5 and 19.7-19.9 overlap, extra flag, prompts.
-- Shipped as cut (1) (about 400 production lines): 19.5 (outputs overlap), 19.7 (extra fields flagged in `collect` and the handoff) and 19.8 (prompts, K1) stay open for the next PR. Until 19.8 the `orchestrate` prompts do not tell the coordinator about the brief; the `spawn_agent` description names the fields.
+- Shipped as cut (1) (about 400 production lines): 19.5 (outputs overlap), 19.7 (extra fields flagged in `collect` and the handoff) and 19.8 (prompts, K1) were delivered afterwards in PR #683 (cut 2). Until then the `orchestrate` prompts did not tell the coordinator about the brief; the `spawn_agent` description names the fields.
 - Depends on: PR18; decision K1 for 19.8.
 
 ---
