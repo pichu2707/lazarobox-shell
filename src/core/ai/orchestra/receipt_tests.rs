@@ -183,6 +183,20 @@ fn no_correction_reads_none() {
     );
 }
 
+// Spec (Corrections are bounded): the receipt says the limit stopped the
+// correction, not that none was due.
+#[test]
+fn a_review_stopped_by_the_correction_limit_says_so() {
+    let mut held = found("FINDING severe change observed: pins a yanked crate");
+    held.review.note_limit(3);
+    let note = judgement(&held.evidence());
+    assert!(
+        note.done.contains("correction: limit reached (3 rounds)"),
+        "{}",
+        note.done
+    );
+}
+
 // Spec (A late path is not reviewed): late, changed and unread paths are listed.
 #[test]
 fn late_changed_and_unread_paths_are_listed() {

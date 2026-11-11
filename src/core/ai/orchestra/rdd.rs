@@ -405,6 +405,9 @@ pub struct Review {
     /// Why the review stopped before it could conclude (a reviewer refused,
     /// no room for its workers), for the receipt.
     stopped: Option<String>,
+    /// The corrections the worker's batch had already used when this review
+    /// found blockers it was not allowed to correct, for the receipt.
+    limit: Option<u32>,
 }
 
 impl Review {
@@ -421,6 +424,7 @@ impl Review {
             gaps: Vec::new(),
             cut_bytes: 0,
             stopped: None,
+            limit: None,
         }
     }
 
@@ -459,6 +463,16 @@ impl Review {
     /// reason is kept.
     pub fn note_stop(&mut self, why: &str) {
         self.stopped.get_or_insert_with(|| why.to_owned());
+    }
+
+    /// No correction ran because `rounds` were already spent.
+    pub fn note_limit(&mut self, rounds: u32) {
+        self.limit = Some(rounds);
+    }
+
+    /// The rounds spent when the correction limit stopped this review.
+    pub fn limit(&self) -> Option<u32> {
+        self.limit
     }
 
     /// Why the review stopped before it could conclude, if it did.

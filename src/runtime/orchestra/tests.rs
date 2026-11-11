@@ -4643,6 +4643,122 @@ async fn a_blocker_that_survives_the_correction_stays_open_with_no_second_one() 
     );
 }
 
+/// [`reviewed_with`] where the same worker proposes the same batch `times`
+/// times (the author re-proposes after each batch review).
+async fn reproposed(
+    by: fn(&ChatRequest) -> Option<&'static str>,
+    times: usize,
+) -> (Lab, RunId, OrchHandle, Vec<Vec<Change>>) {
+    let lab = lab_with(Script::By(by), |m, home| RunManager {
+        scratch: |_| false,
+        restage: Some(restaged_differently),
+        diff: Some(staged_text),
+        ..tooled(m, home)
+    });
+    let (run, handle) = lab.begin(lab.scope(codex_both(), &[])).unwrap();
+    handle.call(spawn(Task::Code, "write a")).await;
+    lab.seen.first().await;
+    let mut sets = Vec::new();
+    for _ in 0..times {
+        let changes = lock_change();
+        let assessment = handle.assess(run, &changes);
+        let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Mandatory);
+        let ended = timeout(Duration::from_secs(10), done).await;
+        sets.push(ended.expect("the review ended").expect("a review"));
+    }
+    (lab, run, handle, sets)
+}
+
+// Spec (Corrections of a batch are bounded): a worker that proposes the same
+// batch again and again, with the blocker standing each time, gets at most
+// three corrections; the fourth proposal gets none.
+#[tokio::test]
+async fn repeated_proposals_of_one_batch_get_a_bounded_number_of_corrections() {
+    let (lab, _run, _handle, _) = reproposed(blocker_stays, 6).await;
+    let fixes = lab
+        .seen
+        .requests()
+        .iter()
+        .filter(|r| is_correction(r))
+        .count();
+    assert_eq!(fixes, 3, "corrections over six proposals");
+}
+
+// Spec (Corrections of a batch are bounded): the review that reaches the
+// bound says so, with how many rounds ran.
+#[tokio::test]
+async fn the_correction_limit_is_said_with_the_rounds_that_ran() {
+    let (mut lab, _run, _handle, _) = reproposed(blocker_stays, 4).await;
+    let lines = review_lines(&mut lab);
+    let said: Vec<_> = lines
+        .iter()
+        .filter(|l| l.contains("correction limit"))
+        .collect();
+    assert_eq!(said.len(), 1, "{lines:?}");
+    assert!(said[0].contains("3 correction rounds"), "{said:?}");
+    assert!(said[0].contains("worker 1"), "{said:?}");
+}
+
+// Spec (Corrections are bounded): only an apply of the worker's own batch
+// starts the count again. A rejection of the batch calls nothing on the run,
+// and another worker's apply is not this worker's.
+#[tokio::test]
+async fn neither_a_rejection_nor_a_siblings_apply_resets_the_count() {
+    let (lab, run, handle, _) = reproposed(blocker_stays, 3).await;
+    handle.applied(run, WorkerId(2), &["other.rs".to_owned()]);
+    let changes = lock_change();
+    let assessment = handle.assess(run, &changes);
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Mandatory);
+    timeout(Duration::from_secs(10), done)
+        .await
+        .unwrap()
+        .unwrap();
+    let fixes = lab
+        .seen
+        .requests()
+        .iter()
+        .filter(|r| is_correction(r))
+        .count();
+    assert_eq!(fixes, 3, "no fourth correction");
+}
+
+// Spec (Corrections of a batch are bounded): at the bound the batch goes on
+// to the user's review with its blockers open, as it was staged.
+#[tokio::test]
+async fn a_batch_at_the_correction_limit_reaches_the_user_with_its_blockers_open() {
+    let (lab, run, _handle, sets) = reproposed(blocker_stays, 4).await;
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept.len(), 4);
+    let last = &kept[3];
+    assert_eq!(last.outcome, Some(Ended::BlockersOpen));
+    assert_eq!(last.review.open().len(), 1, "the blocker is not dropped");
+    assert_eq!(last.review.correction_targets(), None, "no correction ran");
+    // Handed back as it was staged, for the batch review: nothing applied.
+    assert_eq!(sets[3], lock_change());
+}
+
+// Spec (Corrections of a batch are bounded): a batch that lands starts the
+// count again.
+#[tokio::test]
+async fn an_applied_batch_starts_the_correction_count_again() {
+    let (lab, run, handle, _) = reproposed(blocker_stays, 3).await;
+    handle.applied(run, WorkerId(1), &["Cargo.lock".to_owned()]);
+    let changes = lock_change();
+    let assessment = handle.assess(run, &changes);
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Mandatory);
+    timeout(Duration::from_secs(10), done)
+        .await
+        .unwrap()
+        .unwrap();
+    let fixes = lab
+        .seen
+        .requests()
+        .iter()
+        .filter(|r| is_correction(r))
+        .count();
+    assert_eq!(fixes, 4);
+}
+
 fn inferred(request: &ChatRequest) -> Option<&'static str> {
     if is_lens(request) && user_of(request).contains("lens: risk") {
         Some("FINDING severe change inferred: may race")
