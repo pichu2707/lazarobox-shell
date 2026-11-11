@@ -4699,6 +4699,29 @@ async fn the_correction_limit_is_said_with_the_rounds_that_ran() {
     assert!(said[0].contains("worker 1"), "{said:?}");
 }
 
+// Spec (Corrections are bounded): only an apply of the worker's own batch
+// starts the count again. A rejection of the batch calls nothing on the run,
+// and another worker's apply is not this worker's.
+#[tokio::test]
+async fn neither_a_rejection_nor_a_siblings_apply_resets_the_count() {
+    let (lab, run, handle, _) = reproposed(blocker_stays, 3).await;
+    handle.applied(run, WorkerId(2), &["other.rs".to_owned()]);
+    let changes = lock_change();
+    let assessment = handle.assess(run, &changes);
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Mandatory);
+    timeout(Duration::from_secs(10), done)
+        .await
+        .unwrap()
+        .unwrap();
+    let fixes = lab
+        .seen
+        .requests()
+        .iter()
+        .filter(|r| is_correction(r))
+        .count();
+    assert_eq!(fixes, 3, "no fourth correction");
+}
+
 // Spec (Corrections of a batch are bounded): at the bound the batch goes on
 // to the user's review with its blockers open, as it was staged.
 #[tokio::test]

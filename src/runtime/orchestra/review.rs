@@ -48,7 +48,7 @@ const DEFAULT_LENSES: [Lens; 2] = [Lens::Risk, Lens::Reliability];
 /// Why the default lenses are picked.
 const DEFAULT_WHY: &str = "default lens for a high-risk change";
 
-/// Corrections a worker's batch may get across its proposals. Each proposal
+/// Corrections a worker's proposals share until one of its batches is applied. Each proposal
 /// is a review of its own with its one correction; a small model that keeps
 /// re-proposing the same batch, with trivial blockers each time, would get
 /// one correction per proposal for ever. Past this many the review still
@@ -757,12 +757,12 @@ impl RunManager {
             })
             .ok_or_else(|| Stop::Start(ENDED.to_owned()))?;
         if spent >= MAX_CORRECTIONS && !review.blockers().is_empty() {
-            let rounds = if spent == 1 { "round" } else { "rounds" };
+            review.note_limit(spent);
             self.say(
                 pane,
                 run,
                 format!(
-                    "review of worker {}: correction limit reached ({spent} correction {rounds} ran for this batch); no more corrections, your batch review follows with the blockers open",
+                    "review of worker {}: correction limit reached ({spent} correction rounds ran for this worker's proposals); no more corrections, your batch review follows with the blockers open",
                     worker.0
                 ),
             );

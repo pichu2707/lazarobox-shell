@@ -13,12 +13,12 @@ baseline.
 ### Fixed
 
 - The orchestrator's model review no longer starts a correction worker for
-  every re-proposal of the same batch. Each proposal had its own "one
-  correction", so a small local model that kept finding trivial blockers
-  caused dozens of them. A batch now gets at most three corrections (counted
-  from its last applied batch); after that the review still reports, a line
-  says the correction limit was reached and how many rounds ran, and the
-  batch goes to your review with its blockers open.
+  every re-proposal. Each proposal had its own "one correction", so a small
+  local model that kept finding trivial blockers caused dozens of them. A
+  worker's proposals now share at most three corrections until one of its
+  batches is applied; after that the review still reports, a line and the
+  receipt say the correction limit was reached and how many rounds ran, and
+  the batch goes to your review with its blockers open.
 
 ## [1.19.0] - 2026-11-11
 
