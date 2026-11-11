@@ -2647,8 +2647,6 @@ impl App {
         }]
     }
 
-    /// The browser did not open `url`: the link is copied instead and the
-    /// footer says why; links are copied from now on.
     /// The answer of a save or of the backup deletion: the menu says it and
     /// reads the files again; with the menu closed the notice says it.
     fn on_secret_reply(&mut self, reply: Result<String, String>, save: bool) -> Vec<Effect> {
@@ -2666,6 +2664,8 @@ impl App {
         self.on_menu_command(command)
     }
 
+    /// The browser did not open `url`: the link is copied instead and the
+    /// footer says why; links are copied from now on.
     fn on_open_failed(&mut self, url: &str) -> Vec<Effect> {
         self.opener = false;
         let Some(menu) = self.menu.as_mut() else {
