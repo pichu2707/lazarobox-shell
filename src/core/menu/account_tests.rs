@@ -54,7 +54,7 @@ fn the_account_row_is_last_and_reads_not_connected_without_a_token() {
     let last = items.last().unwrap();
     assert_eq!(last.label, "Hugging Face");
     assert!(matches!(last.kind, ItemKind::HfAccount));
-    assert_eq!(items[items.len() - 2].label, "orchestrate");
+    assert_eq!(items[items.len() - 2].label, "simple");
     let m = open_with(TokenFacts::default(), None);
     assert_eq!(row_value(&m), "not connected");
     let m = on_row(TokenFacts::default(), None);

@@ -3453,7 +3453,9 @@ async fn a_read_only_goal_refuses_a_code_worker_with_a_reason() {
         .await;
     assert_eq!(
         handle.call(spawn(Task::Code, "edit it")).await,
-        error("code workers are not spawned for a read-only goal")
+        error(
+            "code workers are not spawned for a read-only goal; a simple worker starts without write tools"
+        )
     );
     assert!(
         lab.sent()
@@ -6216,3 +6218,30 @@ mod commands;
 mod gate_wait;
 mod gates;
 mod parallel;
+
+// Owner decision 2026-11-11 (W8a): on a read-only goal a `simple` worker is
+// started with the read tools only, and its first request tells it so.
+#[tokio::test]
+async fn a_simple_worker_on_a_read_only_goal_launches_with_read_tools_and_a_note() {
+    let assigned = [
+        (Task::Orchestrate, "claude", "opus"),
+        (Task::Simple, "ollama", "llama3:8b"),
+    ];
+    let engines = vec![found("claude", &[]), found("ollama", &["llama3:8b"])];
+    let lab = lab_with(Script::Hang, tooled);
+    let (_, handle) = lab.start(roster(&assigned, engines, JAIL));
+    handle
+        .call(step_call(Step::Authorize, Mark::Grant(Grant::ReadOnly)))
+        .await;
+    assert_eq!(
+        handle.call(spawn(Task::Simple, "explain a.rs")).await,
+        fine("worker 1: running")
+    );
+    let request = lab.seen.first().await;
+    assert_eq!(request.families, FamilySet::EMPTY.with(Family::Read));
+    assert!(
+        request.system.contains("not available to you"),
+        "{}",
+        request.system
+    );
+}

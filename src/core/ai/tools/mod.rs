@@ -777,7 +777,7 @@ const BUILT_INS: [ToolDef; 29] = [
     // touch no file, the host routes them to the run manager.
     ToolDef {
         name: "spawn_agent",
-        description: "Start a worker of one kind (general, code, chat, review or summarize) on the engine the user assigned to it. Returns its id at once.",
+        description: "Start a worker of one kind (general, code, chat, review, summarize or simple) on the engine the user assigned to it. Returns its id at once.",
         access: Access::Read,
         family: Family::Orchestra,
         args: &[
@@ -2506,7 +2506,7 @@ mod tests {
     // schema does not enumerate them.
     #[test]
     fn the_kind_cap_fits_the_longest_kind() {
-        let longest = Task::SET_ALL.iter().map(|t| t.id().len()).max().unwrap();
+        let longest = Task::ALL.iter().map(|t| t.id().len()).max().unwrap();
         assert!(KIND_MAX_BYTES >= longest, "{KIND_MAX_BYTES} < {longest}");
     }
 
@@ -2514,7 +2514,7 @@ mod tests {
     fn spawn_agent_says_which_kinds_it_takes() {
         let tools = registry_for(Toolset::Orchestrator);
         let spawn = tools.iter().find(|t| t.name == "spawn_agent").unwrap();
-        for task in Task::SET_ALL {
+        for task in Task::SET_ALL.into_iter().chain([Task::Simple]) {
             assert!(spawn.description.contains(task.id()), "{}", task.id());
         }
     }

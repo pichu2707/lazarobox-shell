@@ -164,6 +164,22 @@ fn the_runtimes_lift_line_is_a_system_line() {
     );
 }
 
+// A `simple` worker is a writer too: once it exists both gates pass and the
+// offer ends, as it does for a `code` worker.
+#[test]
+fn a_simple_worker_ends_the_gate_offer_like_a_code_worker() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    let (mut a, _) = gated();
+    a.update(event(refused(Gate::Finish, Step::Implement)));
+    assert!(offer(&a).is_some());
+    let mut simple = row(RUN, 1, WorkerStatus::Running);
+    if let OrchestraEvent::Worker(w) = &mut simple {
+        w.kind = crate::core::ai::config::Task::Simple;
+    }
+    a.update(event(simple));
+    assert!(offer(&a).is_none(), "a simple worker exists");
+}
+
 // D24: the offer ends when it no longer applies: a code worker exists (both
 // gates pass), the run finished, the run ended or was stopped. Enter then does
 // nothing for the gates.

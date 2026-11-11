@@ -85,7 +85,7 @@ fn the_tabs_hold_ten_settings_rows_and_twenty_ai_rows() {
         .iter()
         .map(|s| s.items.len())
         .sum();
-    assert_eq!(ai, 21);
+    assert_eq!(ai, 22);
     assert_eq!(SECTIONS[0].items.len(), 10);
 }
 

@@ -1,7 +1,9 @@
 //! Tests of the `orchestrate` row and the `Orchestrator` gate row of the AI
 //! tab, at the `MenuState` level.
 
-use super::ai_tests::{assigned, detection, engine, machine, menu, press, value_of};
+use super::ai_tests::{
+    assigned, detection, engine, machine, menu, press, selected_label, value_of,
+};
 use super::picker_tests::{cursor_label, key, open, pick, send, status, title};
 use super::*;
 use crate::core::ai::Status;
@@ -33,7 +35,8 @@ fn the_orchestrate_and_gate_rows_read_their_defaults() {
     let labels: Vec<_> = MODELS_SECTION.items.iter().map(|i| i.label).collect();
     let at = labels.iter().position(|l| *l == "orchestrate").unwrap();
     assert_eq!(labels[at - 1], "summarize");
-    assert_eq!(labels[at + 1], "Hugging Face");
+    assert_eq!(labels[at + 1], "simple");
+    assert_eq!(labels[at + 2], "Hugging Face");
     let labels: Vec<_> = TOOLS_SECTION.items.iter().map(|i| i.label).collect();
     let gate = labels.iter().position(|l| *l == "Orchestrator").unwrap();
     assert_eq!(labels[gate - 1], "Approval");
@@ -209,5 +212,79 @@ fn set_all_from_the_menu_leaves_orchestrate_alone() {
         Some("claude")
     );
     assert_eq!(draft.get(Task::Chat).engine.as_deref(), Some("codex"));
+    assert_eq!(value_of(&m, "Set all tasks"), "codex › default");
+}
+
+// Spec (config-menu): Simple row and picker [W8]: the row reads its default,
+// `j` walks orchestrate, simple, Hugging Face.
+#[test]
+fn the_simple_row_reads_its_default_and_sits_between_orchestrate_and_hugging_face() {
+    let mut m = menu(Some("claude"), Some("sonnet"), Some(machine()));
+    assert_eq!(value_of(&m, "simple"), "(default)");
+    m.goto("orchestrate");
+    press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "simple");
+    press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "Hugging Face");
+}
+
+#[test]
+fn enter_on_simple_opens_the_picker_with_the_default_entry_first() {
+    let mut m = menu(Some("claude"), Some("sonnet"), Some(machine()));
+    open(&mut m, "simple");
+    assert_eq!(title(&m), "Engine for simple");
+    let rows = m.rows(&Config::default());
+    assert_eq!(
+        rows[1],
+        pick("(default · use general)", Mark::Plain, true, true)
+    );
+}
+
+#[test]
+fn choosing_for_simple_changes_only_simple() {
+    let mut m = assigned(&[(Task::General, "codex", "default")], Some(machine()));
+    let before = m.ai_draft();
+    open(&mut m, "simple");
+    choose(&mut m, "claude");
+    send(&mut m, key(KeyCode::Enter));
+    let draft = m.ai_draft();
+    assert_eq!(draft.get(Task::Simple).engine.as_deref(), Some("claude"));
+    for task in Task::SET_ALL {
+        assert_eq!(draft.get(task), before.get(task), "{}", task.id());
+    }
+    let edits = m.edits(&Config::default());
+    assert!(!edits.is_empty());
+    assert!(
+        edits.iter().all(|e| e.table == "ai.tasks.simple"),
+        "{edits:?}"
+    );
+}
+
+// Spec (ai-task-models): a server engine on `simple` is NOT marked, since a
+// simple task suits a small local model.
+#[test]
+fn a_server_engine_is_not_marked_on_the_simple_row_or_its_picker() {
+    let m = assigned(&[(Task::Simple, "ollama", "llama3:8b")], Some(machine()));
+    assert_eq!(value_of(&m, "simple"), "ollama › llama3:8b");
+    let m = assigned(&[(Task::General, "ollama", "llama3:8b")], Some(machine()));
+    assert_eq!(value_of(&m, "simple"), "(default)");
+    let found = detection(&[engine("ollama", Status::Available, &["llama3:8b"], None)]);
+    let mut m = menu(None, None, Some(found));
+    open(&mut m, "simple");
+    let marked = m.rows(&Config::default()).into_iter().any(|r| {
+        matches!(r, Row::Pick { mark: Mark::Status(ref t), .. } if t.contains("not recommended"))
+    });
+    assert!(!marked);
+}
+
+// Spec (ai-task-models): Set all leaves simple alone; its aggregate ignores it.
+#[test]
+fn set_all_from_the_menu_leaves_simple_alone() {
+    let mut m = assigned(&[(Task::Simple, "ollama", "llama3:8b")], Some(machine()));
+    open(&mut m, "Set all tasks");
+    choose(&mut m, "codex");
+    send(&mut m, key(KeyCode::Enter));
+    let draft = m.ai_draft();
+    assert_eq!(draft.get(Task::Simple).engine.as_deref(), Some("ollama"));
     assert_eq!(value_of(&m, "Set all tasks"), "codex › default");
 }

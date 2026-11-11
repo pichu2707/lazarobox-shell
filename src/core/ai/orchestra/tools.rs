@@ -144,8 +144,11 @@ impl From<OrchError> for ToolError {
     }
 }
 
-fn spawnable() -> [Task; 5] {
-    Task::SET_ALL
+/// The kinds `spawn_agent` takes: the five worker kinds and `simple`.
+/// `orchestrate` is the coordinator itself and is never spawned.
+fn spawnable() -> [Task; 6] {
+    let [a, b, c, d, e] = Task::SET_ALL;
+    [a, b, c, d, e, Task::Simple]
 }
 
 /// Checks an orchestration call by name against its schema.

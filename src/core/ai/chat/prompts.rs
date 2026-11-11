@@ -60,6 +60,8 @@ pub fn builtin(profile: Profile, task: Task) -> &'static str {
             include_str!("prompts/programmer/orchestrate.md"),
             include_str!("prompts/programmer/orchestrate_odd.md")
         ),
+        (Profile::Analyst, Task::Simple) => include_str!("prompts/analyst/simple.md"),
+        (Profile::Programmer, Task::Simple) => include_str!("prompts/programmer/simple.md"),
     }
 }
 
@@ -219,6 +221,17 @@ const WORKER: &str = include_str!("prompts/worker.md");
 /// keeps its prompt byte for byte, and a user's override still comes first.
 pub fn worker_system(system: &str) -> String {
     format!("{}\n\n{}", system.trim_end(), WORKER.trim_end())
+}
+
+/// What a `simple` worker whose Write was removed (a read-only goal) is told
+/// after its prompt, which otherwise asks for the write tools: they are not
+/// offered, so its findings go in its answer.
+const NO_WRITE_TOOLS: &str = "Note: this is a read-only goal, so the write tools, propose_batch and run_command are not available to you. Ignore the instruction to use them and put your findings in your answer instead.";
+
+/// `system` for a `simple` worker that has no write tools. Only `launch`
+/// calls this; the user's override still comes first.
+pub fn read_only_worker_system(system: &str) -> String {
+    format!("{}\n\n{NO_WRITE_TOOLS}", system.trim_end())
 }
 
 /// The system line for a skipped override file.

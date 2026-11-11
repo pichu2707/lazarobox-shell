@@ -11,8 +11,8 @@ expression: "text(&draw(62, POPUP_H, &ai_tab()))"
 │ review                                           (default) │
 │ summarize                                        (default) │
 │ orchestrate                    (default) · not recommended │
+│ simple                                           (default) │
 │ Hugging Face                                 not connected │
-│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │
