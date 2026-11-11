@@ -548,6 +548,82 @@ mod tests {
         assert_eq!(disk.log.borrow().len(), 1);
     }
 
+    /// A disk whose second create fails and whose undo fails too: the apply
+    /// leaves the first file changed (`Partial`).
+    #[derive(Default)]
+    struct Broken {
+        creates: RefCell<usize>,
+    }
+
+    impl WriteOps for Broken {
+        fn probe(&self, _: &Path) -> Result<Option<Vec<u8>>, WriteError> {
+            Ok(None)
+        }
+        fn make_dir(&self, _: &Path) -> Result<(), WriteError> {
+            Ok(())
+        }
+        fn create_file(&self, _: &Path, _: &[u8]) -> Result<(), WriteError> {
+            *self.creates.borrow_mut() += 1;
+            match *self.creates.borrow() {
+                1 => Ok(()),
+                _ => Err(WriteError::Denied),
+            }
+        }
+        fn replace_file(&self, _: &Path, _: &[u8], _: &[u8]) -> Result<(), WriteError> {
+            Ok(())
+        }
+        fn delete_file(&self, _: &Path, _: &[u8]) -> Result<(), WriteError> {
+            Err(WriteError::Denied)
+        }
+        fn delete_dir(&self, _: &Path) -> Result<(), WriteError> {
+            Ok(())
+        }
+    }
+
+    /// Stages `a.txt` and `b.txt` in the batch of `key` and proposes it.
+    fn proposed_pair(stages: &mut Stages, key: StageKey) -> BatchId {
+        put(stages, key, "a.txt");
+        let id = put(stages, key, "b.txt");
+        stages.seal(id).unwrap();
+        id
+    }
+
+    // Spec "Worker commands [W6]" (B1 of the W6a review): a worker's command
+    // runs only after its own batch was applied whole. A partly applied batch
+    // closes without that, and clears an earlier applied one.
+    #[test]
+    fn a_partly_applied_batch_does_not_count_as_applied() {
+        let mut stages = Stages::default();
+        let key = worker(1, 1);
+        let first = put(&mut stages, key, "first.txt");
+        stages.seal(first).unwrap();
+        stages.apply_with(first, &Rec::default()).unwrap();
+        assert!(stages.applied(key), "a whole apply counts");
+        let id = proposed_pair(&mut stages, key);
+        let result = stages.apply_with(id, &Broken::default()).unwrap();
+        assert!(matches!(result, ApplyResult::Partial { .. }), "{result:?}");
+        assert!(stages.batch(key).is_none(), "a partial apply closes it");
+        assert!(!stages.applied(key));
+    }
+
+    // ... and a new batch opened after an applied one is not applied until it
+    // is applied itself.
+    #[test]
+    fn a_new_batch_after_an_applied_one_is_not_applied() {
+        let mut stages = Stages::default();
+        let key = worker(1, 1);
+        let first = put(&mut stages, key, "first.txt");
+        stages.seal(first).unwrap();
+        stages.apply_with(first, &Rec::default()).unwrap();
+        let second = put(&mut stages, key, "second.txt");
+        assert!(!stages.applied(key), "staging");
+        stages.seal(second).unwrap();
+        assert!(!stages.applied(key), "proposed");
+        stages.apply_with(second, &Rec::default()).unwrap();
+        assert!(stages.applied(key), "applied whole again");
+        assert!(!stages.applied(worker(1, 2)), "another worker is not");
+    }
+
     #[test]
     fn apply_refuses_a_batch_that_was_not_proposed_and_writes_nothing() {
         let mut stages = Stages::default();
