@@ -819,6 +819,8 @@ En modo **run** lazarobox hace lo que `auto` no hace: un comando de búsqueda o 
 - el locale no es UTF-8 y el comando tiene caracteres no ASCII;
 - al escribir, el panel ya no está en el mismo directorio o ejecuta un programa.
 
+Al modelo le llega `NOT RUN YET` con el motivo (por ejemplo, que el panel tiene una línea a medio escribir), para que no dé el comando por hecho, y la fila del resultado dice `typed, not run`, no `ok` a secas. En `ask` y `auto`, que nunca pulsan Enter, el resultado también dice `NOT RUN YET`.
+
 La confirmación de `Ctrl+Space`, `e` (un bloque de la respuesta, no una llamada del modelo) solo escribe, también en `run`. En `ask` y `auto`, `y` sigue sin pulsar Enter.
 
 **Corre solo.** `cd`, `pwd`, `ls`, `tree`, `find`, `grep` y `rg`, cuando todas sus rutas, y el directorio del panel si no se da ninguna, quedan dentro de la carpeta del chat. `pwd` corre en cualquier sitio y un `cd` sin ruta va a `~`. `tree`, `grep` y `rg` además solo actúan dentro de `$HOME`.

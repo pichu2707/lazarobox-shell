@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- A command typed into a pane without Enter (`y` on a half-typed line in `run`
+  mode, `ask`, `auto`) is now reported to the model as `NOT RUN YET`, with the
+  reason, instead of a result that read as done, so it no longer claims a file
+  was written when nothing ran. The result row says `typed, not run`.
+
 ## [1.18.0] - 2026-11-11
 
 ### Added

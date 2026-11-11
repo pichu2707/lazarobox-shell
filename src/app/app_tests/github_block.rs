@@ -32,7 +32,7 @@ fn lines(a: &App) -> Vec<String> {
 
 fn typed(effects: &[Effect], turn: u64, call: u64) -> bool {
     matches!(effects, [Effect::WritePty(PaneId::FIRST, bytes), last]
-        if !bytes.contains(&b'\r') && *last == decision(turn, call, Decision::Sent))
+        if !bytes.contains(&b'\r') && matches!(last, Effect::ToolDecision { decision: Decision::Sent | Decision::SentNotRun(_), turn: t, call: c, .. } if *t == turn && c.0 == call))
 }
 
 fn cloud_read(reach: Reach) -> ApprovalAsk {

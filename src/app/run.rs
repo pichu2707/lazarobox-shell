@@ -368,7 +368,7 @@ impl App {
         call: Option<(u64, CallId)>,
         target: PaneId,
         command: &str,
-        not_run: Option<&str>,
+        not_run: Option<&'static str>,
     ) -> Vec<Effect> {
         let mut effects = Vec::new();
         let decision = match self.typed_bytes(target, command) {
@@ -385,7 +385,7 @@ impl App {
                 // A run being settled in this pane is no longer the only thing
                 // in it.
                 self.note_typed(target);
-                Decision::Sent
+                not_run.map_or(Decision::Sent, Decision::SentNotRun)
             }
             Err(refused) => {
                 self.notice = Some(refused.notice);
