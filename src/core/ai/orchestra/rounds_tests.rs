@@ -157,6 +157,79 @@ fn a_split_opens_no_clarification_and_carries_no_round() {
     assert_eq!(named, RoundError::NotAsked(3));
 }
 
+// Review fix: the third asker's handoff caps the rounds at 2 and says the
+// limit was reached; the second asker's does not.
+#[test]
+fn the_third_askers_handoff_caps_the_rounds_and_flags_the_limit() {
+    let mut run = run();
+    asked(&mut run, &["src/a.rs"], None);
+    let second = asked(&mut run, &["src/a.rs"], Some(1));
+    let third = asked(&mut run, &["src/a.rs"], Some(2));
+    let two = run.handoff(second, note()).unwrap();
+    assert!(!two.trail.limit);
+    let three = run.handoff(third, note()).unwrap();
+    assert_eq!((three.trail.rounds, three.trail.limit), (2, true));
+    let content = Item::of_handoff(&three).note.content;
+    assert!(
+        content.contains("\nclarification round: 2 of brief 1"),
+        "{content}"
+    );
+    assert!(
+        content.contains("\nclarification limit reached"),
+        "{content}"
+    );
+    assert!(!Item::of_handoff(&two).note.content.contains("limit"));
+    assert!(
+        run.open_note().contains("round 2 of 2"),
+        "{}",
+        run.open_note()
+    );
+}
+
+// Review fix: a child that answers a clarification and ends without
+// completing reopens its parent, so a plain spawn cannot restart the brief at
+// round 0; a retry of the child closes the parent again.
+#[test]
+fn an_answering_child_that_does_not_complete_reopens_its_parent() {
+    // Cancelled: the run stays open, so a plain spawn is refused naming the parent.
+    let mut run = run();
+    let first = asked(&mut run, &["src/a.rs"], None);
+    let child = answering(&mut run, &["src/a.rs"], 1).unwrap();
+    run.cancel(Instant::now(), child);
+    let again = refusal(plain_spawn(&mut run, "src/b.rs"));
+    assert_eq!(again, RoundError::Open(first));
+    // And the round count goes on: answering again makes round 2, not 1.
+    let next = answering(&mut run, &["src/a.rs"], 1).unwrap();
+    assert!(run.clarify(next, "which?"));
+    assert_eq!(run.clarify_round(next), Some(2));
+    // Failed: the run halts, and the parent's clarification is open again.
+    let mut run = super::clarify_tests::run();
+    asked(&mut run, &["src/a.rs"], None);
+    let child = answering(&mut run, &["src/a.rs"], 1).unwrap();
+    assert_eq!(run.open_note(), "");
+    let failed = WorkerEvent::Failed {
+        class: ErrorClass::Other,
+        text: "boom".into(),
+    };
+    run.on_event(Instant::now(), child, failed);
+    assert!(run.open_note().contains("brief 1"), "{}", run.open_note());
+}
+
+#[test]
+fn a_retry_of_the_child_closes_the_parent_again() {
+    let mut run = run();
+    asked(&mut run, &["src/a.rs"], None);
+    let child = answering(&mut run, &["src/a.rs"], 1).unwrap();
+    let event = WorkerEvent::Failed {
+        class: ErrorClass::Other,
+        text: "boom".into(),
+    };
+    run.on_event(Instant::now(), child, event);
+    assert!(!run.open_note().is_empty());
+    run.decide(Instant::now(), UserChoice::Retry).unwrap();
+    assert_eq!(run.open_note(), "");
+}
+
 // 20.5: a split closing blocks writes like any closing (`clarifying`, which
 // the host's `closed` reads), but it is no clarification: no needs-specification
 // disclosure and no round on the row.

@@ -149,6 +149,8 @@ pub struct Trail {
     pub brief: u32,
     pub rounds: u32,
     pub split: String,
+    /// The brief asked a third time: `rounds` stops at the limit.
+    pub limit: bool,
 }
 
 impl Handoff {

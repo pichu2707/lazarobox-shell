@@ -159,7 +159,13 @@ pub(super) fn worker_line(row: &WorkerRow) -> String {
     if let Some(round) = row.clarifying
         && row.status == WorkerStatus::Done
     {
-        line.push_str(&format!(" needs specification, round {round} of {ROUNDS}"));
+        if round > ROUNDS {
+            line.push_str(&format!(
+                " needs specification, limit reached ({ROUNDS} rounds)"
+            ));
+        } else {
+            line.push_str(&format!(" needs specification, round {round} of {ROUNDS}"));
+        }
     }
     // A done worker whose engine reported nothing says so; the number is
     // never estimated.

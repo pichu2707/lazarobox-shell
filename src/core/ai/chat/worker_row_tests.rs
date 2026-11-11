@@ -384,6 +384,19 @@ fn a_worker_row_says_it_needs_specification() {
     assert_eq!(lines.iter().filter(said).count(), 1, "{lines:?}");
 }
 
+// Review fix: the third asker's row says the limit was reached, never `3 of 2`.
+#[test]
+fn the_third_askers_row_says_the_limit_was_reached() {
+    let mut third = row(3, WorkerStatus::Done, Some(3));
+    third.clarifying = Some(3);
+    let mut state = chat();
+    state.worker_row(third);
+    let lines = texts(&state);
+    let said = |l: &String| l.contains("needs specification, limit reached (2 rounds)");
+    assert!(lines.iter().any(said), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("round 3")), "{lines:?}");
+}
+
 // Spec (chat-pane, "Row shows the round", W8c 20.3): the row of a worker that
 // ended "needs specification" in round 2 says `round 2 of 2`.
 #[test]

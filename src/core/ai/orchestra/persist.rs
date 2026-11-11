@@ -104,6 +104,9 @@ impl Item {
             );
             content.push_str(&line);
         }
+        if trail.limit {
+            content.push_str("\nclarification limit reached");
+        }
         if !trail.split.is_empty() {
             content.push_str(&format!("\nsplit: {}", trail.split));
         }

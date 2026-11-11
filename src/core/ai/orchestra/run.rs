@@ -258,6 +258,9 @@ struct Slot {
     brief: u32,
     /// A later spawn answered this worker's clarification.
     answered: bool,
+    /// The worker whose clarification this one answers: it is reopened when
+    /// this one ends without completing, so the round count goes on.
+    parent: Option<WorkerId>,
 }
 
 #[derive(Clone, Debug)]
@@ -623,8 +626,9 @@ impl Run {
         };
         Trail {
             brief: slot.brief,
-            rounds: slot.round + asked,
+            rounds: (slot.round + asked).min(ROUNDS),
             split,
+            limit: asked == 1 && slot.round >= ROUNDS,
         }
     }
 
@@ -638,7 +642,7 @@ impl Run {
         format!(
             "; brief {} still waits for an answer (round {} of {ROUNDS})",
             slot.brief,
-            slot.round + 1
+            (slot.round + 1).min(ROUNDS)
         )
     }
 
@@ -725,6 +729,13 @@ impl Run {
         let slot = &mut self.slots[index(id)];
         slot.round = round;
         slot.brief = first;
+        slot.parent = parent;
+        // A child refused at once never ran: its parent stays open.
+        if let Some(parent) = parent
+            && self.slots[index(id)].status == WorkerStatus::Refused
+        {
+            self.slots[index(parent)].answered = false;
+        }
         Ok(id)
     }
 
@@ -838,6 +849,7 @@ impl Run {
             round: 0,
             brief: 0,
             answered: false,
+            parent: None,
         });
         let id = WorkerId(self.slots.len() as u32);
         if writer {
@@ -872,6 +884,10 @@ impl Run {
     fn enqueue(&mut self, now: Instant, id: WorkerId, refusal: Option<String>, front: bool) {
         // A new attempt starts the clock over, so a refusal reports no time.
         self.slots[index(id)].started = None;
+        // A retried child answers its parent again.
+        if let Some(parent) = self.slots[index(id)].parent {
+            self.slots[index(parent)].answered = true;
+        }
         // A new attempt starts over, even one refused at once: the closing of
         // the last attempt must not show in `collect`.
         self.slots[index(id)].closing = None;
@@ -1688,6 +1704,13 @@ impl Run {
             usage: slot.usage.map(|usage| shown(usage, slot.gap)),
         });
         self.queue.retain(|queued| *queued != id);
+        // An answering child that did not complete leaves its parent's
+        // question open: the next spawn must answer it again (D4).
+        if status != WorkerStatus::Done
+            && let Some(parent) = self.slots[index(id)].parent
+        {
+            self.slots[index(parent)].answered = false;
+        }
         match (&self.state, error) {
             (RunState::Open, Some((class, text))) => {
                 self.state = RunState::Halted {
