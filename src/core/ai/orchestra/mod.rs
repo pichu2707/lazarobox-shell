@@ -9,6 +9,7 @@ pub mod errors;
 pub mod event;
 pub mod feature;
 pub mod ledger;
+pub mod limit;
 pub mod overrides;
 pub mod persist;
 pub mod rdd;
@@ -136,6 +137,8 @@ mod feature_tests;
 mod gate_tests;
 #[cfg(test)]
 mod ledger_tests;
+#[cfg(test)]
+mod limit_tests;
 #[cfg(test)]
 mod persist_tests;
 #[cfg(test)]
