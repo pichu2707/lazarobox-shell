@@ -247,3 +247,47 @@ fn a_claude_that_needs_an_update_gets_no_mark() {
         Some(ToolMark::Capable)
     );
 }
+
+// llama.cpp cannot download: a saved model the server does not serve under
+// that name is `not served`, in the row and in the task label.
+#[test]
+fn a_llamacpp_model_under_another_served_name_is_not_served_never_a_download() {
+    let d = Detection {
+        engines: vec![state("llamacpp", Status::Available, &["/m/qwen.gguf"])],
+        ..Default::default()
+    };
+    let mut draft = AiConfig::default();
+    draft.set(
+        Task::Code,
+        Assignment {
+            engine: Some("llamacpp".to_owned()),
+            model: Some("qwen".to_owned()),
+        },
+    );
+    let rows = model_rows("llamacpp", Target::Task(Task::Code), &draft, Some(&d));
+    let qwen = rows.iter().find(|r| r.label == "qwen").unwrap();
+    assert_eq!(qwen.mark, Mark::NotServed);
+    assert!(!qwen.enabled);
+    assert!(rows.iter().all(|r| r.mark != Mark::DownloadRequired));
+    assert_eq!(
+        task_label(&draft, Task::Code, Some(&d)),
+        "llamacpp › qwen · not served"
+    );
+}
+
+#[test]
+fn a_llamacpp_alias_equal_to_the_model_carries_no_mark() {
+    let d = Detection {
+        engines: vec![state("llamacpp", Status::Available, &["qwen"])],
+        ..Default::default()
+    };
+    let mut draft = AiConfig::default();
+    draft.set(
+        Task::Code,
+        Assignment {
+            engine: Some("llamacpp".to_owned()),
+            model: Some("qwen".to_owned()),
+        },
+    );
+    assert_eq!(task_label(&draft, Task::Code, Some(&d)), "llamacpp › qwen");
+}

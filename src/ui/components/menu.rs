@@ -200,6 +200,7 @@ fn mark_text(mark: &Mark) -> &str {
         Mark::Plain => "",
         Mark::Downloaded => "✓",
         Mark::DownloadRequired => "download required",
+        Mark::NotServed => "not served",
         Mark::Checking => "checking…",
         Mark::NotInList => NOT_IN_LIST,
         Mark::Status(text) => text,
@@ -212,6 +213,7 @@ const CLIP_MARK_FROM: usize = 40;
 /// Suffixes of a task-row value that must survive clipping, outermost last.
 const REQUIRED_MARK: &str = " · download required";
 const NOT_RECOMMENDED_MARK: &str = " · not recommended";
+const NOT_SERVED_MARK: &str = " · not served";
 
 /// The label a limit being typed gives way to when its value needs the room.
 const EDIT_LABEL: &str = "Edit";
@@ -226,13 +228,13 @@ fn tail(value: &str, room: usize) -> String {
 }
 
 /// `value` within `room` cells: a long model name is clipped, its trailing
-/// ` · download required` and ` · not recommended` marks are kept whole.
+/// ` · download required`, ` · not served` and ` · not recommended` marks are kept whole.
 fn fit(value: &str, room: usize) -> String {
     if cells(value) <= room {
         return value.to_owned();
     }
     let mut head = value;
-    for mark in [NOT_RECOMMENDED_MARK, REQUIRED_MARK] {
+    for mark in [NOT_RECOMMENDED_MARK, REQUIRED_MARK, NOT_SERVED_MARK] {
         head = head.strip_suffix(mark).unwrap_or(head);
     }
     let marks = &value[head.len()..];
@@ -1078,6 +1080,20 @@ mod tests {
         assert_eq!(fit(value, 20), "abcdefghij · downlo…");
         assert_eq!(cells(&fit(value, 20)), 20);
         assert_eq!(fit("plain value that is long", 8), "plain v…");
+    }
+
+    #[test]
+    fn fit_keeps_the_not_served_mark_whole_on_a_narrow_row() {
+        let value = "llamacpp › a-very-long-model-name.gguf · not served";
+        let out = fit(value, 22);
+        assert!(out.ends_with(" · not served"), "{out}");
+        assert_eq!(cells(&out), 22);
+        assert_eq!(fit(value, cells(value)), value);
+    }
+
+    #[test]
+    fn a_not_served_row_draws_its_mark_text() {
+        assert_eq!(mark_text(&Mark::NotServed), "not served");
     }
 
     // Review W1: the cursor on a task row shows the task hint, no h/l.
