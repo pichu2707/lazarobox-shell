@@ -63,6 +63,15 @@ impl ToolHost {
         lock(&self.stages).batch(key).map(|batch| batch.id())
     }
 
+    /// Puts the batch of `key` before the user, as a worker's proposal does,
+    /// and returns its id.
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    pub(crate) fn asked_id_for_test(&self, key: StageKey) -> Option<BatchId> {
+        let mut stages = lock(&self.stages);
+        let id = stages.batch(key)?.id();
+        stages.seal(id).ok()
+    }
+
     /// Whether the batch of `key` holds entries and was never proposed: its
     /// writer is gone or still staging, and nobody asked the user yet. Each
     /// writer of a run has its own key, so a sibling's files or proposal never

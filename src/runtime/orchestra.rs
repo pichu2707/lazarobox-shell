@@ -2110,6 +2110,11 @@ impl Orchestra for Bound {
         own.flatten().map(|own| own.enter())
     }
 
+    fn live(&self, run: RunId) -> bool {
+        run == self.run
+            && (self.manager.upgrade()).is_some_and(|manager| manager.is_live(self.pane, run))
+    }
+
     fn corrects(&self, run: RunId, worker: WorkerId) -> bool {
         let manager = self.manager.upgrade();
         run == self.run
