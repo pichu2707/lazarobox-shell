@@ -78,7 +78,8 @@ fn outputs_that_overlap_a_live_worker_are_refused_naming_it() {
         refusal,
         Refusal::Overlap {
             worker: first,
-            path: "src/c.rs".to_owned()
+            path: "src/c.rs".to_owned(),
+            held: "src/c.rs".to_owned()
         }
     );
     let refusal = spawn(&mut run, brief(&["./src/z.rs"])).unwrap_err();
@@ -86,7 +87,8 @@ fn outputs_that_overlap_a_live_worker_are_refused_naming_it() {
         refusal,
         Refusal::Overlap {
             worker: queued,
-            path: "./src/z.rs".to_owned()
+            path: "./src/z.rs".to_owned(),
+            held: "src/z.rs".to_owned()
         }
     );
     assert_eq!(run.worker_count(), 2);
@@ -175,4 +177,41 @@ fn the_handoff_records_the_extra_fields() {
             .content
             .contains("extra fields")
     );
+}
+
+// Review: `path_ok` accepts an absolute path under the chat origin, so the
+// same file written both ways is the same output. Directory against file too.
+#[test]
+fn an_absolute_path_under_the_origin_overlaps_its_relative_form() {
+    let mut run = run();
+    let first = spawn(&mut run, brief(&["src/b.rs", "lib/"])).unwrap();
+    for path in ["/work/app/src/b.rs", "/work/app/lib/x.rs"] {
+        assert!(
+            matches!(
+                spawn(&mut run, brief(&[path])),
+                Err(Refusal::Overlap { worker, .. }) if worker == first
+            ),
+            "{path}"
+        );
+    }
+    // A directory given as absolute covers a relative file.
+    let mut run = self::run();
+    let first = spawn(&mut run, brief(&["/work/app/pkg"])).unwrap();
+    assert!(matches!(
+        spawn(&mut run, brief(&["pkg/m.rs"])),
+        Err(Refusal::Overlap { worker, .. }) if worker == first
+    ));
+    assert!(spawn(&mut run, brief(&["/work/app/other.rs"])).is_ok());
+}
+
+// Review: the same file on a case-insensitive filesystem. Over-refusing two
+// names that differ only in case on Linux is accepted.
+#[test]
+fn outputs_that_differ_only_in_case_overlap() {
+    let mut run = run();
+    let first = spawn(&mut run, brief(&["src/Readme.md"])).unwrap();
+    assert!(matches!(
+        spawn(&mut run, brief(&["SRC/README.md"])),
+        Err(Refusal::Overlap { worker, .. }) if worker == first
+    ));
 }

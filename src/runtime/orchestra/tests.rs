@@ -6345,3 +6345,36 @@ async fn a_simple_spawn_flags_extra_fields_and_refuses_an_overlapping_output() {
         .await;
     assert!(!other.is_error, "{other:?}");
 }
+
+// Review: the handoff ack of a worker whose brief had extra fields says so; a
+// directory output names itself when it covers the new file.
+#[tokio::test]
+async fn the_handoff_ack_flags_extra_fields_and_a_directory_is_named_in_the_overlap() {
+    let lab = writing_lab(Script::Answer("done"));
+    let scope = OrchScope {
+        origin: lab.app(),
+        ceiling: FamilySet::ALL,
+        ..lab.scope(simple_roster(), &["~/dev/app"])
+    };
+    let (_, handle) = lab.begin(scope).unwrap();
+    let mut first = writing_brief("src/");
+    first.extra = vec![("priority".into(), "high".into())];
+    handle.call(OrchCall::SpawnSimple { brief: first }).await;
+    let refused = handle
+        .call(OrchCall::SpawnSimple {
+            brief: writing_brief("src/b.rs"),
+        })
+        .await;
+    assert!(
+        refused.text.contains("src/b.rs is under its output src/"),
+        "{}",
+        refused.text
+    );
+    handle.call(wait(1)).await;
+    let ack = handle.call(handoff(1, Verdict::OnCourse)).await;
+    assert!(
+        ack.text.ends_with("; brief extra fields: priority"),
+        "{}",
+        ack.text
+    );
+}

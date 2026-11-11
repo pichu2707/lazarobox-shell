@@ -194,14 +194,12 @@ fn the_orchestrate_prompts_teach_the_brief_of_a_simple_worker() {
         let prompt = builtin(profile, Task::Orchestrate);
         for rule in [
             "Delegate a change to files; never answer it in text",
-            "simple",
+            "a simple worker",
             "a brief, not a prompt",
-            "goal",
-            "inputs",
-            "outputs",
-            "done_when",
-            "out_of_scope",
-            "refused",
+            "goal, inputs",
+            "outputs (files it may write",
+            "done_when and out_of_scope",
+            "is refused",
         ] {
             assert!(prompt.contains(rule), "{profile:?}: {rule}");
         }

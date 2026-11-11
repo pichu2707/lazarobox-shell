@@ -132,6 +132,8 @@ pub enum Refusal {
     Overlap {
         worker: WorkerId,
         path: String,
+        /// The live worker's output that covers or is covered by `path`.
+        held: String,
     },
     /// `run paused`: a failure is unresolved.
     Paused,
@@ -190,11 +192,11 @@ pub struct NotHalted;
 /// and true whatever the cause. It stands outside the worker's wrapper.
 const CALLS_AS_TEXT: &str = "lazarobox: this worker changed no file, and its reply holds tool calls written as text. Do not report its files as created.";
 
-/// What lazarobox says before the check of a handoff, outside the wrapper.
 /// What lazarobox says before the result of a worker whose brief held fields
 /// it does not know (W8b), outside the wrapper.
 pub const EXTRA_PREFIX: &str = "lazarobox: brief extra fields: ";
 
+/// What lazarobox says before the check of a handoff, outside the wrapper.
 const CHECK_PREFIX: &str = "lazarobox: handoff check: ";
 
 /// What lazarobox says before the result of a worker that called
@@ -617,6 +619,7 @@ impl Run {
     ) -> Result<WorkerId, Refusal> {
         self.check_open()?;
         let brief = brief.validate(origin).map_err(Refusal::Brief)?;
+        let brief = brief.relative_to(origin);
         self.spawn_as(now, Task::Simple, &brief.prompt(), Some(brief), true)
     }
 
@@ -672,8 +675,8 @@ impl Run {
         if writer && !spec.writes() {
             return Err(Refusal::WriteOff);
         }
-        if let Some((worker, path)) = self.overlap(spec.outputs().unwrap_or_default()) {
-            return Err(Refusal::Overlap { worker, path });
+        if let Some((worker, path, held)) = self.overlap(spec.outputs().unwrap_or_default()) {
+            return Err(Refusal::Overlap { worker, path, held });
         }
         self.slots.push(Slot {
             spec,
@@ -701,21 +704,21 @@ impl Run {
     }
 
     /// The first live (queued or running) worker whose brief outputs overlap
-    /// `outputs`, and the path of `outputs` that does (D10). A directory
-    /// covers the files under it. An ended worker blocks nothing.
-    fn overlap(&self, outputs: &[String]) -> Option<(WorkerId, String)> {
+    /// `outputs`, the path of `outputs` that does and the output it meets
+    /// (D10). A directory covers the files under it. An ended worker blocks
+    /// nothing. Paths are origin-relative (`spawn_simple` made them so). Names
+    /// compare ignoring ASCII case, as on macOS and Windows: two names that
+    /// differ only in case are refused on Linux too, which is accepted.
+    fn overlap(&self, outputs: &[String]) -> Option<(WorkerId, String, String)> {
         let live = |s: &&Slot| matches!(s.status, WorkerStatus::Queued | WorkerStatus::Running);
-        let held = self.slots.iter().enumerate().filter(|(_, s)| live(s));
-        held.flat_map(|(i, s)| {
+        let mut held = self.slots.iter().enumerate().filter(|(_, s)| live(s));
+        held.find_map(|(i, s)| {
             let mine = s.spec.outputs().unwrap_or_default();
-            let id = WorkerId(i as u32 + 1);
-            let taken = move |path: &String| mine.iter().any(|m| covers(m, path));
-            outputs
-                .iter()
-                .filter(move |p| taken(p))
-                .map(move |p| (id, p.clone()))
+            outputs.iter().find_map(|path| {
+                let met = mine.iter().find(|m| covers(m, path))?;
+                Some((WorkerId(i as u32 + 1), path.clone(), met.clone()))
+            })
         })
-        .next()
     }
 
     /// A worker waits in the queue, at the back for a new one and at the
@@ -1388,6 +1391,9 @@ impl Run {
         let RunState::Halted { worker, .. } = self.state else {
             return Err(NotHalted);
         };
+        // A retry or relaunch only runs while the run is halted, and a halted
+        // run takes no new worker (`check_open`), so nothing can have taken
+        // this worker's outputs meanwhile: overlap is not re-checked.
         let reresolve = match choice {
             UserChoice::Cancel => return Ok(self.cancel_run(now)),
             UserChoice::Retry => false,
@@ -1576,17 +1582,25 @@ fn shown(usage: Usage, partial: bool) -> Usage {
     }
 }
 
-/// Worker ids start at 1; id 0 maps to no slot.
-/// Whether one of two output paths is the other or a directory above it.
+/// Whether one of two output paths is the other or a directory above it,
+/// comparing components ignoring ASCII case.
 fn covers(a: &str, b: &str) -> bool {
     let parts = |p: &str| -> Vec<String> {
         let parts = p.split('/').filter(|c| !c.is_empty() && *c != ".");
         parts.map(str::to_owned).collect()
     };
     let (a, b) = (parts(a), parts(b));
-    a.starts_with(&b) || b.starts_with(&a)
+    let under = |long: &[String], short: &[String]| {
+        long.len() >= short.len()
+            && long
+                .iter()
+                .zip(short)
+                .all(|(x, y)| x.eq_ignore_ascii_case(y))
+    };
+    under(&a, &b) || under(&b, &a)
 }
 
+/// Worker ids start at 1; id 0 maps to no slot.
 fn index(id: WorkerId) -> usize {
     (id.0 as usize).wrapping_sub(1)
 }

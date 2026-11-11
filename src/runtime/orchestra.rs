@@ -1241,7 +1241,9 @@ impl RunManager {
                         Refusal::ReadOnly => READ_ONLY.to_owned(),
                         Refusal::WriteOff => WRITE_OFF.to_owned(),
                         Refusal::Brief(error) => error.text(),
-                        Refusal::Overlap { worker, path } => overlap_text(worker, &path),
+                        Refusal::Overlap { worker, path, held } => {
+                            overlap_text(worker, &path, &held)
+                        }
                         Refusal::WorkerCap(cap) => {
                             format!("worker limit reached: max_workers is {cap}")
                         }
@@ -2324,16 +2326,23 @@ fn nonce_bytes() -> Option<[u8; 8]> {
     Some(bytes)
 }
 
-/// A refusal's reason as the coordinator gets it: one line, sanitized, with
-/// any token redacted, paths masked and at most `ERROR_CAP` characters.
 /// The refusal of a `simple` brief whose outputs overlap a live worker's.
-fn overlap_text(worker: WorkerId, path: &str) -> String {
+fn overlap_text(worker: WorkerId, path: &str, held: &str) -> String {
+    let which = if path == held {
+        format!("{path} is already its output")
+    } else if path.len() > held.len() {
+        format!("{path} is under its output {held}")
+    } else {
+        format!("{path} holds its output {held}")
+    };
     format!(
-        "outputs overlap worker {}: {path} is already its output; wait for it or pick other files",
+        "outputs overlap worker {}: {which}; wait for it or pick other files",
         worker.0
     )
 }
 
+/// A refusal's reason as the coordinator gets it: one line, sanitized, with
+/// any token redacted, paths masked and at most `ERROR_CAP` characters.
 fn refusal_reason(reason: &str) -> String {
     let flat = clean(reason)
         .split_whitespace()
