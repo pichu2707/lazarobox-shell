@@ -396,6 +396,10 @@ struct Scoped {
     closed: std::sync::atomic::AtomicBool,
     /// The worker is a `simple` one: a file over the limit is listed (W9b).
     limited: bool,
+    /// The run cannot be reached: the limit cannot be counted.
+    gone: bool,
+    /// The rows the sibling writes during the review (0: `late`).
+    late: usize,
 }
 
 impl Scoped {
@@ -431,6 +435,8 @@ impl Scoped {
             held: Mutex::default(),
             closed: Default::default(),
             limited: false,
+            gone: false,
+            late: 0,
         })
     }
 
@@ -518,9 +524,15 @@ impl Orchestra for Scoped {
         self.held.lock().unwrap().push(self.own.count());
         let error = self.start_error;
         let sibling = self.sibling.lock().unwrap().clone();
+        let late = self.late;
         Box::pin(async move {
             if let Some((dispatch, path)) = sibling {
-                dispatch.call(write_call(path, "late")).await;
+                let text = if late == 0 {
+                    "late".to_owned()
+                } else {
+                    "let x = 1;\n".repeat(late)
+                };
+                dispatch.call(write_call(path, &text)).await;
             }
             error.map_or(Ok(changes), |why| Err(why.to_owned()))
         })
@@ -562,10 +574,10 @@ impl Orchestra for Scoped {
         _: RunId,
         _: WorkerId,
         counts: Vec<(String, Count)>,
-    ) -> Vec<(String, Count)> {
+    ) -> Option<Vec<(String, Count)>> {
         let each = counts.into_iter();
-        each.filter(|(_, count)| self.limited && count.over())
-            .collect()
+        let over = each.filter(|(_, count)| self.limited && count.over());
+        (!self.gone).then(|| over.collect())
     }
 
     fn split(&self, _: RunId, _: WorkerId, files: Vec<String>) {
@@ -2521,6 +2533,11 @@ async fn a_split_discards_the_staged_batch_and_says_how_many() {
     let (d, seen) = writer_rows(&host, &home, fake.clone(), user.clone());
     assert!(!d.call(write_call("src/a.rs", &rows(401))).await.is_error);
     assert!(!d.call(write_call("src/b.rs", "x")).await.is_error);
+    // A folder is no file: it is discarded too but never counted.
+    let dir = Call::CreateDir {
+        path: "src/sub".into(),
+    };
+    assert!(!d.call(dir).await.is_error);
     let out = d.call(Call::ProposeBatch).await;
     assert!(
         out.text.contains("split chosen: 2 staged files discarded"),
@@ -2567,4 +2584,75 @@ async fn a_limit_ask_nobody_answered_discards_nothing_and_asks_again() {
     let origin = home.join("dev/app");
     let staged = host.staged_changes(StageKey::Pane(PANE), &origin).await;
     assert_eq!(staged.map(|s| s.len()), Some(1));
+}
+
+// Review fix 2: a correction or a sibling stages into the author's batch while
+// its review runs, so the lines are counted again at the seal: a file that
+// crossed 400 there asks, naming only what was not asked about.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_file_that_crosses_the_limit_during_the_review_asks_before_the_seal() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    for dir in ["src", "tests"] {
+        std::fs::create_dir_all(home.join("dev/app").join(dir)).unwrap();
+    }
+    let mut fake = Scoped::over(&home, &["~/dev/app"]);
+    let only = Arc::get_mut(&mut fake).unwrap();
+    (only.limited, only.cheap, only.late) = (true, true, 401);
+    let user = ByAsk::limited(&fake, Decision::Sent, Decision::Sent, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    let other = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    *fake.sibling.lock().unwrap() = Some((other, "src/b.rs"));
+    assert!(!d.call(write_call("src/a.rs", &rows(300))).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(!out.is_error, "{out:?}");
+    let log = fake.log.lock().unwrap().clone();
+    let log: Vec<_> = log.iter().filter(|l| !l.starts_with("staged")).collect();
+    assert_eq!(log, ["review Mandatory", "limit", "batch"]);
+    let asks = user.asks.lock().unwrap().clone();
+    let ApprovalAsk::Limit { over, .. } = &asks[0] else {
+        panic!("{asks:?}");
+    };
+    let paths: Vec<_> = over.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, ["src/b.rs"]);
+}
+
+// Review fix 2: a file already asked about and kept is not asked about twice.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_file_kept_before_the_review_is_not_asked_about_again() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = limited(&home, true, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user);
+    assert!(!d.call(write_call("src/a.rs", &rows(401))).await.is_error);
+    assert!(!d.call(Call::ProposeBatch).await.is_error);
+    let log = fake.log.lock().unwrap().clone();
+    assert_eq!(log, ["limit", "review Mandatory", "batch"]);
+}
+
+// Review fix 3: a run that cannot be reached cannot count the lines, and the
+// batch is not proposed unasked: the call ends with a visible reason.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_batch_whose_lines_cannot_be_counted_is_not_proposed() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (mut fake, _) = limited(&home, false, Decision::Sent);
+    Arc::get_mut(&mut fake).unwrap().gone = true;
+    let user = ByAsk::limited(&fake, Decision::Sent, Decision::Sent, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user);
+    assert!(!d.call(write_call("src/a.rs", &rows(401))).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.is_error, "{out:?}");
+    assert!(
+        out.text
+            .contains("could not count the staged lines: nothing is proposed"),
+        "{out:?}"
+    );
+    assert!(fake.log.lock().unwrap().is_empty());
 }

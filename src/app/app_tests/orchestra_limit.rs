@@ -82,6 +82,24 @@ fn y_keeps_and_n_or_esc_split_to_the_workers_session() {
     assert_eq!(pending(&a), None);
 }
 
+// Review fix 5: whatever the approval mode of the chat, the ask is shown and
+// only the user's `y` keeps and `n` splits.
+#[test]
+fn y_and_n_answer_it_in_every_approval_mode() {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        let (mut a, turn) = live();
+        super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
+        announce(&mut a, turn, 1, limit(1, "simple x>y"));
+        assert!(pending(&a).is_some(), "{mode:?}: it opens a prompt");
+        let sent = vec![worker_decision(turn, 1, Decision::Sent)];
+        assert_eq!(a.update(key('y')), sent, "{mode:?}");
+        announce(&mut a, turn, 2, limit(1, "simple x>y"));
+        let declined = Decision::Denied("the user declined");
+        let split = vec![worker_decision(turn, 2, declined)];
+        assert_eq!(a.update(key('n')), split, "{mode:?}");
+    }
+}
+
 // An early key does not count: the prompt arms after its delay.
 #[test]
 fn a_key_typed_before_the_prompt_is_armed_answers_nothing() {

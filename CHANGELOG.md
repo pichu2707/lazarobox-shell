@@ -41,7 +41,9 @@ baseline.
   discarded`). The worker ends, and the coordinator is told to issue two new
   briefs; a split is not a clarification round. No approval mode and no
   timer answers it, and the worker's clock stops while it waits. Test
-  files have no cap; an unknown language counts every line and says so.
+  files have no cap; an unknown language counts every line and says so. After
+  a split `collect` marks the discarded files `discarded`; a batch whose lines
+  cannot be counted is not proposed.
 - `/exec` turns Exec on for one chat, on the same path as `/write`: type it
   in the composer and a dialog names Exec and the folder and says every
   command still asks. Only a lowercase `y` grants it; `n` and Esc say `Exec

@@ -2152,12 +2152,9 @@ impl Orchestra for Bound {
         run: RunId,
         worker: WorkerId,
         counts: Vec<(String, Count)>,
-    ) -> Vec<(String, Count)> {
-        let manager = self.manager.upgrade().filter(|_| run == self.run);
-        let listed = manager.and_then(|manager| {
-            manager.on_run(self.pane, run, |live| live.run.over_limit(worker, &counts))
-        });
-        listed.unwrap_or_default()
+    ) -> Option<Vec<(String, Count)>> {
+        let manager = self.manager.upgrade().filter(|_| run == self.run)?;
+        manager.on_run(self.pane, run, |live| live.run.over_limit(worker, &counts))
     }
 
     fn split(&self, run: RunId, worker: WorkerId, files: Vec<String>) {

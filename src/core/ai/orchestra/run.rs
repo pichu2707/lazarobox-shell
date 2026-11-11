@@ -684,6 +684,7 @@ impl Run {
             flat.chars().take(CLARIFY_MAX).collect::<String>()
         };
         slot.closing = Some(Closing::Split(files.iter().map(one_line).collect()));
+        slot.ledger.discard_pending();
         true
     }
 
@@ -1150,7 +1151,9 @@ impl Run {
         let commands = self.slot(id).and_then(|slot| slot.commands.render());
         let asked = self.slot(id).and_then(|slot| match slot.closing.as_ref() {
             Some(Closing::Clarify(what)) => Some(format!("needs specification: {what}")),
-            Some(Closing::Split(files)) => Some(format!("split chosen: {}", files.join(", "))),
+            Some(Closing::Split(files)) => {
+                Some(format!("split chosen: {} (discarded)", files.join(", ")))
+            }
             _ => None,
         });
         let called = asked.is_some();

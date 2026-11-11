@@ -825,15 +825,19 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             // sealed. A `simple` worker's file over the line limit asks first
             // (W9b), then a high-risk change is reviewed first, with the user's
             // consent (S7b); the batch review follows whatever it found.
-            (Call::ProposeBatch, _, _) => match limit::before_batch(&host, &scope).await {
-                limit::Limited::Go => {
+            (Call::ProposeBatch, _, _) => match limit::check(&host, &scope, &[]).await {
+                limit::Limited::Go(asked) => {
                     review::before_batch(&host, &scope).await;
-                    match files::seal(&host, &scope).await {
-                        Ok((batch, review)) => {
-                            ask = Some(ApprovalAsk::Batch(review));
-                            sealed = Some(batch);
-                        }
-                        Err(why) => checked = Err(why.into()),
+                    // What the review staged is counted again before the seal.
+                    match limit::check(&host, &scope, &asked).await {
+                        limit::Limited::Go(_) => match files::seal(&host, &scope).await {
+                            Ok((batch, review)) => {
+                                ask = Some(ApprovalAsk::Batch(review));
+                                sealed = Some(batch);
+                            }
+                            Err(why) => checked = Err(why.into()),
+                        },
+                        limit::Limited::Stop(why) => checked = Err(why.into()),
                     }
                 }
                 limit::Limited::Stop(why) => checked = Err(why.into()),

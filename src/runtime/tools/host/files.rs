@@ -641,6 +641,20 @@ pub(super) fn staged_counts(
     files.collect()
 }
 
+/// Drops the batch of `key` (a split, W9b). How many files it held: folders
+/// are dropped too but are no file to tell the user about.
+pub(super) fn discard_files(stages: &Mutex<Stages>, key: StageKey) -> usize {
+    let mut stages = lock(stages);
+    let held = stages.batch(key).map_or(0, |batch| {
+        let files = batch.entries().iter();
+        files
+            .filter(|s| matches!(s.entry, Entry::File { .. }))
+            .count()
+    });
+    stages.discard_key(key);
+    held
+}
+
 /// What a review may be shown of the batch of `key`: the files `allow` lets
 /// it read, and the other paths (and folders, which have no text) named only.
 /// Those are the files the review's read tools show it through the staged
