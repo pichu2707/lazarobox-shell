@@ -586,6 +586,17 @@ Files: `src/core/ai/orchestra/mod.rs` (`Toolset` 77-122), `src/runtime/orchestra
 
 ---
 
+## Slice W6c: grant keys (one small PR, on top of W6)
+
+Spec references: modal-input "A key opens the grant dialog [W6c]".
+
+- [x] 16.12 RED: `Ctrl+Space x` opens the Exec dialog and `Ctrl+Space f` the Write dialog; neither grants; `y` grants, `n` and Esc refuse; the draft stays in the composer. Done: `app_tests/grant_keys.rs`.
+- [x] 16.13 RED (refusals): each refusal of the command (tools off, toggle already on, no folder, list open, another approval pending) is the same visible line from the key; a non-chat pane shows a notice. Done: `grant_keys.rs`, reusing `grant_submit`'s path (`grant_open`) in `src/app/write.rs`.
+- [x] 16.14 Docs: prefix table entries `x` (Exec grant dialog) and `f` (Write grant dialog; `w` is the window group), README paragraphs, CHANGELOG `Unreleased`.
+- Depends on: W6 (PR #679).
+
+---
+
 ## Slice W7: mandatory review for cheap authors, review notices, internal reviewers (one PR)
 
 Spec references: agent-orchestrator "Mandatory review for a cheap author, optional for a strong one [W7]" (all six scenarios), "Receipt-driven review [S7b, W7]" ("A cheap author needs no consent", "Consent first", "Declined goes on unreviewed"), "No engine outside the menu runs" ("No silent escalation"), "Waiting on the user stops the worker clock" ("A model review does not time out its author"); chat-pane notices (same-model warning, local-reviewer limits, cloud-diff notice). Design: D6, D20, D21, D22, owner items 3 and 8.
