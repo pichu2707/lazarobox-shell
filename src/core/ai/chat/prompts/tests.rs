@@ -917,7 +917,7 @@ fn the_orchestrate_prompts_delegate_file_changes_by_default() {
             "Delegation is the default",
             "Any request that changes files is done by workers started with spawn_agent",
             "even when the user does not mention spawn_agent",
-            "never write code, a patch or a file's content in your reply",
+            "never write the change itself (its code, a patch or a file's new content) in your reply; quoting code to answer a question is fine",
             "You may answer questions, plan and summarise directly",
         ] {
             assert!(prompt.contains(rule), "{profile:?}: {rule}");

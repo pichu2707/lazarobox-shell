@@ -350,12 +350,12 @@ The built-in `orchestrate` prompt of each profile (`orchestrate.md` with `orches
 - THEN each `orchestrate` prompt is non-empty and at most 6 KiB, and every other one is non-empty and at most 4 KiB
 
 ### Requirement: Orchestrate prompts delegate file changes by default
-Both built-in `orchestrate` prompts MUST state that delegation is the default: any request that changes files is done by workers started with `spawn_agent`, even when the user does not mention `spawn_agent`, and the coordinator MUST NOT write code, a patch or a file's content in its reply. They MUST also state that the coordinator may answer questions, plan and summarise directly.
+Both built-in `orchestrate` prompts MUST state that delegation is the default: any request that changes files is done by workers started with `spawn_agent`, even when the user does not mention `spawn_agent`, and the coordinator MUST NOT write the change itself (its code, a patch or a file's new content) in its reply; quoting code to answer a question stays allowed. They MUST also state that the coordinator may answer questions, plan and summarise directly.
 
 #### Scenario: A request to change files is delegated [auto]
 - GIVEN the built-in `orchestrate` prompt of either profile
 - WHEN its text is read
-- THEN it says that delegation is the default, that a request that changes files is done with `spawn_agent` even if the user does not name it, that code, a patch or a file's content is never written in the reply, and that questions, plans and summaries may be answered directly
+- THEN it says that delegation is the default, that a request that changes files is done with `spawn_agent` even if the user does not name it, that the change itself (its code, a patch or a file's new content) is never written in the reply while quoting code to answer a question is fine, and that questions, plans and summaries may be answered directly
 
 ### Requirement: Worker prompts require tools and forbid fragments as a result [W2]
 The `code` worker prompt and the `simple` prompt MUST tell the worker to make its changes through the write tools and to end with `propose_batch`, and that a code fragment in its final text is not a result. The `code` prompt shared with chat turns MUST NOT change what a chat turn sees: the worker-specific instruction MUST be applied to worker turns only. A worker prompt MUST NOT contradict the tools block appended to it.
