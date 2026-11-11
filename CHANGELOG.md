@@ -12,6 +12,18 @@ baseline.
 
 ### Added
 
+- With ORCH on, a worker on a local engine (Ollama or llama.cpp with a model
+  that stays on the machine; an Ollama `*-cloud` model is not local) always
+  has its staged change reviewed before your batch review, at every risk
+  tier and with no consent ask, by the model of the Review row (the
+  effective assignment). The receipt says `consent: mandatory`. The author is
+  judged by the engine it was spawned with, not the menu now. If the Review
+  row's engine cannot run, its worker ends `refused`, the run stops with the
+  failure alert, and the batch reaches you `not reviewed` with the reason in
+  the receipt; no other engine is tried. The review still needs room for
+  three more workers under `max_workers` (two lenses and the refuter): with
+  less it does not start, says so, and the batch goes on unreviewed, so keep
+  `max_workers` high enough when authors are local.
 - A new `simple` task for direct, fully specified work. The Models tab gets a
   `simple` row (`[ai.tasks.simple]`) after `orchestrate`; unassigned it uses
   `general`, `Set all tasks` leaves it alone, and a local server engine on it
@@ -19,8 +31,22 @@ baseline.
   `simple` worker with `spawn_agent`: it gets the read, write and
   `run_command` tools under the menu's Write and Exec switches, its own
   prompt (override file `simple.md`), and on a read-only goal it starts
-  without the write tools instead of being refused. An older build ignores
+  with the read tools only (no write, no `run_command`) instead of being
+  refused. An older build ignores
   the new table.
+
+### Changed
+
+- The model review of a worker's own batch, consent included, no longer
+  counts against the worker's deadline (`worker_timeout_secs`); review
+  workers keep their own deadline. A review that stops before it concludes
+  now says why in its receipt and in the batch review line.
+
+### Fixed
+
+- A worker whose clock was stopped (waiting for you or for its review) was
+  ended `timed_out` when another worker of the run timed out, by the wall
+  time since it started. Each worker is now timed out by its own clock only.
 
 ## [1.17.0] - 2026-11-10
 

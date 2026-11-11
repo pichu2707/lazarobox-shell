@@ -25,7 +25,7 @@ use crate::{
         },
         tools::paths::SecretRoots,
     },
-    runtime::mcp::Outcome,
+    runtime::{mcp::Outcome, tools::pending::Waiting},
 };
 
 /// What the consent ask came back with.
@@ -36,6 +36,9 @@ pub enum Answered {
     Declined,
     /// Nobody answered: the ask was cancelled or expired, `reason` says how.
     Unanswered(String),
+    /// Nobody was asked: the author is cheap and its change is always
+    /// reviewed (D21).
+    Mandatory,
 }
 
 /// Why a path was not reviewed.
@@ -135,6 +138,22 @@ pub trait Orchestra: Send + Sync {
     /// A review worker could not read `path`, which is outside the run's
     /// scope: its review cannot count as clean.
     fn unread(&self, _run: RunId, _worker: WorkerId, _path: &str) {}
+
+    /// Whether `worker` of `run` is a cheap author (design D20), by the
+    /// engine and model it was spawned with, never the menu now: its staged
+    /// change is always reviewed, with no consent ask (D21). `false` (the
+    /// default) for an unknown run or worker.
+    fn cheap(&self, _run: RunId, _worker: WorkerId) -> bool {
+        false
+    }
+
+    /// Holds `worker`'s own count of asks that wait for the user (its route's,
+    /// D5) until the guard is dropped: its deadline does not run while the
+    /// consent and the model review of its batch last (D6). `None` (the
+    /// default) when the worker has no route here.
+    fn pause(&self, _run: RunId, _worker: WorkerId) -> Option<Waiting> {
+        None
+    }
 
     /// Whether `worker` is the correction of a review: it stages fixes but
     /// the worker whose change is under review proposes the batch.

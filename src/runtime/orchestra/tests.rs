@@ -103,6 +103,12 @@ enum Script {
     Many,
     /// Streams the text, then hangs like a process that never ends.
     SaysThenHangs(&'static str),
+    /// A local author: a server engine's turn writes `a.txt` through the
+    /// tools of its session, proposes the batch and answers `done`; a lens
+    /// turn answers `NONE` after `lens`; any other turn hangs.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    // only the Linux-only write tests use it
+    LocalAuthor { lens: Duration },
 }
 
 /// What the fake engine saw.
@@ -116,6 +122,8 @@ struct Seen {
     /// The pending count each turn's timers read (`pending::TURN`), in
     /// request order.
     timers: Mutex<Vec<Option<Pending>>>,
+    /// What a `LocalAuthor`'s `propose_batch` returned, in order.
+    proposed: Mutex<Vec<Outcome>>,
 }
 
 impl Seen {
@@ -288,6 +296,25 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                         let _ = tx.send(StreamEvent::Delta("0123456789".into())).await;
                     }
                     ("", StreamEvent::Done(Finish::Stop))
+                }
+                Script::LocalAuthor { lens } if is_lens(&request) => {
+                    tokio::time::sleep(lens).await;
+                    ("NONE", StreamEvent::Done(Finish::Stop))
+                }
+                Script::LocalAuthor { .. } => {
+                    let Ok(tools) = TEST_DISPATCH.try_with(Arc::clone) else {
+                        let _dropped = OnDrop(mine);
+                        return std::future::pending().await;
+                    };
+                    let write = crate::core::ai::tools::Call::WriteFile {
+                        path: "a.txt".into(),
+                        content: "one\n".into(),
+                    };
+                    let wrote = tools.call(write).await;
+                    assert!(!wrote.is_error, "{wrote:?}");
+                    let proposed = tools.call(crate::core::ai::tools::Call::ProposeBatch).await;
+                    mine.proposed.lock().unwrap().push(proposed);
+                    ("done", StreamEvent::Done(Finish::Stop))
                 }
                 Script::SaysThenHangs(text) => {
                     let _ = tx.send(StreamEvent::Delta(text.into())).await;
@@ -6183,6 +6210,7 @@ async fn a_degraded_code_worker_with_call_text_gives_the_coordinator_no_line() {
     assert!(!got.text.contains("lazarobox:"), "{got:?}");
 }
 
+mod cheap;
 mod claims;
 mod clock;
 #[cfg(target_os = "linux")]

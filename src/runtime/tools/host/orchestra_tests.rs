@@ -23,7 +23,7 @@ use crate::core::{
         orchestra::{
             RunId, Toolset, WorkerId,
             changes::{Change, ChangeLedger},
-            review::Assessment,
+            review::{self as risk, Assessment, Tier},
             run::{Roster, Run, UserChoice, WorkerEvent},
             scope::ReadScope,
             tools::{MAX_PROMPT_BYTES, OrchCall, WAIT_MAX_SECS},
@@ -383,6 +383,14 @@ struct Scoped {
     start_error: Option<&'static str>,
     /// Stages while the review runs, as a sibling worker would.
     sibling: Mutex<Option<(Arc<dyn Dispatch>, &'static str)>>,
+    /// The worker is a cheap author (D20).
+    cheap: bool,
+    /// The tier every assessment says, instead of the path rules.
+    tier: Option<Tier>,
+    /// The worker's own count of asks, which `pause` holds.
+    own: Pending,
+    /// That count as each review began.
+    held: Mutex<Vec<usize>>,
 }
 
 impl Scoped {
@@ -412,6 +420,10 @@ impl Scoped {
             corrector: false,
             start_error: None,
             sibling: Mutex::new(None),
+            cheap: false,
+            tier: None,
+            own: Pending::new(),
+            held: Mutex::default(),
         })
     }
 
@@ -464,6 +476,22 @@ impl Orchestra for Scoped {
         Some(RECEIPT.to_owned())
     }
 
+    fn assess(&self, _: RunId, changes: &[Change]) -> Assessment {
+        let mut assessment = risk::assess(changes, None);
+        if let Some(tier) = self.tier {
+            assessment.tier = tier;
+        }
+        assessment
+    }
+
+    fn cheap(&self, _: RunId, _: WorkerId) -> bool {
+        self.cheap
+    }
+
+    fn pause(&self, _: RunId, _: WorkerId) -> Option<crate::runtime::tools::pending::Waiting> {
+        Some(self.own.enter())
+    }
+
     fn review(
         &self,
         _: RunId,
@@ -476,6 +504,7 @@ impl Orchestra for Scoped {
             .lock()
             .unwrap()
             .push(format!("review {answered:?}"));
+        self.held.lock().unwrap().push(self.own.count());
         let error = self.start_error;
         let sibling = self.sibling.lock().unwrap().clone();
         Box::pin(async move {
@@ -1438,6 +1467,115 @@ async fn a_passive_change_goes_straight_to_the_batch_review() {
     assert!(!d.call(write_call("new.rs", "fn x() {}")).await.is_error);
     assert!(!d.call(Call::ProposeBatch).await.is_error);
     assert_eq!(*handle.log.lock().unwrap(), ["batch"]);
+}
+
+// Spec "Cheap author, no consent" and "A cheap author needs no consent"
+// (17.2, D21): a cheap author's staged change is reviewed whatever its tier,
+// `passive`, `medium` or `high`, with no consent ask, and the batch review
+// follows. The non-cheap GUARDs are the tests above: a `high` change asks
+// consent first, a declined one goes on unreviewed, a `passive` one runs no
+// review.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cheap_authors_change_is_reviewed_at_every_tier_with_no_consent_ask() {
+    for (tier, path) in [
+        (None, "new.rs"),
+        (Some(Tier::Medium), "new.rs"),
+        (None, "Cargo.lock"),
+    ] {
+        let (_dir, home, host) = fixture();
+        project(&home);
+        let mut fake = Scoped::over(&home, &["~/dev/app"]);
+        let only = Arc::get_mut(&mut fake).unwrap();
+        (only.cheap, only.tier) = (true, tier);
+        let user = ByAsk::new(&fake, Decision::Sent, Decision::Sent);
+        let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+        assert!(!d.call(write_call(path, "x")).await.is_error);
+        let out = d.call(Call::ProposeBatch).await;
+        assert!(!out.is_error, "{out:?}");
+        assert_eq!(
+            *fake.log.lock().unwrap(),
+            ["review Mandatory", "batch"],
+            "{path} {tier:?}"
+        );
+        let asks = user.asks.lock().unwrap().clone();
+        assert!(
+            !asks
+                .iter()
+                .any(|ask| matches!(ask, ApprovalAsk::Consent { .. })),
+            "{asks:?}"
+        );
+    }
+}
+
+// Spec "A model review does not time out its author" (17.4, D6): the host
+// holds the worker's own count through the run manager for the consent and
+// review span, a cheap author's and a strong author's `high` one alike, and
+// lets go when the review returns. A change that is not reviewed holds
+// nothing.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_review_span_holds_the_authors_own_clock_and_only_it() {
+    for (cheap, path, held) in [
+        (true, "new.rs", vec![1]),
+        (false, "Cargo.lock", vec![1]),
+        (false, "new.rs", vec![]),
+    ] {
+        let (_dir, home, host) = fixture();
+        project(&home);
+        let mut fake = Scoped::over(&home, &["~/dev/app"]);
+        Arc::get_mut(&mut fake).unwrap().cheap = cheap;
+        let user = ByAsk::new(&fake, Decision::Sent, Decision::Sent);
+        let d = writer(&host, Locality::Cloud, &home, fake.clone(), user);
+        assert!(!d.call(write_call(path, "x")).await.is_error);
+        assert!(!d.call(Call::ProposeBatch).await.is_error);
+        assert_eq!(*fake.held.lock().unwrap(), held, "{path} cheap={cheap}");
+        assert_eq!(fake.own.count(), 0, "let go after the review");
+    }
+}
+
+// Spec "A cheap author needs no consent", bypass path (17.3, PR11): a cheap
+// author whose batch the user denied and that proposes again is reviewed
+// again, mandatory, before the second batch review.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cheap_author_proposing_again_after_a_denial_is_reviewed_again() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let mut fake = Scoped::over(&home, &["~/dev/app"]);
+    Arc::get_mut(&mut fake).unwrap().cheap = true;
+    let user = ByAsk::new(&fake, Decision::Sent, DECLINED);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user);
+    assert!(!d.call(write_call("new.rs", "one")).await.is_error);
+    assert!(d.call(Call::ProposeBatch).await.is_error, "denied");
+    assert!(!d.call(write_call("new.rs", "two")).await.is_error);
+    assert!(d.call(Call::ProposeBatch).await.is_error, "denied again");
+    assert_eq!(
+        *fake.log.lock().unwrap(),
+        ["review Mandatory", "batch", "review Mandatory", "batch"]
+    );
+}
+
+// Spec "One correction at most" with a cheap author (17.3, D7 mapping): the
+// correction worker of a cheap author's review is not a new author. It
+// cannot propose, so its restage starts no second review and asks nothing.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cheap_authors_correction_is_not_a_new_author() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let mut fake = Scoped::over(&home, &["~/dev/app"]);
+    let only = Arc::get_mut(&mut fake).unwrap();
+    (only.cheap, only.corrector) = (true, true);
+    let user = ByAsk::new(&fake, Decision::Sent, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user);
+    assert!(!d.call(write_call("new.rs", "fixed")).await.is_error);
+    assert!(d.call(Call::ProposeBatch).await.is_error);
+    assert!(fake.log.lock().unwrap().is_empty());
 }
 
 // Spec (One correction at most): the correction worker stages its fixes in
