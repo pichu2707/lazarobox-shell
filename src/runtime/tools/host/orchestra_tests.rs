@@ -391,6 +391,8 @@ struct Scoped {
     own: Pending,
     /// That count as each review began.
     held: Mutex<Vec<usize>>,
+    /// The worker called `needs_specification` (W8c).
+    closed: std::sync::atomic::AtomicBool,
 }
 
 impl Scoped {
@@ -424,6 +426,7 @@ impl Scoped {
             tier: None,
             own: Pending::new(),
             held: Mutex::default(),
+            closed: Default::default(),
         })
     }
 
@@ -446,6 +449,10 @@ const RECEIPT: &str = "review: high · consent granted · clean";
 impl Orchestra for Scoped {
     fn call(&self, _: OrchCall) -> BoxFuture<'static, Outcome> {
         std::future::pending().boxed()
+    }
+
+    fn clarifying(&self, _: RunId, _: WorkerId) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn allows(
@@ -2329,4 +2336,49 @@ async fn a_worker_that_asked_writes_and_runs_nothing_more() {
     assert!(again.is_error, "{again:?}");
     assert!(approver.asked.lock().unwrap().is_empty());
     let _ = events(&mut rx);
+}
+
+/// An approver whose ask first records the worker's `needs_specification`
+/// (a parallel call of the same turn), then approves.
+struct Closes(Arc<Scoped>);
+
+impl Approver for Closes {
+    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
+        self.0
+            .closed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        async { Decision::Sent.into() }.boxed()
+    }
+}
+
+// W8c review fix: a call that passed the pre-flight and waited for the user
+// is judged again after the answer. A batch approved after the worker asked
+// for a clearer brief is not applied: it is denied and discarded, visibly.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_batch_approved_after_the_worker_asked_is_not_applied() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let handle = Scoped::over(&home, &["~/dev/app"]);
+    let d = writer(
+        &host,
+        Locality::Cloud,
+        &home,
+        handle.clone(),
+        Arc::new(Closes(handle.clone())),
+    );
+    assert!(!d.call(write_call("new.rs", "fn x() {}")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(
+        out.is_error && out.text.starts_with("denied") && out.text.contains("clearer brief"),
+        "{out:?}"
+    );
+    assert!(!home.join("dev/app/new.rs").exists());
+    // A write after the closing is refused too.
+    let late = d.call(write_call("later.rs", "fn y() {}")).await;
+    assert!(
+        late.is_error && late.text.contains("clearer brief"),
+        "{late:?}"
+    );
 }
