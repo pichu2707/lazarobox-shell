@@ -8,9 +8,9 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │ Clarity                                           declared │
 │ GA4                                           not declared │
 │ Search Console                                not declared │
-│                                                            │
-│                                                            │
-│                                                            │
+│ Workspace                                                  │
+│ Google (Gmail, Docs, Sheets)                  not declared │
+│ Apps Script                                   not declared │
 │                                                            │
 │                                                            │
 │                                                            │
