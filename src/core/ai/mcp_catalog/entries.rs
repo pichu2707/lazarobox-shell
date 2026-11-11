@@ -1,9 +1,18 @@
 //! The entries, in the order of C8. Binary names marked U in the design stay
 //! unverified until a manual install pins them.
 
-use super::{Class, Entry, Group, Login, Var};
+use super::{Class, Entry, Group, Link, Login, Var, Way};
 
-pub(super) static ENTRIES: &[Entry] = &[CLARITY, GA4, GSC];
+pub(super) static ENTRIES: &[Entry] = &[CLARITY, GA4, GSC, GOOGLE, APPS_SCRIPT];
+
+/// `GSC_SKIP_OAUTH = "true"`: no browser flow, ever (the server would start one
+/// inside an MCP call).
+const SKIP: Var = Var {
+    name: "GSC_SKIP_OAUTH",
+    shown: true,
+    preset: Some("true"),
+    ..Var::SECRET
+};
 
 const CLARITY: Entry = Entry {
     id: "clarity",
@@ -16,10 +25,13 @@ const CLARITY: Entry = Entry {
     args: &[],
     env: &[Var {
         name: "CLARITY_API_TOKEN",
-        secret: true,
-        preset: None,
+        ..Var::SECRET
     }],
+    ways: &[],
     login: None,
+    link: Link::None,
+    hidden: &[],
+    gmail_allowlist: false,
     guide: &[
         "1. In the Clarity project settings, open Data Export.",
         "2. Generate a new API token with project admin rights and copy it.",
@@ -46,9 +58,13 @@ const GA4: Entry = Entry {
     args: &[],
     env: &[Var {
         name: "GOOGLE_CLOUD_PROJECT",
-        secret: true,
-        preset: None,
+        shown: true,
+        ..Var::SECRET
     }],
+    ways: &[],
+    link: Link::Login,
+    hidden: &[],
+    gmail_allowlist: false,
     login: Some(Login {
         line: "gcloud auth application-default login --scopes https://www.googleapis.com/auth/analytics.readonly,https://www.googleapis.com/auth/cloud-platform --client-id-file=~/.config/lazarobox/google-oauth-client.json",
     }),
@@ -75,9 +91,6 @@ const GA4: Entry = Entry {
         ("run_realtime_report", Class::Read),
         ("list_key_events", Class::Read),
         ("run_conversions_report", Class::Read),
-        ("create_property_annotation", Class::Write),
-        ("create_custom_dimension", Class::Write),
-        ("create_key_event", Class::Write),
     ],
 };
 
@@ -87,28 +100,40 @@ const GSC: Entry = Entry {
     group: Group::Analytics,
     project: "AminForou/mcp-gsc",
     license: "MIT",
-    install: "uv tool install mcp-search-console",
+    install: "uv tool install mcp-search-console==0.4.2",
     command: "mcp-search-console",
     args: &[],
     env: &[
         Var {
             name: "GSC_CREDENTIALS_PATH",
-            secret: true,
-            preset: None,
+            shown: true,
+            ..Var::SECRET
         },
-        Var {
-            name: "GSC_SKIP_OAUTH",
-            secret: true,
-            preset: Some("true"),
-        },
+        SKIP,
     ],
+    ways: &[Way {
+        title: "Service account",
+        vars: &[
+            Var {
+                name: "GSC_CREDENTIALS_PATH",
+                shown: true,
+                ..Var::SECRET
+            },
+            SKIP,
+        ],
+        login: None,
+    }],
     login: None,
+    link: Link::None,
+    hidden: &["reauthenticate"],
+    gmail_allowlist: false,
     guide: &[
+        "Declare the server with name = \"gsc\": the hidden reauthenticate tool applies to that name only.",
         "1. In your own Google Cloud project, enable the Google Search Console API and create a service account.",
         "2. Create a JSON key for it and save it as ~/.config/lazarobox/gsc-service-account.json with mode 0600 (lazarobox refuses to read it).",
         "3. In Search Console, open Settings, Users and permissions, and add the service account e-mail as a user of the property (Restricted is enough for search analytics; if URL inspection is denied, use Full).",
         "4. Put the path of the JSON file in secrets.toml under [gsc] as GSC_CREDENTIALS_PATH; GSC_SKIP_OAUTH is already \"true\". There is no login step.",
-        "Warning: the reauthenticate tool is useless with a service account (it deletes the token and starts a browser OAuth flow); answer n if a model asks for it.",
+        "Warning: the reauthenticate tool is useless with a service account (it deletes the token and starts a browser OAuth flow); lazarobox does not offer it to the model.",
     ],
     links: &[
         "https://console.cloud.google.com/iam-admin/serviceaccounts",
@@ -138,5 +163,151 @@ const GSC: Entry = Entry {
         ("add_site", Class::Write),
         ("delete_site", Class::Write),
         ("reauthenticate", Class::Write),
+    ],
+};
+
+const GOOGLE: Entry = Entry {
+    id: "google",
+    title: "Google (Gmail, Docs, Sheets)",
+    group: Group::Workspace,
+    project: "taylorwilsdon/google_workspace_mcp",
+    license: "MIT",
+    install: "uv tool install workspace-mcp==2.4.1",
+    command: "workspace-mcp",
+    args: &[
+        "--single-user",
+        "--permissions",
+        "gmail:readonly+drafts",
+        "docs:full",
+        "sheets:full",
+        "--disabled-tools",
+        "send_gmail_message",
+    ],
+    env: &[
+        Var {
+            name: "GOOGLE_OAUTH_CLIENT_ID",
+            shown: true,
+            ..Var::SECRET
+        },
+        Var {
+            name: "GOOGLE_OAUTH_CLIENT_SECRET",
+            ..Var::SECRET
+        },
+        Var {
+            name: "USER_GOOGLE_EMAIL",
+            shown: true,
+            ..Var::SECRET
+        },
+        Var {
+            name: "WORKSPACE_MCP_DISABLE_LOCAL_FILES",
+            shown: true,
+            preset: Some("true"),
+            ..Var::SECRET
+        },
+    ],
+    ways: &[],
+    login: None,
+    link: Link::GoogleAuth,
+    hidden: &["start_google_auth"],
+    gmail_allowlist: true,
+    guide: &[
+        "Declare the server with name = \"google\": the Gmail allowlist and the hidden tools are keyed by that name, and under another name every Gmail tool is registered.",
+        "1. In your own Google Cloud project, enable the Gmail, Docs, Sheets and Drive APIs and create an OAuth client of type Desktop app.",
+        "2. Put its id, its secret and your Google e-mail in secrets.toml under [google].",
+        "3. Use Link with Google: the browser opens once and the server keeps the token.",
+        "Warning: a client left in \"Testing\" gets refresh tokens that expire after 7 days. Publish the consent screen to avoid linking every week.",
+        "Replies are created as Gmail drafts; you send them from Gmail. lazarobox never registers a send tool.",
+        "The server holds a gmail.compose token that could send at the API level: this is the accepted residual risk.",
+        "workspace-mcp keeps its tokens as plaintext JSON in ~/.google_workspace_mcp/credentials (lazarobox refuses to read that folder).",
+        "The Docs and Sheets permissions include drive.readonly, so the server can read your whole Drive.",
+        "get_gmail_attachment_content saves attachments to local disk (~/.workspace-mcp/attachments) outside lazarobox's write checks: every call asks y.",
+        "WORKSPACE_MCP_DISABLE_LOCAL_FILES is \"true\": draft_gmail_message cannot attach local files by path (checked on 2.4.1; the other tools keep working). Set it to \"false\" to allow it.",
+    ],
+    links: &[
+        "https://console.cloud.google.com/apis/credentials",
+        "https://github.com/taylorwilsdon/google_workspace_mcp",
+    ],
+    token_location: "~/.google_workspace_mcp/credentials (plaintext JSON)",
+    tools: &[
+        ("start_google_auth", Class::Write),
+        ("search_gmail_messages", Class::Read),
+        ("get_gmail_message_content", Class::Read),
+        ("get_gmail_messages_content_batch", Class::Read),
+        ("get_gmail_thread_content", Class::Read),
+        ("get_gmail_threads_content_batch", Class::Read),
+        ("list_gmail_labels", Class::Read),
+        ("get_gmail_attachment_content", Class::Write),
+        ("draft_gmail_message", Class::Write),
+        ("search_docs", Class::Read),
+        ("get_doc_content", Class::Read),
+        ("list_docs_in_folder", Class::Read),
+        ("inspect_doc_structure", Class::Read),
+        ("debug_table_structure", Class::Read),
+        ("get_doc_as_markdown", Class::Read),
+        ("list_document_comments", Class::Read),
+        ("create_doc", Class::Write),
+        ("modify_doc_text", Class::Write),
+        ("find_and_replace_doc", Class::Write),
+        ("insert_doc_elements", Class::Write),
+        ("insert_doc_image", Class::Write),
+        ("update_doc_headers_footers", Class::Write),
+        ("batch_update_doc", Class::Write),
+        ("create_table_with_data", Class::Write),
+        ("export_doc_to_pdf", Class::Write),
+        ("update_paragraph_style", Class::Write),
+        ("manage_doc_tab", Class::Write),
+        ("list_spreadsheets", Class::Read),
+        ("get_spreadsheet_info", Class::Read),
+        ("read_sheet_values", Class::Read),
+        ("list_sheet_tables", Class::Read),
+        ("list_spreadsheet_comments", Class::Read),
+        ("modify_sheet_values", Class::Write),
+        ("format_sheet_range", Class::Write),
+        ("manage_conditional_formatting", Class::Write),
+        ("create_spreadsheet", Class::Write),
+        ("create_sheet", Class::Write),
+        ("append_table_rows", Class::Write),
+        ("manage_sheet_tab", Class::Write),
+        ("resize_sheet_dimensions", Class::Write),
+        ("move_sheet_rows", Class::Write),
+        ("manage_named_range", Class::Write),
+    ],
+};
+
+const APPS_SCRIPT: Entry = Entry {
+    id: "apps-script",
+    title: "Apps Script",
+    group: Group::Workspace,
+    project: "google/clasp",
+    license: "Apache-2.0",
+    install: "npm i -g @google/clasp@3.4.1",
+    command: "clasp",
+    args: &["mcp"],
+    env: &[],
+    ways: &[],
+    login: Some(Login {
+        line: "clasp login",
+    }),
+    link: Link::Login,
+    hidden: &[],
+    gmail_allowlist: false,
+    guide: &[
+        "1. Switch on the Apps Script API for your account at https://script.google.com/home/usersettings.",
+        "2. Use Log in: clasp opens the browser with its own OAuth client and keeps the token in ~/.clasprc.json (lazarobox refuses to read it).",
+        "Version 3.4.0 or later is required (it fixed the project-directory path validation).",
+        "push_files uploads code from a directory on disk, and pushed code runs with the script's scopes.",
+        "pull_files and clone_project write local files and may overwrite them.",
+    ],
+    links: &[
+        "https://script.google.com/home/usersettings",
+        "https://github.com/google/clasp",
+    ],
+    token_location: "~/.clasprc.json",
+    tools: &[
+        ("list_projects", Class::Read),
+        ("push_files", Class::Write),
+        ("create_project", Class::Write),
+        ("pull_files", Class::Write),
+        ("clone_project", Class::Write),
     ],
 };

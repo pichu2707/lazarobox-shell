@@ -129,7 +129,10 @@ fn the_list_groups_the_entries_and_marks_them_not_declared() {
             "Analytics",
             "Clarity: not declared",
             "GA4: not declared",
-            "Search Console: not declared"
+            "Search Console: not declared",
+            "Workspace",
+            "Google (Gmail, Docs, Sheets): not declared",
+            "Apps Script: not declared"
         ]
     );
 }
@@ -142,7 +145,10 @@ fn a_disabled_entry_says_so_and_an_enabled_one_is_declared() {
         [
             "Clarity: disabled",
             "GA4: declared",
-            "Search Console: not declared"
+            "Search Console: not declared",
+            "Workspace",
+            "Google (Gmail, Docs, Sheets): not declared",
+            "Apps Script: not declared"
         ]
     );
 }
@@ -162,6 +168,41 @@ fn a_declared_entry_without_its_secret_says_which_values_are_missing() {
             "GA4: values missing: GOOGLE_CLOUD_PROJECT"
         ]
     );
+}
+
+// Spec (mcp-connect, Entry list): ways; an S5 table completes the service
+// account way.
+#[test]
+fn gsc_is_declared_with_only_its_key_path() {
+    const GSC: &str = "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"x\"\n";
+    let state = |secrets: &str| {
+        let mut m = area(Vec::new());
+        m.presence_reply(presence(GSC, secrets));
+        texts(&m)
+            .into_iter()
+            .find(|t| t.starts_with("Search Console"))
+            .unwrap()
+    };
+    assert_eq!(
+        state(""),
+        "Search Console: values missing: GSC_CREDENTIALS_PATH"
+    );
+    let s5 = "[gsc]\nGSC_CREDENTIALS_PATH = \"/p.json\"\nGSC_SKIP_OAUTH = \"true\"\n";
+    assert_eq!(state(s5), "Search Console: declared");
+    assert_eq!(
+        state("[gsc]\nGSC_CREDENTIALS_PATH = \"/p.json\"\n"),
+        "Search Console: declared"
+    );
+    let google = presence(
+        "[[ai.mcp.servers]]\nname = \"google\"\ncommand = \"x\"\n",
+        "[google]\nUSER_GOOGLE_EMAIL = \"a@b.c\"\nWORKSPACE_MCP_DISABLE_LOCAL_FILES = \"true\"\n",
+    );
+    let mut m = area(Vec::new());
+    m.presence_reply(google);
+    assert!(texts(&m).contains(
+        &"Google (Gmail, Docs, Sheets): values missing: GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET"
+            .to_owned()
+    ));
 }
 
 // Spec: an empty value is a missing one, and no value is ever drawn.
@@ -217,7 +258,13 @@ fn j_and_k_move_the_cursor_and_enter_opens_an_entry() {
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), Some("Search Console"));
     press(&mut m, 'j');
+    assert_eq!(selected_label(&m), Some("Google (Gmail, Docs, Sheets)"));
+    press(&mut m, 'j');
+    assert_eq!(selected_label(&m), Some("Apps Script"));
+    press(&mut m, 'j');
     assert_eq!(selected_label(&m), Some("Clarity"), "wraps");
+    press(&mut m, 'k');
+    press(&mut m, 'k');
     press(&mut m, 'k');
     press(&mut m, 'k');
     send(&mut m, key(KeyCode::Enter));

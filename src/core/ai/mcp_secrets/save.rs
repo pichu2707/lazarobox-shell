@@ -23,6 +23,7 @@ pub enum Refusal {
     FileSymlink,
     NotRegular,
     FileOwner,
+    HardLinked,
     FileMode(PathBuf),
     ReadOnly(PathBuf),
     TooLarge,
@@ -67,6 +68,7 @@ impl Refusal {
             Self::FileSymlink => "secrets.toml is a symlink; edit it by hand".to_owned(),
             Self::NotRegular => super::NOT_REGULAR.to_owned(),
             Self::FileOwner => "secrets.toml is not owned by you; edit it by hand".to_owned(),
+            Self::HardLinked => "secrets.toml has other hard links; edit it by hand".to_owned(),
             Self::FileMode(path) => super::mode_problem(path),
             Self::ReadOnly(path) => format!(
                 "secrets.toml is read-only (mode 0400); chmod 600 {} to save from the menu",

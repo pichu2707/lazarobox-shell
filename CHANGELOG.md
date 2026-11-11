@@ -10,8 +10,18 @@ baseline.
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-11-11
+
 ### Added
 
+- The `Connectors` area lists a `Workspace` group: `google` (Gmail, Docs and
+  Sheets through workspace-mcp 2.4.1) and `apps-script` (clasp 3.4.1). For
+  `google`, lazarobox registers only 8 Gmail tools (search, read, attachment,
+  draft and labels) and never `send_gmail_message` nor `start_google_auth`, so
+  replies are drafts you send from Gmail. Search Console (`gsc`) is pinned to
+  mcp-search-console 0.4.2 and `reauthenticate` is no longer offered to the
+  model; GA4 pins only its 10 read tools. Linking from
+  the menu comes in a later release.
 - Windows Terminal under WSL has a test record (`docs/terminals/windows-terminal/`)
   and counts as a recorded terminal. `Alt+Enter` is taken by Windows Terminal
   for fullscreen: use `Ctrl+J` for a newline in the chat, or unbind the key.
@@ -2719,7 +2729,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.19.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.20.0...HEAD
+[1.20.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.17.0...v1.18.0
 [1.17.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.16.0...v1.17.0

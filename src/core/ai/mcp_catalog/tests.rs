@@ -41,7 +41,11 @@ fn bare() -> Entry {
         command: "x",
         args: &[],
         env: &[],
+        ways: &[],
         login: None,
+        link: Link::None,
+        hidden: &[],
+        gmail_allowlist: false,
         guide: &["g"],
         links: &[],
         token_location: "t",
@@ -52,10 +56,20 @@ fn bare() -> Entry {
 // 2.1 integrity
 
 #[test]
-fn the_catalog_lists_clarity_ga4_then_gsc_in_analytics() {
+fn the_catalog_lists_the_analytics_then_the_workspace_entries() {
     let ids: Vec<_> = entries().iter().map(|e| e.id).collect();
-    assert_eq!(ids, ["clarity", "ga4", "gsc"]);
-    assert!(entries().iter().all(|e| e.group == Group::Analytics));
+    assert_eq!(ids, ["clarity", "ga4", "gsc", "google", "apps-script"]);
+    let groups: Vec<_> = entries().iter().map(|e| e.group).collect();
+    assert_eq!(
+        groups,
+        [
+            Group::Analytics,
+            Group::Analytics,
+            Group::Analytics,
+            Group::Workspace,
+            Group::Workspace
+        ]
+    );
 }
 
 #[test]
@@ -206,7 +220,7 @@ fn ga4_logs_in_with_the_user_own_client_file() {
 }
 
 #[test]
-fn ga4_classes_split_reads_from_the_annotation_write() {
+fn ga4_classes_are_read_and_an_unpinned_write_tool_is_write() {
     for tool in ["run_report", "run_funnel_report", "run_realtime_report"] {
         assert_eq!(class("ga4", tool), Class::Read, "{tool}");
     }
@@ -228,15 +242,11 @@ fn the_ga4_guide_warns_about_testing_clients() {
 #[test]
 fn gsc_uses_a_service_account_and_never_names_the_destructive_flag() {
     let e = entry("gsc").unwrap();
-    assert_eq!(e.install, "uv tool install mcp-search-console");
+    assert_eq!(e.install, "uv tool install mcp-search-console==0.4.2");
     assert_eq!(e.command, "mcp-search-console");
     assert!(e.login.is_none());
     let server = parse_snippet(e);
     assert_eq!(server.env, ["GSC_CREDENTIALS_PATH", "GSC_SKIP_OAUTH"]);
-    assert_eq!(
-        secrets_template(e).unwrap(),
-        "[gsc]\nGSC_CREDENTIALS_PATH = \"\"\nGSC_SKIP_OAUTH = \"true\"\n"
-    );
     let all = format!("{}{:?}", snippet(e), e);
     assert!(!all.contains("GSC_ALLOW_DESTRUCTIVE"), "{all}");
 }
@@ -251,6 +261,7 @@ fn the_gsc_guide_walks_through_the_service_account() {
         "0600",
         "gsc-service-account.json",
         "user of the property",
+        "name = \"gsc\"",
     ] {
         assert!(guide.contains(word), "{word}: {guide}");
     }
@@ -295,13 +306,12 @@ fn a_preset_fills_the_template() {
         env: &[
             Var {
                 name: "A_PATH",
-                secret: true,
-                preset: None,
+                ..Var::SECRET
             },
             Var {
                 name: "A_SKIP",
-                secret: true,
                 preset: Some("true"),
+                ..Var::SECRET
             },
         ],
         ..bare()
@@ -373,15 +383,23 @@ fn report_joins_the_checks_and_a_plain_server_has_no_catalog_line() {
 }
 
 #[test]
-fn ga4_knows_all_thirteen_upstream_tools() {
+fn ga4_pins_only_its_ten_read_tools() {
     let e = entry("ga4").unwrap();
-    assert_eq!(e.tools.len(), 13);
-    for tool in ["list_key_events", "run_conversions_report"] {
-        assert_eq!(class("ga4", tool), Class::Read, "{tool}");
-    }
-    for tool in ["create_custom_dimension", "create_key_event"] {
-        assert_eq!(class("ga4", tool), Class::Write, "{tool}");
+    assert_eq!(e.tools.len(), 10);
+    assert!(e.tools.iter().all(|(_, c)| *c == Class::Read));
+    for tool in [
+        "list_key_events",
+        "run_conversions_report",
+        "list_google_ads_links",
+    ] {
         assert!(e.tools.iter().any(|(n, _)| *n == tool), "{tool}");
+    }
+    for tool in [
+        "create_property_annotation",
+        "create_custom_dimension",
+        "create_key_event",
+    ] {
+        assert!(!e.tools.iter().any(|(n, _)| *n == tool), "{tool}");
     }
 }
 
