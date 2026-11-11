@@ -1229,6 +1229,7 @@ Tres herramientas de **solo lectura** dejan que el modelo lea los issues y las p
 - Termina, con una línea del sistema (`Exec is off because ...`), al cambiar o restaurar la carpeta del chat, al apagar las herramientas, al cambiar el interruptor guardado de Exec desde el menú y al reanudar una conversación.
 - Solo tú puedes abrirlo: ni el modelo, ni un _worker_, ni un resultado de herramienta, ni un mensaje que contenga `/exec` pueden abrir o responder el diálogo.
 - Se niega con una línea y sin diálogo (`/exec refused: ...`) por las mismas razones que `/write` (con Exec ya activo: `Exec is already on`). `/exec` con texto detrás avisa con `/exec takes no arguments` y deja el texto en el compositor; para enviar un mensaje que empiece por `/exec`, escribe `//exec`.
+- **Con una tecla**: `Ctrl+Space`, luego `x`, abre el mismo diálogo que `/exec` (y `f` el de `/write`; `w` ya es el grupo de ventanas). La tecla nunca concede: solo tu `y` en el diálogo. Se niega con las mismas líneas que el comando, deja intacto el borrador del compositor y, fuera de un chat, avisa de que Exec (o Write) es para paneles de chat.
 
 #### Borrador de issue: `gh_issue_draft`
 

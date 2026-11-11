@@ -70,7 +70,7 @@ fn fresh() -> App {
 }
 
 /// A conversation that sent a message and whose store answered `Created(7)`.
-fn stored() -> App {
+pub(super) fn stored() -> App {
     let mut a = fresh();
     ask(&mut a, "hello");
     a.update(created(chat_id(), 7));

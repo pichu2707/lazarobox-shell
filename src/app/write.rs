@@ -179,6 +179,37 @@ impl App {
     /// the chat folder. Nothing is sent, nothing is stored. A refusal says
     /// why.
     fn grant_submit(&mut self, id: PaneId, toggle: ToolToggle) -> Vec<Effect> {
+        self.grant_open(id, toggle, true)
+    }
+
+    /// The key of `toggle` (`Ctrl+Space x` or `f`): the same dialog and the
+    /// same refusals as the command, with the composer draft kept. Outside a
+    /// chat it says so. It never grants: only `y` in the dialog does.
+    pub(super) fn grant_key(&mut self, toggle: ToolToggle) -> Vec<Effect> {
+        if !self.focused_is_chat() {
+            self.notice = Some(format!(
+                "{} is for chat panes; open one with Ctrl+Space c",
+                name(toggle)
+            ));
+            return Vec::new();
+        }
+        let id = self.tab().focus;
+        // A view that replaces the conversation would hide the dialog and
+        // swallow its `y`: say so and arm nothing.
+        if self.list_open(id)
+            || self.cost_open(id)
+            || self.memory_view_open(id)
+            || self.tag_editor_open(id)
+        {
+            self.notice = Some(format!("{} works in the conversation view", name(toggle)));
+            return Vec::new();
+        }
+        self.grant_open(id, toggle, false)
+    }
+
+    /// Opens the dialog of `toggle` in chat `id`; `clear` empties the composer
+    /// (the command was typed there).
+    fn grant_open(&mut self, id: PaneId, toggle: ToolToggle, clear: bool) -> Vec<Effect> {
         let blocker = self.grant_blocker(id, toggle);
         let list = self.list_open(id);
         let armed = (self.clock)();
@@ -192,7 +223,9 @@ impl App {
             self.notice = Some(run::ANSWER_FIRST.to_owned());
             return Vec::new();
         }
-        chat.composer_mut().clear();
+        if clear {
+            chat.composer_mut().clear();
+        }
         let folder = chat.origin_cwd().map(Path::to_path_buf);
         let why = blocker
             .or_else(|| list.then(|| R_LIST_OPEN.to_owned()))

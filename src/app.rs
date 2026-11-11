@@ -2778,6 +2778,8 @@ impl App {
                 | PrefixAction::DiscardRun
                 | PrefixAction::RunInPane
                 | PrefixAction::ToggleApproval
+                | PrefixAction::OpenExecGrant
+                | PrefixAction::OpenWriteGrant
                 | PrefixAction::EditTags,
             ) => InputMode::Terminal,
             Step::Run(
@@ -2812,6 +2814,8 @@ impl App {
                 | PrefixAction::Summarize
                 | PrefixAction::ToggleMemory
                 | PrefixAction::RunInPane
+                | PrefixAction::OpenExecGrant
+                | PrefixAction::OpenWriteGrant
                 | PrefixAction::ToggleApproval,
             ) if self.refuse_over_folder() => Vec::new(),
             // They would replace the transcript of a worker.
@@ -2821,6 +2825,8 @@ impl App {
                 | PrefixAction::Summarize
                 | PrefixAction::RunInPane
                 | PrefixAction::ToggleMemory
+                | PrefixAction::OpenExecGrant
+                | PrefixAction::OpenWriteGrant
                 | PrefixAction::ToggleApproval,
             ) if self.refuse_over_run_view() => Vec::new(),
             // They would replace the conversation and hide a waiting confirm.
@@ -2863,6 +2869,12 @@ impl App {
             Step::Run(PrefixAction::DiscardRun) => self.discard_run(),
             Step::Run(PrefixAction::RunInPane) => self.run_in_pane(),
             Step::Run(PrefixAction::ToggleApproval) => self.toggle_approval(),
+            Step::Run(PrefixAction::OpenExecGrant) => {
+                self.grant_key(crate::core::ai::config::ToolToggle::Exec)
+            }
+            Step::Run(PrefixAction::OpenWriteGrant) => {
+                self.grant_key(crate::core::ai::config::ToolToggle::Write)
+            }
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
@@ -9090,6 +9102,8 @@ mod app_tests {
     mod github_grant;
     /// The hint that suggests `/github`.
     mod github_hint;
+    /// The keys that open the `/exec` and `/write` dialogs.
+    mod grant_keys;
     mod issue_draft;
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;
