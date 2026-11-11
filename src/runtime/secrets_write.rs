@@ -52,6 +52,7 @@ pub struct Stat {
     /// The permission bits only.
     pub mode: u32,
     pub uid: u32,
+    pub nlink: u64,
     pub regular: bool,
 }
 
@@ -70,6 +71,7 @@ impl From<Metadata> for Stat {
             mtime: (m.mtime(), m.mtime_nsec()),
             mode: m.mode() & 0o7777,
             uid: m.uid(),
+            nlink: m.nlink(),
             regular: m.is_file(),
         }
     }
@@ -91,6 +93,8 @@ pub trait SaveFs {
     fn stat_at(&self, dir: &OwnedFd, name: &str) -> io::Result<Stat>;
     /// `O_CREAT | O_EXCL | O_NOFOLLOW | O_WRONLY`, mode 0600.
     fn create_excl(&self, dir: &OwnedFd, name: &str) -> io::Result<OwnedFd>;
+    /// `fchmod` to 0600, whatever the umask.
+    fn private(&self, fd: &OwnedFd) -> io::Result<()>;
     fn write_all(&self, fd: &OwnedFd, bytes: &[u8]) -> io::Result<()>;
     fn fsync(&self, fd: &OwnedFd) -> io::Result<()>;
     fn rename(&self, dir: &OwnedFd, from: &str, to: &str) -> io::Result<()>;
@@ -195,6 +199,7 @@ impl SaveFs for RealFs {
             mtime: (st.st_mtime as i64, st.st_mtime_nsec as i64),
             mode: st.st_mode as u32 & 0o7777,
             uid: st.st_uid as u32,
+            nlink: st.st_nlink as u64,
             regular: st.st_mode as u32 & libc::S_IFMT as u32 == libc::S_IFREG as u32,
         })
     }
@@ -205,6 +210,11 @@ impl SaveFs for RealFs {
         let c = cstr(name)?;
         // SAFETY: `dir` is open and `c` is a valid C string.
         owned(unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags, 0o600 as libc::c_uint) })
+    }
+
+    fn private(&self, fd: &OwnedFd) -> io::Result<()> {
+        // SAFETY: `fd` is open.
+        ok(unsafe { libc::fchmod(fd.as_raw_fd(), 0o600) })
     }
 
     fn write_all(&self, fd: &OwnedFd, bytes: &[u8]) -> io::Result<()> {
@@ -263,6 +273,10 @@ pub fn save_with(
         None => "",
     };
     let new = edit(text, server, name, value)?;
+    // Defense in depth: `edit` already refuses a result over the cap.
+    if new.len() as u64 > MAX_BYTES {
+        return Err(Refusal::TooLarge);
+    }
     let before = current.as_ref().map(|(_, stat)| stat);
     if current.is_some() {
         match fs.stat_at(&dir, BACKUP) {
@@ -329,6 +343,9 @@ fn read_current(
     if stat.uid != fs.euid() {
         return Err(Refusal::FileOwner);
     }
+    if stat.nlink > 1 {
+        return Err(Refusal::HardLinked);
+    }
     // Only the owner's read and write: 0400 is read-only, anything else loose.
     if stat.mode & 0o200 == 0 && stat.mode & 0o7077 == 0 {
         return Err(Refusal::ReadOnly(path.to_path_buf()));
@@ -358,7 +375,9 @@ fn write_temp(fs: &impl SaveFs, dir: &OwnedFd, bytes: &[u8]) -> Result<String, R
             Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(Refusal::Io(e.kind())),
             Ok(fd) => {
-                let written = fs.write_all(&fd, bytes).and_then(|()| fs.fsync(&fd));
+                let written = (fs.private(&fd))
+                    .and_then(|()| fs.write_all(&fd, bytes))
+                    .and_then(|()| fs.fsync(&fd));
                 if let Err(e) = written {
                     let _ = fs.unlink(dir, &name);
                     return Err(Refusal::Io(e.kind()));

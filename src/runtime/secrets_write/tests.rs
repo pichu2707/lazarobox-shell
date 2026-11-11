@@ -91,8 +91,11 @@ struct TestFs {
     file_owner: Option<u32>,
     names: RefCell<Vec<u64>>,
     calls: RefCell<Vec<&'static str>>,
-    before_recheck: Option<Box<dyn Fn()>>,
-    rechecked: Cell<bool>,
+    /// Runs before the n-th (from 0) `stat_at` of the file.
+    on_recheck: Option<(usize, Box<dyn Fn()>)>,
+    rechecks: Cell<usize>,
+    /// A strict umask: new files come out 0400.
+    strict_umask: bool,
 }
 
 impl TestFs {
@@ -143,14 +146,26 @@ impl SaveFs for TestFs {
         RealFs.read(fd, max)
     }
     fn stat_at(&self, dir: &OwnedFd, name: &str) -> io::Result<Stat> {
-        let first = name == "secrets.toml" && !self.rechecked.replace(true);
-        if let (true, Some(hook)) = (first, &self.before_recheck) {
-            hook();
+        if name == "secrets.toml" {
+            let nth = self.rechecks.replace(self.rechecks.get() + 1);
+            if let Some((at, hook)) = &self.on_recheck {
+                if *at == nth {
+                    hook();
+                }
+            }
         }
         RealFs.stat_at(dir, name)
     }
     fn create_excl(&self, dir: &OwnedFd, name: &str) -> io::Result<OwnedFd> {
-        RealFs.create_excl(dir, name)
+        let fd = RealFs.create_excl(dir, name)?;
+        if self.strict_umask {
+            use std::os::fd::AsRawFd;
+            assert_eq!(unsafe { libc::fchmod(fd.as_raw_fd(), 0o400) }, 0);
+        }
+        Ok(fd)
+    }
+    fn private(&self, fd: &OwnedFd) -> io::Result<()> {
+        RealFs.private(fd)
     }
     fn write_all(&self, fd: &OwnedFd, bytes: &[u8]) -> io::Result<()> {
         self.step("write")?;
@@ -503,9 +518,12 @@ fn a_file_changed_before_the_rename_is_not_overwritten() {
     fs::write(lab.bak(), "X").unwrap();
     let path = lab.path();
     let fs = TestFs {
-        before_recheck: Some(Box::new(move || {
-            fs::write(&path, "[clarity]\nCLARITY_API_TOKEN = \"hand\"\n").unwrap();
-        })),
+        on_recheck: Some((
+            0,
+            Box::new(move || {
+                fs::write(&path, "[clarity]\nCLARITY_API_TOKEN = \"hand\"\n").unwrap();
+            }),
+        )),
         ..TestFs::default()
     };
     assert_eq!(
@@ -601,4 +619,78 @@ fn delete_backup_removes_a_regular_file_and_refuses_a_link() {
     };
     assert!(delete_with(&other, Some(&lab.path())).is_err());
     assert!(lab.bak().exists());
+}
+
+// Review: the second re-check, after the backup and right before the rename.
+#[test]
+fn a_file_changed_after_the_backup_is_not_overwritten() {
+    let lab = lab();
+    lab.write(OLD, 0o600);
+    let path = lab.path();
+    let fs = TestFs {
+        on_recheck: Some((
+            1,
+            Box::new(move || {
+                fs::write(&path, "[clarity]\nCLARITY_API_TOKEN = \"hand\"\n").unwrap();
+            }),
+        )),
+        ..TestFs::default()
+    };
+    assert_eq!(
+        lab.notice(lab.save_with_fs(&fs)),
+        "secrets.toml changed on disk; nothing was saved, try again"
+    );
+    assert_eq!(
+        fs::read_to_string(lab.path()).unwrap(),
+        "[clarity]\nCLARITY_API_TOKEN = \"hand\"\n"
+    );
+    // The backup is what the save read; no temporary file is left.
+    assert_eq!(fs::read_to_string(lab.bak()).unwrap(), OLD);
+    assert_eq!(lab.names(), ["secrets.toml", "secrets.toml.bak"]);
+}
+
+// Review: a strict umask (0277) never yields a 0400 file or backup.
+#[test]
+fn a_strict_umask_still_gives_0600() {
+    let lab = lab();
+    lab.write(OLD, 0o600);
+    let fs = TestFs {
+        strict_umask: true,
+        ..TestFs::default()
+    };
+    lab.save_with_fs(&fs).unwrap();
+    assert_eq!(lab.mode(&lab.path()), 0o600);
+    assert_eq!(lab.mode(&lab.bak()), 0o600);
+    // A new file as well.
+    fs::remove_file(lab.path()).unwrap();
+    fs::remove_file(lab.bak()).unwrap();
+    lab.save_with_fs(&fs).unwrap();
+    assert_eq!(lab.mode(&lab.path()), 0o600);
+}
+
+// Review: a file with other hard links is refused.
+#[test]
+fn a_file_with_other_hard_links_is_refused() {
+    let lab = lab();
+    lab.write(OLD, 0o600);
+    fs::hard_link(lab.path(), lab.root.path().join("other")).unwrap();
+    assert_eq!(
+        lab.notice(lab.save("b")),
+        "secrets.toml has other hard links; edit it by hand"
+    );
+    assert_eq!(fs::read_to_string(lab.path()).unwrap(), OLD);
+    assert_eq!(lab.names(), ["secrets.toml"]);
+}
+
+// Review: a result over 64 KiB is never written (the pure edit refuses it
+// first, and the writer checks again before the temp file).
+#[test]
+fn a_result_over_64_kib_writes_nothing() {
+    let lab = lab();
+    lab.write(&format!("# {}\n", "c".repeat(60 * 1024)), 0o600);
+    assert_eq!(
+        lab.notice(lab.save(&"x".repeat(8 * 1024))),
+        "secrets.toml: larger than 64 KiB"
+    );
+    assert_eq!(lab.names(), ["secrets.toml"]);
 }
