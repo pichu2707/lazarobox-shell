@@ -1902,6 +1902,7 @@ impl RunManager {
             socket: started.socket.clone(),
             token: Secret::new(started.token.reveal()),
             unwire: started.end.clone(),
+            coordinator: false,
         }));
         Ok(None)
     }

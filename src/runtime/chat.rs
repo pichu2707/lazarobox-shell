@@ -854,6 +854,8 @@ impl Chats {
         // The run of an orchestrator turn hears when the turn is over: it then
         // ends by itself once it has nothing left to do. An aborted turn says
         // nothing: Ctrl+C ended its run, a new turn replaced it.
+        // Only an orchestrator turn has a run: it is the coordinator.
+        let coordinator = run.is_some();
         let ended = run.zip(self.orchestra.clone());
         // Tell the engine's adapter which session is this turn's. Without a
         // session the request keeps `mcp: None` and the turn runs as text.
@@ -864,6 +866,7 @@ impl Chats {
                 socket: started.socket.clone(),
                 token: Secret::new(started.token.reveal()),
                 unwire: started.end.clone(),
+                coordinator,
             }));
         }
         let turn = run_turn(

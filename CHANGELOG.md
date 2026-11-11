@@ -16,7 +16,9 @@ baseline.
   jail refuses the tools program because its folder is writable by group) now
   ends before the model is called, with a visible error naming the cause and
   the fix, instead of sending a text-only turn where the coordinator says it
-  has no `spawn_agent` tool. Plain chats still degrade to text with the notice.
+  has no `spawn_agent` tool. The advice fits the cause: permissions only for
+  a path others can write, otherwise to assign another engine. Plain tool
+  chats and workers still degrade to text with the notice.
 
 ## [1.18.0] - 2026-11-11
 

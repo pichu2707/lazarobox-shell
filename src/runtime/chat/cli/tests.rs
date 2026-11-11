@@ -527,11 +527,9 @@ async fn the_turns_token_is_not_shown_from_the_stderr_tail() {
     // A short token, which the generic token filter would let through.
     let lab = lab();
     lab.claude("cat > /dev/null\necho 'cannot reach hunter2 now' >&2\nexit 1");
-    let shim = trusted_shim(&lab);
-    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
     let mut job = claude_job(&lab, true);
     job.mcp.as_mut().unwrap().token = Secret::new("hunter2");
-    let events = run_job(&env, job).await;
+    let events = run_job(&lab.env(), job).await;
     assert_eq!(failure(&events), "cannot reach (..) now", "{events:?}");
 }
 
@@ -2251,6 +2249,7 @@ fn claude_job(lab: &Lab, wired: bool) -> Job {
             socket: lab.rec.join("s.sock"),
             token: Secret::new(TOKEN),
             unwire: Unwire::none(),
+            coordinator: false,
         }),
         tools: None,
     }
@@ -2262,6 +2261,25 @@ fn with_shim(lab: &Lab, mut env: CliEnv, shim: &str) -> CliEnv {
     env.jail = jail_on();
     env.helper = lab.helper(PASS);
     env
+}
+
+const OFF_NOTICE: &str = "tools are off for this turn: they could not be set up";
+
+/// The notice of a turn that goes on without tools: the generic line, or, when
+/// the trust check refused a path others (or a group) can write, the cause and
+/// the fix (issue #496). `cause` is the wording expected after `tools are off: `.
+fn assert_off_notice(event: &StreamEvent, cause: bool) {
+    let StreamEvent::Notice(text) = event else {
+        panic!("{event:?}");
+    };
+    if cause {
+        assert!(text.starts_with("tools are off: "), "{text}");
+        assert!(text.contains(" writable by "), "{text}");
+        assert!(text.contains("; run: chmod "), "{text}");
+        assert!(!text.contains("could not be set up"), "{text}");
+    } else {
+        assert_eq!(text, OFF_NOTICE);
+    }
 }
 
 #[tokio::test]
@@ -2328,7 +2346,7 @@ async fn a_wired_claude_gets_the_config_the_flags_the_timeout_and_the_jail_grant
 }
 
 #[tokio::test]
-async fn without_a_jail_an_orchestrator_turn_ends_and_says_why() {
+async fn without_a_jail_a_wired_claude_runs_as_text_and_says_so() {
     let lab = lab();
     script(
         &lab.bin.join("claude"),
@@ -2338,11 +2356,27 @@ async fn without_a_jail_an_orchestrator_turn_ends_and_says_why() {
     let mut env = lab.env();
     env.shim = Some(lab.bin.join("shim"));
     let events = run_job(&env, claude_job(&lab, true)).await;
-    assert_coordinator_refused(&lab, &events, Some("the jail was not probed"));
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    let notices: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Notice(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices.len(), 1, "{events:?}");
+    assert!(notices[0].contains(OFF_NOTICE), "{notices:?}");
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config", "--safe-mode"]);
+    assert_eq!(lab.recorded("mcp_copy"), "");
+    assert!(!lab.recorded("env").contains("MCP_TOOL_TIMEOUT"));
 }
 
 #[tokio::test]
-async fn an_orchestrator_turn_without_a_shim_program_ends() {
+async fn a_jailed_claude_without_a_shim_program_stays_jailed_and_text_only() {
     let lab = lab();
     script(
         &lab.bin.join("claude"),
@@ -2352,7 +2386,17 @@ async fn an_orchestrator_turn_without_a_shim_program_ends() {
     let mut env = with_shim(&lab, lab.env(), "/unused");
     env.shim = None;
     let events = run_job(&env, claude_job(&lab, true)).await;
-    assert_coordinator_refused(&lab, &events, Some("the tools could not be set up"));
+    assert_eq!(
+        events[0],
+        StreamEvent::Notice(OFF_NOTICE.into()),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config", "--safe-mode"]);
+    assert!(
+        !lab.recorded("helper_args").is_empty(),
+        "still through the jail helper"
+    );
 }
 
 /// A shim program that passes the trust check and that the jail still refuses
@@ -2385,7 +2429,7 @@ fn the_jail_refuses_that_shim_and_only_that_shim() {
 }
 
 #[tokio::test]
-async fn a_shim_the_jail_refuses_ends_an_orchestrator_turn_with_the_cause() {
+async fn a_shim_the_jail_refuses_retries_the_jail_without_it() {
     let lab = lab();
     script(
         &lab.bin.join("claude"),
@@ -2395,14 +2439,35 @@ async fn a_shim_the_jail_refuses_ends_an_orchestrator_turn_with_the_cause() {
     let shim = shim_in_ssh(&lab);
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
     let events = run_job(&env, claude_job(&lab, true)).await;
-    assert_coordinator_refused(&lab, &events, Some("too broad for the jail"));
+    assert_eq!(
+        events[0],
+        StreamEvent::Notice(OFF_NOTICE.into()),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    // The retry ran: through the jail helper, with no flag of the tools, no
+    // grant for the shim or the socket, and no config file on disk.
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config", "--safe-mode"]);
+    let helper = lab.recorded("helper_args");
+    assert!(!helper.is_empty(), "still through the jail helper");
+    assert!(
+        !helper.contains(shim.to_str().unwrap()) && !helper.contains("s.sock"),
+        "{helper:?}"
+    );
+    assert_eq!(lab.recorded("mcp_copy"), "", "no --mcp-config was given");
+    assert_eq!(
+        lab.recorded("mcp_during"),
+        "",
+        "no config file while it ran"
+    );
+    assert!(!lab.recorded("env").contains("MCP_TOOL_TIMEOUT"));
     let leftovers = fs::read_dir(lab.data.join("cli-tmp")).unwrap().count();
     assert_eq!(leftovers, 0, "the turn's folder is wiped");
 }
 
 /// A shim program the trust check refuses (it sits in a folder others can
-/// write) ends an orchestrator turn, naming the path and the fix.
-async fn assert_untrusted_shim_ends_the_turn(lab: &Lab, shim: &Path) {
+/// write) is retried without it, like an interpreter: text with the notice.
+async fn assert_untrusted_shim_falls_back(lab: &Lab, shim: &Path) {
     script(
         &lab.bin.join("claude"),
         &lab.rec,
@@ -2410,8 +2475,14 @@ async fn assert_untrusted_shim_ends_the_turn(lab: &Lab, shim: &Path) {
     );
     let env = with_shim(lab, lab.env(), shim.to_str().unwrap());
     let events = run_job(&env, claude_job(lab, true)).await;
-    let text = assert_coordinator_refused(lab, &events, Some(" writable by "));
-    assert!(text.contains("; run: chmod "), "{text}");
+    assert_off_notice(&events[0], true);
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config", "--safe-mode"]);
+    let helper = lab.recorded("helper_args");
+    assert!(
+        !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
+        "{helper:?}"
+    );
 }
 
 #[tokio::test]
@@ -2422,7 +2493,7 @@ async fn a_shim_in_a_folder_others_can_write_is_not_granted() {
     let shim = dir.join("lazarobox-shell");
     fs::write(&shim, "").unwrap();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
-    assert_untrusted_shim_ends_the_turn(&lab, &shim).await;
+    assert_untrusted_shim_falls_back(&lab, &shim).await;
 }
 
 #[tokio::test]
@@ -2431,74 +2502,163 @@ async fn a_shim_that_others_can_write_is_not_granted() {
     let shim = lab.bin.join("shim");
     fs::write(&shim, "").unwrap();
     fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
-    assert_untrusted_shim_ends_the_turn(&lab, &shim).await;
+    assert_untrusted_shim_falls_back(&lab, &shim).await;
 }
 
-/// What the error of an orchestrator turn that cannot get its tools holds: the
-/// start, the cause (when given), the fix, and no model run.
-fn assert_coordinator_refused(lab: &Lab, events: &[StreamEvent], cause: Option<&str>) -> String {
+/// The job of an orchestrator's coordinator: a wired job that is its own.
+fn coordinator_job(lab: &Lab) -> Job {
+    let mut job = claude_job(lab, true);
+    job.mcp.as_mut().unwrap().coordinator = true;
+    job
+}
+
+const PERMISSIONS_FIX: &str = "; run lazarobox from a folder not writable by group or others, \
+     or assign another engine to orchestrate";
+const ENGINE_FIX: &str = "; assign another engine to orchestrate";
+
+/// The error of a coordinator turn that cannot get its tools: the start, the
+/// cause, the advice that fits it, and no model run.
+fn assert_coordinator_refused(lab: &Lab, events: &[StreamEvent], cause: &str, fix: &str) {
     let text = jail_reason(events);
     assert!(
         text.starts_with("the coordinator cannot get its tools: "),
         "{text}"
     );
-    // The advice matches the cause: permissions only when permissions are it.
-    if cause == Some(" writable by ") {
-        assert!(
-            text.ends_with(
-                "; run lazarobox from a folder not writable by group or others, \
-                 or assign another engine to orchestrate"
-            ),
-            "{text}"
-        );
-    } else {
-        assert!(
-            text.ends_with("; assign another engine to orchestrate"),
-            "{text}"
-        );
+    assert!(text.contains(cause), "{text}");
+    assert!(text.ends_with(fix), "{text}");
+    if fix == ENGINE_FIX {
         assert!(!text.contains("folder not writable"), "{text}");
     }
-    if let Some(cause) = cause {
-        assert!(text.contains(cause), "{text}");
-    }
     assert_eq!(lab.recorded("args"), "", "the model was not spawned");
-    text
 }
 
-/// A coordinator turn whose tools cannot be wired ends before the model is
-/// called, with a persistent error that names the cause and the fix.
-#[tokio::test]
-async fn an_orchestrator_turn_without_its_tools_ends_without_calling_the_model() {
+fn claude_lab() -> Lab {
     let lab = lab();
     script(
         &lab.bin.join("claude"),
         &lab.rec,
         &format!("{MCP_CLAUDE}{GOOD}"),
     );
-    let shim = lab.bin.join("shim");
-    fs::write(&shim, "").unwrap();
-    fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
-    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    let events = run_job(&env, claude_job(&lab, true)).await;
-    assert_coordinator_refused(&lab, &events, Some(" writable by "));
+    lab
 }
 
-/// A plain chat keeps degrading to text with the notice.
 #[tokio::test]
-async fn a_plain_chat_without_its_tools_still_runs_as_text() {
-    let lab = lab();
-    script(
-        &lab.bin.join("claude"),
-        &lab.rec,
-        &format!("{MCP_CLAUDE}{GOOD}"),
-    );
+async fn a_coordinator_whose_shim_others_can_write_ends_with_the_permissions_advice() {
+    let lab = claude_lab();
     let shim = lab.bin.join("shim");
     fs::write(&shim, "").unwrap();
     fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    let events = run_job(&env, claude_job(&lab, false)).await;
+    let events = run_job(&env, coordinator_job(&lab)).await;
+    assert_coordinator_refused(&lab, &events, "; run: chmod ", PERMISSIONS_FIX);
+    assert!(jail_reason(&events).contains(" writable by "));
+}
+
+#[test]
+fn only_a_path_others_can_write_gets_the_permissions_advice() {
+    let path = PathBuf::from("/x/shim");
+    let refusal = |why| JailRefusal::UntrustedInterpreter {
+        path: path.clone(),
+        why,
+    };
+    let unchecked = refusal(Untrusted::Unchecked {
+        path: path.clone(),
+        kind: io::ErrorKind::PermissionDenied,
+    });
+    let writable = refusal(Untrusted::Writable {
+        paths: vec![path.clone()],
+        foreign: Vec::new(),
+        cause: WriteCause::Group,
+    });
+    assert_eq!(coordinator_advice(Some(&unchecked)), ENGINE_FIX);
+    assert_eq!(coordinator_advice(Some(&writable)), PERMISSIONS_FIX);
+    assert_eq!(
+        coordinator_advice(Some(&refusal(Untrusted::Unresolvable))),
+        ENGINE_FIX
+    );
+    assert_eq!(coordinator_advice(None), ENGINE_FIX);
+}
+
+#[tokio::test]
+async fn a_coordinator_whose_shim_cannot_be_resolved_ends_with_the_engine_advice() {
+    let lab = claude_lab();
+    let dir = lab.bin.join("closed");
+    fs::create_dir(&dir).unwrap();
+    let shim = dir.join("lazarobox-shell");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&env, coordinator_job(&lab)).await;
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_coordinator_refused(&lab, &events, "cannot be resolved", ENGINE_FIX);
+}
+
+#[tokio::test]
+async fn a_coordinator_without_a_jail_ends_with_the_engine_advice() {
+    let lab = claude_lab();
+    let mut env = lab.env();
+    env.shim = Some(lab.bin.join("shim"));
+    let events = run_job(&env, coordinator_job(&lab)).await;
+    assert_coordinator_refused(&lab, &events, "the jail was not probed", ENGINE_FIX);
+}
+
+#[tokio::test]
+async fn a_coordinator_without_a_shim_program_ends_with_the_engine_advice() {
+    let lab = claude_lab();
+    let mut env = with_shim(&lab, lab.env(), "/unused");
+    env.shim = None;
+    let events = run_job(&env, coordinator_job(&lab)).await;
+    assert_coordinator_refused(&lab, &events, "the tools could not be set up", ENGINE_FIX);
+}
+
+#[tokio::test]
+async fn a_coordinator_whose_shim_the_jail_refuses_ends_with_the_engine_advice() {
+    let lab = claude_lab();
+    let shim = shim_in_ssh(&lab);
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&env, coordinator_job(&lab)).await;
+    assert_coordinator_refused(&lab, &events, "too broad for the jail", ENGINE_FIX);
+    let leftovers = fs::read_dir(lab.data.join("cli-tmp")).unwrap().count();
+    assert_eq!(leftovers, 0, "the turn's folder is wiped");
+}
+
+#[tokio::test]
+async fn a_coordinator_of_codex_and_gemini_ends_too() {
+    for engine in ["codex", "gemini"] {
+        let lab = lab();
+        script(&lab.bin.join(engine), &lab.rec, GOOD);
+        let shim = lab.bin.join("shim");
+        fs::write(&shim, "").unwrap();
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
+        let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+        let mut job = if engine == "codex" {
+            wired_codex_job(&lab)
+        } else {
+            wired_gemini_job(&lab)
+        };
+        job.mcp.as_mut().unwrap().coordinator = true;
+        let events = run_job(&env, job).await;
+        assert_coordinator_refused(&lab, &events, " writable by ", PERMISSIONS_FIX);
+    }
+}
+
+/// A plain chat and a worker turn have a wire too (a job's wire is not the
+/// coordinator's): with an untrusted shim they run as text and say so.
+#[tokio::test]
+async fn a_plain_chat_or_worker_with_a_wire_and_an_untrusted_shim_runs_as_text_with_the_notice() {
+    let lab = claude_lab();
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let job = claude_job(&lab, true);
+    assert!(!job.mcp.as_ref().unwrap().coordinator);
+    let events = run_job(&env, job).await;
+    assert_off_notice(&events[0], true);
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
-    assert!(!lab.args().is_empty(), "the model ran");
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config", "--safe-mode"]);
+    assert_eq!(lab.recorded("mcp_copy"), "");
+    assert!(!lab.recorded("env").contains("MCP_TOOL_TIMEOUT"));
 }
 
 #[tokio::test]
@@ -2522,7 +2682,7 @@ async fn a_shim_whose_loader_others_can_write_is_not_granted() {
     img[300..300 + name.len()].copy_from_slice(name.as_bytes());
     let shim = lab.bin.join("shim");
     fs::write(&shim, img).unwrap();
-    assert_untrusted_shim_ends_the_turn(&lab, &shim).await;
+    assert_untrusted_shim_falls_back(&lab, &shim).await;
 }
 
 /// A wire that counts how often its turn said the engine is not wired.
@@ -2536,7 +2696,7 @@ fn counted(job: &mut Job) -> Arc<AtomicUsize> {
 }
 
 #[tokio::test]
-async fn a_turn_without_its_tools_ends_its_session_and_a_wired_one_keeps_it() {
+async fn a_turn_that_runs_as_text_ends_its_session_and_a_wired_one_keeps_it() {
     // Wired: the session is the engine's.
     let lab = lab();
     script(
@@ -2553,8 +2713,7 @@ async fn a_turn_without_its_tools_ends_its_session_and_a_wired_one_keeps_it() {
     run_job(&env, job).await;
     assert_eq!(wired.load(Ordering::SeqCst), 0);
 
-    // No jail (a bare run), no shim program, a shim the jail refuses: the run
-    // ends, and so does its session.
+    // No jail (a bare run), no shim program, a shim the jail refuses: text.
     let mut bare_env = lab.env();
     bare_env.shim = Some(shim.clone());
     let mut no_shim = with_shim(&lab, lab.env(), "/unused");
@@ -2568,10 +2727,7 @@ async fn a_turn_without_its_tools_ends_its_session_and_a_wired_one_keeps_it() {
         let mut job = claude_job(&lab, true);
         let count = counted(&mut job);
         let events = run_job(&env, job).await;
-        assert!(
-            matches!(events.last(), Some(StreamEvent::Error(ChatError::Jail(_)))),
-            "{what}: {events:?}"
-        );
+        assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
         assert_eq!(count.load(Ordering::SeqCst), 1, "{what}");
     }
 }
@@ -2610,10 +2766,10 @@ async fn only_a_wired_turn_lets_claude_use_our_tools() {
         Some(&StreamEvent::Done(Finish::Stop)),
         "{events:?}"
     );
-    // The same stream in a turn without tools: nothing was offered.
+    // The same stream in a turn that fell back to text: nothing was offered.
     let mut bare = lab.env();
     bare.shim = Some(shim);
-    let events = run_job(&bare, claude_job(&lab, false)).await;
+    let events = run_job(&bare, claude_job(&lab, true)).await;
     assert_eq!(failure(&events), "claude tried to use a tool", "{events:?}");
 }
 
@@ -2649,6 +2805,7 @@ fn while_dormant_no_engine_starts_a_different_process_with_tools_on() {
         socket,
         token: Secret::new(TOKEN),
         unwire: Unwire::none(),
+        coordinator: false,
     });
     for (jail, shim) in [
         (JailSupport::Unavailable(JailOff::NotProbed), None),
@@ -2801,9 +2958,9 @@ async fn a_wired_codex_gets_the_overrides_and_the_jail_grant_and_the_token_only_
     assert!(has("--rw-file", socket.to_str().unwrap()), "{helper:?}");
 }
 
-/// A codex orchestrator turn without its tools: it never ran, said why, and
+/// A codex turn that fell back to text: it ran bare of the tools, said so, and
 /// ended its session once.
-async fn assert_codex_turn_ends(lab: &Lab, env: &CliEnv, cause: &str) {
+async fn assert_codex_text_fallback(lab: &Lab, env: &CliEnv, cause: bool) {
     script(
         &lab.bin.join("codex"),
         &lab.rec,
@@ -2812,26 +2969,45 @@ async fn assert_codex_turn_ends(lab: &Lab, env: &CliEnv, cause: &str) {
     let mut job = wired_codex_job(lab);
     let count = counted(&mut job);
     let events = run_job(env, job).await;
-    assert_coordinator_refused(lab, &events, Some(cause));
+    assert_off_notice(&events[0], cause);
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
     assert_eq!(count.load(Ordering::SeqCst), 1, "Unwire exactly once");
+    assert!(
+        !lab.recorded("env").contains("LAZAROBOX_MCP_TOKEN"),
+        "no token in the child env"
+    );
+    let args = lab.args();
+    assert_eq!(args, ["exec", "-"], "no -c mcp_servers entries: {args:?}");
+    assert!(!args.iter().any(|a| a.contains("mcp_servers")));
+    assert_eq!(lab.recorded("mcp_during"), "");
 }
 
 #[tokio::test]
-async fn a_shim_the_jail_refuses_ends_a_codex_orchestrator_turn() {
+async fn a_shim_the_jail_refuses_retries_codex_without_the_tools() {
     let lab = lab();
     let shim = shim_in_ssh(&lab);
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    assert_codex_turn_ends(&lab, &env, "too broad for the jail").await;
+    assert_codex_text_fallback(&lab, &env, false).await;
+    let helper = lab.recorded("helper_args");
+    assert!(
+        !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
+        "{helper:?}"
+    );
 }
 
 #[tokio::test]
-async fn an_untrusted_shim_ends_a_codex_orchestrator_turn() {
+async fn an_untrusted_shim_runs_codex_as_text_with_the_notice() {
     let lab = lab();
     let shim = lab.bin.join("shim");
     fs::write(&shim, "").unwrap();
     fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    assert_codex_turn_ends(&lab, &env, " writable by ").await;
+    assert_codex_text_fallback(&lab, &env, true).await;
+    let helper = lab.recorded("helper_args");
+    assert!(
+        !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
+        "{helper:?}"
+    );
 }
 
 #[tokio::test]
@@ -2870,12 +3046,14 @@ async fn only_a_wired_turn_lets_codex_use_our_tools() {
         Some(&StreamEvent::Done(Finish::Stop)),
         "{events:?}"
     );
-    // The same stream in a turn without tools.
-    let bare = with_shim(&lab, lab.env(), "/unused");
+    // The same stream in a turn that fell back to text (no shim program).
+    let mut bare = with_shim(&lab, lab.env(), "/unused");
+    bare.shim = None;
     let mut job = wired_codex_job(&lab);
-    job.mcp = None;
+    let count = counted(&mut job);
     let events = run_job(&bare, job).await;
     assert_eq!(failure(&events), "codex tried to use a tool", "{events:?}");
+    assert_eq!(count.load(Ordering::SeqCst), 1, "its session ended");
 }
 
 /// A gemini of a turn with tools: it records where it runs, what it finds in
@@ -3064,9 +3242,10 @@ async fn the_turns_token_is_not_shown_from_a_gemini_stderr_tail() {
     assert!(text.contains("(..)"), "{text}");
 }
 
-/// A gemini orchestrator turn without its tools: it never ran, said why, and
-/// ended its session once.
-async fn assert_gemini_turn_ends(lab: &Lab, env: &CliEnv, cause: &str) {
+/// A gemini turn that fell back to text: it ran in the shared empty folder
+/// with the pinned argv and nothing of the wiring, said so, and ended its
+/// session once.
+async fn assert_gemini_text_fallback(lab: &Lab, env: &CliEnv, cause: bool) {
     script(
         &lab.bin.join("gemini"),
         &lab.rec,
@@ -3075,26 +3254,47 @@ async fn assert_gemini_turn_ends(lab: &Lab, env: &CliEnv, cause: &str) {
     let mut job = wired_gemini_job(lab);
     let count = counted(&mut job);
     let events = run_job(env, job).await;
-    assert_coordinator_refused(lab, &events, Some(cause));
+    assert_off_notice(&events[0], cause);
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
     assert_eq!(count.load(Ordering::SeqCst), 1, "Unwire exactly once");
+    let args = lab.args();
+    assert_eq!(args.len(), 7, "{args:?}");
+    assert!(
+        !args.iter().any(|a| a.starts_with("--admin-policy")
+            || a.starts_with("--allowed-mcp-server-names=")
+            || a.contains("gemini-mcp-policy")),
+        "{args:?}"
+    );
+    // Text only: the turn's own empty folder (it holds only the private
+    // `.env`), never the work folder with the tools' settings.
+    assert!(Path::new(lab.recorded("cwd").trim()).ends_with("gemini-cwd"));
+    assert_eq!(lab.recorded("work_during"), "");
+    assert_eq!(lab.recorded("settings_copy"), "");
+    assert!(!lab.recorded("env").contains(TOKEN));
+    assert!(!lab.recorded("env").contains("GEMINI_CLI_TRUST_WORKSPACE"));
 }
 
 #[tokio::test]
-async fn a_shim_the_jail_refuses_ends_a_gemini_orchestrator_turn() {
+async fn a_shim_the_jail_refuses_retries_gemini_without_the_tools() {
     let lab = lab();
     let shim = shim_in_ssh(&lab);
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    assert_gemini_turn_ends(&lab, &env, "too broad for the jail").await;
+    assert_gemini_text_fallback(&lab, &env, false).await;
+    let helper = lab.recorded("helper_args");
+    assert!(
+        !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
+        "{helper:?}"
+    );
 }
 
 #[tokio::test]
-async fn an_untrusted_shim_ends_a_gemini_orchestrator_turn() {
+async fn an_untrusted_shim_runs_gemini_as_text_with_the_notice() {
     let lab = lab();
     let shim = lab.bin.join("shim");
     fs::write(&shim, "").unwrap();
     fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
-    assert_gemini_turn_ends(&lab, &env, " writable by ").await;
+    assert_gemini_text_fallback(&lab, &env, true).await;
 }
 
 #[tokio::test]
@@ -3105,12 +3305,14 @@ async fn only_a_wired_turn_lets_gemini_use_our_tools() {
         &lab.rec,
         &format!("{MCP_GEMINI}{GEMINI_END}"),
     );
-    // The same stream in a turn without tools.
-    let bare = with_shim(&lab, lab.env(), "/unused");
+    // No shim program: the same stream in a turn that fell back to text.
+    let mut bare = with_shim(&lab, lab.env(), "/unused");
+    bare.shim = None;
     let mut job = wired_gemini_job(&lab);
-    job.mcp = None;
+    let count = counted(&mut job);
     let events = run_job(&bare, job).await;
     assert_eq!(failure(&events), "gemini tried to use a tool", "{events:?}");
+    assert_eq!(count.load(Ordering::SeqCst), 1, "its session ended");
 }
 
 // The tools prompt reaches an engine only on the attempt that is wired. These
@@ -3169,11 +3371,7 @@ async fn real_turn(engine: &str, setup: Setup) -> (Vec<String>, String) {
     request.tools = Tools::On {
         origin: None,
         external: Default::default(),
-        // Only a wired turn is an orchestrator's: the others are text turns
-        // (an orchestrator turn without its tools ends before the model).
-        mcp: (setup == Setup::Wired)
-            .then(|| claude_job(&lab, true).mcp.map(Box::new))
-            .flatten(),
+        mcp: claude_job(&lab, true).mcp.map(Box::new),
     };
     let crate::core::ai::chat::adapters::Invocation::Process(mut job) =
         adapter_for(engine).unwrap().build_with(&request, &[engine])
@@ -3451,7 +3649,7 @@ fn linux_gets_no_os_grants() {
 }
 
 #[tokio::test]
-async fn a_umask_002_shim_ends_the_turn_naming_both_paths_and_the_fix() {
+async fn a_umask_002_shim_gets_a_notice_naming_both_paths_and_the_fix() {
     let lab = lab();
     script(
         &lab.bin.join("claude"),
@@ -3466,22 +3664,23 @@ async fn a_umask_002_shim_ends_the_turn_naming_both_paths_and_the_fix() {
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
     let events = run_job(&env, claude_job(&lab, true)).await;
-    let text = jail_reason(&events);
+    let StreamEvent::Notice(text) = &events[0] else {
+        panic!("{events:?}");
+    };
     let (dir, shim) = (
         fs::canonicalize(&dir).unwrap(),
         fs::canonicalize(&shim).unwrap(),
     );
     let expected = format!(
-        "the coordinator cannot get its tools: {} and {} are writable by its group \
-         (install with umask 022 to keep it); run: chmod g-w '{}' '{}'; run lazarobox \
-         from a folder not writable by group or others, or assign another engine \
-         to orchestrate",
+        "tools are off: {} and {} are writable by its group \
+         (install with umask 022 to keep it); run: chmod g-w '{}' '{}'",
         dir.display(),
         shim.display(),
         dir.display(),
         shim.display()
     );
-    assert_eq!(text, expected);
+    assert_eq!(text, &expected);
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
 }
 
 /// What the fake codex and gemini record about the home they were given.

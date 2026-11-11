@@ -87,6 +87,19 @@ const COORDINATOR_FIX_PERMISSIONS: &str = "; run lazarobox from a folder not wri
 /// What to do about any other cause.
 const COORDINATOR_FIX_ENGINE: &str = "; assign another engine to orchestrate";
 
+/// What an orchestrator turn without its tools is told to do. Only a path
+/// others can write is fixed by permissions; one that could not be inspected,
+/// or any other cause, is not.
+fn coordinator_advice(refusal: Option<&JailRefusal>) -> &'static str {
+    match refusal {
+        Some(JailRefusal::UntrustedInterpreter {
+            why: Untrusted::Writable { .. },
+            ..
+        }) => COORDINATOR_FIX_PERMISSIONS,
+        _ => COORDINATOR_FIX_ENGINE,
+    }
+}
+
 pub const CANNOT_PREPARE: &str = "cannot prepare the private working directory";
 
 /// A file the CLI is told about by path sits where its flag would be split.
@@ -1429,17 +1442,11 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
                 match jailed(env, job, &full, &binary, &dirs, attempt.as_ref()) {
                     Ok((program, argv)) => {
                         let why_off = match &tools_refusal {
-                            Some(
-                                why @ JailRefusal::UntrustedInterpreter {
-                                    why: Untrusted::Writable { .. } | Untrusted::Unchecked { .. },
-                                    ..
-                                },
-                            ) => format!("{}{COORDINATOR_FIX_PERMISSIONS}", why.hint(home)),
-                            Some(why) => format!("{}{COORDINATOR_FIX_ENGINE}", why.hint(home)),
-                            None => {
-                                format!("the tools could not be set up{COORDINATOR_FIX_ENGINE}")
-                            }
+                            Some(why) => why.hint(home),
+                            None => "the tools could not be set up".to_owned(),
                         };
+                        let why_off =
+                            format!("{why_off}{}", coordinator_advice(tools_refusal.as_ref()));
                         let notice = tools_off(None)
                             .filter(|_| attempt.is_none())
                             .map(|generic| match &tools_refusal {
@@ -1760,8 +1767,9 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     if !plan.wired {
         unwire(&job);
         // A coordinator without its tools cannot orchestrate: asking the model
-        // anyway only burns tokens on "I have no spawn_agent tool".
-        if job.mcp.is_some() {
+        // anyway only burns tokens on "I have no spawn_agent tool". A plain
+        // chat or a worker with a wire goes on as text, with the notice.
+        if job.mcp.as_ref().is_some_and(|wire| wire.coordinator) {
             let why = plan.tools_why.take().unwrap_or_default();
             let text = format!("{COORDINATOR_NO_TOOLS}: {why}");
             return send(tx, StreamEvent::Error(ChatError::Jail(text))).await;
