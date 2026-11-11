@@ -457,21 +457,9 @@ pub(crate) async fn wait_gone(pid: libc::pid_t) -> bool {
 /// [`wait_gone`] for a test that cannot use the async clock.
 #[cfg(test)]
 pub(crate) fn wait_gone_blocking(pid: libc::pid_t) -> bool {
-    wait_gone_blocking_with(pid, true)
-}
-
-/// [`wait_gone_with`] for a test that cannot use the async clock: a zombie
-/// counts as gone unless `zombie` is false (the process must be reaped).
-#[cfg(test)]
-pub(crate) fn wait_gone_blocking_with(pid: libc::pid_t, zombie: bool) -> bool {
     let mut watch = GoneWatch::new(std::time::Instant::now(), GONE_WITHIN);
     loop {
-        let gone = if zombie {
-            stopped(pid)
-        } else {
-            process_state(pid).is_none()
-        };
-        match watch.step(std::time::Instant::now(), gone) {
+        match watch.step(std::time::Instant::now(), stopped(pid)) {
             GoneStep::Gone => return true,
             GoneStep::Poll => std::thread::sleep(std::time::Duration::from_millis(20)),
             GoneStep::Fail => {
@@ -728,21 +716,6 @@ mod tests {
         assert!(wait_gone(pid).await);
         child.wait().unwrap();
         assert!(wait_gone_blocking(pid));
-    }
-
-    // The strict blocking wait lets a zombie stand and ends only when the
-    // process is reaped; the lenient one accepts the zombie.
-    #[test]
-    fn the_strict_blocking_wait_needs_the_process_reaped() {
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        let pid = child.id() as libc::pid_t;
-        child.kill().unwrap();
-        assert!(wait_gone_blocking(pid), "a zombie counts as gone");
-        child.wait().unwrap();
-        assert!(wait_gone_blocking_with(pid, false), "reaped is gone");
     }
 
     #[test]

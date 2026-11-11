@@ -294,7 +294,7 @@ mod tests {
         pane::PaneSize,
         pty::{PtyEvent, SpawnSpec},
     };
-    use crate::runtime::proc::{stopped, wait_gone_blocking, wait_gone_blocking_with};
+    use crate::runtime::proc::{stopped, wait_gone_blocking};
 
     const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -606,11 +606,7 @@ mod tests {
         let started = Instant::now();
         pty.kill();
         assert!(started.elapsed() < Duration::from_secs(15), "kill() hung");
-        // The shell is ours, so kill() reaps it: strict, no zombie left.
-        assert!(
-            wait_gone_blocking_with(pid as libc::pid_t, false),
-            "the shell was not reaped"
-        );
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
     }
 
     // Spec: quit leaves no orphan.
@@ -620,10 +616,7 @@ mod tests {
         let pid = pty.pid().expect("pid");
         assert!(Path::new(&format!("/proc/{pid}")).exists());
         drop(pty);
-        assert!(
-            wait_gone_blocking_with(pid as libc::pid_t, false),
-            "the shell was not reaped"
-        );
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
     }
 }
 
