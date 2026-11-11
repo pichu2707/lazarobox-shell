@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- With ORCH on, the claude coordinator no longer answers a file change with a
+  shell command and the code. Its tools block told it "you cannot change files
+  yourself; any change needs a command the user reviews and runs", after the
+  delegation rule; it now says a worker started with `spawn_agent` makes every
+  change.
 ### Added
 
 - The `Connectors` area can save a value into `secrets.toml` for you: `f` on an
