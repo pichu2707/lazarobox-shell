@@ -4941,6 +4941,57 @@ async fn a_correction_and_its_check_need_no_room_under_the_worker_cap() {
     );
 }
 
+/// Draws served so far by [`fourth_draw_fails`].
+static DRAWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A nonce source that fails only its fourth draw: two lenses (a severe blocker
+/// needs no refuter), the
+/// correction, then its check.
+fn fourth_draw_fails() -> Option<[u8; 8]> {
+    let drawn = DRAWS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    (drawn != 3).then_some([7; 8])
+}
+
+// W-A (kept after D22 removed the room rule): a correction check that cannot
+// start keeps the blockers open and says so; the review is not lost.
+#[tokio::test]
+async fn a_check_that_cannot_start_keeps_the_blockers_open() {
+    DRAWS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let mut lab = lab_with(Script::By(blocker_then_fixed), |m, home| {
+        RunManager {
+            scratch: |_| false,
+            restage: Some(restaged_differently),
+            diff: Some(staged_text),
+            ..tooled(m, home)
+        }
+        .with_nonce(fourth_draw_fails)
+    });
+    let (run, handle) = lab.begin(lab.scope(codex_both(), &[])).unwrap();
+    handle.call(spawn(Task::Code, "write a")).await;
+    lab.seen.first().await;
+    let changes = lock_change();
+    let assessment = handle.assess(run, &changes);
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Granted);
+    assert!(
+        timeout(Duration::from_secs(10), done)
+            .await
+            .unwrap()
+            .is_ok()
+    );
+    assert!(lab.seen.requests().iter().any(is_correction));
+    assert_eq!(
+        lab.manager.reviews(pane(), run)[0].outcome,
+        Some(Ended::BlockersOpen)
+    );
+    let lines = review_lines(&mut lab);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("correction could not be checked")),
+        "{lines:?}"
+    );
+}
+
 /// The correction staged only an unrelated file.
 fn restaged_elsewhere(before: &[Change]) -> Option<Vec<Change>> {
     let mut now = before.to_vec();

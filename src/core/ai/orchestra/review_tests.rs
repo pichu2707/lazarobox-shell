@@ -329,11 +329,15 @@ fn the_same_model_as_author_and_reviewer_warns() {
             .any(|l| l.contains("same model (ollama>llama3:latest)")),
         "{got:?}"
     );
-    // GUARD: a different model, or the same name on another engine, is quiet.
+    // GUARD: a different model is quiet; the same name on another engine is
+    // not the same model, and only says where the diff goes.
     let got = notices(WorkerId(1), opus, ("claude", Some("sonnet")));
     assert!(got.is_empty(), "{got:?}");
     let got = notices(WorkerId(1), opus, ("codex", Some("opus")));
-    assert!(got.is_empty(), "{got:?}");
+    assert_eq!(
+        got,
+        ["review of worker 1: the staged diff goes to codex>opus"]
+    );
 }
 
 // Spec "Local reviewer states its limits": a local Review row says what a
@@ -360,11 +364,22 @@ fn a_local_reviewer_states_its_limits_and_a_cloud_one_says_where_the_diff_goes()
         got,
         ["review of worker 4: the staged diff goes to ollama>gpt-oss:120b-cloud"]
     );
-    // GUARD: a cloud author on a cloud reviewer says nothing about the diff.
+    // A cloud author on another vendor's reviewer: the diff reaches a new
+    // vendor, said (RED: it was silent).
     let got = notices(
         WorkerId(4),
         ("claude", Some("opus")),
-        ("codex", Some("gpt")),
+        ("gemini", Some("pro")),
+    );
+    assert_eq!(
+        got,
+        ["review of worker 4: the staged diff goes to gemini>pro"]
+    );
+    // GUARD: the same engine on another model sends the diff nowhere new.
+    let got = notices(
+        WorkerId(4),
+        ("claude", Some("opus")),
+        ("claude", Some("sonnet")),
     );
     assert!(got.is_empty(), "{got:?}");
 }

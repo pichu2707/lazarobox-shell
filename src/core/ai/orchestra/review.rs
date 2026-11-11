@@ -333,9 +333,10 @@ pub type Side<'a> = (&'a str, Option<&'a str>);
 
 /// The notices said once when a review starts (D22), each a transcript line:
 /// the reviewer is the author's own model; the reviewer is a local model
-/// (what that cannot promise); a local author's diff goes to a cloud
-/// reviewer. A cloud author on a cloud reviewer, or two different models,
-/// say nothing. ASCII, because they reach the terminal as they are.
+/// (what that cannot promise); the diff goes to another engine or off the
+/// machine (a local author on a cloud reviewer). The same engine on another
+/// model says nothing more. ASCII, because they reach the terminal as they
+/// are.
 pub fn notices(worker: WorkerId, author: Side, reviewer: Side) -> Vec<String> {
     let of = format!("review of worker {}", worker.0);
     let named = |(engine, model): Side| format!("{engine}>{}", model.unwrap_or("default"));
@@ -356,7 +357,7 @@ pub fn notices(worker: WorkerId, author: Side, reviewer: Side) -> Vec<String> {
             "{of}: the reviewer is a local model ({}); it can miss what a larger model would catch, so read the diff yourself",
             named(reviewer)
         ));
-    } else if cheap(author.0, author.1) {
+    } else if cheap(author.0, author.1) || author.0 != reviewer.0 {
         said.push(format!("{of}: the staged diff goes to {}", named(reviewer)));
     }
     said

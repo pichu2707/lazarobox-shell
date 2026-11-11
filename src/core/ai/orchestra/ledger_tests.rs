@@ -593,3 +593,38 @@ fn the_steps_line_counts_inside_the_budget() {
     let roomy = ledger.render_within(budget + 400);
     assert!(roomy.contains("(large: rrr"), "{roomy}");
 }
+
+// D22 (17.5): an ended internal worker is not waiting for a handoff, in the
+// ledger row and in the pending list, also after `finish`.
+#[test]
+fn an_ended_internal_worker_shows_no_pending_handoff_in_the_ledger() {
+    let row = Row::new(WorkerId(2), Task::Review, WorkerStatus::Done, None).internal();
+    let ledger = Ledger::new("goal", vec![row]);
+    assert!(ledger.pending().is_empty());
+    let text = ledger.render();
+    assert!(!text.contains("handoff pending"), "{text}");
+    assert!(text.contains("internal, no handoff"), "{text}");
+}
+
+#[test]
+fn a_run_ledger_never_waits_for_an_internal_workers_handoff() {
+    let mut run = run();
+    let now = Instant::now();
+    let one = finished(&mut run, Task::Review, "text");
+    let lens = run.spawn_internal(now, Task::Review, "lens").expect("lens");
+    run.on_event(
+        now,
+        lens,
+        WorkerEvent::Done {
+            text: "lens text".to_owned(),
+        },
+    );
+    let before = run.run_ledger("goal");
+    assert_eq!(before.pending(), vec![one]);
+    assert!(!before.render().contains("2 review done: handoff pending"));
+    run.handoff(one, note(Verdict::OnCourse)).expect("stored");
+    run.finish("summary").expect("finish");
+    let after = run.run_ledger("goal");
+    assert!(after.pending().is_empty());
+    assert!(!after.render().contains("handoff pending"));
+}

@@ -24,11 +24,16 @@ baseline.
   refuter and a correction) are internal: they never count against
   `max_workers`, so a review never lacks room, but a run can start more model
   calls than the visible cap, which can cost money on a cloud Review row.
+  Each review start spawns at most 5 internal workers (two lenses, the
+  refuter, a correction and its check), and a review starts for each proposal
+  of an author, so a re-proposal repeats it; `max_parallel`, the worker
+  deadlines, the run's wall clock and `max_turns` still bound it.
   They still show in the worker rows and are never waited on for a handoff.
 - A review says one notice at its start, in the transcript: when author and
   reviewer are the same model; when the Review row is a local model (it can
-  miss what a larger model catches); and when a local author's staged diff
-  goes to a cloud reviewer, naming it.
+  miss what a larger model catches); and when the staged diff goes to a
+  reviewer on another engine than the author's (or a local author's diff to a
+  cloud one), naming it.
 
 ### Changed
 

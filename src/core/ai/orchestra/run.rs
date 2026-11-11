@@ -1207,6 +1207,7 @@ impl Run {
         let rows = self.slots.iter().enumerate().map(|(i, slot)| {
             let id = WorkerId(i as u32 + 1);
             let row = Row::new(id, slot.spec.task, slot.status, slot.handoff.as_ref());
+            let row = if slot.internal { row.internal() } else { row };
             row.flagged(self.audit(id).map(|a| a.flags()).unwrap_or_default())
         });
         let feature = self.feature.as_ref();
