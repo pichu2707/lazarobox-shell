@@ -16,7 +16,7 @@ use super::{
 };
 use crate::core::ai::{
     chat::review::{Badge, BatchReview, ReviewDoc},
-    orchestra::WorkerKey,
+    orchestra::{RunId, WorkerKey},
     tools::{
         paths::SecretRoots,
         stage::{Batch, BatchId, Outcome, StageError, StageKey, State},
@@ -269,6 +269,25 @@ impl Stages {
             !ours
         });
         (lost > 0).then_some(lost)
+    }
+
+    /// Drops the batches the workers of run `run` of `pane` proposed to the
+    /// user: the run ended and denied them, so they are not orphans to apply
+    /// later. A batch a worker staged and never proposed stays an orphan.
+    /// How many were dropped.
+    pub fn discard_asked(&mut self, pane: PaneId, run: RunId) -> usize {
+        let ours =
+            |key: &StageKey| matches!(key, StageKey::Worker(p, w) if *p == pane && w.run == run);
+        let gone: Vec<StageKey> = (self.batches.iter())
+            .filter(|(key, batch)| ours(key) && batch.asked())
+            .map(|(key, _)| *key)
+            .collect();
+        for key in &gone {
+            self.batches.remove(key);
+            self.labels.remove(key);
+            self.applied.remove(key);
+        }
+        gone.len()
     }
 
     /// The oldest orphan of `pane` for the user, by arrival (generation): the
