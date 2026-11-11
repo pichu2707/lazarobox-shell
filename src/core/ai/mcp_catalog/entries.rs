@@ -3,7 +3,7 @@
 
 use super::{Class, Entry, Group, Login, Var};
 
-pub(super) static ENTRIES: &[Entry] = &[CLARITY, GA4];
+pub(super) static ENTRIES: &[Entry] = &[CLARITY, GA4, GSC];
 
 const CLARITY: Entry = Entry {
     id: "clarity",
@@ -78,5 +78,65 @@ const GA4: Entry = Entry {
         ("create_property_annotation", Class::Write),
         ("create_custom_dimension", Class::Write),
         ("create_key_event", Class::Write),
+    ],
+};
+
+const GSC: Entry = Entry {
+    id: "gsc",
+    title: "Search Console",
+    group: Group::Analytics,
+    project: "AminForou/mcp-gsc",
+    license: "MIT",
+    install: "uv tool install mcp-search-console",
+    command: "mcp-search-console",
+    args: &[],
+    env: &[
+        Var {
+            name: "GSC_CREDENTIALS_PATH",
+            secret: true,
+            preset: None,
+        },
+        Var {
+            name: "GSC_SKIP_OAUTH",
+            secret: true,
+            preset: Some("true"),
+        },
+    ],
+    login: None,
+    guide: &[
+        "1. In your own Google Cloud project, enable the Google Search Console API and create a service account.",
+        "2. Create a JSON key for it and save it as ~/.config/lazarobox/gsc-service-account.json with mode 0600 (lazarobox refuses to read it).",
+        "3. In Search Console, open Settings, Users and permissions, and add the service account e-mail as a user of the property (Restricted is enough for search analytics; if URL inspection is denied, use Full).",
+        "4. Put the path of the JSON file in secrets.toml under [gsc] as GSC_CREDENTIALS_PATH; GSC_SKIP_OAUTH is already \"true\". There is no login step.",
+        "Warning: the reauthenticate tool is useless with a service account (it deletes the token and starts a browser OAuth flow); answer n if a model asks for it.",
+    ],
+    links: &[
+        "https://console.cloud.google.com/iam-admin/serviceaccounts",
+        "https://search.google.com/search-console/users",
+        "https://github.com/AminForou/mcp-gsc",
+    ],
+    token_location: "the service-account JSON key (GSC_CREDENTIALS_PATH)",
+    tools: &[
+        ("get_capabilities", Class::Read),
+        ("get_creator_info", Class::Read),
+        ("list_properties", Class::Read),
+        ("get_site_details", Class::Read),
+        ("get_search_analytics", Class::Read),
+        ("get_performance_overview", Class::Read),
+        ("get_advanced_search_analytics", Class::Read),
+        ("compare_search_periods", Class::Read),
+        ("get_search_by_page_query", Class::Read),
+        ("inspect_url_enhanced", Class::Read),
+        ("batch_url_inspection", Class::Read),
+        ("check_indexing_issues", Class::Read),
+        ("get_sitemaps", Class::Read),
+        ("list_sitemaps_enhanced", Class::Read),
+        ("get_sitemap_details", Class::Read),
+        ("manage_sitemaps", Class::Write),
+        ("submit_sitemap", Class::Write),
+        ("delete_sitemap", Class::Write),
+        ("add_site", Class::Write),
+        ("delete_site", Class::Write),
+        ("reauthenticate", Class::Write),
     ],
 };

@@ -2420,6 +2420,7 @@ impl App {
                 .with_connectors(
                     self.ai.mcp_servers().to_vec(),
                     self.mcp_probes.values().cloned().collect(),
+                    self.config_path.clone(),
                 )
                 .with_feedback(crate::core::menu::feedback::Facts {
                     engines: self
@@ -3576,6 +3577,10 @@ impl App {
 
     fn on_resize(&mut self, cols: u16, rows: u16) -> Vec<Effect> {
         self.term = (cols, rows);
+        // An open menu wraps its text to this width now, not at the next key.
+        if let Some(menu) = self.menu.as_mut() {
+            menu.set_term(cols, rows);
+        }
         self.refresh_screen();
         let effects = self.relayout();
         self.dirty = true;
@@ -9008,7 +9013,7 @@ mod app_tests {
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
         to_level_two(&mut a);
-        let before = a.menu().cloned();
+        let mut before = a.menu().cloned();
         a.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Exited));
         a.update(AppEvent::SpawnFailed(pid(9), "boom".into()));
         a.update(AppEvent::Resize {
@@ -9016,6 +9021,8 @@ mod app_tests {
             rows: 30,
         });
         assert_still_open(&a);
+        // Only the size the menu wraps to follows the resize.
+        before.as_mut().unwrap().set_term(100, 30);
         assert_eq!(a.menu().cloned(), before);
         // One Esc goes back to level 1, not out of the picker.
         a.update(esc());

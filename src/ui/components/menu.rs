@@ -1977,8 +1977,20 @@ mod tests {
 
     /// The Connectors tab of a menu that loaded `clarity` at startup.
     fn connectors_tab() -> MenuState {
-        let mut menu = mixed().with_connectors(vec![server("clarity")], Vec::new());
+        let path = std::path::PathBuf::from("/home/ana/.config/lazarobox/config.toml");
+        let mut menu = mixed().with_connectors(vec![server("clarity")], Vec::new(), Some(path));
         press(&mut menu, &[KeyCode::Char('4')]);
+        menu
+    }
+
+    /// The area open, on the entry of `at` list rows below the first.
+    fn connectors_entry(at: usize) -> MenuState {
+        let mut menu = connectors_tab();
+        press(&mut menu, &[KeyCode::Enter]);
+        for _ in 0..at {
+            press(&mut menu, &[KeyCode::Char('j')]);
+        }
+        press(&mut menu, &[KeyCode::Enter]);
         menu
     }
 
@@ -1993,6 +2005,30 @@ mod tests {
     fn snapshot_the_connectors_list() {
         let mut menu = connectors_tab();
         press(&mut menu, &[KeyCode::Enter]);
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
+    // Spec (mcp-connect, Entry screen): guide, snippet, files, actions.
+    #[test]
+    fn snapshot_the_connectors_entry_screen_top() {
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &connectors_entry(0))));
+    }
+
+    // Spec: a long screen scrolls inside the body.
+    #[test]
+    fn snapshot_the_connectors_entry_screen_scrolled() {
+        let mut menu = connectors_entry(1);
+        for _ in 0..14 {
+            press(&mut menu, &[KeyCode::Char('j')]);
+        }
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
+    // Spec (mcp-connect, Install and login): the prompt shows the command.
+    #[test]
+    fn snapshot_the_login_prompt_shows_the_full_command() {
+        let mut menu = connectors_entry(1);
+        press(&mut menu, &[KeyCode::Char('l')]);
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
     }
 
@@ -2013,7 +2049,13 @@ mod tests {
         };
         let mut list = connectors_tab();
         press(&mut list, &[KeyCode::Enter]);
-        let views = [mixed(), connectors_tab(), list];
+        let views = [
+            mixed(),
+            connectors_tab(),
+            list,
+            connectors_entry(0),
+            connectors_entry(1),
+        ];
         let heights: Vec<u16> = views.iter().map(height).collect();
         assert!(heights.iter().all(|h| *h == heights[0]), "{heights:?}");
         for menu in &views {
@@ -2024,9 +2066,7 @@ mod tests {
 
     #[test]
     fn the_connectors_views_draw_at_every_size_without_panic() {
-        let mut list = connectors_tab();
-        press(&mut list, &[KeyCode::Enter]);
-        for menu in [connectors_tab(), list] {
+        for menu in [connectors_tab(), connectors_entry(0), connectors_entry(1)] {
             for (w, h) in [(0, 0), (1, 1), (24, 7), (40, 12), (62, POPUP_H), (200, 80)] {
                 draw(w, h, &menu);
             }

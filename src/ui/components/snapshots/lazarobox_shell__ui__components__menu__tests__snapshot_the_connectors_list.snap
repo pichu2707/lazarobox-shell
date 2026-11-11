@@ -7,6 +7,7 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │ Analytics                                                  │
 │ Clarity                                           declared │
 │ GA4                                           not declared │
+│ Search Console                                not declared │
 │                                                            │
 │                                                            │
 │                                                            │
@@ -17,6 +18,5 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │                                                            │
 │                                                            │
 │                                                            │
-│                                                            │
-│ j/k move · Esc back                                        │
+│ j/k move · Enter open · Esc back                           │
 └────────────────────────────────────────────────────────────┘
