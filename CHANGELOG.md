@@ -41,6 +41,15 @@ baseline.
   batch stages that folder, and a `cwd` that is not a folder is named in the
   refusal, the same text whatever is there. Secret and hidden places keep the
   bare refusal.
+### Fixed
+
+- A llama.cpp server that serves its model under another id (for example the
+  GGUF path, because `llama-server` runs without `--alias`) no longer reads
+  `download required`: llama.cpp cannot download anything. The chat now says
+  that the server at `127.0.0.1:<port>` does not serve the configured model,
+  to start `llama-server` with `--alias <model>` or set the model to the
+  served name, and then lists up to three ids it serves. The task row and the model list read
+  `not served`.
 
 ## [1.19.0] - 2026-11-11
 
