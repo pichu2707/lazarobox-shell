@@ -148,6 +148,30 @@ run --apply --cap 0K
 check "the worktree of the base branch is kept" "$([ -f "$scratch/wt/base/only-here.txt" ]; echo $?)"
 check "the base branch is not deleted" "$(has_branch main; echo $?)"
 
+# A binary running from inside a worktree's build folder keeps that worktree:
+# deleting it would pull the executable from under the process.
+fixture
+worktree busy 1000000010 1
+mkdir -p "$scratch/wt/busy/target/release"
+cp "$(command -v sleep)" "$scratch/wt/busy/target/release/sleep"
+"$scratch/wt/busy/target/release/sleep" 300 &
+busy_pid=$!
+sleep 0.3
+run --apply --cap 0K
+kill "$busy_pid" 2> /dev/null || true
+wait "$busy_pid" 2> /dev/null || true
+check "a worktree with a running build binary is kept" "$([ -d "$scratch/wt/busy" ] && has_branch busy; echo $?)"
+check "it says a running process is the reason" \
+  "$(grep -q 'running process: not removed' <<< "$out"; echo $?)"
+check "it names the running binary" "$(grep -q 'target/release/sleep' <<< "$out"; echo $?)"
+check "other merged worktrees are still removed" "$([ ! -e "$scratch/wt/old" ]; echo $?)"
+check "--apply says it never removes build folders on their own" \
+  "$(grep -q 'never removes a build folder on its own' <<< "$out"; echo $?)"
+
+# Once the process is gone the same worktree is removable.
+run --apply --cap 0K
+check "a worktree is removed once its binary stopped" "$([ ! -e "$scratch/wt/busy" ]; echo $?)"
+
 # Bad arguments stop before anything is listed.
 fixture
 run --cap lots

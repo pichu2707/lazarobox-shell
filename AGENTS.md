@@ -26,9 +26,20 @@ when the branch merges.
   (default 40G).
 - It never removes the main checkout, the worktree it runs from, a locked
   worktree, the worktree of the base branch, a worktree with uncommitted
-  changes or untracked files, or one whose commits are not all in the base ref
-  (`--base`, default `origin/main`). Ignored files, such as build output, go
-  with a removed worktree.
+  changes or untracked files, one whose commits are not all in the base ref
+  (`--base`, default `origin/main`), or one where a process is running a binary
+  from inside it (for example `target/release/lazarobox`): it lists it as
+  `running` and says which binary. The check reads `/proc` on Linux and `ps`
+  elsewhere; if neither works it prints a note that it was skipped. Ignored
+  files, such as build output, go with a removed worktree.
+- It never removes a build folder on its own, including a stray top-level
+  `target-*`: those are listed only. Free one with `cargo clean`, after
+  checking that no process runs a binary from it.
+- No fixed build slots (`target-w1`, `target-w2`). What replaced them: each
+  agent worktree builds into its own `target/`, runs `rm -rf target` after its
+  checks, and the lighter dev profile (#677) keeps a cold build cheap.
+- Never run the full test suite from a worktree under `/tmp`: the app's jail
+  refuses `/tmp` roots as too broad, and 168 lib tests fail there.
 - A build folder holds compiler output only: removing it (`cargo clean`)
   costs a rebuild and nothing else. A worktree can hold uncommitted work:
   check it first, as the script does.
