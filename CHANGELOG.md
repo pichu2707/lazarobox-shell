@@ -12,6 +12,11 @@ baseline.
 
 ### Added
 
+- A `simple` worker is started from a brief (`goal`, `inputs`, `outputs`,
+  `done_when`, `out_of_scope`) instead of free text. An incomplete brief or a
+  path outside the project creates no worker and says so in the pane and to
+  the coordinator; its `outputs` decide whether the worker writes, and a
+  `simple` that writes is refused on a read-only goal or with Write off.
 - `/exec` turns Exec on for one chat, on the same path as `/write`: type it
   in the composer and a dialog names Exec and the folder and says every
   command still asks. Only a lowercase `y` grants it; `n` and Esc say `Exec

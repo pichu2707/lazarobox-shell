@@ -91,7 +91,10 @@ fn the_simple_toolset_is_read_write_and_exec_under_the_ceiling() {
 fn spawn_agent_accepts_simple_and_still_refuses_deploy_and_orchestrate() {
     // W8b: `simple` takes a brief, and free text is refused.
     assert!(matches!(
-        parse("spawn_agent", &json!({ "kind": "simple", "goal": "rename x" })),
+        parse(
+            "spawn_agent",
+            &json!({ "kind": "simple", "goal": "rename x" })
+        ),
         Ok(OrchCall::SpawnSimple { .. })
     ));
     assert_eq!(

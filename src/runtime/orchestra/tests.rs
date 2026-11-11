@@ -3453,9 +3453,7 @@ async fn a_read_only_goal_refuses_a_code_worker_with_a_reason() {
         .await;
     assert_eq!(
         handle.call(spawn(Task::Code, "edit it")).await,
-        error(
-            "code workers are not spawned for a read-only goal; a simple worker starts without write tools"
-        )
+        error(crate::core::ai::orchestra::steps::READ_ONLY)
     );
     assert!(
         lab.sent()
@@ -5893,6 +5891,41 @@ async fn a_code_spawn_with_write_off_is_refused_shown_and_never_launched() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(lab.seen.requests().is_empty(), "no process was started");
     // The run is not paused: the next spawn is a worker like any other.
+    assert_eq!(
+        handle.call(spawn(Task::Review, "look")).await,
+        fine("worker 1: running")
+    );
+}
+
+// Spec (agent-orchestrator, "Missing done-when refused", "A refusal before a
+// worker does not pause the run"): a `simple` spawn with no `done when` makes
+// no worker and no process; the coordinator and the pane get the same text,
+// naming the field; the run goes on.
+#[tokio::test]
+async fn a_simple_spawn_with_a_missing_field_is_refused_shown_and_never_launched() {
+    use crate::core::ai::orchestra::brief::Brief;
+    let mut lab = lab(Script::Hang);
+    let scope = lab.scope(codex_review(), &[]);
+    let (run, handle) = lab.begin(scope).unwrap();
+    let brief = Brief {
+        goal: "add a flag".into(),
+        inputs: vec!["src/a.rs".into()],
+        out_of_scope: "docs".into(),
+        ..Brief::default()
+    };
+    let refused = handle.call(OrchCall::SpawnSimple { brief }).await;
+    assert!(refused.is_error, "{refused:?}");
+    assert!(refused.text.contains("done when"), "{}", refused.text);
+    assert_eq!(
+        refusal(&mut lab).await,
+        OrchestraEvent::SpawnRefused {
+            run,
+            kind: Task::Simple,
+            reason: refused.text,
+        }
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(lab.seen.requests().is_empty(), "no process was started");
     assert_eq!(
         handle.call(spawn(Task::Review, "look")).await,
         fine("worker 1: running")
