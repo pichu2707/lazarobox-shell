@@ -44,6 +44,13 @@ baseline.
   files have no cap; an unknown language counts every line and says so. After
   a split `collect` marks the discarded files `discarded`; a batch whose lines
   cannot be counted is not proposed.
+- The same ask names the files a `simple` worker staged that its brief does
+  not list (`outside the brief: ...`), inside the run's scope; a secret path
+  or one outside the chat's folder is still refused at staging, never asked.
+  When the ask lists only such files, `n` or Esc decline: the batch is
+  discarded (`writes outside the brief declined: N staged files discarded`),
+  and that is neither a split nor a clarification round. After a split the
+  worker's row says `split, staged batch discarded`.
 - `Ctrl+Space x` opens the `/exec` dialog and `Ctrl+Space f` the `/write`
   dialog (`w` is the window group). A key never grants: only your `y` in the
   dialog does. A refusal shows the command's line, the composer draft is kept,
@@ -100,6 +107,8 @@ baseline.
 
 ### Fixed
 
+- A write refused after a split said the worker had asked for a clearer brief;
+  it now says the worker chose to split.
 - A worker whose clock was stopped (waiting for you or for its review) was
   ended `timed_out` when another worker of the run timed out, by the wall
   time since it started. Each worker is now timed out by its own clock only.

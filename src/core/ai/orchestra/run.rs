@@ -698,6 +698,24 @@ impl Run {
         total.filter(|(_, count)| count.over()).collect()
     }
 
+    /// The staged `paths` that worker `id`'s brief does not list among its
+    /// outputs (W9b, C). Only a `simple` worker has a brief to leave.
+    pub fn outside_brief(&self, id: WorkerId, paths: &[String]) -> Vec<String> {
+        let Some(slot) = self.slot(id).filter(|s| s.spec.task == Task::Simple) else {
+            return Vec::new();
+        };
+        let listed = slot.spec.outputs().unwrap_or_default();
+        let outside = paths
+            .iter()
+            .filter(|p| !listed.iter().any(|o| inside(p, o)));
+        outside.cloned().collect()
+    }
+
+    /// Whether worker `id` ended its attempt by choosing to split.
+    pub fn split_chosen(&self, id: WorkerId) -> bool {
+        matches!(self.closing(id), Some(Closing::Split(_)))
+    }
+
     /// Worker `id` chose to split its brief (W9b): `files` are the files over
     /// the limit, cleaned to one line each and capped like a clarification
     /// question. It ends the worker's writes and opens no clarification.
@@ -1843,22 +1861,22 @@ fn shown(usage: Usage, partial: bool) -> Usage {
     }
 }
 
-/// Whether one of two output paths is the other or a directory above it,
-/// comparing components ignoring ASCII case.
+/// The components of a path, without empty ones or `.`.
+fn parts(path: &str) -> Vec<String> {
+    let parts = path.split('/').filter(|c| !c.is_empty() && *c != ".");
+    parts.map(str::to_owned).collect()
+}
+
+/// Whether `path` is `output` or lies under it, comparing components
+/// ignoring ASCII case. `.` (the project root) holds every path.
+fn inside(path: &str, output: &str) -> bool {
+    let (long, short) = (parts(path), parts(output));
+    long.len() >= short.len() && (long.iter().zip(&short)).all(|(x, y)| x.eq_ignore_ascii_case(y))
+}
+
+/// Whether one of two output paths is the other or a directory above it.
 fn covers(a: &str, b: &str) -> bool {
-    let parts = |p: &str| -> Vec<String> {
-        let parts = p.split('/').filter(|c| !c.is_empty() && *c != ".");
-        parts.map(str::to_owned).collect()
-    };
-    let (a, b) = (parts(a), parts(b));
-    let under = |long: &[String], short: &[String]| {
-        long.len() >= short.len()
-            && long
-                .iter()
-                .zip(short)
-                .all(|(x, y)| x.eq_ignore_ascii_case(y))
-    };
-    under(&a, &b) || under(&b, &a)
+    inside(a, b) || inside(b, a)
 }
 
 /// Worker ids start at 1; id 0 maps to no slot.

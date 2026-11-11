@@ -203,6 +203,25 @@ pub trait Orchestra: Send + Sync {
         Some(Vec::new())
     }
 
+    /// The staged `paths` a `simple` worker's brief does not list among its
+    /// outputs (W9b, C). Only a `simple` worker has a brief to leave: the
+    /// default lists nothing. `None` when the run cannot be reached: the
+    /// files cannot be judged, and the batch is not proposed unasked.
+    fn outside_brief(
+        &self,
+        _run: RunId,
+        _worker: WorkerId,
+        _paths: Vec<String>,
+    ) -> Option<Vec<String>> {
+        Some(Vec::new())
+    }
+
+    /// Whether `worker` of `run` ended its work by choosing to split (W9b):
+    /// its write and command tools are then refused, with the split's text.
+    fn split_chosen(&self, _run: RunId, _worker: WorkerId) -> bool {
+        false
+    }
+
     /// `worker` chose to split its brief: `files` are the files over the
     /// limit. The run records it as the worker's closing (W9b).
     fn split(&self, _run: RunId, _worker: WorkerId, _files: Vec<String>) {}

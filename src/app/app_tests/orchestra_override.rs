@@ -219,6 +219,7 @@ fn kind_row(id: u32, kind: Task, engine: &str, model: Option<&str>) -> Orchestra
         partial: false,
         overridden: false,
         clarifying: None,
+        split: false,
     })
 }
 

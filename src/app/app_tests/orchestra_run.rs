@@ -56,6 +56,7 @@ pub(super) fn row(run: RunId, id: u32, status: WorkerStatus) -> OrchestraEvent {
         partial: false,
         overridden: false,
         clarifying: None,
+        split: false,
     })
 }
 

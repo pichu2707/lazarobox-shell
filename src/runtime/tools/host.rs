@@ -468,11 +468,26 @@ const OUT_OF_REVIEW_SCOPE: &str = "that path is outside the run's scope: the rev
 const CLARIFYING: &str =
     "you asked for a clearer brief: write and run nothing more; end with a short text";
 
-/// Whether `call` is a write or a command of a worker that already called
-/// `needs_specification`: it is refused, before it asks and after it waited.
-fn closed(scope: &TurnScope, call: &Call) -> bool {
-    (call.is_write() || matches!(call, Call::RunCommand { .. }))
-        && (scope.read_scope.as_ref()).is_some_and(|w| w.handle.clarifying(w.run, w.worker))
+/// What a worker is told when it writes or runs after it chose to split.
+const SPLIT_CLOSED: &str =
+    "you chose to split the work: write and run nothing more; end with a short text";
+
+/// What refuses `call` when it is a write or a command of a worker that
+/// already ended its brief, by `needs_specification` or by a split: it is
+/// refused, before it asks and after it waited, with the text of its ending.
+fn closed(scope: &TurnScope, call: &Call) -> Option<&'static str> {
+    if !(call.is_write() || matches!(call, Call::RunCommand { .. })) {
+        return None;
+    }
+    let w = scope.read_scope.as_ref()?;
+    if !w.handle.clarifying(w.run, w.worker) {
+        return None;
+    }
+    Some(if w.handle.split_chosen(w.run, w.worker) {
+        SPLIT_CLOSED
+    } else {
+        CLARIFYING
+    })
 }
 
 /// What a worker is told when `needs_specification` recorded nothing.
@@ -637,17 +652,19 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     };
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The command is the sanitizer's, so the ask shows what would be typed.
-    let mut checked: Result<Call, Cow<'static, str>> = match &call {
+    // `if let` guards need a newer Rust than the MSRV, so the closing is a
+    // second element of the matched pair.
+    let mut checked: Result<Call, Cow<'static, str>> = match (&call, closed(&scope, &call)) {
         // What the turn does not offer is refused as the parse refuses it.
-        call if !scope.offers(call) => Err(refusal_text(ToolError::UnknownTool).into()),
+        (call, _) if !scope.offers(call) => Err(refusal_text(ToolError::UnknownTool).into()),
         // A worker that asked for a clearer brief writes and runs nothing.
-        call if closed(&scope, call) => Err(CLARIFYING.into()),
-        Call::RunInPane { command } => command::validate(command)
+        (_, Some(text)) => Err(text.into()),
+        (Call::RunInPane { command }, None) => command::validate(command)
             .map(|valid| Call::RunInPane {
                 command: valid.as_str().to_owned(),
             })
             .map_err(|refusal| refusal.reason().into()),
-        other => files::gate(&scope, other)
+        (other, None) => files::gate(&scope, other)
             .map(|()| other.clone())
             .map_err(Cow::from),
     };
@@ -972,18 +989,14 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             // worker's `needs_specification` while this one waited: it is
             // judged again, and a batch is denied and discarded as the
             // user's `n` would.
-            if closed(&scope, &call) {
+            if let Some(closing) = closed(&scope, &call) {
                 record_denied(denied_command.take());
                 let (outcome, status, summary) = match call {
                     Call::ProposeBatch => {
-                        let no = Decision::Denied(CLARIFYING);
+                        let no = Decision::Denied(closing);
                         files::answered(&host, &scope, sealed.take(), no).await
                     }
-                    _ => ended(
-                        ToolStatus::Denied,
-                        format!("denied: {CLARIFYING}"),
-                        CLARIFYING,
-                    ),
+                    _ => ended(ToolStatus::Denied, format!("denied: {closing}"), closing),
                 };
                 owed.answer(status, &summary);
                 return outcome;

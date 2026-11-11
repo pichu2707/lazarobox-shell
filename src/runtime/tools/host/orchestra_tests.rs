@@ -396,6 +396,12 @@ struct Scoped {
     closed: std::sync::atomic::AtomicBool,
     /// The worker is a `simple` one: a file over the limit is listed (W9b).
     limited: bool,
+    /// The brief's outputs of the `simple` worker; `None` lists no outside file.
+    outputs: Option<&'static [&'static str]>,
+    /// The brief cannot be read though the counts can (review).
+    outside_gone: bool,
+    /// The worker chose to split (W9b).
+    splitted: std::sync::atomic::AtomicBool,
     /// The run cannot be reached: the limit cannot be counted.
     gone: bool,
     /// The rows the sibling writes during the review (0: `late`).
@@ -435,6 +441,9 @@ impl Scoped {
             held: Mutex::default(),
             closed: Default::default(),
             limited: false,
+            outputs: None,
+            outside_gone: false,
+            splitted: Default::default(),
             gone: false,
             late: 0,
         })
@@ -580,7 +589,24 @@ impl Orchestra for Scoped {
         (!self.gone).then(|| over.collect())
     }
 
+    fn outside_brief(&self, _: RunId, _: WorkerId, paths: Vec<String>) -> Option<Vec<String>> {
+        if self.outside_gone {
+            return None;
+        }
+        let Some(outputs) = self.outputs else {
+            return Some(Vec::new());
+        };
+        let listed = |path: &String| outputs.contains(&path.as_str());
+        Some(paths.into_iter().filter(|path| !listed(path)).collect())
+    }
+
+    fn split_chosen(&self, _: RunId, _: WorkerId) -> bool {
+        self.splitted.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn split(&self, _: RunId, _: WorkerId, files: Vec<String>) {
+        self.splitted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let line = format!("split {}", files.join(","));
         self.log.lock().unwrap().push(line);
         self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -2561,8 +2587,14 @@ async fn a_split_discards_the_staged_batch_and_says_how_many() {
         .iter()
         .any(|n| n.contains("split chosen: 2 staged files discarded"));
     assert!(said, "{notices:?}");
-    // The worker may not write again: the split ended its work.
-    assert!(d.call(write_call("src/c.rs", "x")).await.is_error);
+    // The worker may not write again: the split ended its work, and the
+    // refusal says so (not that it asked for a clearer brief).
+    let late = d.call(write_call("src/c.rs", "x")).await;
+    assert!(late.is_error, "{late:?}");
+    assert!(
+        late.text.contains("split") && !late.text.contains("clearer brief"),
+        "{late:?}"
+    );
 }
 
 // 22.4, 22.7: an ask nobody answered (cancelled, expired) is no split: the
@@ -2584,6 +2616,119 @@ async fn a_limit_ask_nobody_answered_discards_nothing_and_asks_again() {
     let origin = home.join("dev/app");
     let staged = host.staged_changes(StageKey::Pane(PANE), &origin).await;
     assert_eq!(staged.map(|s| s.len()), Some(1));
+}
+
+/// A `simple` worker whose brief lists only `outputs`.
+#[cfg(target_os = "linux")]
+fn briefed(
+    home: &Path,
+    limit: Decision,
+    outputs: &'static [&'static str],
+) -> (Arc<Scoped>, Arc<ByAsk>) {
+    for dir in ["src", "tests"] {
+        std::fs::create_dir_all(home.join("dev/app").join(dir)).unwrap();
+    }
+    let mut fake = Scoped::over(home, &["~/dev/app"]);
+    let only = Arc::get_mut(&mut fake).unwrap();
+    (only.limited, only.outputs) = (true, Some(outputs));
+    let user = ByAsk::limited(&fake, Decision::Sent, Decision::Sent, limit);
+    (fake, user)
+}
+
+// 22.5 (C, F, spec "Unlisted file inside the scope asks"): a staged file the
+// brief does not list is named in the SAME ask as the file over the limit.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_unlisted_file_is_named_in_the_same_ask_as_the_limit() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = briefed(&home, Decision::Sent, &["src/a.rs"]);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    assert!(!d.call(write_call("src/a.rs", &rows(401))).await.is_error);
+    assert!(!d.call(write_call("src/b.rs", "x")).await.is_error);
+    assert!(!d.call(Call::ProposeBatch).await.is_error);
+    let asks = user.asks.lock().unwrap().clone();
+    let limits: Vec<_> = (asks.iter())
+        .filter(|ask| matches!(ask, ApprovalAsk::Limit { .. }))
+        .collect();
+    assert_eq!(limits.len(), 1, "{asks:?}");
+    let ApprovalAsk::Limit { over, outside, .. } = limits[0] else {
+        panic!("{asks:?}");
+    };
+    assert_eq!(over.len(), 1);
+    assert_eq!(*outside, ["src/b.rs"]);
+}
+
+// 22.5: a file inside the brief and under the limit asks nothing.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn files_the_brief_lists_ask_nothing() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = briefed(&home, Decision::Sent, &["src/a.rs"]);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user);
+    assert!(!d.call(write_call("src/a.rs", "x")).await.is_error);
+    assert!(!d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(*fake.log.lock().unwrap(), ["batch"]);
+}
+
+// 22.5 (K2): an ask that lists only outside files: `y` keeps the batch,
+// `n` or Esc discards it with the decline wording, which is no split.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_outside_only_ask_keeps_on_y_and_declines_on_n_without_a_split() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = briefed(&home, Decision::Sent, &["src/a.rs"]);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user);
+    assert!(!d.call(write_call("src/b.rs", "x")).await.is_error);
+    assert!(!d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(*fake.log.lock().unwrap(), ["limit", "batch"]);
+
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = briefed(&home, DECLINED, &["src/a.rs"]);
+    let (d, seen) = writer_rows(&host, &home, fake.clone(), user.clone());
+    assert!(!d.call(write_call("src/a.rs", "x")).await.is_error);
+    assert!(!d.call(write_call("src/b.rs", "x")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    let said = "writes outside the brief declined: 2 staged files discarded";
+    assert!(out.text.contains(said), "{out:?}");
+    assert_eq!(*fake.log.lock().unwrap(), ["limit"], "no split recorded");
+    let origin = home.join("dev/app");
+    let staged = host.staged_changes(StageKey::Pane(PANE), &origin).await;
+    assert_eq!(staged, Some(Vec::new()));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let notices: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::Notice(line) => Some(line.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(notices.iter().any(|n| n.contains(said)), "{notices:?}");
+}
+
+// 22.5 (spec "Outside the scope is refused, not asked", GUARD): a secret path
+// and a path outside the chat's root are refused at staging, never asked.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_secret_or_out_of_root_write_is_refused_and_never_asked() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = briefed(&home, Decision::Sent, &["src/a.rs"]);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    for path in [".env", "../other/x.rs"] {
+        let out = d.call(write_call(path, "x")).await;
+        assert!(out.is_error, "{path}: {out:?}");
+    }
+    assert!(user.asks.lock().unwrap().is_empty());
 }
 
 // Review fix 2: a correction or a sibling stages into the author's batch while
@@ -2652,6 +2797,28 @@ async fn a_batch_whose_lines_cannot_be_counted_is_not_proposed() {
     assert!(
         out.text
             .contains("could not count the staged lines: nothing is proposed"),
+        "{out:?}"
+    );
+    assert!(fake.log.lock().unwrap().is_empty());
+}
+
+// Review: a run whose brief cannot be read cannot name the outside files, and
+// the batch is not proposed unasked, as when the lines cannot be counted.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_batch_whose_outside_files_cannot_be_judged_is_not_proposed() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (mut fake, _) = briefed(&home, Decision::Sent, &["src/a.rs"]);
+    Arc::get_mut(&mut fake).unwrap().outside_gone = true;
+    let user = ByAsk::limited(&fake, Decision::Sent, Decision::Sent, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user);
+    assert!(!d.call(write_call("src/b.rs", "x")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.is_error, "{out:?}");
+    assert!(
+        out.text.contains("could not count the staged lines"),
         "{out:?}"
     );
     assert!(fake.log.lock().unwrap().is_empty());

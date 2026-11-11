@@ -1696,6 +1696,7 @@ impl RunManager {
             partial: live.run.usage_partial(id),
             overridden: false,
             clarifying: live.run.clarify_round(id),
+            split: live.run.split_chosen(id),
         };
         self.send(pane, OrchestraEvent::Worker(row));
     }
@@ -2155,6 +2156,27 @@ impl Orchestra for Bound {
     ) -> Option<Vec<(String, Count)>> {
         let manager = self.manager.upgrade().filter(|_| run == self.run)?;
         manager.on_run(self.pane, run, |live| live.run.over_limit(worker, &counts))
+    }
+
+    fn outside_brief(
+        &self,
+        run: RunId,
+        worker: WorkerId,
+        paths: Vec<String>,
+    ) -> Option<Vec<String>> {
+        let manager = self.manager.upgrade().filter(|_| run == self.run)?;
+        manager.on_run(self.pane, run, |live| {
+            live.run.outside_brief(worker, &paths)
+        })
+    }
+
+    fn split_chosen(&self, run: RunId, worker: WorkerId) -> bool {
+        let manager = self.manager.upgrade();
+        manager
+            .and_then(|manager| {
+                manager.on_run(self.pane, run, |live| live.run.split_chosen(worker))
+            })
+            .unwrap_or(false)
     }
 
     fn split(&self, run: RunId, worker: WorkerId, files: Vec<String>) {

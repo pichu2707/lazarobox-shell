@@ -1041,6 +1041,9 @@ pub const FOLDER_CHECKING_KEYS: &str = "Esc cancels";
 pub const CONSENT_KEYS: &str = "y review it · n skip the review";
 /// The keys of the limit ask of a `simple` worker (decision K2).
 pub const LIMIT_KEYS: &str = "y keep · n or Esc split";
+/// The keys of that ask when it lists only files outside the brief: there is
+/// nothing to split (decision K2).
+pub const OUTSIDE_KEYS: &str = "y keep · n or Esc decline";
 /// The keys of the `/github` dialog. ASCII: it must read on a Linux console.
 pub const GITHUB_GRANT_KEYS: &str = "y allow | n or Esc decline";
 /// What the `/github` dialog adds under the repository. ASCII.

@@ -72,6 +72,8 @@ pub struct WorkerRow {
     /// The worker ended on a call of `needs_specification` (W8c): its row
     /// says it needs specification, in this round of its brief.
     pub clarifying: Option<u32>,
+    /// The worker ended on a split the user chose (W9b): its row says so.
+    pub split: bool,
 }
 
 /// A continuation turn (S4, D8): turn `turn` of at most `max` of run `run`

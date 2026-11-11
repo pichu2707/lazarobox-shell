@@ -32,6 +32,7 @@ fn row(id: u32, status: WorkerStatus, elapsed: Option<u64>) -> WorkerRow {
         partial: false,
         overridden: false,
         clarifying: None,
+        split: false,
     }
 }
 
@@ -395,6 +396,20 @@ fn the_third_askers_row_says_the_limit_was_reached() {
     let said = |l: &String| l.contains("needs specification, limit reached (2 rounds)");
     assert!(lines.iter().any(said), "{lines:?}");
     assert!(!lines.iter().any(|l| l.contains("round 3")), "{lines:?}");
+}
+
+// Spec (chat-pane, "A limit and a clarification stop are visible", W9b 22.7):
+// the row of a worker that ended with a split chosen says `split`, and no
+// clarification round.
+#[test]
+fn a_split_row_says_split_and_no_round() {
+    let mut split = row(2, WorkerStatus::Done, Some(3));
+    split.split = true;
+    let mut state = chat();
+    state.worker_row(split);
+    let lines = texts(&state);
+    let said = |l: &String| l.contains(" split") && !l.contains("needs specification");
+    assert!(lines.iter().any(said), "{lines:?}");
 }
 
 // Spec (chat-pane, "Row shows the round", W8c 20.3): the row of a worker that

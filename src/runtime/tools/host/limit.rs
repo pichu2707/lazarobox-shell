@@ -46,23 +46,31 @@ pub(super) async fn check(host: &ToolHost, scope: &TurnScope, asked: &[String]) 
     let Ok(counts) = taken.await else {
         return Limited::Stop(NO_COUNT.to_owned());
     };
+    // The staged files the brief does not list ride in the same ask (C).
+    let paths = counts.iter().map(|(path, _)| path.clone()).collect();
+    let Some(outside) = worker
+        .handle
+        .outside_brief(worker.run, worker.worker, paths)
+    else {
+        return Limited::Stop(NO_COUNT.to_owned());
+    };
     let Some(listed) = worker.handle.over_limit(worker.run, worker.worker, counts) else {
         return Limited::Stop(NO_COUNT.to_owned());
     };
-    let over: Vec<_> = listed
-        .into_iter()
-        .filter(|(path, _)| !asked.contains(path))
-        .collect();
-    if over.is_empty() {
+    let fresh = |path: &String| !asked.contains(path);
+    let over: Vec<_> = listed.into_iter().filter(|(p, _)| fresh(p)).collect();
+    let outside: Vec<String> = outside.into_iter().filter(fresh).collect();
+    if over.is_empty() && outside.is_empty() {
         return Limited::Go(asked.to_vec());
     }
     let asked_now: Vec<String> = asked
         .iter()
         .cloned()
         .chain(over.iter().map(|(path, _)| path.clone()))
+        .chain(outside.iter().cloned())
         .collect();
     let label = worker.ask_label();
-    let ask = limit_ask(worker.key(), &label, &over, &[]);
+    let ask = limit_ask(worker.key(), &label, &over, &outside);
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The wait is not the worker's own work: its deadline stops (PR15).
     let _paused = worker.handle.pause(worker.run, worker.worker);
@@ -76,7 +84,11 @@ pub(super) async fn check(host: &ToolHost, scope: &TurnScope, asked: &[String]) 
     let announce = StreamEvent::ToolCall {
         id,
         name: ROW.to_owned(),
-        summary: clip("write past the line limit in a file?"),
+        summary: clip(if over.is_empty() {
+            "outside the brief?"
+        } else {
+            "line limit?"
+        }),
         approval: Some(Box::new(ask)),
     };
     if scope.events.send(announce).await.is_err() {
@@ -94,10 +106,16 @@ pub(super) async fn check(host: &ToolHost, scope: &TurnScope, asked: &[String]) 
             Limited::Go(asked_now)
         }
         Answer::Decided(Decision::Denied(crate::app::DECLINED)) => {
-            let files: Vec<String> = over.into_iter().map(|(path, _)| path).collect();
             let lost = files::discard_files(&host.stages, key);
-            worker.handle.split(worker.run, worker.worker, files);
-            let said = format!("split chosen: {lost} staged files discarded");
+            // Only a file over the limit is a split; a decline of files
+            // outside the brief is neither a split nor a round (K2).
+            let said = if over.is_empty() {
+                format!("writes outside the brief declined: {lost} staged files discarded")
+            } else {
+                let files: Vec<String> = over.into_iter().map(|(path, _)| path).collect();
+                worker.handle.split(worker.run, worker.worker, files);
+                format!("split chosen: {lost} staged files discarded")
+            };
             let line = format!("worker {label}: {said}");
             let _ = scope.events.send(StreamEvent::Notice(line)).await;
             owed.answer(ToolStatus::Denied, &clip(&said));

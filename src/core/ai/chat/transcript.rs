@@ -167,6 +167,9 @@ pub(super) fn worker_line(row: &WorkerRow) -> String {
             line.push_str(&format!(" needs specification, round {round} of {ROUNDS}"));
         }
     }
+    if row.split && row.status == WorkerStatus::Done {
+        line.push_str(" split, staged batch discarded");
+    }
     // A done worker whose engine reported nothing says so; the number is
     // never estimated.
     match (row.usage, row.status) {
