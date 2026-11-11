@@ -58,7 +58,7 @@ impl App {
         let mut effects = Vec::new();
         if !on {
             self.end_all_grants(github::TOOLS_ENDED);
-            effects.extend(self.end_all_write(write::TOOLS_ENDED));
+            effects.extend(self.end_all_write(write::WHY_TOOLS));
             // A dialog of `/github` or `/write` goes with them, and says so.
             let ids: Vec<PaneId> = self.panes.keys().copied().collect();
             for id in ids {

@@ -15,7 +15,7 @@ use crate::core::ai::chat::{
     usage_view::{Billing, today_segment},
     yank,
 };
-use crate::core::ai::window::ollama_num_ctx;
+use crate::core::ai::{config::ToolToggle, window::ollama_num_ctx};
 
 /// What the last store answer said about the local day: the status segment's
 /// figures. They come from the store thread, so drawing never reads SQLite.
@@ -541,7 +541,12 @@ impl App {
             }
             Command::Write => return self.write_submit(id),
             Command::WriteArgs => {
-                self.write_refused(id);
+                self.grant_refused(id, ToolToggle::Write);
+                return Vec::new();
+            }
+            Command::Exec => return self.exec_submit(id),
+            Command::ExecArgs => {
+                self.grant_refused(id, ToolToggle::Exec);
                 return Vec::new();
             }
             Command::Feedback(words) => return self.feedback_submit(id, &words),
