@@ -138,6 +138,8 @@ mod brief_spawn_tests;
 #[cfg(test)]
 mod brief_tests;
 #[cfg(test)]
+mod ceiling_exec_tests;
+#[cfg(test)]
 mod ceiling_tests;
 #[cfg(test)]
 mod claims_tests;
