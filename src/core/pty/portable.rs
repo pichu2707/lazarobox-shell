@@ -294,6 +294,7 @@ mod tests {
         pane::PaneSize,
         pty::{PtyEvent, SpawnSpec},
     };
+    use crate::runtime::proc::{stopped, wait_gone_blocking, wait_gone_blocking_with};
 
     const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -503,19 +504,6 @@ mod tests {
         assert_eq!(count_exited(&rx, Duration::from_secs(15)), 1);
     }
 
-    fn is_alive(pid: u32) -> bool {
-        std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .map(|stat| {
-                !stat
-                    .rsplit(')')
-                    .next()
-                    .unwrap_or("")
-                    .trim_start()
-                    .starts_with('Z')
-            })
-            .unwrap_or(false)
-    }
-
     /// The pid in `job=<pid>` of the shell's output (the tty echo of the
     /// command line has `job=$!`, no digits). Only a whole line counts: the
     /// output can arrive in pieces, and `job=1` of `job=1234` is not pid 1.
@@ -568,18 +556,19 @@ mod tests {
                 None => {}
             }
         };
-        assert!(is_alive(job));
+        assert!(!stopped(job as libc::pid_t));
         assert_eq!(
             parent_of(job),
             pty.pid(),
             "job={job} is not the shell's child"
         );
         drop(pty);
-        let deadline = Instant::now() + TIMEOUT;
-        while is_alive(job) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(!is_alive(job), "background job survived the drop");
+        // The job is reparented once its shell is gone, so a zombie waiting
+        // for init counts as gone.
+        assert!(
+            wait_gone_blocking(job as libc::pid_t),
+            "background job survived the drop"
+        );
     }
 
     /// Starts `/bin/sh`, installs `setup`, then spins so signals are handled
@@ -617,7 +606,11 @@ mod tests {
         let started = Instant::now();
         pty.kill();
         assert!(started.elapsed() < Duration::from_secs(15), "kill() hung");
-        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        // The shell is ours, so kill() reaps it: strict, no zombie left.
+        assert!(
+            wait_gone_blocking_with(pid as libc::pid_t, false),
+            "the shell was not reaped"
+        );
     }
 
     // Spec: quit leaves no orphan.
@@ -627,7 +620,10 @@ mod tests {
         let pid = pty.pid().expect("pid");
         assert!(Path::new(&format!("/proc/{pid}")).exists());
         drop(pty);
-        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        assert!(
+            wait_gone_blocking_with(pid as libc::pid_t, false),
+            "the shell was not reaped"
+        );
     }
 }
 
