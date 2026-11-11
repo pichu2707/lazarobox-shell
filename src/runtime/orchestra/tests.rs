@@ -4484,19 +4484,27 @@ async fn an_unanswered_inferred_claim_is_not_upheld_and_the_review_is_incomplete
     );
 }
 
-// S3 limits: a review that cannot start its workers (max_workers) says so,
-// leaves the change unreviewed and does not fail the worker.
+// D22 (17.5): the review workers are internal, so a run whose `max_workers`
+// is already used by its author still reviews (before, a review needed room
+// for three more workers and was left unreviewed).
 #[tokio::test]
-async fn a_review_over_the_worker_cap_stops_visibly() {
+async fn a_review_runs_with_the_worker_cap_used_up() {
     let limits = RunLimits {
-        workers: 3,
+        workers: 1,
         ..RunLimits::default()
     };
     let (mut lab, run, _handle) = reviewed(quiet, Answered::Granted, limits).await;
     let kept = lab.manager.reviews(pane(), run);
-    assert_eq!(kept[0].outcome, None);
+    assert!(kept[0].outcome.is_some(), "the review concluded");
+    assert!(
+        lab.seen.requests().len() >= 3,
+        "the code worker and the lenses"
+    );
     let lines = review_lines(&mut lab);
-    assert!(lines.iter().any(|l| l.contains("max_workers")), "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("max_workers")),
+        "{lines:?}"
+    );
 }
 
 // The orchestrator raises the tier; it cannot lower it, and a passive or an
@@ -4794,26 +4802,6 @@ async fn the_correction_stays_marked_and_the_readers_are_cleaned() {
     assert!(state.viewers.is_empty() && state.systems.is_empty());
 }
 
-// W4: a review that cannot fit its workers (two lenses and the refuter) does
-// not start any, and says why.
-#[tokio::test]
-async fn a_review_that_cannot_fit_its_workers_starts_none() {
-    let limits = RunLimits {
-        workers: 3,
-        ..RunLimits::default()
-    };
-    let (mut lab, run, _handle) = reviewed(quiet, Answered::Granted, limits).await;
-    assert_eq!(lab.seen.requests().len(), 1, "only the code worker");
-    assert_eq!(lab.manager.reviews(pane(), run)[0].outcome, None);
-    let lines = review_lines(&mut lab);
-    assert!(
-        lines
-            .iter()
-            .any(|l| l.contains("could not start") && l.contains("max_workers")),
-        "{lines:?}"
-    );
-}
-
 // W5: a run that is gone cannot review, and its assessment is not passive.
 #[tokio::test]
 async fn a_review_of_a_gone_run_cannot_start_and_its_assessment_is_high() {
@@ -4928,13 +4916,12 @@ async fn a_run_halted_during_a_review_ends_it_incomplete() {
     assert!(lines.iter().any(|l| l.contains("halted")), "{lines:?}");
 }
 
-// W-A: with no room for a correction and its check (workers 4: code, two
-// lenses, one left), the correction is skipped, said, and the blocker stays
-// open.
+// D22 (17.5): a correction and its check are internal too: they run with
+// `max_workers` used up by the author and the lenses.
 #[tokio::test]
-async fn a_correction_without_room_for_its_check_is_skipped_visibly() {
+async fn a_correction_and_its_check_need_no_room_under_the_worker_cap() {
     let limits = RunLimits {
-        workers: 4,
+        workers: 1,
         ..RunLimits::default()
     };
     let (mut lab, run, _handle) = reviewed_with(
@@ -4944,71 +4931,60 @@ async fn a_correction_without_room_for_its_check_is_skipped_visibly() {
         Some(restaged_differently),
     )
     .await;
-    assert!(lab.seen.requests().iter().all(|r| !is_correction(r)));
-    assert_eq!(
+    assert!(lab.seen.requests().iter().any(is_correction));
+    assert_ne!(
         lab.manager.reviews(pane(), run)[0].outcome,
         Some(Ended::BlockersOpen)
     );
     let lines = review_lines(&mut lab);
     assert!(
-        lines.iter().any(|l| l.contains("correction was skipped")),
+        !lines.iter().any(|l| l.contains("correction was skipped")),
         "{lines:?}"
     );
 }
 
-fn correction_held(request: &ChatRequest) -> Option<&'static str> {
-    if is_correction(request) {
-        None
-    } else {
-        blocker_then_fixed(request)
-    }
+/// Draws served so far by [`fourth_draw_fails`].
+static DRAWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A nonce source that fails only its fourth draw: two lenses (a severe blocker
+/// needs no refuter), the
+/// correction, then its check.
+fn fourth_draw_fails() -> Option<[u8; 8]> {
+    let drawn = DRAWS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    (drawn != 3).then_some([7; 8])
 }
 
-// W-A: a check that cannot start (the last slot was taken meanwhile) keeps
-// the blockers open and says so; the review is not lost.
+// W-A (kept after D22 removed the room rule): a correction check that cannot
+// start keeps the blockers open and says so; the review is not lost.
 #[tokio::test]
 async fn a_check_that_cannot_start_keeps_the_blockers_open() {
-    let limits = RunLimits {
-        workers: 5,
-        ..RunLimits::default()
-    };
-    let lab = lab_with(Script::By(correction_held), |m, home| RunManager {
-        scratch: |_| false,
-        restage: Some(restaged_differently),
-        ..tooled(m, home)
+    DRAWS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let mut lab = lab_with(Script::By(blocker_then_fixed), |m, home| {
+        RunManager {
+            scratch: |_| false,
+            restage: Some(restaged_differently),
+            diff: Some(staged_text),
+            ..tooled(m, home)
+        }
+        .with_nonce(fourth_draw_fails)
     });
-    let scope = OrchScope {
-        limits,
-        ..lab.scope(codex_both(), &[])
-    };
-    let (run, handle) = lab.begin(scope).unwrap();
+    let (run, handle) = lab.begin(lab.scope(codex_both(), &[])).unwrap();
     handle.call(spawn(Task::Code, "write a")).await;
     lab.seen.first().await;
     let changes = lock_change();
     let assessment = handle.assess(run, &changes);
-    let review = handle.review(run, WorkerId(1), changes, assessment, Answered::Granted);
-    let task = tokio::spawn(review);
-    until("the correction started", || {
-        lab.seen.requests().iter().any(is_correction)
-    })
-    .await;
-    // Something else takes the last slot before the check is started.
-    handle.call(spawn(Task::Review, "x")).await;
-    let done = WorkerEvent::Done {
-        text: "staged".to_owned(),
-    };
-    let key = WorkerKey {
-        run,
-        worker: WorkerId(4),
-    };
-    lab.manager.finish(pane(), key, Some(vec![done]));
-    let ended = timeout(Duration::from_secs(5), task).await;
-    assert!(ended.expect("the review ended").unwrap().is_ok());
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Granted);
+    assert!(
+        timeout(Duration::from_secs(10), done)
+            .await
+            .unwrap()
+            .is_ok()
+    );
+    assert!(lab.seen.requests().iter().any(is_correction));
     assert_eq!(
         lab.manager.reviews(pane(), run)[0].outcome,
         Some(Ended::BlockersOpen)
     );
-    let mut lab = lab;
     let lines = review_lines(&mut lab);
     assert!(
         lines
