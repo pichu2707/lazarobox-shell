@@ -2,14 +2,14 @@
 
 ## Purpose
 
-The values a user MCP server needs (tokens, OAuth client id and secret, project ids, credential file paths) live in a lazarobox-owned file that the user edits, mode 0600, and each value reaches only its own server (C6). The servers themselves stay declared in `config.toml` `[[ai.mcp.servers]]` (C4, C5); how a value reaches a server is in mcp-servers (Lifecycle, Secrets and privacy), and the read tools refuse the file (agent-tools, Path policy). Slice tag: [S1]. Scenario tags: [auto] = `cargo test` (temp config folder, fake server child); [manual] = real machine. Items marked "assumption" are proposals, not user decisions.
+The values a user MCP server needs (tokens, OAuth client id and secret, project ids, credential file paths) live in a lazarobox-owned file that the user edits, mode 0600, and each value reaches only its own server (C6). The servers themselves stay declared in `config.toml` `[[ai.mcp.servers]]` (C4, C5); how a value reaches a server is in mcp-servers (Lifecycle, Secrets and privacy), and the read tools refuse the file (agent-tools, Path policy). Slice tags: [S1], [S6a] (menu save, C6 amended 2026-11-11). Scenario tags: [auto] = `cargo test` (temp config folder, fake server child); [manual] = real machine. Items marked "assumption" are proposals, not user decisions.
 
 Terms: "the file" = `secrets.toml` in the lazarobox config folder. "Table" = a top-level TOML table of the file. "Server table" = the table whose name equals a server's `name`.
 
 ## Requirements
 
 ### Requirement: Location and ownership [S1]
-The file MUST be `secrets.toml` in the lazarobox config folder, the folder of `config.toml` (see configuration: `$XDG_CONFIG_HOME/lazarobox/`, else `$HOME/.config/lazarobox/`), so its default place is `~/.config/lazarobox/secrets.toml` (C6). It is edited by the user. lazarobox MUST NEVER create, write, rename, delete or change the mode of the file, from the menu or anywhere else. A missing file is not an error, produces no notice, and leaves every server with the values from lazarobox's own environment only. No value from the file is ever written to `config.toml`.
+The file MUST be `secrets.toml` in the lazarobox config folder, the folder of `config.toml` (see configuration: `$XDG_CONFIG_HOME/lazarobox/`, else `$HOME/.config/lazarobox/`), so its default place is `~/.config/lazarobox/secrets.toml` (C6). It is the user's file, and editing it by hand MUST stay fully supported. lazarobox MUST NEVER create, write, rename, delete or change the mode of the file, from the menu or anywhere else, EXCEPT by the menu save of one value (see Menu save; C6 amended 2026-11-11). Amendment note: until 2026-11-11 this sentence had no exception; the owner kept the file the user's and added the masked-field save. A missing file is not an error, produces no notice, and leaves every server with the values from lazarobox's own environment only. No value from the file is ever written to `config.toml`.
 
 #### Scenario: Default place [auto]
 - GIVEN `XDG_CONFIG_HOME` unset and `HOME=/h`
@@ -28,7 +28,7 @@ The file MUST be `secrets.toml` in the lazarobox config folder, the folder of `c
 
 #### Scenario: Never written [auto]
 - GIVEN a config folder with and without a `secrets.toml`
-- WHEN servers start and stop, the menu opens, saves and closes, and the app quits
+- WHEN servers start and stop, the menu opens, saves and closes (no secret field confirmed), and the app quits
 - THEN no `secrets.toml` is created, an existing one is byte-identical with the same mode, and `config.toml` holds none of its values
 
 ### Requirement: Mode 0600 [S1]
@@ -110,3 +110,91 @@ A problem with the file MUST be shown as a sanitized system line `mcp: <problem>
 - GIVEN a file with one bad key and one good key for `clarity`
 - WHEN `clarity` is started
 - THEN it starts with the good value and the chat shows the problem once
+
+### Requirement: Menu save [S6a]
+The only write lazarobox makes to the file (C6 amended 2026-11-11) is the save of ONE value for ONE server, sent by a confirmed secret field of the Connectors area (see mcp-connect, Secret fields). It MUST be started only by that field; no model, tool, MCP call, chat command or config value can send it. The save MUST:
+- write only the table whose name is the server's `name` and only a name that the server's catalog entry lists in `env` (for a preset, the preset value); any other server or name is refused as `secrets.toml: <server>.<NAME> is not a value of this connector` and nothing is written;
+- read the file under the same bounds as a start (regular file, at most 64 KiB, not a special file) and parse it preserving its layout (assumption: `toml_edit`), then change only that value: an existing key keeps its place, its key text and the comment after it on the same line; a missing key is appended at the end of its table; a missing table is appended at the end of the file after one empty line. Every other byte of the file (comments, blank lines, order, other tables, other keys) MUST be identical after the save;
+- write the value as a TOML basic string with the escapes TOML needs, and refuse a value that is not one line or holds a control character;
+- when the file exists, first write its previous bytes to `secrets.toml.bak` in the same folder, mode 0600, through a temporary file and a rename (one generation; the previous backup is replaced). A `secrets.toml.bak` that is a symlink or not a regular file refuses the save. No backup is made when the file did not exist;
+- write the new file atomically: a temporary file created new in the same folder with mode 0600, written, synced, then renamed over `secrets.toml`; a failure at any step leaves the original file unchanged, leaves no partial file and removes the temporary file. The result MUST have mode 0600. When the file is missing it is created with mode 0600 holding only that table; when the config folder is missing it is created as the config save creates it (config-persistence), and when no config folder can be resolved nothing is written (`secrets.toml: no config folder`);
+- check, right before the rename, that the file is still the one that was read (same device, inode, size and modification time); otherwise write nothing and report `secrets.toml changed on disk; nothing was saved, try again`.
+
+The save MUST refuse, write nothing (no backup, no temporary file left) and show one visible notice when:
+- the path is a symlink: `secrets.toml is a symlink; edit it by hand`;
+- it is not a regular file: `secrets.toml: not a regular file`;
+- it is not owned by the user running lazarobox (effective uid): `secrets.toml is not owned by you; edit it by hand`;
+- it has any group or other permission bit: `secrets.toml: mode must be 0600 (chmod 600 <path>)` (the existing text, path sanitized);
+- it is larger than 64 KiB: `secrets.toml: larger than 64 KiB`;
+- it cannot be read: `secrets.toml: cannot be read`;
+- it is not valid TOML: `secrets.toml: not valid TOML (line <N>); fix it by hand, nothing was saved` (an unparseable file is NEVER overwritten);
+- the server's table exists but is not a plain `[name]` table (an inline table, dotted keys, an array of tables or a value): `secrets.toml: [<server>] is not a plain table; edit it by hand`;
+- the existing value of that name is not a string: `secrets.toml: <server>.<NAME>: expected a string; edit it by hand`;
+- a write, sync or rename fails: `secrets.toml: not saved (<error kind>)`.
+
+A notice, a log line or an error MUST name at most the server and the name, never a value or a text of the file. On success the notice reads `saved <NAME> to secrets.toml (backup: secrets.toml.bak)` (without the backup part when there was no file).
+
+#### Scenario: Only the value changes [auto]
+- GIVEN a file of mode 0600 holding a leading comment, `[ga4]` with `GOOGLE_CLOUD_PROJECT = "p1" # mine`, a blank line and `[clarity]` with `CLARITY_API_TOKEN = "a"`
+- WHEN `CLARITY_API_TOKEN` of `clarity` is saved as `b`
+- THEN the new file equals the old one with `"a"` replaced by `"b"`, its mode is 0600, and `secrets.toml.bak` holds the old bytes with mode 0600
+
+#### Scenario: Comment after the value kept [auto]
+- GIVEN `[ga4]` with `GOOGLE_CLOUD_PROJECT = "p1" # mine`
+- WHEN it is saved as `p2`
+- THEN the line reads `GOOGLE_CLOUD_PROJECT = "p2" # mine`
+
+#### Scenario: New table appended [auto]
+- GIVEN a file holding only `[clarity]`
+- WHEN `GOOGLE_CLOUD_PROJECT` of `ga4` is saved as `p`
+- THEN the file ends with an empty line, `[ga4]` and `GOOGLE_CLOUD_PROJECT = "p"`, and every byte before it is unchanged
+
+#### Scenario: Missing file is created 0600 [auto]
+- GIVEN no `secrets.toml`
+- WHEN `CLARITY_API_TOKEN` of `clarity` is saved
+- THEN the file exists with mode 0600 and holds only `[clarity]` with that value, and no `secrets.toml.bak` exists
+
+#### Scenario: Symlink refused [auto]
+- GIVEN `secrets.toml` a symlink to a 0600 file elsewhere
+- WHEN a value is saved
+- THEN the notice is `secrets.toml is a symlink; edit it by hand`, and neither the link, its target nor any `.bak` or temporary file changes
+
+#### Scenario: Loose mode refused [auto]
+- GIVEN a valid file with mode 0644
+- WHEN a value is saved
+- THEN the notice is `secrets.toml: mode must be 0600 (chmod 600 <path>)` and the file is byte-identical with mode 0644
+
+#### Scenario: Foreign owner refused [auto, root or fake metadata]
+- GIVEN a file owned by another uid
+- WHEN a value is saved
+- THEN the notice is `secrets.toml is not owned by you; edit it by hand` and nothing changes
+
+#### Scenario: Directory in its place refused [auto]
+- GIVEN a directory named `secrets.toml`
+- WHEN a value is saved
+- THEN the notice is `secrets.toml: not a regular file` and nothing is created
+
+#### Scenario: Unparseable file never overwritten [auto]
+- GIVEN a file of mode 0600 whose line 3 reads `CLARITY_API_TOKEN = "sk-123`
+- WHEN a value is saved
+- THEN the notice is `secrets.toml: not valid TOML (line 3); fix it by hand, nothing was saved`, the file is byte-identical, no `.bak` is written, and `sk-123` appears in no notice or log
+
+#### Scenario: Inline table refused [auto]
+- GIVEN `clarity = { CLARITY_API_TOKEN = "a" }`
+- WHEN `CLARITY_API_TOKEN` of `clarity` is saved
+- THEN the notice is `secrets.toml: [clarity] is not a plain table; edit it by hand` and nothing changes
+
+#### Scenario: A name the entry does not list [auto]
+- GIVEN the `clarity` entry
+- WHEN a save of `PATH` for `clarity`, or of `CLARITY_API_TOKEN` for `ga4`, is sent
+- THEN it is refused as not a value of this connector and nothing changes
+
+#### Scenario: Changed on disk [auto]
+- GIVEN a save that read the file, and the file replaced by another program before the rename
+- WHEN the save reaches the rename
+- THEN nothing is written and the notice says the file changed on disk
+
+#### Scenario: Failed write leaves the original [auto]
+- GIVEN a folder where the rename fails
+- WHEN a value is saved
+- THEN the original file is byte-identical, no temporary file remains, and the notice is `secrets.toml: not saved (<error kind>)`

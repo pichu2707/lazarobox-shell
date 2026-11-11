@@ -46,14 +46,58 @@ S4 may split the entry screen (the entry part of `connectors.rs`, tasks 4.3-4.4b
 - [x] 5.2 Docs: README for GSC. As built: the section is now "Conectar un servicio (Clarity, Google Analytics 4 y Search Console)" with a Search Console paragraph, the disconnect steps (remove the service account from Users and permissions, delete the key in Cloud Console) and a CHANGELOG line under Unreleased.
 - [ ] 5.3 [manual] Live: a query on a property the service account was added to.
 
-## S6 Workspace: Gmail drafts, Docs, Sheets, Apps Script (C9, C12) — 170–270 lines
+## S6 replaced on 2026-11-11 by S6a-S6d
 
-- [ ] 6.1 RED/GREEN: `google` entry: `--permissions gmail:readonly+drafts`, client id and secret in `secrets.toml`, drafts and residual-risk notes in the guide (Google Workspace entry, drafts only).
-- [ ] 6.2 RED/GREEN: Gmail tool filter: `send_gmail_message` and unknown Gmail tools not registered, filter before the 64-tool cap, which `list_tools` applies today (client.rs:191), other servers untouched (Gmail tool filter).
-- [ ] 6.3 RED/GREEN: `apps-script` entry: `clasp mcp`, `clasp login`, no `env`, tool classes (Apps Script entry).
-- [ ] 6.4 Verify (U) and pin the workspace-mcp pre-authorization in the login pane and the installed binary names; probe confirms the tool count stays under 64.
-- [ ] 6.5 Docs: README for Google and Apps Script, including that replies go to Drafts and are sent from Gmail.
-- [ ] 6.6 [manual] Live: a draft after `y`; `push_files` after `y`.
+The owner amended C6, C7 and C10 and added C14 (proposal, dated notes; design D21-D26). The former tasks 6.1-6.6 are folded in: 6.1 and 6.3 into S6c, 6.2 into S6c (8-name allowlist), 6.4 is answered (binary names verified 2026-11-11; workspace-mcp has NO pre-authorization command, so the login-pane assumption is dropped and S6b links it instead), 6.5 into S6d, 6.6 into the [manual] checks below. Build order: S6a, S6c, S6b, S6d (S6b needs the `google` entry of S6c and the fields of S6a). Each slice is one PR of about 400 production lines at most (tests, snapshots and docs do not count). (U) = still needs upstream verification inside the slice.
+
+| Slice | Content | Decisions | Production lines (est.) | Depends on |
+|---|---|---|---|---|
+| S6a | Secret fields and the menu save of `secrets.toml` | C6 amended, D22, D23 | 300–390 | S4 |
+| S6c | `google` and `apps-script` entries, Gmail allowlist and hidden tools before the cap, `gsc` ways (data), catalog fixes | C9, C10 amended, C12, D24, D25 | 200–280 | S5 |
+| S6b | Link with Google: `gsc` OAuth login in the pane, `google` link session, `linked` states, macOS mcp-gsc read-deny | C7, C10 amended, D21, D26 | 280–380 | S6a, S6c |
+| S6d | Tutorial `docs/conectores.md` (Spanish), README links, guides point at the tutorial | C14 | docs only (under 30) | S6b |
+
+## S6a Secret fields and save (C6 amended) — 300–390 lines
+
+- [ ] 6a.1 RED/GREEN: pure `mcp_secrets::edit(text, server, name, value)`: only the value changes (key place, key text and the comment after it kept), missing key appended to its table, missing table appended after one empty line, TOML escapes, one-line and no-control-character values; refusals for an inline table, dotted keys, an array of tables, a non-string existing value, a name the entry does not list, unparseable text (line only, never the parser message) (mcp-secrets, Menu save: Only the value changes, Comment after the value kept, New table appended, Inline table refused, A name the entry does not list, Unparseable file never overwritten).
+- [ ] 6a.2 RED/GREEN: runtime writer `secrets_write.rs`: refuses a symlink, a non-regular file, a foreign owner (`geteuid`), any group or other bit, over 64 KiB, unreadable; backup `secrets.toml.bak` 0600 (one generation, refused when the `.bak` is a link or not regular, none when the file was missing); temp file `create_new` 0600 + `sync_all` + rename; `(dev, ino, len, mtime)` re-check; missing file created 0600; failure leaves the original and no temp file (Missing file is created 0600, Symlink refused, Loose mode refused, Foreign owner refused, Directory in its place refused, Changed on disk, Failed write leaves the original).
+- [ ] 6a.3 RED/GREEN: field list and masked field in the area (`f`): rows `not set` / `set` / `set · …abcd` (16+ characters), presets written without typing, `•` per character, 4096-byte bound, refused line break and control characters, empty Enter saves nothing, overwrite asks `replace the saved <NAME>? (y/n)` and only a plain `y` continues, Esc drops the text (mcp-connect, Secret fields: every scenario).
+- [ ] 6a.4 RED/GREEN: plumbing `MenuCommand::SaveSecret` -> `Effect::SaveSecret` -> `AppEvent::SecretSaved`; the value type's `Debug` prints `<redacted>` and clears on drop; notices carry the name only; a sweep test over notices, `Debug` outputs, the log and the clipboard finds no saved value; no chat, tool or config path can build the command (The value appears nowhere else, No other path to the save).
+- [ ] 6a.5 RED/GREEN: config-menu: a secret save is not a draft (no unsaved hint, `s` does not repeat it, Esc of the menu does not revert it); keys go to the open field; the popup keeps its size with a field open (config-menu, Connectors row).
+- [ ] 6a.6 Characterization: every other area action leaves `config.toml` and `secrets.toml` byte-identical with their modes (mcp-connect, Byte-identical after every other action); the S1 `Never written` test runs with no confirmed field.
+- [ ] 6a.7 Docs: CHANGELOG line; README "Valores en `secrets.toml`" says the area can save a value and that the hand edit stays supported (the README is NOT changed by the spec PR).
+- [ ] 6a.8 [manual] Live: save a Clarity token from the area on a file with comments; `diff` against `secrets.toml.bak` shows one changed line; `stat` shows 0600.
+
+## S6c Workspace entries, filters and catalog fixes (C9, C10, C12) — 200–280 lines
+
+- [ ] 6c.1 RED/GREEN: `Entry` gains `ways`, `hidden`, `gmail_allowlist` and the link kind; snippet `env` is the union of the ways; template per way; presence judges `values missing` per way, and an S5 table completes the service-account way (mcp-catalog, Entries are data; GSC entry with two ways: Both ways in one snippet, Templates per way, Old service-account entries keep working; mcp-connect, Entry list).
+- [ ] 6c.2 RED/GREEN: `gsc` ways data: OAuth (`GSC_OAUTH_CLIENT_SECRETS_FILE` preset `~/.config/lazarobox/google-oauth-client.json`, `GSC_SKIP_OAUTH` preset `"false"`, the login line) and service account; install pinned `mcp-search-console==0.4.2`; `reauthenticate` hidden; guide for both ways with the umask and "link first" warnings (The OAuth login stays outside MCP).
+- [ ] 6c.3 RED/GREEN: `google` entry: install `workspace-mcp==2.4.1`, args with `--disabled-tools send_gmail_message`, `env` with `USER_GOOGLE_EMAIL` and `WORKSPACE_MCP_DISABLE_LOCAL_FILES` (preset `"true"`), no `WORKSPACE_MCP_CREDENTIALS_DIR`, no login, link kind `start_google_auth`, the 42 pinned tools and their classes, `start_google_auth` hidden, guide notes (drafts, residual send risk, plaintext tokens, `drive.readonly`, local files) (Google Workspace entry: every scenario).
+- [ ] 6c.4 RED/GREEN: Gmail allowlist (8 names, ASCII case-insensitive `gmail` match) and hidden tools in `admits`, before `take(MAX_TOOLS)`; probe counts admitted tools; other servers untouched (Gmail tool filter: every scenario).
+- [ ] 6c.5 (U) Verify with the probe on an isolated install that `workspace-mcp 2.4.1` accepts `--disabled-tools send_gmail_message` together with `--permissions gmail:readonly+drafts` (starts, lists 42 tools, `send_gmail_message` absent). If it refuses, drop the flag from the args (the allowlist stays the second layer) and record it here.
+- [ ] 6c.6 (U) Verify what `WORKSPACE_MCP_DISABLE_LOCAL_FILES=true` does to `draft_gmail_message` attachments and to `get_gmail_attachment_content` (read the 2.4.1 source); write the result into the guide (proposal open question 12).
+- [ ] 6c.7 RED/GREEN: `apps-script` entry: `npm i -g @google/clasp@3.4.1`, `clasp mcp`, `clasp login`, no `env`, `list_projects` read and the other four write, guide notes (Apps Script API switch, pushed code runs with the script's scopes, local overwrites) (Apps Script entry: every scenario).
+- [ ] 6c.8 RED/GREEN: catalog fixes: `ga4` pins only its 10 read tools (drop the stale `create_property_annotation`, `create_custom_dimension`, `create_key_event` pins); the catalog-integrity test lists all five ids and groups; the area list and snapshots gain the `Workspace` rows (GA4 entry: Only the read tools are pinned; Catalog integrity; mcp-connect Groups and order).
+- [ ] 6c.9 [manual] Live: probe `google` and `apps-script` on a real install: `mcp: started google (41 tools)` and `mcp: started apps-script (5 tools)`; no `send_gmail_message`, `start_google_auth` or `reauthenticate` registered in a chat.
+
+## S6b Link with Google (C7, C10 amended) — 280–380 lines
+
+- [ ] 6b.1 RED/GREEN: pure `sign_in_url(text)`: first `https://accounts.google.com/` link, one line, no control character, at most 2048 bytes; anything else is `None` (A link that is not Google is not opened).
+- [ ] 6b.2 RED/GREEN: link preconditions and prompt: `g` only on `gsc` (OAuth way) and `google`; missing client file, OAuth values, declaration or `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` / `USER_GOOGLE_EMAIL` give the named notice and start nothing; only a plain `y` starts it (gsc without the client file, gsc in the service-account way, No client id yet, Nothing without y).
+- [ ] 6b.3 RED/GREEN: `gsc` link types the OAuth way's login line in one new pane with Enter (reuses `App::start_connector`, D19); no MCP server spawned (gsc link types the server's own login).
+- [ ] 6b.4 RED/GREEN: `google` link session `runtime/mcp/link.rs` over `external::connect` and the single-flight slot of the probe: handshake, `tools/call start_google_auth`, opener (fake), waiting screen, success by credentials-file metadata, Esc, 5-minute timeout (paused clock), error result, no link, server exit; server reaped within 3 s in every case; the call enters no transcript (google link succeeds, cancelled, times out, Callback ports busy).
+- [ ] 6b.5 (U) Pin from the workspace-mcp 2.4.1 source: the argument names of `start_google_auth` (`service_name`, `user_google_email`) and the service value to pass; whether the result text always holds the URL in stdio mode when no browser opens; the credentials file name for an e-mail (proposal open question 13). Isolated install, no real OAuth flow.
+- [ ] 6b.6 (U) [manual] Run the `gsc` OAuth login line once with a real Desktop client (owner's machine, real consent) and confirm the token location and that a later chat call does not open the browser (open question 14).
+- [ ] 6b.7 RED/GREEN: `linked` / `not linked` states for `gsc` (OAuth way) and `google` from token-file existence and mtime only (never opened), on the list and the entry screen (mcp-connect, Entry list).
+- [ ] 6b.8 RED/GREEN: `SECRET_DIRS` gains `Library/Application Support/mcp-gsc`; the existing path-policy, write-check and git tests still pass (agent-tools, mcp-gsc token on macOS).
+- [ ] 6b.9 [manual] Live: Link with Google for `google` (`linked google`, then a `search_gmail_messages` call after `y` with no new consent, then `draft_gmail_message` after `y` creates a draft and sends nothing) and for `gsc` (pane shows `Search Console linked`, then a search analytics query after `y`); `push_files` after `y` for `apps-script`.
+
+## S6d Tutorial and README (C14) — docs only
+
+- [ ] 6d.1 Docs: `docs/conectores.md` in Spanish (neutral, professional), one section per service: Clarity, GA4, Search Console (OAuth and service account), Google Workspace (Gmail drafts, Docs, Sheets), Apps Script. Each: what it gives, what it costs (limits, scopes, residual risks: `gmail.compose` can send, `drive.readonly`, plaintext tokens, umask of the mcp-gsc token, local files), step by step with the menu keys (`f`, `g`, `l`, `p`), the `config.toml` block to paste, how to check it (probe), how to disconnect (revoke at https://myaccount.google.com/permissions, delete the token, remove the table).
+- [ ] 6d.2 Docs: README "Conectar un servicio" links the tutorial and lists the five connectors; CHANGELOG line.
+- [ ] 6d.3 RED/GREEN: every catalog guide ends with a line pointing at `docs/conectores.md` (mcp-catalog, Entries are data); the link check accepts the repository URL.
+- [ ] 6d.4 [manual] A reader new to the project follows the tutorial for one Google service end to end.
 
 ## S7 (later) Profile default entries (C4, C12)
 
@@ -63,7 +107,7 @@ Not specced. Blocked on open question 8 of the proposal (mechanism and the promp
 
 Not specced. Blocked on open question 9 of the proposal.
 
-## Later items (not in S2-S6)
+## Later items (not in S2-S6d)
 
 - L1 WSL login handling (deferred by D18, 2026-11-11): decide whether to set `BROWSER` (for example to `wslview`, only when unset) so gcloud opens the Windows browser; needs a manual check on WSL. Until then the link printed in the login pane is the fallback.
 - L2 Hot reload of `[[ai.mcp.servers]]` into running chats when the area closes (candidate follow-up of D20): larger change in the chat runtime.
