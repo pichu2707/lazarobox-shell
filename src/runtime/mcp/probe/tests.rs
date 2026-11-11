@@ -16,16 +16,31 @@ use crate::{
 const LONG: Duration = Duration::from_secs(10);
 
 fn pid_of(lab: &Lab, name: &str) -> libc::pid_t {
-    let path = format!("{}.pid", lab.calls(name).display());
-    // The shell creates the file and then writes the pid: wait for the text.
+    read_pid(&format!("{}.pid", lab.calls(name).display()))
+}
+
+/// The pid in `path`. The shell creates the file and then writes the pid: wait
+/// for the text, not for the file.
+fn read_pid(path: &str) -> libc::pid_t {
     let end = Instant::now() + Duration::from_secs(3);
     loop {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let text = std::fs::read_to_string(path).unwrap_or_default();
         if let Ok(pid) = text.trim().parse() {
             return pid;
         }
         assert!(Instant::now() < end, "the server wrote no pid");
         std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits (on the async clock) until the shell has written its pid.
+async fn wait_for_pid(path: &str) {
+    while std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
@@ -119,8 +134,14 @@ async fn esc_stops_the_probe_and_the_server_goes() {
     let lab = lab();
     let server = lab.mute("clarity");
     let pid_file = format!("{}.pid", lab.calls("clarity").display());
+    // Esc comes once the shell has WRITTEN its pid (the file exists a moment
+    // before): a stop before that leaves nothing to check.
     let esc = async {
-        while !Path::new(&pid_file).exists() {
+        while std::fs::read_to_string(&pid_file)
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     };
@@ -128,6 +149,29 @@ async fn esc_stops_the_probe_and_the_server_goes() {
     assert_eq!(report.verdict, Verdict::Stopped);
     assert_eq!(report.lines, ["mcp: clarity probe stopped"]);
     assert_reaped(&lab, "clarity");
+}
+
+/// The group guard is armed by `spawn` itself, before any await: a client
+/// dropped right after it (Esc before the handshake even started) takes the
+/// leader AND what the leader started with it.
+#[tokio::test]
+async fn a_client_dropped_right_after_spawn_kills_the_whole_group() {
+    let lab = lab();
+    let mut server = lab.mute("clarity");
+    server.args[1] = "sleep 600 & echo $! > \"$4.child\"; echo $$ > \"$4.pid\"; wait".to_owned();
+    let client =
+        crate::runtime::mcp::client::McpClient::spawn(&server, &lab.home, host_env).unwrap();
+    let base = lab.calls("clarity").display().to_string();
+    wait_for_pid(&format!("{base}.pid")).await;
+    wait_for_pid(&format!("{base}.child")).await;
+    drop(client);
+    let child = read_pid(&format!("{base}.child"));
+    let end = Instant::now() + Duration::from_secs(3);
+    while !(gone(child) && gone(pid_of(&lab, "clarity"))) && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(gone(pid_of(&lab, "clarity")), "the leader is stopped");
+    assert!(gone(child), "what the leader started is stopped");
 }
 
 #[tokio::test]
@@ -151,10 +195,7 @@ async fn the_prober_answers_with_one_event_and_esc_stops_it() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(4);
     let mut prober = Prober::new(lab.home.clone(), None, tx);
     prober.start(1, lab.mute("clarity"));
-    let pid_file = format!("{}.pid", lab.calls("clarity").display());
-    while !Path::new(&pid_file).exists() {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_for_pid(&format!("{}.pid", lab.calls("clarity").display())).await;
     prober.cancel();
     let Some(AppEvent::McpProbe(1, report)) = rx.recv().await else {
         panic!("one McpProbe event");
@@ -169,10 +210,7 @@ async fn a_new_probe_replaces_the_old_one_which_reports_nothing() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(4);
     let mut prober = Prober::new(lab.home.clone(), None, tx);
     prober.start(1, lab.mute("clarity"));
-    let pid_file = format!("{}.pid", lab.calls("clarity").display());
-    while !Path::new(&pid_file).exists() {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_for_pid(&format!("{}.pid", lab.calls("clarity").display())).await;
     prober.start(2, lab.listing("ga4", &["a"], "ok", "0"));
     let Some(AppEvent::McpProbe(id, report)) = rx.recv().await else {
         panic!("one McpProbe event");
