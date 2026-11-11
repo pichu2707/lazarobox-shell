@@ -19,6 +19,10 @@ baseline.
 
 ### Fixed
 
+- A review that cannot start while the author keeps re-proposing no longer
+  floods the pane: the same notice (and its blocked receipt) is one line with
+  a count, `(22 times)`. A different cause is still its own line.
+
 - When an orchestrator run ends (`run_timeout_mins`, a stop or a cancel), the
   batch reviews and asks of its workers still on screen close with `review
   closed: the run ended; nothing was written`, and a late `y` no longer writes

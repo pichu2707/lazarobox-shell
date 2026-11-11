@@ -366,7 +366,9 @@ impl App {
             // Where a worker's review stands (S7b): lazarobox's own words.
             OrchestraEvent::Review { run, text } => {
                 if chat.orch_run().is_none_or(|current| current == run) {
-                    chat.push_system_line(text);
+                    // The same line again (a review that cannot start while
+                    // the author re-proposes) is one line with a count.
+                    chat.push_collapsing_line(text.clone(), text);
                 }
             }
             // A fact about a worker's end: a system line, never history.
@@ -452,18 +454,27 @@ impl App {
             OrchestraEvent::Handoff { run, handoff } => {
                 store = Some((run, Item::of_handoff(&handoff)));
                 if matches!(handoff.verdict, Verdict::OffCourse | Verdict::Blocked) {
-                    let subject = match handoff.unit {
+                    let (subject, same) = match handoff.unit {
                         Unit::Worker(worker) => {
-                            format!("worker {} {}", worker.0, handoff.kind.id())
+                            let s = format!("worker {} {}", worker.0, handoff.kind.id());
+                            (s.clone(), s)
                         }
-                        Unit::Step(step) => format!("step {}", step.label()),
-                        Unit::Receipt(worker, n) => format!("receipt {n} of worker {}", worker.0),
+                        Unit::Step(step) => {
+                            let s = format!("step {}", step.label());
+                            (s.clone(), s)
+                        }
+                        // The receipt number grows with each repeat: it is
+                        // not part of what makes two of them the same.
+                        Unit::Receipt(worker, n) => (
+                            format!("receipt {n} of worker {}", worker.0),
+                            format!("receipt of worker {}", worker.0),
+                        ),
                     };
-                    chat.push_system_line(format!(
-                        "handoff {subject} {}: {}",
-                        handoff.verdict.label(),
-                        handoff.reason
-                    ));
+                    let verdict = handoff.verdict.label();
+                    chat.push_collapsing_line(
+                        format!("handoff {same} {verdict}: {}", handoff.reason),
+                        format!("handoff {subject} {verdict}: {}", handoff.reason),
+                    );
                 }
             }
             // The feature document of a large goal: one note, one key, stored
