@@ -1278,6 +1278,23 @@ fn a_spawn_over_the_worker_cap_is_refused_with_the_limit() {
     assert_eq!(run.spawn(t0, Task::Review, "3"), Err(Refusal::WorkerCap(2)));
 }
 
+// D22 (17.5): a worker lazarobox starts itself never counts for the cap and
+// needs no room: a run at `max_workers` still takes its review workers, and
+// they take no public slot from the coordinator.
+#[test]
+fn an_internal_worker_is_outside_the_worker_cap() {
+    let (t0, mut run) = (Instant::now(), parallel(8, 2));
+    run.spawn(t0, Task::Review, "1").unwrap();
+    run.spawn(t0, Task::Review, "2").unwrap();
+    let internal = run.spawn_internal(t0, Task::Review, "lens").unwrap();
+    assert_eq!(run.spawn_internal(t0, Task::Review, "lens").map(|_| ()), Ok(()));
+    assert!(run.is_internal(internal));
+    assert!(!run.is_internal(WorkerId(1)));
+    assert_eq!(run.spawn(t0, Task::Review, "3"), Err(Refusal::WorkerCap(2)));
+    run.cancel(t0, internal);
+    assert_eq!(run.spawn(t0, Task::Review, "3"), Err(Refusal::WorkerCap(2)));
+}
+
 // Spec (agent-orchestrator, Siblings finish): worker 2 fails while worker 1
 // runs: worker 1 completes, nothing new starts, the run stays halted.
 #[test]

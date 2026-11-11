@@ -214,6 +214,10 @@ struct Slot {
     parked: bool,
     /// The current turn runs without tools: no write tool was offered to it.
     no_tools: bool,
+    /// Started by lazarobox itself (a review lens, the refuter, a
+    /// correction): outside `max_workers` and with no handoff to wait for
+    /// (D22), still shown with its row.
+    internal: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -379,6 +383,18 @@ impl Run {
     /// How many workers the run has spawned so far.
     pub fn worker_count(&self) -> usize {
         self.slots.len()
+    }
+
+    /// How many workers the coordinator spawned: what `max_workers` bounds.
+    /// Internal workers (D22) are not counted.
+    fn public_count(&self) -> usize {
+        self.slots.iter().filter(|slot| !slot.internal).count()
+    }
+
+    /// Whether lazarobox started the worker itself (a review lens, the
+    /// refuter, a correction).
+    pub fn is_internal(&self, id: WorkerId) -> bool {
+        self.slots.get(index(id)).is_some_and(|slot| slot.internal)
     }
 
     /// Whether the run made no worker and was not cancelled: an orchestrator
@@ -581,7 +597,7 @@ impl Run {
         if self.steps.read_only() && writer {
             return Err(Refusal::ReadOnly);
         }
-        if self.slots.len() >= self.limits.workers {
+        if gated && self.public_count() >= self.limits.workers {
             return Err(Refusal::WorkerCap(self.limits.workers));
         }
         if writer && gated && !self.gates_lifted {
@@ -608,6 +624,7 @@ impl Run {
             handoff: None,
             parked: false,
             no_tools: false,
+            internal: !gated,
         });
         let id = WorkerId(self.slots.len() as u32);
         if writer {
@@ -1081,6 +1098,7 @@ impl Run {
         numbered
             .filter(|(_, slot)| {
                 slot.handoff.is_none()
+                    && !slot.internal
                     && !matches!(slot.status, WorkerStatus::Queued | WorkerStatus::Running)
             })
             .map(|(i, _)| WorkerId(i as u32 + 1))

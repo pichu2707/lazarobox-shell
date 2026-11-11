@@ -216,6 +216,27 @@ fn the_handoff_call_is_checked_and_a_bad_verdict_becomes_unknown() {
     assert_eq!(parse("finish", &json!({})), Err(OrchError::MissingArgument));
 }
 
+// D22 (17.5): an internal worker has no handoff to wait for: finish does not
+// name it and builds no fallback for it.
+#[test]
+fn finish_does_not_wait_for_an_internal_workers_handoff() {
+    let mut run = run();
+    let now = Instant::now();
+    let one = finished(&mut run, Task::Review, "text");
+    let lens = run.spawn_internal(now, Task::Review, "lens").expect("lens");
+    run.on_event(
+        now,
+        lens,
+        WorkerEvent::Done {
+            text: "lens text".to_owned(),
+        },
+    );
+    run.handoff(one, note(Verdict::OnCourse)).expect("stored");
+    let built = run.finish("summary").expect("nothing is missing");
+    assert!(built.is_empty(), "{built:?}");
+    assert_eq!(*run.state(), RunState::Finished);
+}
+
 // Spec (A missing handoff gets a fallback): the first finish names the
 // worker, the second builds the fallback and ends the run.
 #[test]

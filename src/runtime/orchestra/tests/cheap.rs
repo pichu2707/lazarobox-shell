@@ -312,15 +312,25 @@ async fn an_unavailable_reviewer_stops_the_run_visibly_and_nothing_escalates() {
 }
 
 // D21 GUARD (17.7): a mandatory review that cannot start for another reason
-// (no room under `max_workers`) says so in the transcript and in its
-// receipt, and the batch goes on unreviewed.
+// (here no nonce can be drawn to wrap the lens prompt) says so in the
+// transcript and in its receipt, and the batch goes on unreviewed.
 #[tokio::test]
 async fn a_mandatory_review_that_cannot_start_says_why_and_the_batch_goes_on() {
-    let limits = RunLimits {
-        workers: 3,
-        ..RunLimits::default()
-    };
-    let (mut lab, run, handle) = reviewed(quiet, Answered::Mandatory, limits).await;
+    let mut lab = lab_with(Script::By(quiet), |m, home| {
+        RunManager {
+            scratch: |_| false,
+            diff: Some(staged_text),
+            ..tooled(m, home)
+        }
+        .with_nonce(|| None)
+    });
+    let (run, handle) = lab.begin(lab.scope(codex_both(), &[])).unwrap();
+    handle.call(spawn(Task::Code, "write a")).await;
+    lab.seen.first().await;
+    let changes = lock_change();
+    let assessment = handle.assess(run, &changes);
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Mandatory);
+    assert!(timeout(Duration::from_secs(10), done).await.unwrap().is_ok());
     let kept = lab.manager.reviews(pane(), run);
     assert_eq!(kept[0].outcome, None);
     let events = lab.sent();
@@ -333,11 +343,14 @@ async fn a_mandatory_review_that_cannot_start_says_why_and_the_batch_goes_on() {
         .collect();
     assert!(
         said.iter()
-            .any(|l| l.contains("could not start: max_workers is 3")),
+            .any(|l| l.contains("could not start: a prompt cannot be wrapped now")),
         "{said:?}"
     );
     let line = handle
         .receipt_line(run, WorkerId(1), &lock_change())
         .expect("a line");
-    assert!(line.contains("not reviewed (max_workers is 3"), "{line}");
+    assert!(
+        line.contains("not reviewed (a prompt cannot be wrapped now"),
+        "{line}"
+    );
 }
