@@ -226,7 +226,7 @@ pub fn worker_system(system: &str) -> String {
 /// What a `simple` worker whose Write was removed (a read-only goal) is told
 /// after its prompt, which otherwise asks for the write tools: they are not
 /// offered, so its findings go in its answer.
-const NO_WRITE_TOOLS: &str = "Note: this is a read-only goal, so the write tools are not available to you, and propose_batch is not offered. Ignore the instruction to use them and put your findings in your answer instead.";
+const NO_WRITE_TOOLS: &str = "Note: this is a read-only goal, so the write tools, propose_batch and run_command are not available to you. Ignore the instruction to use them and put your findings in your answer instead.";
 
 /// `system` for a `simple` worker that has no write tools. Only `launch`
 /// calls this; the user's override still comes first.

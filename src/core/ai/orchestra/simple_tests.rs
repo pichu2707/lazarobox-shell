@@ -152,7 +152,7 @@ fn a_simple_spawn_on_a_read_only_goal_starts_without_write() {
     assert_eq!(run.status(id), Some(WorkerStatus::Running));
     let spec = run.spec(id).unwrap();
     assert!(!spec.writes());
-    assert!(spec.families.contains(Family::Read) && spec.families.contains(Family::Exec));
+    assert!(spec.families.contains(Family::Read) && !spec.families.contains(Family::Exec));
 }
 
 // 18.7: a simple worker queued before the goal turns read-only starts
@@ -241,4 +241,82 @@ fn a_code_spawn_with_write_off_is_still_refused() {
         run.spawn(Instant::now(), Task::Code, "x"),
         Err(Refusal::WriteOff)
     );
+}
+
+// Owner decision (2026-11-11, option B): on a read-only goal a `simple`
+// worker keeps Read only, with neither Write nor Exec.
+fn read_only_simple_has_only_read(run: &Run, id: super::WorkerId) {
+    let spec = run.spec(id).unwrap();
+    assert!(!spec.writes());
+    assert!(!spec.families.contains(Family::Exec));
+    assert!(spec.families.contains(Family::Read));
+    assert!(!names(spec.families).contains(&"run_command".to_owned()));
+}
+
+#[test]
+fn a_read_only_simple_spawn_has_no_write_and_no_exec() {
+    for menu in [
+        FamilySet::ALL,
+        write_off(),
+        FamilySet::ALL.without(Family::Exec),
+    ] {
+        let mut run = run_with(menu);
+        read_only(&mut run);
+        let id = run
+            .spawn(Instant::now(), Task::Simple, "explain a.rs")
+            .unwrap();
+        assert_eq!(run.status(id), Some(WorkerStatus::Running));
+        read_only_simple_has_only_read(&run, id);
+    }
+}
+
+#[test]
+fn a_queued_read_only_simple_starts_with_read_only() {
+    let mut run = run_with(FamilySet::ALL).with_limits(RunLimits {
+        parallel: 1,
+        ..RunLimits::default()
+    });
+    let now = Instant::now();
+    let first = run.spawn(now, Task::Review, "look").unwrap();
+    let queued = run.spawn(now, Task::Simple, "edit a.rs").unwrap();
+    read_only(&mut run);
+    run.on_event(now, first, WorkerEvent::Done { text: "ok".into() });
+    assert_eq!(run.status(queued), Some(WorkerStatus::Running));
+    read_only_simple_has_only_read(&run, queued);
+}
+
+#[test]
+fn a_read_only_simple_retry_has_no_write_and_no_exec() {
+    use super::run::UserChoice;
+    use super::worker::ErrorClass;
+    let mut run = run_with(FamilySet::ALL);
+    read_only(&mut run);
+    let now = Instant::now();
+    let id = run.spawn(now, Task::Simple, "explain a.rs").unwrap();
+    run.on_event(
+        now,
+        id,
+        WorkerEvent::Failed {
+            class: ErrorClass::Other,
+            text: "boom".into(),
+        },
+    );
+    run.decide(now, UserChoice::Retry).unwrap();
+    assert_eq!(run.status(id), Some(WorkerStatus::Running));
+    read_only_simple_has_only_read(&run, id);
+}
+
+// A `simple` worker on a goal that is not read-only keeps Exec, and a `code`
+// worker is unchanged.
+#[test]
+fn a_writing_simple_keeps_exec_and_a_code_worker_is_unchanged() {
+    let mut run = run_with(FamilySet::ALL);
+    let now = Instant::now();
+    let simple = run.spawn(now, Task::Simple, "edit a.rs").unwrap();
+    let code = run.spawn(now, Task::Code, "edit b.rs").unwrap();
+    assert_eq!(
+        run.spec(simple).unwrap().families,
+        Toolset::Simple.families()
+    );
+    assert_eq!(run.spec(code).unwrap().families, Toolset::Code.families());
 }

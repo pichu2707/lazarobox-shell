@@ -566,7 +566,7 @@ impl Run {
         // Write on would not help.
         // A `simple` worker is not refused: `resolve` already took its Write
         // away (W8a, interim until `outputs` in W8b), so it is no writer.
-        let writer = spec.toolset.families().contains(Family::Write) && !self.strips_write(task);
+        let writer = spec.toolset.families().contains(Family::Write) && !self.strips_tools(task);
         if self.steps.read_only() && writer {
             return Err(Refusal::ReadOnly);
         }
@@ -653,7 +653,7 @@ impl Run {
             };
             // Starting is a new process: the menu is read again now, and a
             // writer that lost Write meanwhile is refused, not run bare.
-            let strip = self.strips_write(self.slots[index(next)].spec.task);
+            let strip = self.strips_tools(self.slots[index(next)].spec.task);
             let ceiling = self.ceiling;
             let spec = &mut self.slots[index(next)].spec;
             spec.families = Self::capped_families(spec.toolset, ceiling, strip);
@@ -668,17 +668,19 @@ impl Run {
         }
     }
 
-    /// Whether a read-only goal takes Write away from a worker of `task`
-    /// instead of refusing it: only a `simple` worker (W8a).
-    fn strips_write(&self, task: Task) -> bool {
+    /// Whether a read-only goal takes Write and Exec away from a worker of
+    /// `task` instead of refusing it: only a `simple` worker (W8a; owner
+    /// decision 2026-11-11, option B: it keeps Read only).
+    fn strips_tools(&self, task: Task) -> bool {
         self.steps.read_only() && task == Task::Simple
     }
 
-    /// A toolset under the menu's ceiling, without Write when `strip`.
+    /// A toolset under the menu's ceiling, without Write and Exec when
+    /// `strip`.
     fn capped_families(toolset: Toolset, ceiling: FamilySet, strip: bool) -> FamilySet {
         let capped = toolset.capped(ceiling);
         if strip {
-            capped.without(Family::Write)
+            capped.without(Family::Write).without(Family::Exec)
         } else {
             capped
         }
@@ -709,7 +711,7 @@ impl Run {
             families: Self::capped_families(
                 Toolset::for_kind(task),
                 self.ceiling,
-                self.strips_write(task),
+                self.strips_tools(task),
             ),
             deadline: self.deadline,
         };
@@ -719,7 +721,7 @@ impl Run {
         let refusal = refusal.or_else(|| {
             (spec.toolset.families().contains(Family::Write)
                 && !spec.writes()
-                && !self.strips_write(task))
+                && !self.strips_tools(task))
             .then(|| WRITE_OFF.to_owned())
         });
         (spec, refusal)
@@ -1243,7 +1245,7 @@ impl Run {
         } else {
             // A retry is a new process: the spec is capped by the menu as it
             // is now, and a writer that lost Write is refused, not run bare.
-            let strip = self.strips_write(self.slots[index(worker)].spec.task);
+            let strip = self.strips_tools(self.slots[index(worker)].spec.task);
             let ceiling = self.ceiling;
             let spec = &mut self.slots[index(worker)].spec;
             spec.families = Self::capped_families(spec.toolset, ceiling, strip);

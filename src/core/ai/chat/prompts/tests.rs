@@ -822,7 +822,14 @@ fn a_simple_worker_without_write_tools_is_told_to_answer_in_text() {
         let base = builtin(profile, Task::Simple);
         let got = read_only_worker_system(base);
         assert!(got.starts_with(base.trim_end()), "{profile:?}");
-        for needle in ["write tools are not available", "read-only goal", "answer"] {
+        for needle in [
+            "write tools",
+            "propose_batch",
+            "run_command",
+            "are not available",
+            "read-only goal",
+            "answer",
+        ] {
             assert!(got.contains(needle), "{profile:?}: {needle}");
         }
         assert!(got.is_ascii());
