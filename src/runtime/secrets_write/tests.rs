@@ -693,3 +693,96 @@ fn a_result_over_64_kib_writes_nothing() {
     );
     assert_eq!(lab.names(), ["secrets.toml"]);
 }
+
+// ---- the writer the Connectors area talks to --------------------------------
+
+async fn answer(rx: &mut mpsc::Receiver<AppEvent>) -> AppEvent {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+        Ok(Some(event)) => event,
+        other => panic!("no answer: {other:?}"),
+    }
+}
+
+fn secret(text: &str) -> SecretText {
+    let mut s = SecretText::new();
+    s.push_str(text);
+    s
+}
+
+#[tokio::test]
+async fn the_writer_saves_and_answers_with_the_notice_and_no_value() {
+    let lab = lab();
+    lab.write(OLD, 0o600);
+    let (tx, mut rx) = mpsc::channel(4);
+    Writer::new(Some(lab.path()), tx).save("clarity", "CLARITY_API_TOKEN", secret("tok-7f3a9c"));
+    let event = answer(&mut rx).await;
+    let said = "saved CLARITY_API_TOKEN; the previous values stay in secrets.toml.bak (0600) until you delete it";
+    assert_eq!(event, AppEvent::SecretSaved(Ok(said.to_owned())));
+    assert!(!format!("{event:?}").contains("tok-7f3a"));
+    let text = fs::read_to_string(lab.path()).unwrap();
+    assert!(
+        text.contains("CLARITY_API_TOKEN = \"tok-7f3a9c\""),
+        "{text}"
+    );
+    assert_eq!(fs::read_to_string(lab.bak()).unwrap(), OLD);
+}
+
+#[tokio::test]
+async fn a_refused_save_answers_with_the_refusal_and_changes_nothing() {
+    let lab = lab();
+    lab.write(OLD, 0o644);
+    let (tx, mut rx) = mpsc::channel(4);
+    Writer::new(Some(lab.path()), tx).save("clarity", "CLARITY_API_TOKEN", secret("tok"));
+    let AppEvent::SecretSaved(Err(notice)) = answer(&mut rx).await else {
+        panic!("a refusal")
+    };
+    assert!(
+        notice.starts_with("secrets.toml: mode must be 0600"),
+        "{notice}"
+    );
+    assert_eq!(fs::read_to_string(lab.path()).unwrap(), OLD);
+    let (tx, mut rx) = mpsc::channel(4);
+    Writer::new(None, tx).save("clarity", "CLARITY_API_TOKEN", secret("tok"));
+    assert_eq!(
+        answer(&mut rx).await,
+        AppEvent::SecretSaved(Err("secrets.toml: no config folder".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn the_writer_deletes_the_backup_and_says_when_there_is_none() {
+    let lab = lab();
+    lab.write(OLD, 0o600);
+    fs::write(lab.bak(), "x").unwrap();
+    fs::set_permissions(lab.bak(), fs::Permissions::from_mode(0o600)).unwrap();
+    let (tx, mut rx) = mpsc::channel(4);
+    let writer = Writer::new(Some(lab.path()), tx);
+    writer.delete_backup();
+    assert_eq!(
+        answer(&mut rx).await,
+        AppEvent::BackupDeleted(Ok("deleted secrets.toml.bak".to_owned()))
+    );
+    assert!(!lab.bak().exists());
+    writer.delete_backup();
+    assert_eq!(
+        answer(&mut rx).await,
+        AppEvent::BackupDeleted(Err("secrets.toml.bak: there is no backup".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn saves_sent_together_all_succeed_instead_of_racing_into_changed_on_disk() {
+    let lab = lab();
+    lab.write(OLD, 0o600);
+    let (tx, mut rx) = mpsc::channel(16);
+    let writer = Writer::new(Some(lab.path()), tx);
+    for _ in 0..8 {
+        writer.save("clarity", "CLARITY_API_TOKEN", secret("tok"));
+    }
+    for _ in 0..8 {
+        let AppEvent::SecretSaved(reply) = answer(&mut rx).await else {
+            panic!("a reply")
+        };
+        assert!(reply.is_ok(), "{reply:?}");
+    }
+}

@@ -205,3 +205,45 @@ fn a_resize_rewraps_an_open_prompt_without_a_key() {
     tap(&mut a, AppEvent::Resize { cols: 80, rows: 25 });
     assert!(rows(&a).iter().any(|l| l.contains("npm i -g")));
 }
+
+// ---- S6a2: the replies of the save and of the backup deletion ---------------
+
+fn footer(a: &App) -> String {
+    match a.menu().unwrap().footer() {
+        Footer::Hint(h) => h.into_owned(),
+        Footer::Error(e) => e.to_owned(),
+    }
+}
+
+#[test]
+fn the_reply_of_a_save_shows_its_notice_and_reads_the_files_again() {
+    let mut a = on_entry();
+    let said = "saved CLARITY_API_TOKEN".to_owned();
+    assert_eq!(
+        tap(&mut a, AppEvent::SecretSaved(Ok(said.clone()))),
+        [Effect::LoadPresence]
+    );
+    assert_eq!(footer(&a), said);
+    let refusal = "secrets.toml is a symlink; edit it by hand".to_owned();
+    assert_eq!(tap(&mut a, AppEvent::SecretSaved(Err(refusal.clone()))), []);
+    assert_eq!(footer(&a), refusal);
+}
+
+// A reply that arrives after the menu closed is still said, never dropped.
+#[test]
+fn a_reply_after_the_menu_closed_is_said_in_the_notice() {
+    let mut a = launched(80, 25);
+    assert_eq!(
+        tap(&mut a, AppEvent::SecretSaved(Ok("saved X".to_owned()))),
+        []
+    );
+    assert_eq!(a.notice.as_deref(), Some("saved X"));
+    tap(
+        &mut a,
+        AppEvent::BackupDeleted(Err("secrets.toml.bak: there is no backup".to_owned())),
+    );
+    assert_eq!(
+        a.notice.as_deref(),
+        Some("secrets.toml.bak: there is no backup")
+    );
+}

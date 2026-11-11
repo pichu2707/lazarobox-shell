@@ -15,13 +15,16 @@ use std::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::fs::{DirBuilderExt, MetadataExt},
     },
-    path::Path,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, PoisonError},
 };
 
-use crate::core::ai::mcp_secrets::{FILE, MAX_BYTES, Refusal, edit, line_of};
+use tokio::sync::mpsc;
 
-/// The backup of the file, one generation.
-pub const BACKUP: &str = "secrets.toml.bak";
+use crate::{
+    app::AppEvent,
+    core::ai::mcp_secrets::{BACKUP, FILE, MAX_BYTES, Refusal, SecretText, edit, line_of},
+};
 
 /// What a save did.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -236,6 +239,58 @@ impl SaveFs for RealFs {
         let c = cstr(name)?;
         // SAFETY: `dir` is open and `c` is a valid C string.
         ok(unsafe { libc::unlinkat(dir.as_raw_fd(), c.as_ptr(), 0) })
+    }
+}
+
+/// Answers each `Effect::SaveSecret` and `Effect::DeleteBackup` of the
+/// Connectors area with one event, on a blocking task of its own. The notice
+/// it sends names a server and a name at most, never a value.
+pub struct Writer {
+    secrets: Option<PathBuf>,
+    events: mpsc::Sender<AppEvent>,
+    /// One write at a time: two saves would read the same file and the second
+    /// would see "changed on disk".
+    turn: Arc<Mutex<()>>,
+}
+
+impl Writer {
+    pub fn new(secrets: Option<PathBuf>, events: mpsc::Sender<AppEvent>) -> Self {
+        Self {
+            secrets,
+            events,
+            turn: Arc::default(),
+        }
+    }
+
+    pub fn save(&self, server: &'static str, name: &'static str, value: SecretText) {
+        let (secrets, events) = (self.secrets.clone(), self.events.clone());
+        let turn = Arc::clone(&self.turn);
+        tokio::spawn(async move {
+            let done = tokio::task::spawn_blocking(move || {
+                let _turn = turn.lock().unwrap_or_else(PoisonError::into_inner);
+                save_secret(secrets.as_deref(), server, name, value.expose())
+            })
+            .await;
+            let reply = match done {
+                Ok(Ok(saved)) => Ok(saved.notice()),
+                Ok(Err(refusal)) => Err(refusal.notice()),
+                Err(_) => Err("secrets.toml: not saved (the task failed)".to_owned()),
+            };
+            let _ = events.send(AppEvent::SecretSaved(reply)).await;
+        });
+    }
+
+    pub fn delete_backup(&self) {
+        let (secrets, events) = (self.secrets.clone(), self.events.clone());
+        tokio::spawn(async move {
+            let done = tokio::task::spawn_blocking(move || delete_backup(secrets.as_deref())).await;
+            let reply = match done {
+                Ok(Ok(())) => Ok(format!("deleted {BACKUP}")),
+                Ok(Err(refusal)) => Err(refusal.notice()),
+                Err(_) => Err(format!("{BACKUP}: not deleted (the task failed)")),
+            };
+            let _ = events.send(AppEvent::BackupDeleted(reply)).await;
+        });
     }
 }
 

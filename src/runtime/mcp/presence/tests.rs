@@ -63,3 +63,14 @@ async fn reading_changes_no_byte_and_no_mode() {
     let mode = std::fs::metadata(&secrets).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
 }
+
+#[tokio::test]
+async fn the_backup_and_the_home_are_read_for_the_fields() {
+    let (dir, config, secrets) = files(0o600);
+    let presence = asked(config.clone(), secrets.clone()).await;
+    assert!(!presence.backup());
+    std::fs::write(dir.path().join("secrets.toml.bak"), "x").unwrap();
+    let presence = asked(config, secrets).await;
+    assert!(presence.backup());
+    assert_eq!(presence.home(), std::env::var("HOME").unwrap_or_default());
+}

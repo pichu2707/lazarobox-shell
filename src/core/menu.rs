@@ -21,6 +21,7 @@ use super::{
         hf::{AccountAsk, AccountReply, Answer, Ask, Job, TokenFacts},
         marks::ToolMark,
         mcp_catalog::{checks::Probed, presence::Presence},
+        mcp_secrets::SecretText,
         menu::AiMenu,
         ollama_lib::{self, Pull},
         picker::{
@@ -1060,6 +1061,17 @@ pub enum MenuCommand {
     /// The Connectors area opened: read `config.toml` and which values
     /// `secrets.toml` holds; the answer comes back as [`MenuState::presence_reply`].
     LoadPresence,
+    /// A confirmed secret field: save this one value of this server's table
+    /// of `secrets.toml` (mcp-secrets, Menu save). The reply comes back through
+    /// [`MenuState::secret_reply`].
+    SaveSecret {
+        server: &'static str,
+        name: &'static str,
+        value: SecretText,
+    },
+    /// `y` on the backup deletion prompt; the reply comes back through
+    /// [`MenuState::backup_reply`].
+    DeleteBackup,
     /// Send this Feedback request with `gh` (find similar issues, create,
     /// or comment); the answer comes back through
     /// [`MenuState::feedback_reply`].
@@ -1299,6 +1311,23 @@ impl MenuState {
     /// What the runtime read when the area opened (D20).
     pub fn presence_reply(&mut self, presence: Presence) {
         self.connectors.presence_reply(presence);
+    }
+
+    /// What the save of a secret field answered: the notice either way.
+    pub fn secret_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
+        self.backup_reply(reply)
+    }
+
+    /// What the deletion of the backup answered: the files are read again
+    /// after a success, so the states and the `d` row follow the disk.
+    pub fn backup_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
+        let ok = reply.is_ok();
+        self.notice = Some(reply.unwrap_or_else(|notice| notice));
+        if ok {
+            MenuCommand::LoadPresence
+        } else {
+            MenuCommand::None
+        }
     }
 
     /// A probe ended.
