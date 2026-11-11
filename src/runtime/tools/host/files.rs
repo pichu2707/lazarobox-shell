@@ -19,7 +19,8 @@ use crate::{
     core::ai::{
         chat::{
             approval::Reach,
-            review::{BatchReview, ReviewDoc, TOO_LARGE},
+            engine::StreamEvent,
+            review::{BatchReview, RUN_ENDED, ReviewDoc, TOO_LARGE},
         },
         orchestra::{
             WorkerKey,
@@ -167,9 +168,23 @@ pub(super) async fn seal(
         }
     };
     let env = host.scope_env(scope);
-    tokio::task::spawn_blocking(move || seal_in(stages, key, label, &env))
+    let sealed = tokio::task::spawn_blocking(move || seal_in(stages, key, label, &env))
         .await
-        .unwrap_or_else(|_| Err(COULD_NOT.to_owned()))
+        .unwrap_or_else(|_| Err(COULD_NOT.to_owned()))?;
+    // The run may have ended while this call was in flight: it denied its
+    // batches already, so this one is dropped, not shown. Checked after the
+    // seal, so either the run's end drops it or this check does.
+    if let Some(worker) = scope.read_scope.as_ref()
+        && !worker.handle.live(worker.run)
+    {
+        let _ = lock(&host.stages).discard(sealed.0.id);
+        let _ = scope
+            .events
+            .send(StreamEvent::Notice(RUN_ENDED.into()))
+            .await;
+        return Err(RUN_ENDED.to_owned());
+    }
+    Ok(sealed)
 }
 
 fn seal_in(

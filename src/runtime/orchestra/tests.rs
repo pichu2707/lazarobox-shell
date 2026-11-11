@@ -2933,6 +2933,146 @@ async fn a_code_workers_batch_waits_for_the_users_review() {
     }
 }
 
+/// How a run ends under a batch review in `a_run_that_ends_under_a_batch_review`.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+enum RunEnd {
+    /// The wall clock passes.
+    Expiry,
+    /// The user stops the run.
+    Cancel,
+}
+
+// A run that ends while a `code` worker's batch waits for the review leaves
+// nothing to answer or to apply: the ask is denied, the answer finds no wait,
+// the batch is not kept as an orphan for a later `y`, and nothing is written.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_batch_review_open_when_the_run_ends_writes_nothing() {
+    for end in [RunEnd::Expiry, RunEnd::Cancel] {
+        a_run_that_ends_under_a_batch_review(end).await;
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn a_run_that_ends_under_a_batch_review(end: RunEnd) {
+    let mut lab = writing_lab(Script::Held("done"));
+    let waits = Waits::new();
+    let pending = Pending::new();
+    let wall = match end {
+        RunEnd::Expiry => Duration::from_millis(1500),
+        RunEnd::Cancel => TEN_MINUTES,
+    };
+    let scope = OrchScope {
+        origin: lab.app(),
+        approver: waits.approver(pane(), 7, pending.clone()),
+        pending,
+        deadline: TEN_MINUTES,
+        limits: RunLimits {
+            wall,
+            ..RunLimits::default()
+        },
+        ..lab.scope(codex_code(), &["~/dev/app"])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    lab.open_steps(run);
+    handle.call(spawn(Task::Code, "write a")).await;
+    let mut client = worker_client(&lab.seen).await;
+    let call = tool_call(
+        1,
+        "write_file",
+        json!({"path": "a.txt", "content": "one\n"}),
+    );
+    let staged = exchange(&mut client, call).await;
+    assert!(reply_text(&staged).starts_with("staged a.txt"), "{staged}");
+    let propose = format!("{}\n", tool_call(2, "propose_batch", json!({})));
+    client.1.write_all(propose.as_bytes()).await.unwrap();
+    let id = loop {
+        let event = timeout(Duration::from_secs(5), lab.turn.1.recv()).await;
+        if let StreamEvent::ToolCall {
+            id,
+            approval: Some(_),
+            ..
+        } = event.unwrap().unwrap()
+        {
+            break id;
+        }
+    };
+    if matches!(end, RunEnd::Cancel) {
+        lab.manager.cancel(pane());
+    }
+    loop {
+        let event = timeout(Duration::from_secs(10), lab.next()).await.unwrap();
+        if event == (OrchestraEvent::Ended { run }) {
+            break;
+        }
+    }
+    let worker = SessionKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
+    );
+    assert!(
+        !waits.decide(worker, 7, id, Decision::Sent),
+        "{end:?}: no ask waits once the run ended"
+    );
+    assert!(
+        lab.host().review_batch(pane(), false).is_none(),
+        "{end:?}: the denied batch is not kept as an orphan"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !lab.app().join("a.txt").exists(),
+        "{end:?}: nothing written"
+    );
+}
+
+// Defense in depth: the apply refuses a batch whose worker's ask was denied
+// when its run is no longer live, and says so; nothing is written.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_apply_refuses_the_batch_of_a_run_that_is_not_live() {
+    let mut lab = writing_lab(Script::Held("done"));
+    let waits = Waits::new();
+    let (run, handle) = lab.start_writing_run(&waits, TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write a")).await;
+    let mut client = worker_client(&lab.seen).await;
+    let call = tool_call(
+        1,
+        "write_file",
+        json!({"path": "a.txt", "content": "one\n"}),
+    );
+    exchange(&mut client, call).await;
+    let propose = format!("{}\n", tool_call(2, "propose_batch", json!({})));
+    client.1.write_all(propose.as_bytes()).await.unwrap();
+    loop {
+        let event = timeout(Duration::from_secs(5), lab.turn.1.recv()).await;
+        if let StreamEvent::ToolCall {
+            approval: Some(_), ..
+        } = event.unwrap().unwrap()
+        {
+            break;
+        }
+    }
+    let key = crate::core::ai::tools::stage::StageKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
+    );
+    let id = lab.host().batch_id_for_test(key).unwrap();
+    let event = lab.host().apply_batch_of(id, false, None, false);
+    let crate::core::ai::chat::review::BatchEvent::Done { shown, told } = event else {
+        panic!("{event:?}");
+    };
+    assert_eq!(shown, crate::core::ai::chat::review::RUN_ENDED);
+    assert_eq!(told, None);
+    assert!(!lab.app().join("a.txt").exists(), "nothing was written");
+}
+
 // A HOME reached through a link (macOS `/var` is `/private/var`) is still the
 // same folder: a `code` worker's write inside the scope is staged.
 // Needs the write primitives (`openat2`, `renameat2`): Linux only; elsewhere a
