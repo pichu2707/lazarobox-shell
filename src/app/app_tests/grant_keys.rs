@@ -163,6 +163,42 @@ fn another_pending_confirm_keeps_the_keys_and_says_so() {
     assert!(chat(&a, id2()).approvals().pending().is_some());
 }
 
+/// The text of whichever memory editor is open.
+fn editor_content(a: &App) -> String {
+    let chat = a
+        .panes
+        .get(&a.focused())
+        .and_then(PaneState::chat_state)
+        .unwrap();
+    match (chat.note_editor(), chat.summary_draft()) {
+        (Some(note), _) => note.content(),
+        (_, Some(draft)) => draft.content(),
+        _ => panic!("no editor open"),
+    }
+}
+
+// The note editor and the summary draft cover the conversation too: the keys
+// give the same notice there, arm nothing and type nothing into the editor.
+#[test]
+fn under_the_note_and_summary_editors_the_keys_give_a_notice_and_type_nothing() {
+    for key_ in ["x", "f"] {
+        let editors: [(&str, App); 2] = [
+            ("note", super::chat_notes::ready("an answer")),
+            ("summary", super::chat_summary::with_draft("the draft")),
+        ];
+        for (which, mut a) in editors {
+            let id = a.focused();
+            let before = editor_content(&a);
+            a.notice = None;
+            assert_eq!(press(&mut a, key_), vec![], "{which}");
+            let notice = a.notice.clone().expect("a notice");
+            assert!(notice.contains("conversation view"), "{which}: {notice}");
+            assert!(!a.approval_pending(id), "{which}: nothing armed");
+            assert_eq!(editor_content(&a), before, "{which}: no stray text");
+        }
+    }
+}
+
 #[test]
 fn outside_a_chat_the_keys_say_so() {
     for (key_, what) in [("x", "Exec"), ("f", "Write")] {
