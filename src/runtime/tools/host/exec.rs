@@ -167,13 +167,21 @@ pub(super) async fn plan(host: &ToolHost, scope: &TurnScope, call: &Call) -> Res
     let worker = scope.read_scope.is_some();
     let stages = host.stages.clone();
     let judged = tokio::task::spawn_blocking(move || {
-        let found = inspect(&env, &origin, &args)?;
-        staged(&stages, key)?;
-        // A worker's command runs only after its own batch was applied (W6).
-        if worker && !lock(&stages).applied(key) {
-            return Err(NOT_APPLIED.into());
-        }
-        Ok::<_, Cow<'static, str>>(found)
+        // What the worker's own batch says, judged first: a folder it staged
+        // is not on disk, and the disk check would blame the path.
+        let pending: Option<Cow<'static, str>> = match staged(&stages, key) {
+            Err(why) => Some(why.into()),
+            // A worker's command runs only after its own batch was applied (W6).
+            Ok(()) if worker && !lock(&stages).applied(key) => Some(NOT_APPLIED.into()),
+            Ok(()) => None,
+        };
+        let under: Vec<PathBuf> = lock(&stages).batch(key).map_or_else(Vec::new, |batch| {
+            (batch.entries().iter())
+                .map(|entry| entry.target.real.clone())
+                .collect()
+        });
+        let found = inspect(&env, &origin, &args, pending.clone(), &under)?;
+        pending.map_or(Ok::<_, Cow<'static, str>>(found), Err)
     })
     .await
     .map_err(|_| COULD_NOT)??;
@@ -294,16 +302,18 @@ fn inspect(
     env: &ToolEnv,
     origin: &Path,
     args: &Value,
+    pending: Option<Cow<'static, str>>,
+    staged_paths: &[PathBuf],
 ) -> Result<(RunRequest, PathBuf, PathBuf, Option<Pin>), Cow<'static, str>> {
     let (roots, root) = root_of(env, origin)?;
     let rel = match args["cwd"].as_str() {
         Some(text) => plain_relative(text).ok_or(REFUSED)?,
         None => PathBuf::new(),
     };
-    let cwd = fs::canonicalize(root.join(rel))
+    let cwd = fs::canonicalize(root.join(&rel))
         .ok()
         .filter(|cwd| cwd.starts_with(&root) && cwd.is_dir() && roots.judge_real(cwd))
-        .ok_or(REFUSED)?;
+        .ok_or_else(|| not_a_folder(env, &roots, &root.join(&rel), &rel, pending, staged_paths))?;
     let package = Package::read(&cwd);
     // A manager walks up to a parent `package.json` that nothing here would
     // show or pin, so a script runs only from the folder that has its own.
@@ -323,6 +333,34 @@ fn inspect(
     }
     let pin = pin(&request, &package);
     Ok((request, root, cwd, pin))
+}
+
+/// Why `target` (`root` plus the plain relative `rel`) cannot be the folder of
+/// a command. A refused place (a secret, a hidden name) is the bare refusal
+/// whether it exists or not, judged on the path as written, so the text is no
+/// oracle for what exists. Any other path gets one text whatever is there
+/// (nothing, a file, a link out), or what the worker's own batch says when
+/// that batch stages the folder or something below it.
+fn not_a_folder(
+    env: &ToolEnv,
+    roots: &SecretRoots,
+    target: &Path,
+    rel: &Path,
+    pending: Option<Cow<'static, str>>,
+    staged_paths: &[PathBuf],
+) -> Cow<'static, str> {
+    if !roots.judge_real(target) {
+        return REFUSED.into();
+    }
+    if let Some(why) = pending.filter(|_| staged_paths.iter().any(|at| at.starts_with(target))) {
+        return why;
+    }
+    format!(
+        "{REFUSED}: the folder {}/ is not a folder inside the chat's folder (paths are relative to the chat's folder {})",
+        rel.display(),
+        super::files::chat_folder(env)
+    )
+    .into()
 }
 
 /// A command runs against the disk, never against staged content.
