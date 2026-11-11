@@ -1529,3 +1529,60 @@ fn a_cheap_engine_is_local_and_keeps_the_model_on_the_machine() {
     assert!(!cheap("deploybot", Some("x")));
     assert!(!cheap("", None));
 }
+
+/// A run whose `review` kind is on a cheap engine (D20), one worker at once.
+fn cheap_run() -> Run {
+    let mut run = Run::new(
+        RunId(1),
+        roster(ready("ollama", "llama3:8b")),
+        Duration::from_secs(600),
+    );
+    run.close_steps_for_tests();
+    run
+}
+
+// Spec "Menu change after spawn" (17.3): a cheap author stays cheap when the
+// menu moves its kind to a cloud engine; a worker spawned after the change
+// is not cheap. A strong author stays strong the other way round.
+#[test]
+fn a_cheap_author_is_told_by_its_spec_as_spawned_not_the_menu_now() {
+    let (t0, mut run) = (Instant::now(), cheap_run());
+    let one = run.spawn(t0, Task::Review, "p").unwrap();
+    let strong = run.spawn(t0, Task::Code, "q").unwrap();
+    run.set_roster(Roster::new(vec![
+        (Task::Code, ready("ollama", "llama3:8b")),
+        (Task::Review, ready("claude", "sonnet")),
+    ]));
+    assert!(run.cheap(one));
+    assert!(!run.cheap(strong));
+    run.on_event(t0, one, done());
+    let later = run.spawn(t0, Task::Review, "r").unwrap();
+    assert!(!run.cheap(later));
+    assert!(!run.cheap(WorkerId(9)), "an unknown worker is not cheap");
+}
+
+// Bypass paths (17.3): a cheap author started from the queue, retried, or
+// relaunched on a roster that keeps it local is still cheap; one relaunched
+// on a cloud engine is not (its spec is the relaunched one).
+#[test]
+fn a_queued_retried_or_relaunched_cheap_author_stays_cheap() {
+    let (t0, mut run) = (Instant::now(), cheap_run());
+    let one = run.spawn(t0, Task::Review, "1").unwrap();
+    let two = run.spawn(t0, Task::Review, "2").unwrap();
+    assert_eq!(run.status(two), Some(WorkerStatus::Queued));
+    assert!(run.cheap(two), "queued");
+    run.on_event(t0, one, done());
+    assert_eq!(run.status(two), Some(WorkerStatus::Running));
+    assert!(run.cheap(two), "started from the queue");
+    run.on_event(t0, two, failed(ErrorClass::Other, "x"));
+    run.decide(t0, UserChoice::Retry).unwrap();
+    assert!(run.cheap(two), "retried");
+    run.on_event(t0, two, failed(ErrorClass::Other, "x"));
+    let local = roster(ready("llamacpp", "model.gguf"));
+    run.decide(t0, UserChoice::Relaunch(local)).unwrap();
+    assert!(run.cheap(two), "relaunched on a local engine");
+    run.on_event(t0, two, failed(ErrorClass::Other, "x"));
+    let cloud = roster(ready("ollama", "gpt-oss:120b-cloud"));
+    run.decide(t0, UserChoice::Relaunch(cloud)).unwrap();
+    assert!(!run.cheap(two), "relaunched on a cloud model");
+}

@@ -2011,6 +2011,16 @@ impl Orchestra for Bound {
         }
     }
 
+    fn cheap(&self, run: RunId, worker: WorkerId) -> bool {
+        let manager = self.manager.upgrade();
+        run == self.run
+            && manager.is_some_and(|manager| {
+                manager
+                    .on_run(self.pane, run, |live| live.run.cheap(worker))
+                    .unwrap_or(false)
+            })
+    }
+
     fn corrects(&self, run: RunId, worker: WorkerId) -> bool {
         let manager = self.manager.upgrade();
         run == self.run

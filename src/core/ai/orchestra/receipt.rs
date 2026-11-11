@@ -44,7 +44,10 @@ pub struct Summary {
 }
 
 pub fn summary(ev: &Evidence) -> Summary {
-    let granted = ev.review.consent_answer() == Some(Consent::Granted);
+    let granted = matches!(
+        ev.review.consent_answer(),
+        Some(Consent::Granted | Consent::Mandatory)
+    );
     let concluded = !matches!(ev.outcome, None | Some(Outcome::NotReviewed));
     Summary {
         reviewed: granted && concluded,
@@ -81,6 +84,7 @@ fn consent_word(ev: &Evidence) -> String {
         (_, Some(why)) => format!("not answered ({})", clip(why)),
         (Some(Consent::Granted), None) => "granted".to_owned(),
         (Some(Consent::Declined), None) => "declined".to_owned(),
+        (Some(Consent::Mandatory), None) => "mandatory".to_owned(),
         (None, None) => "not asked".to_owned(),
     }
 }

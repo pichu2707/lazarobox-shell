@@ -411,7 +411,7 @@ impl RunManager {
         let of = format!("review of worker {}", worker.0);
         let mut review = Review::new(assessment);
         let unanswered = match &answered {
-            Answered::Granted => None,
+            Answered::Granted | Answered::Mandatory => None,
             Answered::Declined => {
                 let _ = review.consent(Consent::Declined);
                 self.say(
@@ -441,7 +441,12 @@ impl RunManager {
             self.keep(pane, run, kept, &changes, &changes);
             return Ok(changes);
         }
-        let _ = review.consent(Consent::Granted);
+        let given = if answered == Answered::Mandatory {
+            Consent::Mandatory
+        } else {
+            Consent::Granted
+        };
+        let _ = review.consent(given);
         let mut guard = Guard {
             manager: self.clone(),
             pane,

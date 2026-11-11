@@ -65,6 +65,9 @@ impl Lens {
 pub enum Consent {
     Granted,
     Declined,
+    /// No ask: the author is cheap and its change is always reviewed (D21).
+    /// Never the user's grant, and never given by the orchestrator.
+    Mandatory,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -470,7 +473,7 @@ impl Review {
         match self.consent {
             None => Err(ReviewError::ConsentFirst),
             Some(Consent::Declined) => Err(ReviewError::Declined),
-            Some(Consent::Granted) => Ok(()),
+            Some(Consent::Granted | Consent::Mandatory) => Ok(()),
         }
     }
 
@@ -709,7 +712,7 @@ impl Review {
         match self.consent {
             None => return Err(ReviewError::ConsentFirst),
             Some(Consent::Declined) => return Ok(Outcome::NotReviewed),
-            Some(Consent::Granted) => {}
+            Some(Consent::Granted | Consent::Mandatory) => {}
         }
         if !self.all_reported() {
             return Err(ReviewError::Pending);

@@ -410,6 +410,14 @@ impl Run {
         Some(WorkerId(found.0 as u32 + 1))
     }
 
+    /// Whether worker `id` is a cheap author (design D20), by the engine and
+    /// model it was spawned with (or relaunched on), never the menu now: its
+    /// staged change is always reviewed, with no consent ask (D21).
+    pub fn cheap(&self, id: WorkerId) -> bool {
+        self.spec(id)
+            .is_some_and(|spec| cheap(&spec.engine, spec.model.as_deref()))
+    }
+
     /// What worker `id` reported using so far; `None` when its engine
     /// reported nothing (shown as `n/a`, never as zero).
     pub fn usage(&self, id: WorkerId) -> Option<Usage> {
