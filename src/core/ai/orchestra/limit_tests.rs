@@ -1,4 +1,4 @@
-use super::limit::{LIMIT, count, from_diff};
+use super::limit::{LIMIT, Written, count, from_diff};
 use crate::core::ai::tools::diff::{MAX_ROWS, diff_within};
 use std::time::Duration;
 
@@ -55,7 +55,10 @@ fn a_block_comment_is_tracked_across_added_rows() {
     // Code after a closing marker counts.
     assert_eq!(count("a.rs", None, "/* a\nb */ let x = 1;\n").lines, 1);
     // A one-row block comment with code after it counts, without it does not.
-    assert_eq!(count("a.rs", None, "/* a */ let x = 1;\n/* b */\n").lines, 1);
+    assert_eq!(
+        count("a.rs", None, "/* a */ let x = 1;\n/* b */\n").lines,
+        1
+    );
 }
 
 #[test]
@@ -155,7 +158,58 @@ fn a_name_that_only_ends_like_a_test_is_not_one() {
 
 #[test]
 fn an_inline_test_module_counts_as_code() {
-    let t = format!("#[cfg(test)]\nmod tests {{\n{}}}\n", rows(401, "    let x ="));
+    let t = format!(
+        "#[cfg(test)]\nmod tests {{\n{}}}\n",
+        rows(401, "    let x =")
+    );
     let c = count("src/a.rs", None, &t);
     assert!(!c.test && c.over());
+}
+
+#[test]
+fn two_applied_batches_of_one_worker_on_one_file_sum() {
+    let mut w = Written::default();
+    w.add("src/a.rs", count("src/a.rs", None, &rows(300, "x =")));
+    w.add("src/a.rs", count("src/a.rs", None, &rows(150, "y =")));
+    assert_eq!(w.total("src/a.rs").lines, 450);
+    assert!(w.total("src/a.rs").over());
+}
+
+#[test]
+fn the_total_with_a_write_not_yet_applied_leaves_the_record_alone() {
+    let mut w = Written::default();
+    w.add("src/a.rs", count("src/a.rs", None, &rows(300, "x =")));
+    let next = count("src/a.rs", None, &rows(101, "y ="));
+    assert!(w.with("src/a.rs", next).over());
+    assert_eq!(w.total("src/a.rs").lines, 300);
+}
+
+#[test]
+fn files_do_not_add_to_each_other() {
+    let mut w = Written::default();
+    w.add("src/a.rs", count("src/a.rs", None, &rows(300, "x =")));
+    w.add("src/b.rs", count("src/b.rs", None, &rows(300, "x =")));
+    assert_eq!(w.total("src/a.rs").lines, 300);
+    assert_eq!(w.total("src/c.rs").lines, 0);
+}
+
+#[test]
+fn a_second_worker_and_a_new_brief_start_from_zero() {
+    let mut first = Written::default();
+    first.add("src/a.rs", count("src/a.rs", None, &rows(300, "x =")));
+    let second = Written::default();
+    assert_eq!(second.total("src/a.rs").lines, 0);
+    let next = count("src/a.rs", None, &rows(300, "y ="));
+    assert!(!second.with("src/a.rs", next).over());
+    assert_eq!(first.total("src/a.rs").lines, 300);
+}
+
+#[test]
+fn the_flags_of_a_sum_follow_its_writes() {
+    let mut w = Written::default();
+    w.add("a.xyz", count("a.xyz", None, "x\n"));
+    w.add("a.xyz", count("a.xyz", None, "y\n"));
+    assert!(w.total("a.xyz").every_line);
+    w.add("tests/t.rs", count("tests/t.rs", None, &rows(900, "x")));
+    assert!(w.total("tests/t.rs").test && !w.total("tests/t.rs").over());
 }

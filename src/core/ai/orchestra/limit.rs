@@ -1,6 +1,8 @@
 //! The per-file line counter behind the limit of a `simple` worker (W9, D13).
 //! Pure: no IO.
 
+use std::collections::BTreeMap;
+
 use crate::core::ai::tools::diff::{Diff, Kind, diff};
 
 /// The most counted lines one brief may write to one file without an ask.
@@ -166,5 +168,40 @@ fn is_code(lang: &Lang, row: &str, open: &mut Option<&'static str>) -> bool {
             continue;
         }
         return !lang.line.iter().any(|m| rest.starts_with(m));
+    }
+}
+
+/// The counted lines one worker applied for its brief, per file. A new brief
+/// starts from `default`, and each worker has its own: another worker's
+/// writes to the same file never add to it.
+#[derive(Clone, Default, Debug)]
+pub struct Written {
+    files: BTreeMap<String, Count>,
+}
+
+impl Written {
+    /// Records an applied write to `path`.
+    pub fn add(&mut self, path: &str, count: Count) {
+        let sum = self.with(path, count);
+        self.files.insert(path.to_owned(), sum);
+    }
+
+    /// What `path` holds so far.
+    pub fn total(&self, path: &str) -> Count {
+        self.files.get(path).copied().unwrap_or(Count {
+            lines: 0,
+            every_line: false,
+            test: is_test(path),
+        })
+    }
+
+    /// What `path` would hold with `count` added, without recording it.
+    pub fn with(&self, path: &str, count: Count) -> Count {
+        let held = self.total(path);
+        Count {
+            lines: held.lines + count.lines,
+            every_line: held.every_line || count.every_line,
+            test: count.test,
+        }
     }
 }
