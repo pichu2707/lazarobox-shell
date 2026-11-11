@@ -12,6 +12,16 @@ baseline.
 
 ### Added
 
+- `/exec` turns Exec on for one chat, on the same path as `/write`: type it
+  in the composer and a dialog names Exec and the folder and says every
+  command still asks. Only a lowercase `y` grants it; `n` and Esc say `Exec
+  stays off`. The grant lives in that chat's memory, leaves the saved Exec
+  toggle and `config.toml` alone, and reaches the next message and, in an
+  orchestrating chat, the next `code` worker (a running worker keeps its
+  tools). It ends with a system line when the folder changes, tools turn
+  off, the saved Exec toggle changes or a conversation is resumed, and
+  ending it does not touch a `/write` grant. A model call, a worker, a
+  tool result or pasted text cannot open or answer the dialog.
 - With ORCH on, a worker on a local engine (Ollama or llama.cpp with a model
   that stays on the machine; an Ollama `*-cloud` model is not local) always
   has its staged change reviewed before your batch review, at every risk
@@ -34,6 +44,16 @@ baseline.
   miss what a larger model catches); and when the staged diff goes to a
   reviewer on another engine than the author's (or a local author's diff to a
   cloud one), naming it.
+- A new `simple` task for direct, fully specified work. The Models tab gets a
+  `simple` row (`[ai.tasks.simple]`) after `orchestrate`; unassigned it uses
+  `general`, `Set all tasks` leaves it alone, and a local server engine on it
+  is not marked `not recommended`. With ORCH on, the coordinator can start a
+  `simple` worker with `spawn_agent`: it gets the read, write and
+  `run_command` tools under the menu's Write and Exec switches, its own
+  prompt (override file `simple.md`), and on a read-only goal it starts
+  with the read tools only (no write, no `run_command`) instead of being
+  refused. An older build ignores
+  the new table.
 
 ### Changed
 

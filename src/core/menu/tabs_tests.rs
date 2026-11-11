@@ -19,7 +19,7 @@ const SETTINGS: [&str; 10] = [
     "Feedback",
 ];
 
-const MODELS: [&str; 8] = [
+const MODELS: [&str; 9] = [
     "Set all tasks",
     "general",
     "code",
@@ -27,6 +27,7 @@ const MODELS: [&str; 8] = [
     "review",
     "summarize",
     "orchestrate",
+    "simple",
     "Hugging Face",
 ];
 

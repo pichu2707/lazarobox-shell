@@ -2414,12 +2414,15 @@ impl App {
                     saved_over =
                         Some((self.ai.managed().cloned(), self.ai.managed_options().idle()));
                     let github = self.ai.toggle(crate::core::ai::config::ToolToggle::Github);
-                    let write = self.ai.toggle(crate::core::ai::config::ToolToggle::Write);
+                    let saved = write::GRANTS.map(|toggle| self.ai.toggle(toggle));
                     self.ai = menu.ai_draft();
-                    // A saved Write toggle that changed makes the grant moot or
-                    // unwanted: it ends either way.
-                    if write != self.ai.toggle(crate::core::ai::config::ToolToggle::Write) {
-                        lowered = self.end_all_write(write::TOGGLE_ENDED);
+                    // A saved Write or Exec toggle that changed makes its grant
+                    // moot or unwanted: it ends either way.
+                    for (toggle, before) in write::GRANTS.into_iter().zip(saved) {
+                        if before != self.ai.toggle(toggle) {
+                            let why = write::toggle_why(toggle);
+                            lowered.extend(self.end_all_tool_grants(&[toggle], &why));
+                        }
                     }
                     // Turning the saved toggle off takes the tools from every chat.
                     if github && !self.ai.toggle(crate::core::ai::config::ToolToggle::Github) {
@@ -9075,6 +9078,10 @@ mod app_tests {
     /// The full-pane transcript of a worker (S9).
     mod orchestra_view;
 
+    /// `/exec`, its dialog and where the grant ends.
+    mod exec_grant;
+    /// Where the `/exec` grant ends and what it widens.
+    mod exec_grant_end;
     /// The auto-run block after a GitHub read.
     mod github_block;
     /// `/github` and its dialog.

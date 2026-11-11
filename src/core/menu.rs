@@ -585,6 +585,10 @@ pub static MODELS_SECTION: Section = Section {
             kind: ItemKind::Assign(Some(Task::Orchestrate)),
         },
         Item {
+            label: "simple",
+            kind: ItemKind::Assign(Some(Task::Simple)),
+        },
+        Item {
             label: "Hugging Face",
             kind: ItemKind::HfAccount,
         },

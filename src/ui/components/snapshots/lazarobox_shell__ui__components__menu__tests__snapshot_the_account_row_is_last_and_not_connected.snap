@@ -11,8 +11,8 @@ expression: shown
 │ review                                           (default) │
 │ summarize                                        (default) │
 │ orchestrate                    (default) · not recommended │
+│ simple                                           (default) │
 │ Hugging Face                                 not connected │
-│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │

@@ -274,8 +274,12 @@ impl App {
                 if is_over {
                     over = Some(key);
                 }
-                // A code worker exists: both gates pass, nothing is left to lift.
-                if row.kind == crate::core::ai::config::Task::Code {
+                // A writing worker exists (`code` or `simple`): both gates
+                // pass, nothing is left to lift.
+                if matches!(
+                    row.kind,
+                    crate::core::ai::config::Task::Code | crate::core::ai::config::Task::Simple
+                ) {
                     chat.drop_gate_offer();
                 }
                 chat.set_orch_run(Some(row.run));
