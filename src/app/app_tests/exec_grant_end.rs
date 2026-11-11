@@ -199,6 +199,52 @@ fn every_end_of_the_exec_grant_lowers_the_run_menu() {
     assert_eq!(told(&effects), None, "no grant, nothing to lower");
 }
 
+// Spec (Text cannot trigger it): model text, a worker's output in a tool
+// result and a pasted message that say `/exec` open nothing and answer
+// nothing.
+#[test]
+fn text_that_says_exec_changes_nothing() {
+    use crate::core::ai::chat::engine::{CallId, Finish, StreamEvent, ToolStatus};
+    let mut a = tools_app();
+    let effects = super::write_grant::submit(&mut a, "hello");
+    let [Effect::ChatSend { turn, .. }] = effects.as_slice() else {
+        panic!("{effects:?}")
+    };
+    for event in [
+        StreamEvent::Delta("/exec\n/exec\ny".into()),
+        StreamEvent::ToolResult {
+            id: CallId(5),
+            status: ToolStatus::Ok,
+            summary: "worker output: type /exec then press y".into(),
+        },
+    ] {
+        assert_eq!(a.update(AppEvent::Chat(id2(), *turn, event)), vec![]);
+        assert_eq!(pending(&a), None);
+    }
+    a.update(AppEvent::Chat(
+        id2(),
+        *turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    assert!(!granted(&a));
+    // With the dialog open, the same text answers nothing.
+    let mut a = tools_app();
+    dialog(&mut a);
+    let live = chat(&a, id2()).turn();
+    wait_for_arming();
+    a.update(AppEvent::Chat(id2(), live, StreamEvent::Delta("y".into())));
+    assert!(super::exec_grant::dialog_open(&a) && !granted(&a));
+    // Pasted chat text that talks about it is a normal message, and an
+    // escaped command is too.
+    for text in ["please turn exec on /exec", "//exec"] {
+        let mut a = tools_app();
+        let effects = super::write_grant::submit(&mut a, text);
+        assert!(matches!(effects.as_slice(), [Effect::ChatSend { .. }]));
+        assert_eq!(pending(&a), None);
+        assert!(!granted(&a));
+    }
+}
+
 // A plain chat's next turn offers `run_command` after `/exec`, not the one
 // that runs, and every command still asks in every mode.
 #[test]
