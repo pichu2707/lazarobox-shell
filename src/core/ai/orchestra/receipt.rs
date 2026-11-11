@@ -174,7 +174,10 @@ fn lenses_line(ev: &Evidence) -> String {
 
 fn correction_line(ev: &Evidence) -> String {
     match ev.review.correction_targets() {
-        None => "correction: none".to_owned(),
+        None => match ev.review.limit() {
+            Some(rounds) => format!("correction: limit reached ({rounds} rounds)"),
+            None => "correction: none".to_owned(),
+        },
         Some((targets, open)) => {
             format!("correction: {targets} blocker(s) targeted, {open} still open")
         }

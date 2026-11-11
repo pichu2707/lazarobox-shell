@@ -16,6 +16,24 @@ baseline.
   and counts as a recorded terminal. `Alt+Enter` is taken by Windows Terminal
   for fullscreen: use `Ctrl+J` for a newline in the chat, or unbind the key.
 
+### Changed
+
+- With ORCH on, the coordinator now delegates by default: a request that
+  changes files is done by workers started with `spawn_agent`, even when you
+  do not mention it, and the coordinator no longer writes the code in its
+  reply (quoting code to answer a question is still fine). It still answers
+  questions, plans and summarises directly.
+
+### Fixed
+
+- The orchestrator's model review no longer starts a correction worker for
+  every re-proposal. Each proposal had its own "one correction", so a small
+  local model that kept finding trivial blockers caused dozens of them. A
+  worker's proposals now share at most three corrections until one of its
+  batches is applied; after that the review still reports, a line and the
+  receipt say the correction limit was reached and how many rounds ran, and
+  the batch goes to your review with its blockers open.
+
 ## [1.19.0] - 2026-11-11
 
 ### Added
