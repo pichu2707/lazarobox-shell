@@ -2170,7 +2170,11 @@ impl Orchestra for Bound {
 
     fn applied(&self, run: RunId, worker: WorkerId, paths: &[String]) {
         if let Some(manager) = self.manager.upgrade() {
-            manager.on_run(self.pane, run, |live| live.run.applied(worker, paths));
+            manager.on_run(self.pane, run, |live| {
+                live.run.applied(worker, paths);
+                // The batch landed: the next one starts its corrections again.
+                live.review.corrections.remove(&worker);
+            });
         }
     }
 

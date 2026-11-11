@@ -10,6 +10,30 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- With ORCH on, the coordinator now delegates by default: a request that
+  changes files is done by workers started with `spawn_agent`, even when you
+  do not mention it, and the coordinator no longer writes the code in its
+  reply (quoting code to answer a question is still fine). It still answers
+  questions, plans and summarises directly.
+### Fixed
+
+- The orchestrator's model review no longer starts a correction worker for
+  every re-proposal. Each proposal had its own "one correction", so a small
+  local model that kept finding trivial blockers caused dozens of them. A
+  worker's proposals now share at most three corrections until one of its
+  batches is applied; after that the review still reports, a line and the
+  receipt say the correction limit was reached and how many rounds ran, and
+  the batch goes to your review with its blockers open.
+### Fixed
+
+- A worker's first `run_command` in a folder it had only staged was answered
+  with a bare `path not available`, and the same call ran once its batch was
+  applied. It now gets the real reason (`propose them first`) when its own
+  batch stages that folder, and a `cwd` that is not a folder is named in the
+  refusal, the same text whatever is there. Secret and hidden places keep the
+  bare refusal.
 ### Fixed
 
 - A llama.cpp server that serves its model under another id (for example the
