@@ -277,7 +277,7 @@ impl ChatState {
         // A resumed conversation opens with no grant, the drive grant too:
         // it is asked again (openspec `wsl-drive-access` Q2).
         self.github_granted = false;
-        self.write_granted = false;
+        self.tool_grants.clear();
         self.drive_grant = None;
         self.set_conversation(conversation);
         self.scroll = super::transcript::Scroll::Follow;

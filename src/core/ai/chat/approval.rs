@@ -1036,11 +1036,22 @@ pub const WRITE_DECLINED_LINE: &str = "Write stays off";
 /// Why a model's call cannot open the `/write` dialog.
 pub const TOOL_GRANT_DENIED: &str = "only the user can turn Write on for a chat";
 
-/// The prompt of the `/write` dialog for the chat folder `folder`.
+/// What the `/exec` dialog adds under the folder. ASCII.
+pub const EXEC_GRANT_NOTE: &str = "the model may propose commands in this folder, this chat only\nevery command still asks, in every approval mode\nthe saved Exec toggle stays as it is";
+/// The system line of an `/exec` grant. ASCII, 80 columns.
+pub const EXEC_GRANTED_LINE: &str =
+    "Exec on for this chat from the next message; every command still asks";
+/// The system line of a declined `/exec` dialog.
+pub const EXEC_DECLINED_LINE: &str = "Exec stays off";
+/// Why a model's call cannot open the `/exec` dialog.
+pub const EXEC_GRANT_DENIED: &str = "only the user can turn Exec on for a chat";
+
+/// The prompt of the `/write` or `/exec` dialog for the chat folder `folder`.
 pub fn tool_grant_prompt(toggle: ToolToggle, folder: &Path, armed: bool) -> ApprovalPrompt {
-    let name = match toggle {
-        ToolToggle::Write => "Write",
-        other => other.key(),
+    let (name, note) = match toggle {
+        ToolToggle::Write => ("Write", WRITE_GRANT_NOTE),
+        ToolToggle::Exec => ("Exec", EXEC_GRANT_NOTE),
+        other => (other.key(), WRITE_GRANT_NOTE),
     };
     ApprovalPrompt {
         target: format!("Turn {name} on for this chat?"),
@@ -1048,7 +1059,7 @@ pub fn tool_grant_prompt(toggle: ToolToggle, folder: &Path, armed: bool) -> Appr
         keys: TOOL_GRANT_KEYS,
         armed,
         why: None,
-        notice: Some(WRITE_GRANT_NOTE.to_owned()),
+        notice: Some(note.to_owned()),
     }
 }
 
@@ -1989,6 +2000,9 @@ mod tests {
             WRITE_GRANTED_LINE,
             WRITE_DECLINED_LINE,
             TOOL_GRANT_DENIED,
+            EXEC_GRANTED_LINE,
+            EXEC_DECLINED_LINE,
+            EXEC_GRANT_DENIED,
         ] {
             assert!(line.is_ascii() && line.len() <= 80, "{line:?}");
         }
