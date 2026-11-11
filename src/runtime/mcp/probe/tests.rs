@@ -189,19 +189,67 @@ async fn secrets_toml_values_reach_the_child_and_never_the_report() {
     assert_reaped(&lab, "clarity");
 }
 
+// A tool name is server text: one equal to a value is redacted like the rest
+// (collision lines name two tools).
+#[tokio::test]
+async fn a_tool_name_that_is_a_secret_value_is_redacted_in_every_line() {
+    let lab = lab();
+    let value = "SECRETSECRETSECRETSECRETSECRET";
+    let both = [value, &format!("{value}_more")];
+    let mut server = lab.listing("clarity", &both, "ok", "0");
+    server.env = vec!["CLARITY_API_TOKEN".to_owned()];
+    let path = secrets_file(
+        &lab,
+        &format!("[clarity]\nCLARITY_API_TOKEN = \"{value}\"\n"),
+        0o600,
+    );
+    let report = run(&lab, &server, Some(&path)).await;
+    assert_eq!(report.verdict, Verdict::Started);
+    assert!(
+        report.lines.iter().any(|l| l.contains("collide")),
+        "{report:?}"
+    );
+    assert!(!format!("{report:?}").contains(value), "{report:?}");
+    assert_reaped(&lab, "clarity");
+}
+
 #[tokio::test]
 async fn the_prober_answers_with_one_event_and_esc_stops_it() {
     let lab = lab();
     let (tx, mut rx) = tokio::sync::mpsc::channel(4);
     let mut prober = Prober::new(lab.home.clone(), None, tx);
-    prober.start(lab.mute("clarity"));
+    prober.start(1, lab.mute("clarity"));
     wait_for_pid(&format!("{}.pid", lab.calls("clarity").display())).await;
     prober.cancel();
-    let Some(AppEvent::McpProbe(report)) = rx.recv().await else {
+    let Some(AppEvent::McpProbe(1, report)) = rx.recv().await else {
         panic!("one McpProbe event");
     };
     assert_eq!(report.verdict, Verdict::Stopped);
     assert_reaped(&lab, "clarity");
+}
+
+#[tokio::test]
+async fn a_new_probe_replaces_the_old_one_which_reports_nothing() {
+    let lab = lab();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let mut prober = Prober::new(lab.home.clone(), None, tx);
+    prober.start(1, lab.mute("clarity"));
+    wait_for_pid(&format!("{}.pid", lab.calls("clarity").display())).await;
+    prober.start(2, lab.listing("ga4", &["a"], "ok", "0"));
+    let Some(AppEvent::McpProbe(id, report)) = rx.recv().await else {
+        panic!("one McpProbe event");
+    };
+    assert_eq!((id, report.verdict), (2, Verdict::Started));
+    assert_reaped(&lab, "clarity");
+    assert!(rx.try_recv().is_err(), "the replaced probe says nothing");
+}
+
+#[tokio::test]
+async fn a_probe_that_panics_still_reports_a_failure() {
+    let report = guarded("clarity", async { panic!("boom") }).await;
+    assert_eq!(report.verdict, Verdict::Failed);
+    assert_eq!(report.lines, ["mcp: clarity unavailable: the probe failed"]);
+    assert!(!format!("{report:?}").contains("boom"));
 }
 
 #[tokio::test]
