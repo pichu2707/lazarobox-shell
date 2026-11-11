@@ -82,7 +82,7 @@ pub fn is_wsl(distro: Option<&str>, osrelease: Option<&str>) -> bool {
 }
 
 /// Terminals that have a record under `docs/terminals/<name>/`.
-pub const RECORDED_TERMINALS: [&str; 3] = ["kitty", "windows-terminal", "zutty"];
+pub const RECORDED_TERMINALS: [&str; 4] = ["kitty", "wezterm", "windows-terminal", "zutty"];
 
 /// The Debian alternatives link: the system decides which terminal it runs.
 pub const ALTERNATIVES: &str = "x-terminal-emulator";

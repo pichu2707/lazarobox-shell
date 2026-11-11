@@ -15,6 +15,10 @@ baseline.
 - Windows Terminal under WSL has a test record (`docs/terminals/windows-terminal/`)
   and counts as a recorded terminal. `Alt+Enter` is taken by Windows Terminal
   for fullscreen: use `Ctrl+J` for a newline in the chat, or unbind the key.
+- WezTerm (Windows build with its WSL domain) has a test record
+  (`docs/terminals/wezterm/`) and counts as a recorded terminal. As in Windows
+  Terminal, `Alt+Enter` is taken for fullscreen: use `Ctrl+J`, or disable the
+  default assignment in `wezterm.lua`.
 
 ### Changed
 
@@ -33,7 +37,6 @@ baseline.
   batches is applied; after that the review still reports, a line and the
   receipt say the correction limit was reached and how many rounds ran, and
   the batch goes to your review with its blockers open.
-### Fixed
 
 - A worker's first `run_command` in a folder it had only staged was answered
   with a bare `path not available`, and the same call ran once its batch was
@@ -41,7 +44,6 @@ baseline.
   batch stages that folder, and a `cwd` that is not a folder is named in the
   refusal, the same text whatever is there. Secret and hidden places keep the
   bare refusal.
-### Fixed
 
 - A llama.cpp server that serves its model under another id (for example the
   GGUF path, because `llama-server` runs without `--alias`) no longer reads

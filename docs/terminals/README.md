@@ -15,7 +15,7 @@ change a result, so each record names both.
 | Kitty | recorded | [kitty/](kitty/README.md) |
 | zutty | recorded | [zutty/](zutty/README.md) |
 | Windows Terminal (WSL) | recorded | [windows-terminal/](windows-terminal/README.md) |
-| WezTerm | deferred, no record yet | - |
+| WezTerm | recorded (Windows build, WSL domain) | [wezterm/](wezterm/README.md) |
 
 Only a terminal listed in `RECORDED_TERMINALS` (`src/core/desktop.rs`) is
 reported as "has a record" by `install-desktop`. Adding a terminal means a
@@ -33,6 +33,10 @@ folder here, a filled record, and that constant, in the same change.
   fullscreen by default, so it never reaches lazarobox. Use `Ctrl+J` for a
   newline in the chat, or add `{ "command": "unbound", "keys": "alt+enter" }`
   to `actions` in the Windows Terminal settings.
+- **WezTerm and Alt+Enter.** WezTerm binds `Alt+Enter` to `ToggleFullScreen`
+  by default, so it never reaches lazarobox. Use `Ctrl+J`, or add
+  `{ key = "Enter", mods = "ALT", action = wezterm.action.DisableDefaultAssignment }`
+  to `config.keys`.
 
 ## Record header
 
