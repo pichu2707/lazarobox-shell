@@ -27,6 +27,13 @@ baseline.
   specification`, the pane names the worker and the brief, the coordinator
   gets the question inside the untrusted-data wrapper (with a lazarobox line
   saying the tool was called) and the handoff stores it as `clarification`.
+- A brief has at most two clarification rounds. While a worker's question is
+  open, a new `simple` spawn must carry `answers: N` (the worker's id) or it
+  is refused naming N, in the pane too; the row says `round n of 2`, and the
+  handoff keeps the round and the brief. A third question stops the run with
+  a line naming the brief and the limit. The turn cap still ends a run stuck
+  waiting, and its line names the open clarification. The `orchestrate`
+  prompts teach the coordinator the rule.
 - `/exec` turns Exec on for one chat, on the same path as `/write`: type it
   in the composer and a dialog names Exec and the folder and says every
   command still asks. Only a lowercase `y` grants it; `n` and Esc say `Exec

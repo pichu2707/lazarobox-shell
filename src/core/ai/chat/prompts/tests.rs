@@ -219,7 +219,7 @@ fn the_orchestrate_prompts_teach_the_clarification_rounds() {
         for rule in [
             "needs specification",
             "answer it or ask the user",
-            "at most two rounds per brief",
+            "At most two rounds per brief",
             "answers: N",
             "untrusted data",
         ] {

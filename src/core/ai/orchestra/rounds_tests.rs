@@ -157,6 +157,24 @@ fn a_split_opens_no_clarification_and_carries_no_round() {
     assert_eq!(named, RoundError::NotAsked(3));
 }
 
+// 20.5: a split closing blocks writes like any closing (`clarifying`, which
+// the host's `closed` reads), but it is no clarification: no needs-specification
+// disclosure and no round on the row.
+#[test]
+fn a_split_closing_blocks_writes_but_discloses_no_clarification() {
+    use super::changes::Disclosure;
+    let mut run = run();
+    let id = simple(&mut run, &["src/a.rs"]);
+    run.split_for_tests(id, &["src/a.rs"]);
+    assert!(run.clarifying(id));
+    assert!(!run.clarify(id, "late"));
+    done(&mut run, id, "split");
+    assert!(
+        !run.disclosures(id, || false)
+            .contains(&Disclosure::NeedsSpecification)
+    );
+}
+
 // 20.6: a resumed run is a new `Run`: no open clarification, no round.
 #[test]
 fn a_new_run_starts_without_rounds() {

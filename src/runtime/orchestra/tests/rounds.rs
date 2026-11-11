@@ -22,8 +22,11 @@ fn open(lab: &Lab, turns: usize) -> (RunId, OrchHandle) {
 fn ask(lab: &Lab, run: RunId, id: u32) {
     lab.manager.on_run(pane(), run, |live| {
         assert!(live.run.clarify(WorkerId(id), "which file?"));
-        let done = WorkerEvent::Done { text: "stopped".into() };
-        live.run.on_event(std::time::Instant::now(), WorkerId(id), done);
+        let done = WorkerEvent::Done {
+            text: "stopped".into(),
+        };
+        live.run
+            .on_event(std::time::Instant::now(), WorkerId(id), done);
     });
 }
 

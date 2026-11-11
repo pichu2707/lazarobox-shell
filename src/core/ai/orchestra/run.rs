@@ -528,7 +528,8 @@ impl Run {
         let Some(slot) = self.slot(id) else {
             return Vec::new();
         };
-        let asked = slot.status == WorkerStatus::Done && slot.closing.is_some();
+        let clarified = matches!(slot.closing, Some(Closing::Clarify(_)));
+        let asked = slot.status == WorkerStatus::Done && clarified;
         let mut said = Vec::new();
         if asked {
             said.push(Disclosure::NeedsSpecification);
