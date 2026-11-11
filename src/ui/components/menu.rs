@@ -1649,6 +1649,7 @@ mod tests {
 
     #[test]
     fn the_bar_is_body_row_zero_with_the_hint_on_a_normal_terminal() {
+        let _hidden = crate::core::menu::tabs_tests::Mcp::hidden();
         for menu in [mixed(), ai_tab()] {
             let l = lines(&draw(62, POPUP_H, &menu));
             assert!(
@@ -1893,6 +1894,7 @@ mod tests {
     // Spec: Thresholds of the four-tab bar.
     #[test]
     fn the_four_tab_bar_degrades_at_its_thresholds() {
+        let _hidden = crate::core::menu::tabs_tests::Mcp::hidden();
         let menu = mixed();
         let whole = " Settings │ Models │ Tools │ Chat ";
         assert!(bar(49, &menu).contains(whole) && bar(49, &menu).contains("⇥ Tab · 1-5"));
@@ -1948,6 +1950,7 @@ mod tests {
     // Spec: Hidden Connectors shows a notice, in the footer, until the next key.
     #[test]
     fn snapshot_the_hidden_connectors_notice_replaces_the_footer() {
+        let _hidden = crate::core::menu::tabs_tests::Mcp::hidden();
         let mut menu = ai_tab();
         goto(&mut menu, "code");
         press(&mut menu, &[KeyCode::Char('4')]);
@@ -1957,6 +1960,77 @@ mod tests {
         press(&mut menu, &[KeyCode::Char('j')]);
         let shown = text(&draw(62, POPUP_H, &menu));
         assert!(!shown.contains("No connectors yet"), "{shown}");
+    }
+
+    // ---- the Connectors tab and area (S4) ------------------------------
+
+    fn server(name: &str) -> crate::core::ai::config::McpServer {
+        crate::core::ai::config::McpServer {
+            name: name.to_owned(),
+            command: "x".to_owned(),
+            args: Vec::new(),
+            env: Vec::new(),
+            project: None,
+            enabled: true,
+        }
+    }
+
+    /// The Connectors tab of a menu that loaded `clarity` at startup.
+    fn connectors_tab() -> MenuState {
+        let mut menu = mixed().with_connectors(vec![server("clarity")], Vec::new());
+        press(&mut menu, &[KeyCode::Char('4')]);
+        menu
+    }
+
+    // Spec (config-menu, Connectors row): The Connectors tab.
+    #[test]
+    fn snapshot_the_connectors_tab() {
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &connectors_tab())));
+    }
+
+    // Spec (mcp-connect, Entry list): Groups and order.
+    #[test]
+    fn snapshot_the_connectors_list() {
+        let mut menu = connectors_tab();
+        press(&mut menu, &[KeyCode::Enter]);
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
+    // Spec: The popup keeps its size.
+    #[test]
+    fn the_popup_has_the_same_height_on_every_connectors_view() {
+        let screen = crate::core::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
+        let height = |menu: &MenuState| {
+            menu.popup_layout(&Config::default(), screen)
+                .unwrap()
+                .popup
+                .height
+        };
+        let mut list = connectors_tab();
+        press(&mut list, &[KeyCode::Enter]);
+        let views = [mixed(), connectors_tab(), list];
+        let heights: Vec<u16> = views.iter().map(height).collect();
+        assert!(heights.iter().all(|h| *h == heights[0]), "{heights:?}");
+        for menu in &views {
+            let drawn = lines(&draw(62, POPUP_H, menu));
+            assert_eq!(drawn.len(), usize::from(POPUP_H));
+        }
+    }
+
+    #[test]
+    fn the_connectors_views_draw_at_every_size_without_panic() {
+        let mut list = connectors_tab();
+        press(&mut list, &[KeyCode::Enter]);
+        for menu in [connectors_tab(), list] {
+            for (w, h) in [(0, 0), (1, 1), (24, 7), (40, 12), (62, POPUP_H), (200, 80)] {
+                draw(w, h, &menu);
+            }
+        }
     }
 
     #[test]

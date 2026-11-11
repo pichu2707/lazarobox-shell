@@ -12,6 +12,13 @@ baseline.
 
 ### Added
 
+- The `Connectors` tab of the menu (key `4`) is visible now. Its one row,
+  `Connectors`, opens a list of the catalog services (Microsoft Clarity and
+  Google Analytics 4) with their state: `not declared`, `disabled`, `values
+  missing: <NAMES>`, `declared` and the last probe of the session. The list
+  reads `config.toml` and `secrets.toml` each time it opens (names only, never
+  a value) and says `restart lazarobox to use it in chats` when the file has
+  servers that the running chats did not load. The area writes nothing.
 - A `simple` worker is started from a brief (`goal`, `inputs`, `outputs`,
   `done_when`, `out_of_scope`) instead of free text. An incomplete brief or a
   path outside the project creates no worker and says so in the pane and to

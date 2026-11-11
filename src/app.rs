@@ -322,6 +322,8 @@ pub enum AppEvent {
     OpenFailed(String),
     /// A connector probe ended (see `Effect::McpProbe`).
     McpProbe(crate::core::ai::mcp_catalog::checks::Probed),
+    /// What `Effect::LoadPresence` read.
+    McpPresence(crate::core::ai::mcp_catalog::presence::Presence),
     /// What became of the `Effect::CopyLocal` numbered `seq`: `Err` carries
     /// the short reason.
     Clipboard {
@@ -386,6 +388,9 @@ pub enum Effect {
     McpProbe(Box<crate::core::ai::config::McpServer>),
     /// Stop the MCP probe that runs (Esc).
     CancelMcpProbe,
+    /// The Connectors area opened: read `config.toml` and `secrets.toml`
+    /// (read only); the runtime answers with one `AppEvent::McpPresence`.
+    LoadPresence,
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
     /// Like `DetectEngines`, but the codex model listing is read again even
@@ -2271,6 +2276,13 @@ impl App {
             AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
             AppEvent::McpProbe(report) => self.on_mcp_probe(report),
+            AppEvent::McpPresence(presence) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.presence_reply(presence);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
@@ -2401,6 +2413,10 @@ impl App {
                 .with_opener(self.opener)
                 .with_sandbox(self.jail.runs_commands())
                 .with_build_machine(self.build_machine.unwrap_or_default())
+                .with_connectors(
+                    self.ai.mcp_servers().to_vec(),
+                    self.mcp_probes.values().cloned().collect(),
+                )
                 .with_feedback(crate::core::menu::feedback::Facts {
                     engines: self
                         .engines
@@ -2573,6 +2589,7 @@ impl App {
             MenuCommand::SendIssue(issue) => vec![Effect::SendIssue(issue)],
             MenuCommand::Probe(server) => vec![Effect::McpProbe(server)],
             MenuCommand::CancelProbe => vec![Effect::CancelMcpProbe],
+            MenuCommand::LoadPresence => vec![Effect::LoadPresence],
             MenuCommand::Connector(line) => self.start_connector(line),
             MenuCommand::None => Vec::new(),
         }
@@ -9246,6 +9263,7 @@ mod app_tests {
 
     /// Install and login panes of a connector, probe replies (mcp-connect).
     mod connectors;
+    mod connectors_area;
 
     /// The Hugging Face account row of the Models tab (config-menu).
     mod hf_account;

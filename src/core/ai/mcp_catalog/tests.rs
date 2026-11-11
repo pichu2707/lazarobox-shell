@@ -33,6 +33,7 @@ fn names(list: &[&str]) -> Vec<String> {
 fn bare() -> Entry {
     Entry {
         id: "bare",
+        title: "Bare",
         group: Group::Workspace,
         project: "p",
         license: "l",
@@ -235,6 +236,7 @@ fn a_bare_entry_has_no_template_and_a_minimal_snippet() {
 fn a_preset_fills_the_template() {
     let preset = Entry {
         id: "p",
+        title: "P",
         args: &["--a"],
         env: &[
             Var {

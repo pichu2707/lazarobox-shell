@@ -1,0 +1,22 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(62, POPUP_H, &connectors_tab()))"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Connectors │ Chat  ⇥ Tab · 1-5 │
+│ Connectors                                      1 declared │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ Enter open · j/k move · s save · Esc cancel                │
+└────────────────────────────────────────────────────────────┘

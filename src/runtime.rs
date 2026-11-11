@@ -421,6 +421,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let (folder_tx, folder_rx) = mpsc::channel(FOLDER_CHANNEL);
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
     let (prompt_tx, prompt_rx) = mpsc::channel(PROMPT_CHANNEL);
+    let presence_config = config_path.clone();
     let config_dir = config_path
         .as_deref()
         .and_then(Path::parent)
@@ -684,6 +685,15 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         // the Hub's channel; one `y` per probe.
         .with_prober(mcp::probe::Prober::new(
             servers_home.clone().unwrap_or_default(),
+            crate::core::ai::mcp_secrets::secrets_path(
+                env::var_os("XDG_CONFIG_HOME"),
+                env::var_os("HOME"),
+            ),
+            hub_tx.clone(),
+        ))
+        // The Connectors area reads both files when it opens (D20).
+        .with_presence(mcp::presence::Reader::new(
+            presence_config,
             crate::core::ai::mcp_secrets::secrets_path(
                 env::var_os("XDG_CONFIG_HOME"),
                 env::var_os("HOME"),
@@ -1450,6 +1460,7 @@ struct Panes {
     hub: Option<hf::Hub>,
     /// The connector probe. `None` ignores its effects (unit tests).
     prober: Option<mcp::probe::Prober>,
+    presence: Option<mcp::presence::Reader>,
     /// The Ollama library requests and pull. `None` ignores the Ollama
     /// effects (unit tests).
     ollama: Option<ollama_lib::Ollama>,
@@ -1501,6 +1512,7 @@ impl Panes {
             list_running: Box::new(jobs::running),
             hub: None,
             prober: None,
+            presence: None,
             ollama: None,
             deletes: None,
             installer: None,
@@ -1718,6 +1730,11 @@ impl Panes {
 
     fn with_prober(mut self, prober: mcp::probe::Prober) -> Self {
         self.prober = Some(prober);
+        self
+    }
+
+    fn with_presence(mut self, reader: mcp::presence::Reader) -> Self {
+        self.presence = Some(reader);
         self
     }
 
@@ -2272,6 +2289,11 @@ impl Panes {
                 Effect::McpProbe(server) => {
                     if let Some(prober) = self.prober.as_mut() {
                         prober.start(*server);
+                    }
+                }
+                Effect::LoadPresence => {
+                    if let Some(reader) = self.presence.as_ref() {
+                        reader.load();
                     }
                 }
                 Effect::CancelMcpProbe => {

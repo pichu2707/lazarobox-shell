@@ -5,6 +5,7 @@
 use std::borrow::Cow;
 
 mod account;
+mod connectors;
 pub mod feedback;
 mod limit;
 
@@ -19,6 +20,7 @@ use super::{
         config::{AiConfig, ApprovalMode, NotifyMode, Profile, Task, ToolToggle, cycled_idle},
         hf::{AccountAsk, AccountReply, Answer, Ask, Job, TokenFacts},
         marks::ToolMark,
+        mcp_catalog::{checks::Probed, presence::Presence},
         menu::AiMenu,
         ollama_lib::{self, Pull},
         picker::{
@@ -281,6 +283,9 @@ pub enum ItemKind {
     /// count from 1 up to the cores. It changes the live config like a
     /// [`Choice`] and is written as a TOML integer, `auto` as a string.
     Jobs,
+    /// The `Connectors` row of the Connectors tab: Enter opens the area.
+    /// It never writes a config edit.
+    Connectors,
 }
 
 /// The version shown on the Updates row. Tests see a fixed one, so a release
@@ -595,6 +600,15 @@ pub static MODELS_SECTION: Section = Section {
     ],
 };
 
+/// The Connectors tab: one row that opens the area.
+pub static CONNECTORS_SECTION: Section = Section {
+    title: "Connectors",
+    items: &[Item {
+        label: "Connectors",
+        kind: ItemKind::Connectors,
+    }],
+};
+
 /// The Tools tab: the tools switch, the six family switches, `Approval` and
 /// the `Orchestrator` gate.
 pub static TOOLS_SECTION: Section = Section {
@@ -775,7 +789,7 @@ pub static TABS: [Tab; TAB_COUNT] = [
     },
     Tab {
         label: "Connectors",
-        sections: &[],
+        sections: std::slice::from_ref(&CONNECTORS_SECTION),
         needs_ai: true,
         note: false,
         caution: false,
@@ -835,6 +849,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::HfAccount
             | ItemKind::Feedback
             | ItemKind::Usage
+            | ItemKind::Connectors
             | ItemKind::Jobs => None,
         })
 }
@@ -1042,6 +1057,9 @@ pub enum MenuCommand {
     /// was answered, with the full line on screen): it is typed there and
     /// sent with Enter.
     Connector(String),
+    /// The Connectors area opened: read `config.toml` and which values
+    /// `secrets.toml` holds; the answer comes back as [`MenuState::presence_reply`].
+    LoadPresence,
     /// Send this Feedback request with `gh` (find similar issues, create,
     /// or comment); the answer comes back through
     /// [`MenuState::feedback_reply`].
@@ -1193,6 +1211,8 @@ pub struct MenuState {
     no_sandbox: bool,
     /// What the `Build jobs` row works `auto` out from.
     build_machine: build_jobs::Machine,
+    /// The Connectors area and what it knows.
+    connectors: connectors::Connectors,
 }
 
 /// The view that replaces the rows while it is open. One `sub_view()` picks
@@ -1207,6 +1227,7 @@ enum SubView {
     AccountField,
     Feedback,
     Usage,
+    Connectors,
 }
 
 /// What became of the Feedback form.
@@ -1258,6 +1279,52 @@ impl MenuState {
             opener: false,
             no_sandbox: false,
             build_machine: build_jobs::Machine::default(),
+            connectors: connectors::Connectors::default(),
+        }
+    }
+
+    /// The servers loaded at startup and this session's probe reports, for
+    /// the Connectors area.
+    pub fn with_connectors(
+        mut self,
+        servers: Vec<crate::core::ai::config::McpServer>,
+        probes: Vec<Probed>,
+    ) -> Self {
+        self.connectors = connectors::Connectors::new(servers, probes);
+        self
+    }
+
+    /// What the runtime read when the area opened (D20).
+    pub fn presence_reply(&mut self, presence: Presence) {
+        self.connectors.presence_reply(presence);
+    }
+
+    /// A probe ended.
+    pub fn probe_reply(&mut self, report: Probed) {
+        self.connectors.probe_reply(report);
+    }
+
+    fn on_connectors_row(&self) -> bool {
+        matches!(self.selected_kind(), Some(ItemKind::Connectors))
+    }
+
+    /// Keys in the Connectors area. A repeat only scrolls and moves.
+    fn on_connectors_key(&mut self, key: &KeyEvent, repeat: bool, config: &Config) -> MenuCommand {
+        let moves = matches!(
+            key.code,
+            KeyCode::Char('j' | 'k') | KeyCode::Up | KeyCode::Down
+        );
+        if repeat && !moves {
+            return MenuCommand::None;
+        }
+        let dirty = !self.edits(config).is_empty();
+        let command = self.connectors.key(key, dirty);
+        if let Some(notice) = self.connectors.take_notice() {
+            self.notice = Some(notice.to_owned());
+        }
+        match command {
+            MenuCommand::Open(url) => self.open_or_copy(url),
+            other => other,
         }
     }
 
@@ -1880,7 +1947,8 @@ impl MenuState {
                 | SubView::Picker
                 | SubView::AccountField
                 | SubView::Feedback
-                | SubView::Usage,
+                | SubView::Usage
+                | SubView::Connectors,
             ) => true,
             None => false,
         }
@@ -1961,6 +2029,8 @@ impl MenuState {
             Some(SubView::Feedback)
         } else if self.usage.is_some() {
             Some(SubView::Usage)
+        } else if self.connectors.is_open() {
+            Some(SubView::Connectors)
         } else {
             None
         }
@@ -2064,6 +2134,7 @@ impl MenuState {
             | ItemKind::HfAccount
             | ItemKind::Feedback
             | ItemKind::Usage
+            | ItemKind::Connectors
             | ItemKind::Jobs => None,
         }
     }
@@ -2093,6 +2164,7 @@ impl MenuState {
             Some(SubView::AccountField) => self.account_rows(),
             Some(SubView::Feedback) => self.feedback_rows(),
             Some(SubView::Usage) => self.usage_rows(),
+            Some(SubView::Connectors) => Some(self.connectors.rows()),
             None => None,
         };
         if let Some(rows) = view {
@@ -2184,6 +2256,16 @@ impl MenuState {
                         index += 1;
                         row
                     }
+                    ItemKind::Connectors => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: Some(self.connectors.value()),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
                     ItemKind::Jobs => {
                         let row = Row::Item {
                             label: item.label,
@@ -2255,6 +2337,7 @@ impl MenuState {
             Some(SubView::AccountField) => return self.on_account_key(key, repeat),
             Some(SubView::Feedback) => return self.on_feedback_key(key, repeat),
             Some(SubView::Usage) => return self.on_usage_key(key, repeat),
+            Some(SubView::Connectors) => return self.on_connectors_key(key, repeat, config),
             Some(SubView::Picker) => return self.on_picker_key(key, repeat),
             Some(SubView::Warning) | None => {}
         }
@@ -2296,6 +2379,13 @@ impl MenuState {
             KeyCode::Char('d') if !repeat && self.on_account_row() => {
                 self.account.forget();
                 MenuCommand::None
+            }
+            KeyCode::Enter if self.on_connectors_row() => {
+                if repeat {
+                    MenuCommand::None
+                } else {
+                    self.connectors.open()
+                }
             }
             KeyCode::Enter if self.on_feedback_row() => {
                 if !repeat {
@@ -2842,7 +2932,7 @@ impl MenuState {
                 }
             }
             Some(SubView::Usage) => self.paste_limit(text),
-            Some(SubView::Warning) | None => {}
+            Some(SubView::Connectors | SubView::Warning) | None => {}
         }
     }
 
@@ -2914,6 +3004,7 @@ impl MenuState {
                 };
                 return Footer::Hint(Cow::Borrowed(hint));
             }
+            Some(SubView::Connectors) => return Footer::Hint(self.connectors.hint()),
             // The picker's footers follow below, with its cursor row.
             Some(SubView::Picker) | Some(SubView::Warning) | None => {}
         }
@@ -3020,7 +3111,9 @@ impl MenuState {
             _ if in_ai_view => Cow::Borrowed(HINT_TASK),
             _ if self.on_updates_row() => Cow::Owned(self.updates_hint()),
             _ if self.on_account_row() => Cow::Borrowed(self.account.hint()),
-            _ if self.on_feedback_row() => Cow::Borrowed(HINT_FEEDBACK_ROW),
+            _ if self.on_feedback_row() || self.on_connectors_row() => {
+                Cow::Borrowed(HINT_FEEDBACK_ROW)
+            }
             _ if self.on_notify_row() => match &self.test_report {
                 Some(report) => Cow::Owned(report.clone()),
                 None => Cow::Borrowed(HINT_NOTIFY),
@@ -3400,7 +3493,7 @@ mod ai_tests;
 mod goto_tests;
 
 #[cfg(test)]
-mod tabs_tests;
+pub(crate) mod tabs_tests;
 
 #[cfg(test)]
 mod tools_tests;
@@ -3484,3 +3577,6 @@ mod feedback_tests;
 mod descriptor_tests;
 #[cfg(test)]
 mod feedback_menu_tests;
+
+#[cfg(test)]
+mod connectors_tests;

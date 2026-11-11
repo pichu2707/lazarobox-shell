@@ -83,7 +83,7 @@ fn tabs_are_well_formed_in_the_five_tab_order() {
     assert!(TABS[1..].iter().all(|t| t.needs_ai));
     assert!(TABS[0].note && TABS[1..].iter().all(|t| !t.note));
     assert!(TABS[2].caution && !TABS[1].caution && !TABS[4].caution);
-    assert!(TABS[3].sections.is_empty(), "no connector rows yet");
+    assert_eq!(TABS[3].sections.len(), 1, "the Connectors row");
 }
 
 #[test]
@@ -98,11 +98,12 @@ fn every_section_is_in_exactly_one_tab() {
         assert_eq!(homes, 1, "{}", section.title);
     }
     let total: usize = TABS.iter().map(|t| t.sections.len()).sum();
-    assert_eq!(total, SECTIONS.len() + 3, "no foreign section");
+    assert_eq!(total, SECTIONS.len() + 4, "no foreign section");
 }
 
 #[test]
 fn the_rows_sit_on_their_tab_in_the_tab_map_order() {
+    let _hidden = Mcp::hidden();
     let mut m = menu(None, None, Some(machine()));
     let mut seen = Vec::new();
     for _ in 0..m.tabs().count() {
@@ -120,17 +121,9 @@ fn the_rows_sit_on_their_tab_in_the_tab_map_order() {
     assert_eq!(labels(&CHAT_SECTION), CHAT);
 }
 
-/// A tab table whose Connectors tab has one row, for the scenarios where
-/// MCP has landed.
-static MCP_ROWS: Section = Section {
-    title: "Connectors",
-    items: &[Item {
-        label: "server",
-        kind: ItemKind::Feedback,
-    }],
-};
-
-static WITH_CONNECTORS: [Tab; TAB_COUNT] = [
+/// A test table whose Connectors tab has no row: the tab stays hidden, for
+/// the scenarios about a tab that has nothing to show.
+static HIDDEN: [Tab; TAB_COUNT] = [
     Tab {
         label: "Settings",
         sections: SECTIONS,
@@ -154,7 +147,7 @@ static WITH_CONNECTORS: [Tab; TAB_COUNT] = [
     },
     Tab {
         label: "Connectors",
-        sections: std::slice::from_ref(&MCP_ROWS),
+        sections: &[],
         needs_ai: true,
         note: false,
         caution: false,
@@ -168,12 +161,18 @@ static WITH_CONNECTORS: [Tab; TAB_COUNT] = [
     },
 ];
 
-/// Swaps the tab table for [`WITH_CONNECTORS`] until it drops.
-struct Mcp;
+/// Swaps the tab table for [`HIDDEN`] until it drops.
+pub(crate) struct Mcp;
 
 impl Mcp {
+    pub(crate) fn hidden() -> Self {
+        TEST_TABS.with(|t| t.set(Some(&HIDDEN)));
+        Self
+    }
+
+    /// The real table, whose Connectors tab holds the `Connectors` row.
     fn lands() -> Self {
-        TEST_TABS.with(|t| t.set(Some(&WITH_CONNECTORS)));
+        TEST_TABS.with(|t| t.set(None));
         Self
     }
 }
@@ -187,6 +186,11 @@ impl Drop for Mcp {
 #[test]
 fn the_ai_tabs_are_listed_only_when_the_ai_section_is_attached() {
     assert_eq!(labels(&MenuState::open(&Config::default())), ["Settings"]);
+    assert_eq!(
+        labels(&menu(None, None, None)),
+        ["Settings", "Models", "Tools", "Connectors", "Chat"]
+    );
+    let _hidden = Mcp::hidden();
     assert_eq!(
         labels(&menu(None, None, None)),
         ["Settings", "Models", "Tools", "Chat"],
@@ -212,12 +216,13 @@ fn connectors_appears_between_tools_and_chat_with_its_first_row() {
 
 #[test]
 fn a_tab_appearing_keeps_every_cursor() {
+    let hidden = Mcp::hidden();
     let mut m = menu(None, None, None);
     press_digit(&mut m, '5');
     m.goto("Memory");
     press_digit(&mut m, '1');
     press(&mut m, 'j');
-    let _mcp = Mcp::lands();
+    drop(hidden);
     press_digit(&mut m, '5');
     assert_eq!(selected_label(&m), "Memory");
     press_digit(&mut m, '1');
@@ -228,6 +233,7 @@ fn a_tab_appearing_keeps_every_cursor() {
 
 #[test]
 fn tab_and_back_tab_cycle_the_tabs_with_wrap_in_every_encoding() {
+    let _hidden = Mcp::hidden();
     let encodings = [
         (KeyCode::Tab, KeyModifiers::NONE),
         (KeyCode::Tab, KeyModifiers::SHIFT),
@@ -253,6 +259,7 @@ fn tab_and_back_tab_cycle_the_tabs_with_wrap_in_every_encoding() {
 
 #[test]
 fn tab_skips_the_hidden_connectors_in_both_directions() {
+    let _hidden = Mcp::hidden();
     let mut m = menu(None, None, Some(machine()));
     let mut seen = Vec::new();
     for _ in 0..4 {
@@ -272,6 +279,7 @@ fn tab_skips_the_hidden_connectors_in_both_directions() {
 
 #[test]
 fn the_stored_tab_is_the_tabs_position_even_with_connectors_hidden() {
+    let _hidden = Mcp::hidden();
     let mut m = menu(None, None, None);
     press_digit(&mut m, '5');
     assert_eq!(m.tab, 4);
@@ -294,6 +302,7 @@ fn ctrl_and_alt_tab_are_swallowed() {
 
 #[test]
 fn a_repeat_of_tab_or_back_tab_switches_like_a_press() {
+    let _hidden = Mcp::hidden();
     for code in [KeyCode::Tab, KeyCode::BackTab] {
         let mut m = menu(None, None, Some(machine()));
         with_mods(&mut m, code, KeyModifiers::NONE, true);
@@ -371,6 +380,7 @@ fn j_and_k_wrap_inside_the_settings_tab() {
 
 #[test]
 fn j_and_k_wrap_inside_models_tools_and_chat() {
+    let _hidden = Mcp::hidden();
     for (digit, rows, tab_index) in [
         ('2', &MODELS[..], 1),
         ('3', &TOOLS[..], 2),
@@ -504,6 +514,7 @@ fn warned() -> MenuState {
 
 #[test]
 fn tab_in_the_privacy_warning_declines_and_stays_on_the_chat_tab() {
+    let _hidden = Mcp::hidden();
     for (code, mods) in TAB_KEYS {
         let mut m = warned();
         assert!(m.in_sub_level());
@@ -527,6 +538,7 @@ fn tab_in_the_privacy_warning_declines_and_stays_on_the_chat_tab() {
 
 #[test]
 fn the_settings_label_carries_a_star_while_an_update_waits() {
+    let _hidden = Mcp::hidden();
     let m = menu(None, None, None);
     assert_eq!(m.tab_labels(), ["Settings", "Models", "Tools", "Chat"]);
     let m = m.with_update(Some("9.9.9".into()));
@@ -771,6 +783,7 @@ fn a_jump_to_the_active_tab_changes_nothing_and_says_so() {
 
 #[test]
 fn four_while_connectors_is_hidden_shows_a_notice_and_changes_nothing() {
+    let _hidden = Mcp::hidden();
     let mut m = menu(None, None, Some(machine()));
     press_digit(&mut m, '2');
     m.goto("code");
@@ -825,6 +838,7 @@ fn ctrl_and_alt_digits_are_swallowed_without_a_notice() {
 
 #[test]
 fn a_notice_is_cleared_by_the_next_press_which_then_acts() {
+    let _hidden = Mcp::hidden();
     for first in ['4', '0'] {
         let mut m = menu(None, None, Some(machine()));
         press_digit(&mut m, first);

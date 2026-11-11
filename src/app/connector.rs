@@ -81,6 +81,9 @@ impl App {
 
     /// A probe ended: its report is kept for the session.
     pub(super) fn on_mcp_probe(&mut self, report: Probed) -> Vec<Effect> {
+        if let Some(menu) = self.menu.as_mut() {
+            menu.probe_reply(report.clone());
+        }
         self.mcp_probes.insert(report.server.clone(), report);
         self.dirty = true;
         Vec::new()
