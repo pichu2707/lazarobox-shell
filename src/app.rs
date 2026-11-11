@@ -320,8 +320,9 @@ pub enum AppEvent {
     IssueSent(crate::core::menu::feedback::SendReply),
     /// The opener of `Effect::OpenUrl` failed on this link.
     OpenFailed(String),
-    /// A connector probe ended (see `Effect::McpProbe`).
-    McpProbe(crate::core::ai::mcp_catalog::checks::Probed),
+    /// The probe numbered `.0` ended (see `Effect::McpProbe`). A report whose
+    /// number is not the last asked for is a superseded probe's and is dropped.
+    McpProbe(u64, crate::core::ai::mcp_catalog::checks::Probed),
     /// What became of the `Effect::CopyLocal` numbered `seq`: `Err` carries
     /// the short reason.
     Clipboard {
@@ -383,7 +384,7 @@ pub enum Effect {
     SendIssue(Box<crate::core::menu::feedback::Request>),
     /// Probe this declared MCP server, after the user's `y`; the runtime
     /// answers with one `AppEvent::McpProbe`. One at a time.
-    McpProbe(Box<crate::core::ai::config::McpServer>),
+    McpProbe(u64, Box<crate::core::ai::config::McpServer>),
     /// Stop the MCP probe that runs (Esc).
     CancelMcpProbe,
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
@@ -1076,6 +1077,8 @@ pub struct App {
     /// `app/connector.rs`) and this session's MCP probe reports.
     typing: Vec<connector::Typing>,
     mcp_probes: std::collections::HashMap<String, crate::core::ai::mcp_catalog::checks::Probed>,
+    /// The number of the last probe asked for.
+    mcp_probe_seq: u64,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
     /// A fresh engram session id, injected so the core does no IO: the
@@ -1232,6 +1235,7 @@ impl App {
             probe: None,
             typing: Vec::new(),
             mcp_probes: std::collections::HashMap::new(),
+            mcp_probe_seq: 0,
             clock: Instant::now,
             session_id: || None,
             token_check: || false,
@@ -2270,7 +2274,7 @@ impl App {
             AppEvent::InstallWarning(warning) => self.on_install_warning(warning),
             AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
-            AppEvent::McpProbe(report) => self.on_mcp_probe(report),
+            AppEvent::McpProbe(id, report) => self.on_mcp_probe(id, report),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
@@ -2571,7 +2575,7 @@ impl App {
                 vec![Effect::OpenUrl(url)]
             }
             MenuCommand::SendIssue(issue) => vec![Effect::SendIssue(issue)],
-            MenuCommand::Probe(server) => vec![Effect::McpProbe(server)],
+            MenuCommand::Probe(server) => self.start_mcp_probe(server),
             MenuCommand::CancelProbe => vec![Effect::CancelMcpProbe],
             MenuCommand::Connector(line) => self.start_connector(line),
             MenuCommand::None => Vec::new(),

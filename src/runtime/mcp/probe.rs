@@ -10,10 +10,15 @@
 use std::{
     ffi::OsString,
     future::Future,
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
 };
 
-use tokio::sync::{mpsc, oneshot};
+use futures::FutureExt;
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
 
 use super::{client::Timeouts, external::connect};
 use crate::{
@@ -24,6 +29,7 @@ use crate::{
             checks::{self, Probed, Verdict},
             entry,
         },
+        mcp_secrets::{redact_list, redact_values},
         sanitize::clean,
     },
     runtime::mcp_secrets::load_for_start,
@@ -43,8 +49,9 @@ pub async fn probe(
     let loaded = load_for_start(secrets).await;
     // This server's own values only, as in a chat start.
     let own = loaded.secrets.lookup_for(server, &host);
+    let values = redact_list(server, &own);
     let connected = tokio::select! {
-        result = connect(server, home, &own, timeouts) => Some(result),
+        result = connect(server, home, &own, &values, timeouts) => Some(result),
         () = cancel => None,
     };
     let (verdict, lines) = match connected {
@@ -63,6 +70,8 @@ pub async fn probe(
         Some(Ok((client, listed))) => {
             let names: Vec<String> = listed.tools.into_iter().map(|t| t.name).collect();
             let lines = checks::started(&server.name, entry(&server.name), listed.admitted, &names);
+            // Tool names are the server's own text: a value it echoes goes.
+            let lines = lines.iter().map(|l| redact_values(l, &values)).collect();
             client.shutdown().await;
             (Verdict::Started, lines)
         }
@@ -71,17 +80,39 @@ pub async fn probe(
         server: clean(&server.name),
         verdict,
         lines,
-        problems: loaded.problems,
+        problems: loaded
+            .problems
+            .iter()
+            .map(|p| redact_values(p, &values))
+            .collect(),
+    }
+}
+
+/// `report` of a probe that may panic: a panic is a failed probe, so the area
+/// never waits for a report that will not come. The panic text is not shown.
+async fn guarded(server: &str, report: impl Future<Output = Probed>) -> Probed {
+    match AssertUnwindSafe(report).catch_unwind().await {
+        Ok(report) => report,
+        Err(_) => Probed {
+            server: clean(server),
+            verdict: Verdict::Failed,
+            lines: vec![format!(
+                "mcp: {} unavailable: the probe failed",
+                clean(server)
+            )],
+            problems: Vec::new(),
+        },
     }
 }
 
 /// Runs the probes the app asks for, one at a time, and answers each with one
-/// `AppEvent::McpProbe`.
+/// `AppEvent::McpProbe` carrying the number the app gave it.
 pub struct Prober {
     home: PathBuf,
     secrets: Option<PathBuf>,
     events: mpsc::Sender<AppEvent>,
     stop: Option<oneshot::Sender<()>>,
+    task: Option<JoinHandle<()>>,
 }
 
 impl Prober {
@@ -91,35 +122,40 @@ impl Prober {
             secrets,
             events,
             stop: None,
+            task: None,
         }
     }
 
-    /// Starts the probe of `server` on a task of its own; one already running
-    /// is stopped first.
-    pub fn start(&mut self, server: McpServer) {
-        self.cancel();
+    /// Starts probe `id` of `server` on a task of its own. One that still runs
+    /// is replaced: its task is aborted (dropping its server kills the
+    /// process group) and it reports nothing, so two probes never overlap.
+    pub fn start(&mut self, id: u64, server: McpServer) {
+        self.stop = None;
+        if let Some(old) = self.task.take() {
+            old.abort();
+        }
         let (stop, stopped) = oneshot::channel::<()>();
         self.stop = Some(stop);
         let (home, secrets, events) =
             (self.home.clone(), self.secrets.clone(), self.events.clone());
-        tokio::spawn(async move {
+        self.task = Some(tokio::spawn(async move {
             let cancel = async {
                 // A dropped sender is not an Esc.
                 if stopped.await.is_err() {
                     std::future::pending::<()>().await;
                 }
             };
-            let report = probe(
+            let run = probe(
                 &server,
                 &home,
                 |name| std::env::var_os(name),
                 secrets,
                 Timeouts::default(),
                 cancel,
-            )
-            .await;
-            let _ = events.send(AppEvent::McpProbe(report)).await;
-        });
+            );
+            let report = guarded(&server.name, run).await;
+            let _ = events.send(AppEvent::McpProbe(id, report)).await;
+        }));
     }
 
     /// Esc: stops the probe that runs, if any.
