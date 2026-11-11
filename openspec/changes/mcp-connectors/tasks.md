@@ -14,12 +14,12 @@ Order follows C8 (secrets and read-deny, then Clarity and GA4, then GSC, then Wo
 
 ## S2 Catalog core with Clarity and GA4 (C2, C8, C11) — 220–300 lines
 
-- [ ] 2.1 RED/GREEN: catalog integrity (ids, order, groups, commands, `https://` links) (mcp-catalog, Entries are data).
-- [ ] 2.2 RED/GREEN: match by name; non-catalog servers untouched (Declared entries are matched by name).
-- [ ] 2.3 RED/GREEN: class lookup, unknown tool is `write`; a `read` tool with `readOnlyHint` still asks `y` in `auto` (Read/write class is recorded only).
-- [ ] 2.4 RED/GREEN: no first-run download in any run command (Pre-installed binary).
-- [ ] 2.5 RED/GREEN: `clarity` and `ga4` entries: snippet, secrets template, no `--allow-write`, guide warnings (Clarity entry, GA4 entry).
-- [ ] 2.6 RED/GREEN: pure checks: more than 64 tools, collisions after the 24-character cut, tools not in the catalog.
+- [x] 2.1 RED/GREEN: catalog integrity (ids, order, groups, commands, `https://` links) (mcp-catalog, Entries are data). As built: `Entry` data in `src/core/ai/mcp_catalog.rs`, `ENTRIES` in `mcp_catalog/entries.rs`. S2 holds `clarity`, `ga4` only, so the test checks that order and `Analytics`; `gsc`, `google`, `apps-script` extend it in S5/S6. Link check uses `opener::is_web_url`; id validity is checked by parsing the snippet with `Config::parse` (no problem).
+- [x] 2.2 RED/GREEN: match by name; non-catalog servers untouched (Declared entries are matched by name). As built: `entry(name)` exact equality; `admits(&McpServer, tool)` returns true for everything (no flag yet).
+- [x] 2.3 RED/GREEN: class lookup, unknown tool is `write`; a `read` tool with `readOnlyHint` still asks `y` in `auto` (Read/write class is recorded only). As built: `Entry::class`/`class(server, tool)`, unknown or non-entry is `Write`. The `y` test calls `approval::ask_for` on `Call::External` for a `read` tool on both localities (`ask_for` has no mode argument, so `ask`/`auto`/`run` cannot differ). Nothing in approval was touched.
+- [x] 2.4 RED/GREEN: no first-run download in any run command (Pre-installed binary). As built: test over `command`, `install` and the login line (`uvx`, `npx`, `pnpm`, `pipx run`, `dlx`).
+- [x] 2.5 RED/GREEN: `clarity` and `ga4` entries: snippet, secrets template, no `--allow-write`, guide warnings (Clarity entry, GA4 entry). As built: snippet omits empty `args`/`env`; template is `None` without secret vars. Clarity tools: `query-analytics-dashboard`, `list-session-recordings`, `query-documentation-resources`. GA4 login uses the full `https://www.googleapis.com/auth/...` scope URLs of the analytics-mcp README (U: not run against gcloud here), client file `~/.config/lazarobox/google-oauth-client.json`. Clarity limits (10 requests per project per day, last 1 to 3 days, 1,000 rows, no pagination) confirmed against learn.microsoft.com/en-us/clarity/setup-and-installation/clarity-data-export-api. GA4 lists all 13 upstream tools (README checked). Binary names `clarity-mcp-server`, `analytics-mcp` stay U until task 6.4.
+- [x] 2.6 RED/GREEN: pure checks: more than 64 tools, collisions after the 24-character cut, tools not in the catalog. As built: `checks::{report, too_many, collisions, unknown}`; collisions use `servers::qualified_name` and a name that cannot be qualified gets its own line; lines sanitize and cap names; `MAX_TOOLS` moved to `tools/servers.rs` (client imports it).
 
 ## S3 Probe, install pane, login pane (C2, C7) — 230–330 lines
 
