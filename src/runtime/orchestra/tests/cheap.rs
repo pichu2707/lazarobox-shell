@@ -247,3 +247,97 @@ async fn a_lens_past_its_deadline_times_out_and_not_its_author() {
     assert!(waits.decide(session_of(run, 1), 7, id, Decision::Sent));
     assert_eq!(ended(&lab, 1).await, WorkerStatus::Done);
 }
+
+// Spec "Reviewer unavailable stops visibly" and "No silent escalation"
+// (17.7): a cheap author's change with the Review row on an engine that is
+// not installed. The lens worker ends `refused`, the run halts with the
+// failure alert, the batch reaches the user not reviewed, and the receipt
+// and the transcript say why. No other engine is called: the fake runner
+// sees the author's alone.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_unavailable_reviewer_stops_the_run_visibly_and_nothing_escalates() {
+    let waits = Waits::new();
+    let (mut lab, run, handle) = local_run(LENS, ("gemini", "pro"), DEADLINE, &waits);
+    handle.call(spawn(Task::Code, "write a")).await;
+    let Some((id, review)) = batch_ask(&mut lab).await else {
+        panic!("no batch review; worker 1 is {:?}", status(&lab, 1));
+    };
+    assert_eq!(status(&lab, 2), Some(WorkerStatus::Refused), "the lens");
+    let receipt = review.receipt().expect("the receipt line");
+    assert!(receipt.contains("consent mandatory"), "{receipt}");
+    assert!(
+        receipt.contains("not reviewed (lens risk (worker 2) was refused"),
+        "{receipt}"
+    );
+    let events = lab.sent();
+    let halted = events.iter().find_map(|e| match e {
+        OrchestraEvent::Halted { worker, class, .. } => Some((*worker, *class)),
+        _ => None,
+    });
+    assert_eq!(halted, Some((WorkerId(2), ErrorClass::Setup)), "{events:?}");
+    let said: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            OrchestraEvent::Review { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        said.iter()
+            .any(|l| l.contains("could not start: lens risk (worker 2) was refused")),
+        "{said:?}"
+    );
+    let made: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            OrchestraEvent::Handoff { handoff, .. }
+                if matches!(handoff.unit, Unit::Receipt(..)) =>
+            {
+                Some(handoff.done.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        made.iter()
+            .any(|done| done.contains("outcome: not reviewed (lens risk (worker 2) was refused")),
+        "{made:?}"
+    );
+    assert!(waits.decide(session_of(run, 1), 7, id, Decision::Sent));
+    assert_eq!(ended(&lab, 1).await, WorkerStatus::Done);
+    let mut engines = lab.seen.engines();
+    engines.dedup();
+    assert_eq!(engines, ["ollama"], "no other engine ran");
+}
+
+// D21 GUARD (17.7): a mandatory review that cannot start for another reason
+// (no room under `max_workers`) says so in the transcript and in its
+// receipt, and the batch goes on unreviewed.
+#[tokio::test]
+async fn a_mandatory_review_that_cannot_start_says_why_and_the_batch_goes_on() {
+    let limits = RunLimits {
+        workers: 3,
+        ..RunLimits::default()
+    };
+    let (mut lab, run, handle) = reviewed(quiet, Answered::Mandatory, limits).await;
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].outcome, None);
+    let events = lab.sent();
+    let said: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            OrchestraEvent::Review { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        said.iter()
+            .any(|l| l.contains("could not start: max_workers is 3")),
+        "{said:?}"
+    );
+    let line = handle
+        .receipt_line(run, WorkerId(1), &lock_change())
+        .expect("a line");
+    assert!(line.contains("not reviewed (max_workers is 3"), "{line}");
+}

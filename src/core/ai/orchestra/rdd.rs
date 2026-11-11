@@ -402,6 +402,9 @@ pub struct Review {
     gaps: Vec<String>,
     /// Bytes of diff left out of the prompts, the most of any, for the receipt.
     cut_bytes: usize,
+    /// Why the review stopped before it could conclude (a reviewer refused,
+    /// no room for its workers), for the receipt.
+    stopped: Option<String>,
 }
 
 impl Review {
@@ -417,6 +420,7 @@ impl Review {
             correction: Correction::Unused,
             gaps: Vec::new(),
             cut_bytes: 0,
+            stopped: None,
         }
     }
 
@@ -449,6 +453,17 @@ impl Review {
         if !self.gaps.iter().any(|known| known == why) {
             self.gaps.push(why.to_owned());
         }
+    }
+
+    /// The review stopped before it could conclude, for `why`. The first
+    /// reason is kept.
+    pub fn note_stop(&mut self, why: &str) {
+        self.stopped.get_or_insert_with(|| why.to_owned());
+    }
+
+    /// Why the review stopped before it could conclude, if it did.
+    pub fn stopped(&self) -> Option<&str> {
+        self.stopped.as_deref()
     }
 
     pub fn gaps(&self) -> &[String] {
