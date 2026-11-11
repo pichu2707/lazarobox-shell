@@ -677,7 +677,7 @@ impl Run {
         let listed = slot.spec.outputs().unwrap_or_default();
         let outside = paths
             .iter()
-            .filter(|p| !listed.iter().any(|o| covers(o, p)));
+            .filter(|p| !listed.iter().any(|o| inside(p, o)));
         outside.cloned().collect()
     }
 
@@ -1828,22 +1828,22 @@ fn shown(usage: Usage, partial: bool) -> Usage {
     }
 }
 
-/// Whether one of two output paths is the other or a directory above it,
-/// comparing components ignoring ASCII case.
+/// The components of a path, without empty ones or `.`.
+fn parts(path: &str) -> Vec<String> {
+    let parts = path.split('/').filter(|c| !c.is_empty() && *c != ".");
+    parts.map(str::to_owned).collect()
+}
+
+/// Whether `path` is `output` or lies under it, comparing components
+/// ignoring ASCII case. `.` (the project root) holds every path.
+fn inside(path: &str, output: &str) -> bool {
+    let (long, short) = (parts(path), parts(output));
+    long.len() >= short.len() && (long.iter().zip(&short)).all(|(x, y)| x.eq_ignore_ascii_case(y))
+}
+
+/// Whether one of two output paths is the other or a directory above it.
 fn covers(a: &str, b: &str) -> bool {
-    let parts = |p: &str| -> Vec<String> {
-        let parts = p.split('/').filter(|c| !c.is_empty() && *c != ".");
-        parts.map(str::to_owned).collect()
-    };
-    let (a, b) = (parts(a), parts(b));
-    let under = |long: &[String], short: &[String]| {
-        long.len() >= short.len()
-            && long
-                .iter()
-                .zip(short)
-                .all(|(x, y)| x.eq_ignore_ascii_case(y))
-    };
-    under(&a, &b) || under(&b, &a)
+    inside(a, b) || inside(b, a)
 }
 
 /// Worker ids start at 1; id 0 maps to no slot.

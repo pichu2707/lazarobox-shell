@@ -117,6 +117,21 @@ fn staged_files_the_brief_does_not_list_are_outside_it() {
     assert!(run.outside_brief(code, &staged).is_empty());
 }
 
+// Review: the match is one way, a staged path equal to or under a listed
+// output. A staged ancestor of an output is not covered; `.` (the project
+// root) covers every file, by design.
+#[test]
+fn only_a_path_equal_to_or_under_an_output_is_inside_the_brief() {
+    let mut run = run();
+    let id = simple(&mut run, &["src/a.rs", "docs"]);
+    let staged = ["src", "src/a.rs/x", "docs/deep/x.md", "docs"].map(str::to_owned);
+    assert_eq!(run.outside_brief(id, &staged), ["src"]);
+    let mut run = super::clarify_tests::run();
+    let id = simple(&mut run, &["."]);
+    let staged = ["src/b.rs", "Cargo.toml"].map(str::to_owned);
+    assert!(run.outside_brief(id, &staged).is_empty());
+}
+
 // 22.7: only a split closing is a split; a clarification is not.
 #[test]
 fn only_a_split_closing_is_split_chosen() {

@@ -2158,14 +2158,16 @@ impl Orchestra for Bound {
         manager.on_run(self.pane, run, |live| live.run.over_limit(worker, &counts))
     }
 
-    fn outside_brief(&self, run: RunId, worker: WorkerId, paths: Vec<String>) -> Vec<String> {
-        let manager = self.manager.upgrade().filter(|_| run == self.run);
-        let listed = manager.and_then(|manager| {
-            manager.on_run(self.pane, run, |live| {
-                live.run.outside_brief(worker, &paths)
-            })
-        });
-        listed.unwrap_or_default()
+    fn outside_brief(
+        &self,
+        run: RunId,
+        worker: WorkerId,
+        paths: Vec<String>,
+    ) -> Option<Vec<String>> {
+        let manager = self.manager.upgrade().filter(|_| run == self.run)?;
+        manager.on_run(self.pane, run, |live| {
+            live.run.outside_brief(worker, &paths)
+        })
     }
 
     fn split_chosen(&self, run: RunId, worker: WorkerId) -> bool {

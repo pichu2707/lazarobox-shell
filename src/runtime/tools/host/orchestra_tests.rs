@@ -398,6 +398,8 @@ struct Scoped {
     limited: bool,
     /// The brief's outputs of the `simple` worker; `None` lists no outside file.
     outputs: Option<&'static [&'static str]>,
+    /// The brief cannot be read though the counts can (review).
+    outside_gone: bool,
     /// The worker chose to split (W9b).
     splitted: std::sync::atomic::AtomicBool,
     /// The run cannot be reached: the limit cannot be counted.
@@ -440,6 +442,7 @@ impl Scoped {
             closed: Default::default(),
             limited: false,
             outputs: None,
+            outside_gone: false,
             splitted: Default::default(),
             gone: false,
             late: 0,
@@ -586,12 +589,15 @@ impl Orchestra for Scoped {
         (!self.gone).then(|| over.collect())
     }
 
-    fn outside_brief(&self, _: RunId, _: WorkerId, paths: Vec<String>) -> Vec<String> {
+    fn outside_brief(&self, _: RunId, _: WorkerId, paths: Vec<String>) -> Option<Vec<String>> {
+        if self.outside_gone {
+            return None;
+        }
         let Some(outputs) = self.outputs else {
-            return Vec::new();
+            return Some(Vec::new());
         };
         let listed = |path: &String| outputs.contains(&path.as_str());
-        paths.into_iter().filter(|path| !listed(path)).collect()
+        Some(paths.into_iter().filter(|path| !listed(path)).collect())
     }
 
     fn split_chosen(&self, _: RunId, _: WorkerId) -> bool {
@@ -2791,6 +2797,28 @@ async fn a_batch_whose_lines_cannot_be_counted_is_not_proposed() {
     assert!(
         out.text
             .contains("could not count the staged lines: nothing is proposed"),
+        "{out:?}"
+    );
+    assert!(fake.log.lock().unwrap().is_empty());
+}
+
+// Review: a run whose brief cannot be read cannot name the outside files, and
+// the batch is not proposed unasked, as when the lines cannot be counted.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_batch_whose_outside_files_cannot_be_judged_is_not_proposed() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (mut fake, _) = briefed(&home, Decision::Sent, &["src/a.rs"]);
+    Arc::get_mut(&mut fake).unwrap().outside_gone = true;
+    let user = ByAsk::limited(&fake, Decision::Sent, Decision::Sent, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user);
+    assert!(!d.call(write_call("src/b.rs", "x")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.is_error, "{out:?}");
+    assert!(
+        out.text.contains("could not count the staged lines"),
         "{out:?}"
     );
     assert!(fake.log.lock().unwrap().is_empty());
