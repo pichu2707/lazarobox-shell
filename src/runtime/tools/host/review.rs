@@ -1,7 +1,8 @@
 //! The step before a `code` worker's batch review (agent-orchestrator S7b,
 //! D16): assess the staged change set and, for a `high` one, ask the user for
 //! consent on a wait of its own, then hand the answer to the run manager,
-//! which runs the review. The ask is built here from the assessment and the
+//! which runs the review. A cheap author's set is reviewed at every tier with
+//! no ask (W7, D21). The ask is built here from the assessment and the
 //! staged ledger, never from text the worker supplied. Nothing in this step
 //! approves the batch, and no answer to the consent reaches the worker's own
 //! tool call: the consent is announced as a call of its own, with its own id,
@@ -40,7 +41,8 @@ pub(super) fn joined(taken: Result<Vec<Change>, tokio::task::JoinError>) -> Opti
     taken.ok()
 }
 
-/// Reviews the staged change set of `scope`'s worker when it is `high`.
+/// Reviews the staged change set of `scope`'s worker when it is `high`, or
+/// whatever its tier when the worker is a cheap author (D21).
 /// Returns when the review ended or was skipped; the caller then seals the
 /// batch for the user's review whatever happened here.
 pub(super) async fn before_batch(host: &ToolHost, scope: &TurnScope) {
@@ -70,11 +72,22 @@ pub(super) async fn before_batch_with(
     // The set as last reviewed: the review hands it back with the hashes of
     // the files it corrected and checked.
     let mut base = changes.clone();
-    if assessment.tier >= Tier::High {
-        let Some(answered) = consent(host, scope, worker, &assessment, &changes).await else {
-            return;
+    // A cheap author is told by its spec as spawned, before the tier: its
+    // change is reviewed with no ask, whatever the tier (D21).
+    let cheap = worker.handle.cheap(worker.run, worker.worker);
+    if cheap || assessment.tier >= Tier::High {
+        // The consent and the review are not the worker's own work: its
+        // deadline stops until the review returns (D6, owner item 3).
+        let _paused = worker.handle.pause(worker.run, worker.worker);
+        let answered = if cheap {
+            Answered::Mandatory
+        } else {
+            let Some(answered) = consent(host, scope, worker, &assessment, &changes).await else {
+                return;
+            };
+            answered
         };
-        let granted = answered == Answered::Granted;
+        let granted = matches!(answered, Answered::Granted | Answered::Mandatory);
         let started = worker
             .handle
             .review(
@@ -180,7 +193,7 @@ async fn consent(
         | Answer::Screen(_) => Answered::Unanswered("no user answer".to_owned()),
     };
     match &answered {
-        Answered::Granted => owed.answer(ToolStatus::Ok, "review started"),
+        Answered::Granted | Answered::Mandatory => owed.answer(ToolStatus::Ok, "review started"),
         Answered::Declined => owed.answer(ToolStatus::Denied, "not reviewed"),
         Answered::Unanswered(why) => {
             owed.answer(

@@ -452,3 +452,47 @@ fn a_diff_gap_is_named_and_never_called_clean() {
         note.left
     );
 }
+
+// Spec "Cheap author, no consent" (17.2, D21): a mandatory review's receipt
+// and its batch-review line say `mandatory`, never `granted`, and it counts
+// as reviewed.
+#[test]
+fn a_mandatory_review_says_mandatory_in_the_receipt_and_the_line() {
+    let mut review = high();
+    review.consent(Consent::Mandatory).unwrap();
+    review.pick("risk", "a cheap author").unwrap();
+    review.report(Lens::Risk, "NONE").unwrap();
+    let outcome = review.conclude().ok();
+    let held = Held::of(review, outcome);
+    let ev = held.evidence();
+    let note = judgement(&ev);
+    assert!(note.done.contains("consent: mandatory"), "{}", note.done);
+    assert!(note.done.contains("outcome: clean"), "{}", note.done);
+    let text = line(&ev);
+    assert!(text.contains("consent mandatory"), "{text}");
+    assert!(!text.contains("granted"), "{text}");
+    assert!(summary(&ev).reviewed);
+}
+
+// Spec "Reviewer unavailable stops visibly" (17.7) and D21: a review that
+// stopped before it could conclude says why in its receipt and in the batch
+// review line, still `not reviewed`.
+#[test]
+fn a_stopped_review_says_why_in_the_receipt_and_the_line() {
+    let mut review = high();
+    review.consent(Consent::Mandatory).unwrap();
+    review.note_stop("lens risk (worker 3) was refused: gemini is not installed");
+    let held = Held::of(review, None);
+    let ev = held.evidence();
+    let note = judgement(&ev);
+    assert!(
+        note.done.contains(
+            "outcome: not reviewed (lens risk (worker 3) was refused: gemini is not installed)"
+        ),
+        "{}",
+        note.done
+    );
+    let text = line(&ev);
+    assert!(text.contains("not reviewed (lens risk"), "{text}");
+    assert!(!summary(&ev).reviewed);
+}

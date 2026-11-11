@@ -1655,3 +1655,108 @@ fn a_run_is_undelegated_only_with_no_worker_and_no_cancel() {
     refused.spawn(t0, Task::Review, "x").unwrap_err();
     assert!(refused.undelegated(), "a refusal made no worker");
 }
+
+// Spec "Mandatory review for a cheap author, optional for a strong one"
+// (17.1, D20): a cheap author is a local server that keeps the model on the
+// machine. An Ollama `*-cloud` model, a CLI engine, an unknown engine and an
+// empty one are not.
+#[test]
+fn a_cheap_engine_is_local_and_keeps_the_model_on_the_machine() {
+    use super::run::cheap;
+    assert!(cheap("ollama", Some("llama3:8b")));
+    assert!(cheap("llamacpp", Some("model.gguf")));
+    assert!(cheap("llamacpp", None));
+    assert!(!cheap("ollama", Some("gpt-oss:120b-cloud")));
+    assert!(!cheap("ollama", Some("gpt-oss:cloud")));
+    assert!(!cheap("claude", Some("opus")));
+    assert!(!cheap("claude", None));
+    assert!(!cheap("deploybot", Some("x")));
+    assert!(!cheap("", None));
+}
+
+/// A run whose `review` kind is on a cheap engine (D20), one worker at once.
+fn cheap_run() -> Run {
+    let mut run = Run::new(
+        RunId(1),
+        roster(ready("ollama", "llama3:8b")),
+        Duration::from_secs(600),
+    );
+    run.close_steps_for_tests();
+    run
+}
+
+// Spec "Menu change after spawn" (17.3): a cheap author stays cheap when the
+// menu moves its kind to a cloud engine; a worker spawned after the change
+// is not cheap. A strong author stays strong the other way round.
+#[test]
+fn a_cheap_author_is_told_by_its_spec_as_spawned_not_the_menu_now() {
+    let (t0, mut run) = (Instant::now(), cheap_run());
+    let one = run.spawn(t0, Task::Review, "p").unwrap();
+    let strong = run.spawn(t0, Task::Code, "q").unwrap();
+    run.set_roster(Roster::new(vec![
+        (Task::Code, ready("ollama", "llama3:8b")),
+        (Task::Review, ready("claude", "sonnet")),
+    ]));
+    assert!(run.cheap(one));
+    assert!(!run.cheap(strong));
+    run.on_event(t0, one, done());
+    let later = run.spawn(t0, Task::Review, "r").unwrap();
+    assert!(!run.cheap(later));
+    assert!(!run.cheap(WorkerId(9)), "an unknown worker is not cheap");
+}
+
+// Bypass paths (17.3): a cheap author started from the queue, retried, or
+// relaunched on a roster that keeps it local is still cheap; one relaunched
+// on a cloud engine is not (its spec is the relaunched one).
+#[test]
+fn a_queued_retried_or_relaunched_cheap_author_stays_cheap() {
+    let (t0, mut run) = (Instant::now(), cheap_run());
+    let one = run.spawn(t0, Task::Review, "1").unwrap();
+    let two = run.spawn(t0, Task::Review, "2").unwrap();
+    assert_eq!(run.status(two), Some(WorkerStatus::Queued));
+    assert!(run.cheap(two), "queued");
+    run.on_event(t0, one, done());
+    assert_eq!(run.status(two), Some(WorkerStatus::Running));
+    assert!(run.cheap(two), "started from the queue");
+    run.on_event(t0, two, failed(ErrorClass::Other, "x"));
+    run.decide(t0, UserChoice::Retry).unwrap();
+    assert!(run.cheap(two), "retried");
+    run.on_event(t0, two, failed(ErrorClass::Other, "x"));
+    let local = roster(ready("llamacpp", "model.gguf"));
+    run.decide(t0, UserChoice::Relaunch(local)).unwrap();
+    assert!(run.cheap(two), "relaunched on a local engine");
+    run.on_event(t0, two, failed(ErrorClass::Other, "x"));
+    let cloud = roster(ready("ollama", "gpt-oss:120b-cloud"));
+    run.decide(t0, UserChoice::Relaunch(cloud)).unwrap();
+    assert!(!run.cheap(two), "relaunched on a cloud model");
+}
+
+// D6 (17.4): a worker's own deadline ends it alone. A sibling whose started
+// time is as old keeps running: its clock may have stopped for the user or
+// its review, which only its own turn knows. A worker that already ended is
+// left as it was.
+#[test]
+fn a_time_out_ends_only_its_own_worker() {
+    let (t0, mut run) = (Instant::now(), cheap_run());
+    let limits = RunLimits {
+        parallel: 2,
+        ..RunLimits::default()
+    };
+    run = run.with_limits(limits);
+    let one = run.spawn(t0, Task::Review, "1").unwrap();
+    let two = run.spawn(t0, Task::Review, "2").unwrap();
+    let late = t0 + Duration::from_secs(601);
+    run.time_out(late, one);
+    assert_eq!(run.status(one), Some(WorkerStatus::TimedOut));
+    assert_eq!(run.status(two), Some(WorkerStatus::Running));
+    assert!(matches!(
+        run.state(),
+        RunState::Halted {
+            class: ErrorClass::Timeout,
+            ..
+        }
+    ));
+    run.on_event(late, two, done());
+    run.time_out(late, two);
+    assert_eq!(run.status(two), Some(WorkerStatus::Done));
+}

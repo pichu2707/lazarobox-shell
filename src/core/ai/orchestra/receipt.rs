@@ -44,7 +44,10 @@ pub struct Summary {
 }
 
 pub fn summary(ev: &Evidence) -> Summary {
-    let granted = ev.review.consent_answer() == Some(Consent::Granted);
+    let granted = matches!(
+        ev.review.consent_answer(),
+        Some(Consent::Granted | Consent::Mandatory)
+    );
     let concluded = !matches!(ev.outcome, None | Some(Outcome::NotReviewed));
     Summary {
         reviewed: granted && concluded,
@@ -53,7 +56,7 @@ pub fn summary(ev: &Evidence) -> Summary {
 }
 
 /// The word for how the review ended. A review that stopped early, or never
-/// began, is `not reviewed`. A clean or corrected review that left paths
+/// began, is `not reviewed`, with why when it stopped. A clean or corrected review that left paths
 /// unseen says it covers the reviewed paths only.
 fn outcome_word(ev: &Evidence) -> String {
     let word = match ev.outcome {
@@ -64,7 +67,10 @@ fn outcome_word(ev: &Evidence) -> String {
             format!("incomplete ({})", clip(&ev.review.reasons().join("; ")))
         }
         Some(Outcome::Incomplete) => "incomplete".to_owned(),
-        Some(Outcome::NotReviewed) | None => "not reviewed".to_owned(),
+        Some(Outcome::NotReviewed) | None => match ev.review.stopped() {
+            Some(why) => format!("not reviewed ({})", clip(why)),
+            None => "not reviewed".to_owned(),
+        },
     };
     let partial = matches!(ev.outcome, Some(Outcome::Clean | Outcome::Corrected))
         && !(ev.unreviewed.is_empty() && ev.unread.is_empty());
@@ -81,6 +87,7 @@ fn consent_word(ev: &Evidence) -> String {
         (_, Some(why)) => format!("not answered ({})", clip(why)),
         (Some(Consent::Granted), None) => "granted".to_owned(),
         (Some(Consent::Declined), None) => "declined".to_owned(),
+        (Some(Consent::Mandatory), None) => "mandatory".to_owned(),
         (None, None) => "not asked".to_owned(),
     }
 }
