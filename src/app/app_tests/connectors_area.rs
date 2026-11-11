@@ -193,3 +193,15 @@ fn visiting_the_area_saves_and_types_nothing() {
     );
     assert_eq!(spawned(&effects), None);
 }
+
+// A resize while the menu is open re-wraps the area at once, not at the next key.
+#[test]
+fn a_resize_rewraps_an_open_prompt_without_a_key() {
+    let mut a = on_entry();
+    tap(&mut a, key('i'));
+    assert!(rows(&a).iter().any(|l| l.contains("npm i -g")));
+    tap(&mut a, AppEvent::Resize { cols: 20, rows: 25 });
+    assert_eq!(rows(&a), ["widen the terminal to read the command"]);
+    tap(&mut a, AppEvent::Resize { cols: 80, rows: 25 });
+    assert!(rows(&a).iter().any(|l| l.contains("npm i -g")));
+}
