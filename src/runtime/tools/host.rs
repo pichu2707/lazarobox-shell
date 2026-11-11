@@ -504,11 +504,17 @@ const CORRECTION_PROPOSES: &str = "a correction only stages its fixes: the worke
 /// is no output and nothing has changed. `why` is what stopped `y` in `run`
 /// mode from running it, when there is one.
 fn typed_text(why: Option<&str>) -> String {
+    // Enter would reach the program that is running there.
+    let busy = why.is_some_and(|why| why.contains("running"));
+    let advice = if busy {
+        "the user must run it once the program in that pane has finished"
+    } else {
+        "Tell the user to press Enter in that pane to run it"
+    };
     let why = why.map_or_else(String::new, |why| format!(" ({why})"));
     format!(
         "NOT RUN YET: the command was typed into the user's pane without Enter{why}. Nothing \
-         has changed: no file was written and no output exists. Tell the user to press Enter in \
-         that pane to run it; do not say it is done."
+         has changed: no file was written and no output exists. {advice}; do not say it is done."
     )
 }
 
@@ -1095,11 +1101,12 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     typed_text(None),
                     &format!("typed into pane {number} \u{2014} not run"),
                 ),
-                (Decision::Sent, Call::RunInPane { .. }) => {
-                    ended(ToolStatus::Ok, typed_text(None), "typed, not run")
-                }
-                (Decision::SentNotRun(why), Call::RunInPane { .. }) => {
-                    ended(ToolStatus::Ok, typed_text(Some(why)), "typed, not run")
+                (Decision::Sent | Decision::SentNotRun(_), Call::RunInPane { .. }) => {
+                    let why = match decision {
+                        Decision::SentNotRun(why) => Some(why),
+                        _ => None,
+                    };
+                    ended(ToolStatus::Ok, typed_text(why), "typed, not run")
                 }
                 // Only the frozen text releases a screen, never a plain `y` or
                 // a mode's answer.

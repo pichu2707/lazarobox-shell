@@ -423,6 +423,23 @@ async fn a_typed_run_tells_the_model_it_has_not_run_and_why() {
     }
 }
 
+// Enter would go to the running program, so the advice waits for it to end.
+#[tokio::test]
+async fn a_typed_run_in_a_busy_pane_does_not_say_to_press_enter() {
+    for why in [
+        "a command is still running in the pane",
+        "the pane is running a program",
+    ] {
+        let (_dir, home, host) = fixture();
+        let (mut scope, _rx) = scope(Locality::Cloud, &home);
+        scope.approver = Scripted::new(Decision::SentNotRun(why));
+        let out = host.dispatch(scope).call(run_cmd("cargo build")).await;
+        assert!(out.text.starts_with("NOT RUN YET") && out.text.contains(why));
+        assert!(out.text.contains("has finished"), "{}", out.text);
+        assert!(!out.text.contains("press Enter"), "{}", out.text);
+    }
+}
+
 // Spec (agent-tools, auto-type): the rows name the pane.
 #[tokio::test]
 async fn an_auto_typed_run_names_the_pane_in_its_result_row() {
