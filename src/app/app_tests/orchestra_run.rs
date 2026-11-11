@@ -733,6 +733,88 @@ fn a_review_line_reaches_the_transcript() {
     assert!(transcript(&a).contains("the change was not reviewed"));
 }
 
+fn review_line(text: &str) -> OrchestraEvent {
+    OrchestraEvent::Review {
+        run: RUN,
+        text: text.to_owned(),
+    }
+}
+
+fn blocked_receipt(n: u32, reason: &str) -> OrchestraEvent {
+    let OrchestraEvent::Handoff { mut handoff, .. } = handed_off(Verdict::Blocked) else {
+        unreachable!()
+    };
+    handoff.unit = Unit::Receipt(WorkerId(1), n);
+    handoff.reason = reason.to_owned();
+    OrchestraEvent::Handoff { run: RUN, handoff }
+}
+
+// A review that cannot start while the author keeps re-proposing said the same
+// line over and over: the first one is visible, the repeats collapse into it.
+#[test]
+fn a_repeated_review_notice_prints_once_and_counts_the_repeats() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    let line = "review of worker 1 could not start: engine missing; the change goes to your batch review unreviewed";
+    for _ in 0..22 {
+        a.update(event(review_line(line)));
+    }
+    let said: Vec<_> = system_lines(&a)
+        .lines()
+        .filter(|l| l.contains("could not start"))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        said,
+        [format!("{line} (22 times)")],
+        "one line, with the count"
+    );
+}
+
+// The first notice is shown as it is, and a NEW cause is a new line.
+#[test]
+fn a_new_review_cause_still_prints_and_the_first_notice_has_no_counter() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    let first = "review of worker 1 could not start: engine missing; the change goes to your batch review unreviewed";
+    let other = "review of worker 1 could not start: no model; the change goes to your batch review unreviewed";
+    a.update(event(review_line(first)));
+    assert!(
+        system_lines(&a).lines().any(|l| l == first),
+        "{}",
+        system_lines(&a)
+    );
+    a.update(event(review_line(other)));
+    a.update(event(review_line(first)));
+    let all = system_lines(&a);
+    assert!(all.lines().any(|l| l == format!("{first} (2 times)")));
+    assert!(all.lines().any(|l| l == other), "{all}");
+}
+
+// The blocked receipt that comes with each notice collapses too, though its
+// receipt number grows.
+#[test]
+fn a_repeated_blocked_receipt_collapses_and_a_new_reason_prints() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    for n in 1..=5 {
+        a.update(event(blocked_receipt(n, "no review ran")));
+    }
+    a.update(event(blocked_receipt(6, "another cause")));
+    let said: Vec<_> = system_lines(&a)
+        .lines()
+        .filter(|l| l.starts_with("handoff receipt"))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "handoff receipt 5 of worker 1 blocked: no review ran (5 times)",
+            "handoff receipt 6 of worker 1 blocked: another cause",
+        ]
+    );
+}
+
 fn disclosed(id: u32, what: Disclosure) -> OrchestraEvent {
     OrchestraEvent::Disclosed {
         run: RUN,

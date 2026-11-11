@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- A review that cannot start while the author keeps re-proposing no longer
+  floods the pane: the same notice (and its blocked receipt) is one line with
+  a count, `(22 times)`. A different cause is still its own line.
+
 ## [1.18.0] - 2026-11-11
 
 ### Added

@@ -354,6 +354,8 @@ struct ContextFill {
 pub struct ChatState {
     origin_cwd: Option<PathBuf>,
     entries: Vec<Entry>,
+    /// The system lines that collapse their repeats: key to (line shown, times).
+    collapsed: std::collections::HashMap<String, (String, u32)>,
     phase: Phase,
     turn: u64,
     composer: Composer,
@@ -565,6 +567,7 @@ impl ChatState {
         Self {
             origin_cwd,
             entries: Vec::new(),
+            collapsed: std::collections::HashMap::new(),
             phase: Phase::Idle,
             turn: 0,
             composer: Composer::new(),
@@ -1275,6 +1278,29 @@ impl ChatState {
     pub fn push_system_line(&mut self, line: String) {
         self.entries.push(Entry::System(line));
         self.generation += 1;
+    }
+
+    /// A system line that may come again under the same `key` (a worker and a
+    /// cause, say): the first is shown as it is; each repeat rewrites that
+    /// line to carry the count (`(N times)`) instead of adding another. A
+    /// different key is a new line, so a new cause is never hidden.
+    pub fn push_collapsing_line(&mut self, key: String, line: String) {
+        if let Some((shown, times)) = self.collapsed.get_mut(&key) {
+            let at = self
+                .entries
+                .iter()
+                .rposition(|e| matches!(e, Entry::System(s) if s == shown));
+            if let Some(at) = at {
+                *times += 1;
+                let next = format!("{line} ({times} times)");
+                *shown = next.clone();
+                self.entries[at] = Entry::System(next);
+                self.generation += 1;
+                return;
+            }
+        }
+        self.collapsed.insert(key, (line.clone(), 1));
+        self.push_system_line(line);
     }
 
     /// The pending approval of this chat.
