@@ -238,7 +238,6 @@ fn is_code(lang: &Lang, row: &str, later: &[&str], open: &mut Option<&'static st
             }
             *open = None;
             rest = rest[at + close.len()..].trim();
-            fresh = false;
         }
         if rest.is_empty() {
             return false;
