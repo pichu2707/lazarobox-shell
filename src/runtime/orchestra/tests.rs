@@ -887,7 +887,7 @@ async fn a_review_worker_runs_on_the_review_assignment_and_ends_done() {
             usage: None,
             partial: false,
             overridden: false,
-            clarifying: false,
+            clarifying: None,
         })
     };
     assert_eq!(lab.next().await, row(WorkerStatus::Running));
@@ -6228,6 +6228,7 @@ mod commands;
 mod gate_wait;
 mod gates;
 mod parallel;
+mod rounds;
 
 // Owner decision 2026-11-11 (W8a): on a read-only goal a `simple` worker is
 // started with the read tools only, and its first request tells it so.

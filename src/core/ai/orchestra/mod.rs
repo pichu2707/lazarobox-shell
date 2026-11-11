@@ -17,6 +17,7 @@ pub mod rdd;
 pub mod receipt;
 pub mod record;
 pub mod review;
+pub mod rounds;
 pub mod run;
 pub mod scope;
 pub mod steps;
@@ -168,6 +169,8 @@ mod rdd_tests;
 mod receipt_tests;
 #[cfg(test)]
 mod review_tests;
+#[cfg(test)]
+mod rounds_tests;
 #[cfg(test)]
 mod share_tests;
 #[cfg(test)]

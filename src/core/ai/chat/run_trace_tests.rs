@@ -29,7 +29,7 @@ fn row(id: u32, status: WorkerStatus) -> WorkerRow {
         usage: None,
         partial: false,
         overridden: false,
-        clarifying: false,
+        clarifying: None,
     }
 }
 

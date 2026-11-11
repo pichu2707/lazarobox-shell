@@ -77,6 +77,7 @@ use crate::core::{
             feature::FeatureError,
             ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
             review::Assessment,
+            rounds::ROUNDS,
             run::{
                 CancelOutcome, CollectError, NextTurn, NotHalted, Refusal, Roster, Run, RunLimits,
                 RunState, StepDone, UserChoice, WorkerEvent,
@@ -947,10 +948,15 @@ impl RunManager {
                             step.label()
                         )
                     });
+                let open = live.run.open_note();
                 Next::Stop(format!(
-                    "run stopped: it took max_turns ({taken}) orchestrator turns; running workers were cancelled{gate}"
+                    "run stopped: it took max_turns ({taken}) orchestrator turns; running workers were cancelled{gate}{open}"
                 ))
             }
+            NextTurn::Limit(brief) => Next::Stop(format!(
+                "run stopped: brief {} asked for a clearer brief a third time; the limit is {ROUNDS} rounds of clarification per brief; running workers were cancelled",
+                brief.0
+            )),
             NextTurn::Continue(turn) => match (self.nonce)() {
                 Some(bytes) => {
                     let ledger = live.run.run_ledger(&live.goal).render();
@@ -1241,6 +1247,7 @@ impl RunManager {
                         Refusal::ReadOnly => READ_ONLY.to_owned(),
                         Refusal::WriteOff => WRITE_OFF.to_owned(),
                         Refusal::Brief(error) => error.text(),
+                        Refusal::Round(error) => error.text(),
                         Refusal::Overlap { worker, path, held } => {
                             overlap_text(worker, &path, &held)
                         }
@@ -1687,7 +1694,7 @@ impl RunManager {
             usage: live.run.usage(id),
             partial: live.run.usage_partial(id),
             overridden: false,
-            clarifying: live.run.clarifying(id),
+            clarifying: live.run.clarify_round(id),
         };
         self.send(pane, OrchestraEvent::Worker(row));
     }

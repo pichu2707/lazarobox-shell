@@ -465,6 +465,7 @@ fn failed_row(id: u32, done: &str) -> Row {
         prior: None,
         extra: String::new(),
         clarification: String::new(),
+        trail: Default::default(),
     };
     let note = Judgement {
         done: done.to_owned(),
@@ -512,6 +513,7 @@ fn an_old_failure_does_not_block_later_rows_from_collapsing() {
             prior: None,
             extra: String::new(),
             clarification: String::new(),
+            trail: Default::default(),
         };
         let handoff = Handoff::of(facts, note(Verdict::OnCourse), false);
         rows.push(Row::new(

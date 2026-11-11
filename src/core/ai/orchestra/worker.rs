@@ -52,6 +52,9 @@ impl WorkerSpec {
 pub enum Closing {
     /// `needs_specification`: the worker's question, cleaned to one line.
     Clarify(String),
+    /// A split of the brief into two (W9b): the files over the limit. It
+    /// opens no clarification and counts as no round.
+    Split(Vec<String>),
 }
 
 /// The longest question kept, in characters.

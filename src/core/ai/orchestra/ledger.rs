@@ -135,6 +135,22 @@ pub struct Handoff {
     /// What a `simple` worker asked through `needs_specification`, one clean
     /// line; empty when it did not (W8c). The worker's text, so inert data.
     pub clarification: String,
+    /// The brief's clarification rounds and the split of its worker (W8c).
+    pub trail: Trail,
+}
+
+/// What a `simple` worker's handoff keeps of its brief's rounds (W8c, 20.7):
+/// the brief it belongs to (its first worker), the clarification rounds that
+/// brief has had up to and including this worker's, and the files of a split.
+/// Lazarobox's own counts; `split` holds worker-named paths, one line.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct Trail {
+    /// The id of the brief's first worker; 0 for a worker with no brief.
+    pub brief: u32,
+    pub rounds: u32,
+    pub split: String,
+    /// The brief asked a third time: `rounds` stops at the limit.
+    pub limit: bool,
 }
 
 impl Handoff {
@@ -170,6 +186,7 @@ impl Handoff {
             audit,
             extra: facts.extra,
             clarification: facts.clarification,
+            trail: facts.trail,
         }
     }
 
@@ -208,6 +225,7 @@ pub(super) struct Facts {
     pub extra: String,
     /// The worker's recorded question (W8c); empty for none.
     pub clarification: String,
+    pub trail: Trail,
 }
 
 /// Why a handoff was not stored.

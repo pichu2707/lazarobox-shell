@@ -96,6 +96,20 @@ impl Item {
         if !handoff.clarification.is_empty() {
             content.push_str(&format!("\nclarification: {}", handoff.clarification));
         }
+        let trail = &handoff.trail;
+        if trail.rounds > 0 {
+            let line = format!(
+                "\nclarification round: {} of brief {}",
+                trail.rounds, trail.brief
+            );
+            content.push_str(&line);
+        }
+        if trail.limit {
+            content.push_str("\nclarification limit reached");
+        }
+        if !trail.split.is_empty() {
+            content.push_str(&format!("\nsplit: {}", trail.split));
+        }
         Self {
             key,
             note: Note {

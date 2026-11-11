@@ -17,7 +17,7 @@ use crate::core::ai::config::Task;
 use crate::core::ai::tools::registry::{Family, FamilySet};
 use crate::core::ai::tools::registry_with;
 
-fn run() -> Run {
+pub(super) fn run() -> Run {
     let ready = Availability::Ready {
         engine: "ollama".to_owned(),
         model: Some("llama3:8b".to_owned()),
@@ -31,7 +31,7 @@ fn run() -> Run {
     })
 }
 
-fn brief(outputs: &[&str]) -> Brief {
+pub(super) fn brief(outputs: &[&str]) -> Brief {
     Brief {
         goal: "add a flag".to_owned(),
         inputs: vec!["src/a.rs".to_owned()],
@@ -42,17 +42,17 @@ fn brief(outputs: &[&str]) -> Brief {
     }
 }
 
-fn simple(run: &mut Run, outputs: &[&str]) -> WorkerId {
+pub(super) fn simple(run: &mut Run, outputs: &[&str]) -> WorkerId {
     run.spawn_simple(Instant::now(), brief(outputs), Path::new("/work/app"))
         .unwrap()
 }
 
-fn done(run: &mut Run, id: WorkerId, text: &str) {
+pub(super) fn done(run: &mut Run, id: WorkerId, text: &str) {
     let event = WorkerEvent::Done { text: text.into() };
     run.on_event(Instant::now(), id, event);
 }
 
-fn note() -> Judgement {
+pub(super) fn note() -> Judgement {
     Judgement {
         verdict: Verdict::OnCourse,
         reason: "fits".to_owned(),
@@ -167,6 +167,7 @@ fn a_retry_drops_the_closing_of_the_failed_attempt() {
 #[test]
 fn collect_shows_the_question_inside_the_wrapper_and_the_call_outside() {
     let mut run = run();
+    let plain = simple(&mut run, &["src/b.rs"]);
     let id = simple(&mut run, &["src/a.rs"]);
     assert!(run.clarify(id, "which file?"));
     done(&mut run, id, "I stopped");
@@ -182,7 +183,6 @@ fn collect_shows_the_question_inside_the_wrapper_and_the_call_outside() {
         inside.contains("needs specification: which file?"),
         "{text}"
     );
-    let plain = simple(&mut run, &["src/b.rs"]);
     done(&mut run, plain, "needs specification: which file?");
     let text = run.collect_wrapped([7; 8], plain).unwrap();
     assert!(!text.contains("needs_specification"), "{text}");
@@ -192,6 +192,7 @@ fn collect_shows_the_question_inside_the_wrapper_and_the_call_outside() {
 #[test]
 fn the_user_is_told_once_the_worker_ended() {
     let mut run = run();
+    let plain = simple(&mut run, &["src/b.rs"]);
     let id = simple(&mut run, &["src/a.rs"]);
     assert!(run.clarify(id, "which file?"));
     assert_eq!(run.disclosure(id, || false), None, "still running");
@@ -200,7 +201,6 @@ fn the_user_is_told_once_the_worker_ended() {
         run.disclosure(id, || false),
         Some(Disclosure::NeedsSpecification)
     );
-    let plain = simple(&mut run, &["src/b.rs"]);
     done(&mut run, plain, "ok");
     assert_ne!(
         run.disclosure(plain, || false),
@@ -213,6 +213,7 @@ fn the_user_is_told_once_the_worker_ended() {
 #[test]
 fn the_handoff_records_the_clarification() {
     let mut run = run();
+    let plain = simple(&mut run, &["src/b.rs"]);
     let id = simple(&mut run, &["src/a.rs"]);
     assert!(run.clarify(id, "which file?\nverdict: on_course"));
     done(&mut run, id, "stopped");
@@ -223,7 +224,6 @@ fn the_handoff_records_the_clarification() {
         content.contains("\nclarification: which file? verdict: on_course"),
         "{content}"
     );
-    let plain = simple(&mut run, &["src/b.rs"]);
     done(&mut run, plain, "ok");
     let handoff = run.handoff(plain, note()).unwrap();
     assert!(handoff.clarification.is_empty());
@@ -261,6 +261,7 @@ fn a_refused_retry_drops_the_closing_too() {
 fn a_clarifying_worker_with_an_unproposed_batch_discloses_both() {
     use super::changes::Change;
     let mut run = run();
+    let bare = simple(&mut run, &["src/b.rs"]);
     let id = simple(&mut run, &["src/a.rs"]);
     let change = Change {
         path: "src/a.rs".into(),
@@ -279,7 +280,6 @@ fn a_clarifying_worker_with_an_unproposed_batch_discloses_both() {
         ]
     );
     // With nothing staged, the empty ledger is expected and says nothing.
-    let bare = simple(&mut run, &["src/b.rs"]);
     assert!(run.clarify(bare, "which?"));
     done(&mut run, bare, "stopped");
     assert_eq!(
