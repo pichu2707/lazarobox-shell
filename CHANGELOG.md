@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- A worker whose task row is unassigned (for example `simple`, which runs on
+  `general`) now says `(default)` on its row in the orchestra panel, like the
+  AI menu row does, instead of showing only `engine>model`.
+
 ## [1.18.0] - 2026-11-11
 
 ### Added

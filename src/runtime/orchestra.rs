@@ -1695,6 +1695,7 @@ impl RunManager {
             usage: live.run.usage(id),
             partial: live.run.usage_partial(id),
             overridden: false,
+            inherited: false,
             clarifying: live.run.clarify_round(id),
             split: live.run.split_chosen(id),
         };
