@@ -145,6 +145,30 @@ async fn secrets_toml_values_reach_the_child_and_never_the_report() {
     assert_reaped(&lab, "clarity");
 }
 
+// A tool name is server text: one equal to a value is redacted like the rest
+// (collision lines name two tools).
+#[tokio::test]
+async fn a_tool_name_that_is_a_secret_value_is_redacted_in_every_line() {
+    let lab = lab();
+    let value = "SECRETSECRETSECRETSECRETSECRET";
+    let both = [value, &format!("{value}_more")];
+    let mut server = lab.listing("clarity", &both, "ok", "0");
+    server.env = vec!["CLARITY_API_TOKEN".to_owned()];
+    let path = secrets_file(
+        &lab,
+        &format!("[clarity]\nCLARITY_API_TOKEN = \"{value}\"\n"),
+        0o600,
+    );
+    let report = run(&lab, &server, Some(&path)).await;
+    assert_eq!(report.verdict, Verdict::Started);
+    assert!(
+        report.lines.iter().any(|l| l.contains("collide")),
+        "{report:?}"
+    );
+    assert!(!format!("{report:?}").contains(value), "{report:?}");
+    assert_reaped(&lab, "clarity");
+}
+
 #[tokio::test]
 async fn the_prober_answers_with_one_event_and_esc_stops_it() {
     let lab = lab();

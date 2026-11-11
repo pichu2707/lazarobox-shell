@@ -70,6 +70,8 @@ pub async fn probe(
         Some(Ok((client, listed))) => {
             let names: Vec<String> = listed.tools.into_iter().map(|t| t.name).collect();
             let lines = checks::started(&server.name, entry(&server.name), listed.admitted, &names);
+            // Tool names are the server's own text: a value it echoes goes.
+            let lines = lines.iter().map(|l| redact_values(l, &values)).collect();
             client.shutdown().await;
             (Verdict::Started, lines)
         }
