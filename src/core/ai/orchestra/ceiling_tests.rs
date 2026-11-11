@@ -345,3 +345,65 @@ fn a_retried_worker_keeps_what_the_menu_still_allows() {
     run.decide(now, UserChoice::Retry).unwrap();
     assert_eq!(run.status(review), Some(WorkerStatus::Running));
 }
+
+// Spec (agent-tools, "Role toolsets [auto]"; agent-orchestrator, "A code
+// worker with run_command [W6, auto]"): the `code` role holds Read, Write and
+// Exec, and nothing else.
+#[test]
+fn the_code_role_holds_read_write_and_exec() {
+    let code = Toolset::Code.families();
+    for family in EVERY_FAMILY {
+        assert_eq!(
+            code.contains(family),
+            matches!(family, Family::Read | Family::Write | Family::Exec),
+            "{family:?}"
+        );
+    }
+}
+
+// Spec ("Exec off means no run_command [W2, auto]"): with Exec off the `code`
+// role loses Exec only and keeps Read and Write.
+#[test]
+fn exec_off_removes_exec_only_from_the_code_role() {
+    let capped = Toolset::Code.capped(FamilySet::ALL.without(Family::Exec));
+    assert_eq!(capped, Toolset::Code.families().without(Family::Exec));
+    assert!(capped.contains(Family::Write) && capped.contains(Family::Read));
+    assert!(!capped.contains(Family::Exec));
+}
+
+// Spec ("The menu never widens [W2, auto]"): a `review` worker stays exactly
+// read-only with Write and Exec on, and a `code` spawn carries Exec.
+#[test]
+fn exec_on_reaches_a_code_spawn_and_never_a_review_one() {
+    let mut run = run_with(FamilySet::ALL);
+    let now = Instant::now();
+    let code = run.spawn(now, Task::Code, "write").unwrap();
+    let review = run.spawn(now, Task::Review, "look").unwrap();
+    assert!(run.spec(code).unwrap().families.contains(Family::Exec));
+    assert_eq!(
+        run.spec(review).unwrap().families,
+        FamilySet::EMPTY.with(Family::Read)
+    );
+}
+
+// Task 16.2 (D19, the `stage_key` half): a worker with Exec on and Write off
+// (a `simple` worker with inputs only, from W8a) still has a batch key, so its
+// `run_command` is judged instead of refused as an unknown tool; a reader has
+// none.
+#[test]
+fn a_spec_with_exec_or_write_has_a_batch_key_and_a_reader_has_none() {
+    use super::worker::WorkerSpec;
+    let spec = |families: FamilySet| WorkerSpec {
+        task: Task::Code,
+        prompt: String::new(),
+        engine: "ollama".into(),
+        model: None,
+        toolset: Toolset::Code,
+        families,
+        deadline: Duration::from_secs(60),
+    };
+    let read = FamilySet::EMPTY.with(Family::Read);
+    assert!(spec(read.with(Family::Exec)).keys_a_batch());
+    assert!(spec(read.with(Family::Write)).keys_a_batch());
+    assert!(!spec(read).keys_a_batch());
+}

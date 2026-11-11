@@ -11,10 +11,6 @@ use super::*;
 /// A worker deadline short enough to be passed by the waits below.
 const DEADLINE: Duration = Duration::from_millis(1500);
 
-/// The deadline of a writer, whose apply after the answer counts.
-#[cfg(target_os = "linux")]
-const WRITER_DEADLINE: Duration = Duration::from_millis(5000);
-
 /// The longest any of these tests may take: a hang fails here.
 const BOUND: Duration = Duration::from_secs(20);
 
@@ -199,19 +195,26 @@ async fn the_wall_clock_ends_the_run_while_a_worker_waits() {
     );
 }
 
+/// The deadline of a writer whose review wait is the test: applying its
+/// batch is work time, and its fsyncs took about 1.2 s alone and more under
+/// a full suite, so the work around the wait has most of it.
+#[cfg(target_os = "linux")]
+const REVIEWED_DEADLINE: Duration = Duration::from_millis(4000);
+
 // Spec "A long review does not time out the worker" and "Review time does
-// not count against the deadline" (15.2): a `code` worker with a 5 s
-// deadline whose batch waits 6.5 s for the user, then is approved, is not
-// `timed_out` and its turn goes on to its answer. The deadline is longer
-// than the others' because applying the batch is work time and its fsyncs
-// took over 2.5 s under a parallel test load.
+// not count against the deadline" (15.2): a `code` worker with a 4 s
+// deadline whose batch waits 4.5 s for the user, then is approved, is not
+// `timed_out` and its turn goes on to its answer. The wait alone passes the
+// deadline, so a clock that does not stop ends the worker during it; the work
+// before and after (staging, the apply's fsyncs, the answer) has the whole
+// 4 s, which does not hang on how fast the disk syncs under load.
 // Needs the write primitives (`openat2`, `renameat2`): Linux only.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_long_review_does_not_time_out_the_worker() {
     let mut lab = writing_lab(Script::Held("done"));
     let waits = Waits::new();
-    let (run, handle) = lab.start_writing_run(&waits, WRITER_DEADLINE);
+    let (run, handle) = lab.start_writing_run(&waits, REVIEWED_DEADLINE);
     handle.call(spawn(Task::Code, "write a")).await;
     let mut client = worker_client(&lab.seen).await;
     let call = tool_call(
@@ -222,7 +225,7 @@ async fn a_long_review_does_not_time_out_the_worker() {
     exchange(&mut client, call).await;
     let id = propose_and_ask(&mut lab, &mut client).await;
     assert_eq!(own_count(&lab, run, 1), 1);
-    tokio::time::sleep(WRITER_DEADLINE + Duration::from_millis(1500)).await;
+    tokio::time::sleep(REVIEWED_DEADLINE + Duration::from_millis(500)).await;
     assert_eq!(
         status(&lab, 1),
         Some(WorkerStatus::Running),

@@ -171,7 +171,9 @@ impl RunOutcome {
         format!("{}\n{}", self.facts(), label::wrap(nonce, body))
     }
 
-    fn facts(&self) -> String {
+    /// One line of facts: how it ended, after how long, and whether the
+    /// output was cut.
+    pub fn facts(&self) -> String {
         let ms = self.duration.as_millis();
         let after = format!("after {}.{}s", ms / 1000, ms % 1000 / 100);
         let mut line = if self.timed_out {

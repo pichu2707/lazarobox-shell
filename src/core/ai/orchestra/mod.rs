@@ -4,6 +4,7 @@
 
 pub mod changes;
 pub mod claims;
+pub mod commands;
 pub mod errors;
 pub mod event;
 pub mod feature;
@@ -80,9 +81,11 @@ pub enum Toolset {
     /// `find_dir`, `list_dir` and `read_file`: what every worker but a
     /// `code` one gets.
     ReadOnly,
-    /// The read tools and the coding-tools write tools (S7): `create_dir`,
-    /// `write_file`, `edit_file` and `propose_batch`. Writes are staged in
-    /// the worker's own batch and reach the disk only through the user's review.
+    /// The read tools, the coding-tools write tools (S7): `create_dir`,
+    /// `write_file`, `edit_file` and `propose_batch`, and `run_command` (W6).
+    /// Writes are staged in the worker's own batch and reach the disk only
+    /// through the user's review; a command runs only after that batch is
+    /// applied, and asks the user every time. The menu caps Write and Exec.
     Code,
     /// The orchestration tools and the pane reads (`list_panes`,
     /// `read_pane`), for the orchestrator turn only.
@@ -98,7 +101,7 @@ impl Toolset {
         let read = FamilySet::EMPTY.with(Family::Read);
         match self {
             Self::ReadOnly => read,
-            Self::Code => read.with(Family::Write),
+            Self::Code => read.with(Family::Write).with(Family::Exec),
             Self::Orchestrator => read.with(Family::PaneRead).with(Family::Orchestra),
         }
     }
