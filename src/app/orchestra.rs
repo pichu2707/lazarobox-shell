@@ -286,10 +286,15 @@ impl App {
                 }
                 chat.set_orch_run(Some(row.run));
                 chat.keep_override();
-                let menu = self.ai.resolve(row.kind).0.engine;
+                let (resolved, unassigned) = self.ai.resolve(row.kind);
+                let menu = resolved.engine;
+                // `(default)` only when the worker really runs on what
+                // `general` names.
+                let unassigned = unassigned && menu.as_deref() == Some(row.engine.as_str());
                 row.overridden = chat.orch_overrides().is_some_and(|over| {
                     over.is_on(row.kind, &row.engine, row.model.as_deref(), menu.as_deref())
                 });
+                row.inherited = unassigned && !row.overridden;
                 chat.worker_row(row.clone());
                 kept = self.keep_worker(id, &row);
             }
