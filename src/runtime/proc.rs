@@ -273,17 +273,30 @@ pub(crate) fn stopped(pid: libc::pid_t) -> bool {
 /// Linux, the State/PPid/Name lines of `/proc`.
 #[cfg(test)]
 pub(crate) fn describe(pid: libc::pid_t) -> String {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
-    let status: Vec<&str> = status
-        .lines()
-        .filter(|l| {
-            ["State:", "PPid:", "Name:"]
-                .iter()
-                .any(|k| l.starts_with(k))
-        })
-        .collect();
+    #[cfg(target_os = "linux")]
+    let more = {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+        let lines: Vec<&str> = status
+            .lines()
+            .filter(|l| {
+                ["State:", "PPid:", "Name:"]
+                    .iter()
+                    .any(|k| l.starts_with(k))
+            })
+            .collect();
+        format!("{lines:?}")
+    };
+    // No /proc elsewhere: `ps` answers, or says why it could not.
+    #[cfg(not(target_os = "linux"))]
+    let more = match std::process::Command::new("ps")
+        .args(["-o", "stat=,ppid=,comm=", "-p", &pid.to_string()])
+        .output()
+    {
+        Ok(out) => format!("ps: {}", String::from_utf8_lossy(&out.stdout).trim()),
+        Err(e) => format!("no /proc here and `ps` could not run: {e}"),
+    };
     format!(
-        "pid {pid} still runs after {GONE_WITHIN:?}: state {:?} {status:?}",
+        "pid {pid} still runs after {GONE_WITHIN:?}: state {:?} {more}",
         process_state(pid)
     )
 }
@@ -565,11 +578,14 @@ mod tests {
         assert!(!stopped(pid));
         let why = describe(pid);
         assert!(
-            why.contains(&format!("pid {pid} still runs"))
-                && why.contains("state Some(")
-                && why.contains("PPid:"),
+            why.contains(&format!("pid {pid} still runs")) && why.contains("state Some("),
             "{why}"
         );
+        // Only Linux has the /proc lines; elsewhere `ps` answers.
+        #[cfg(target_os = "linux")]
+        assert!(why.contains("PPid:"), "{why}");
+        #[cfg(not(target_os = "linux"))]
+        assert!(why.contains("ps: "), "{why}");
         child.kill().unwrap();
         assert!(wait_gone(pid).await);
         child.wait().unwrap();
