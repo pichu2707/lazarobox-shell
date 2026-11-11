@@ -6323,7 +6323,11 @@ async fn a_simple_spawn_flags_extra_fields_and_refuses_an_overlapping_output() {
         })
         .await;
     assert!(refused.is_error, "{refused:?}");
-    assert!(refused.text.contains("overlap worker 1"), "{}", refused.text);
+    assert!(
+        refused.text.contains("overlap worker 1"),
+        "{}",
+        refused.text
+    );
     assert!(refused.text.contains("src/b.rs"), "{}", refused.text);
     assert_eq!(
         refusal(&mut lab).await,

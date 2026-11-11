@@ -128,7 +128,10 @@ fn a_brief_with_no_outputs_never_overlaps() {
 fn a_code_worker_is_not_checked_for_overlap() {
     let mut run = run();
     spawn(&mut run, brief(&["src/b.rs"])).unwrap();
-    assert!(run.spawn(Instant::now(), Task::Code, "edit src/b.rs").is_ok());
+    assert!(
+        run.spawn(Instant::now(), Task::Code, "edit src/b.rs")
+            .is_ok()
+    );
 }
 
 // 19.7: `collect` says which fields were extra, outside the worker's wrapper.
@@ -157,11 +160,19 @@ fn the_handoff_records_the_extra_fields() {
     let handoff = run.handoff(id, note()).unwrap();
     assert_eq!(handoff.extra, "priority");
     let content = Item::of_handoff(&handoff).note.content;
-    assert!(content.contains("\nbrief extra fields: priority"), "{content}");
+    assert!(
+        content.contains("\nbrief extra fields: priority"),
+        "{content}"
+    );
     // Without one, the note has no such line.
     let plain = spawn(&mut run, brief(&["src/z.rs"])).unwrap();
     done(&mut run, plain);
     let handoff = run.handoff(plain, note()).unwrap();
     assert!(handoff.extra.is_empty());
-    assert!(!Item::of_handoff(&handoff).note.content.contains("extra fields"));
+    assert!(
+        !Item::of_handoff(&handoff)
+            .note
+            .content
+            .contains("extra fields")
+    );
 }

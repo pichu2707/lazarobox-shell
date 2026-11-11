@@ -128,7 +128,10 @@ pub enum Refusal {
     /// The outputs of a `simple` brief overlap a live worker's: two workers
     /// would write the same file (D10). `path` is the path as the new brief
     /// wrote it.
-    Overlap { worker: WorkerId, path: String },
+    Overlap {
+        worker: WorkerId,
+        path: String,
+    },
     /// `run paused`: a failure is unresolved.
     Paused,
     Ended,
@@ -668,7 +671,10 @@ impl Run {
             let mine = s.spec.outputs().unwrap_or_default();
             let id = WorkerId(i as u32 + 1);
             let taken = move |path: &String| mine.iter().any(|m| covers(m, path));
-            outputs.iter().filter(move |p| taken(p)).map(move |p| (id, p.clone()))
+            outputs
+                .iter()
+                .filter(move |p| taken(p))
+                .map(move |p| (id, p.clone()))
         })
         .next()
     }
@@ -1031,7 +1037,12 @@ impl Run {
             status: slot.status,
             ledger: slot.writer_ledger().cloned(),
             prior: slot.handoff.as_ref().and_then(|h| h.audit.clone()),
-            extra: slot.spec.brief.as_ref().map(Brief::extra_names).unwrap_or_default(),
+            extra: slot
+                .spec
+                .brief
+                .as_ref()
+                .map(Brief::extra_names)
+                .unwrap_or_default(),
         }
     }
 
