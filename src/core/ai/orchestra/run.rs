@@ -564,16 +564,11 @@ impl Run {
         let (spec, refusal) = self.resolve(task, prompt);
         // A read-only goal is judged by the role, before the menu: turning
         // Write on would not help.
-        let mut spec = spec;
-        let mut writer = spec.toolset.families().contains(Family::Write);
+        // A `simple` worker is not refused: `resolve` already took its Write
+        // away (W8a, interim until `outputs` in W8b), so it is no writer.
+        let writer = spec.toolset.families().contains(Family::Write) && !self.strips_write(task);
         if self.steps.read_only() && writer {
-            // A `simple` worker is not refused: it starts without Write
-            // (W8a, interim until `outputs` in W8b).
-            if spec.task != Task::Simple {
-                return Err(Refusal::ReadOnly);
-            }
-            spec.families = spec.families.without(Family::Write);
-            writer = false;
+            return Err(Refusal::ReadOnly);
         }
         if self.slots.len() >= self.limits.workers {
             return Err(Refusal::WorkerCap(self.limits.workers));
@@ -658,13 +653,10 @@ impl Run {
             };
             // Starting is a new process: the menu is read again now, and a
             // writer that lost Write meanwhile is refused, not run bare.
-            let strip = self.steps.read_only() && self.slots[index(next)].spec.task == Task::Simple;
+            let strip = self.strips_write(self.slots[index(next)].spec.task);
+            let ceiling = self.ceiling;
             let spec = &mut self.slots[index(next)].spec;
-            spec.families = spec.toolset.capped(self.ceiling);
-            if strip {
-                // A `simple` worker on a read-only goal runs without Write.
-                spec.families = spec.families.without(Family::Write);
-            }
+            spec.families = Self::capped_families(spec.toolset, ceiling, strip);
             if !strip && spec.toolset.families().contains(Family::Write) && !spec.writes() {
                 let error = (ErrorClass::Setup, WRITE_OFF.to_owned());
                 self.end(now, next, WorkerStatus::Refused, "", Some(error));
@@ -673,6 +665,22 @@ impl Run {
             let slot = &mut self.slots[index(next)];
             (slot.status, slot.started) = (WorkerStatus::Running, Some(now));
             slot.no_tools = false;
+        }
+    }
+
+    /// Whether a read-only goal takes Write away from a worker of `task`
+    /// instead of refusing it: only a `simple` worker (W8a).
+    fn strips_write(&self, task: Task) -> bool {
+        self.steps.read_only() && task == Task::Simple
+    }
+
+    /// A toolset under the menu's ceiling, without Write when `strip`.
+    fn capped_families(toolset: Toolset, ceiling: FamilySet, strip: bool) -> FamilySet {
+        let capped = toolset.capped(ceiling);
+        if strip {
+            capped.without(Family::Write)
+        } else {
+            capped
         }
     }
 
@@ -698,15 +706,21 @@ impl Run {
             engine,
             model,
             toolset: Toolset::for_kind(task),
-            families: Toolset::for_kind(task).capped(self.ceiling),
+            families: Self::capped_families(
+                Toolset::for_kind(task),
+                self.ceiling,
+                self.strips_write(task),
+            ),
             deadline: self.deadline,
         };
         // A role that writes, under a menu that no longer allows it, is
         // refused and never run read-only without a word. `spawn` refuses it
         // first; this covers the re-resolves of a retry and a relaunch.
         let refusal = refusal.or_else(|| {
-            (spec.toolset.families().contains(Family::Write) && !spec.writes())
-                .then(|| WRITE_OFF.to_owned())
+            (spec.toolset.families().contains(Family::Write)
+                && !spec.writes()
+                && !self.strips_write(task))
+            .then(|| WRITE_OFF.to_owned())
         });
         (spec, refusal)
     }
@@ -1229,9 +1243,11 @@ impl Run {
         } else {
             // A retry is a new process: the spec is capped by the menu as it
             // is now, and a writer that lost Write is refused, not run bare.
+            let strip = self.strips_write(self.slots[index(worker)].spec.task);
+            let ceiling = self.ceiling;
             let spec = &mut self.slots[index(worker)].spec;
-            spec.families = spec.toolset.capped(self.ceiling);
-            (spec.toolset.families().contains(Family::Write) && !spec.writes())
+            spec.families = Self::capped_families(spec.toolset, ceiling, strip);
+            (!strip && spec.toolset.families().contains(Family::Write) && !spec.writes())
                 .then(|| WRITE_OFF.to_owned())
         };
         // The run stays halted while the worker is queued again, so a refusal

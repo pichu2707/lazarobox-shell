@@ -47,7 +47,7 @@ use super::{
         fs::load_roots, pending,
     },
 };
-use crate::core::ai::chat::prompts::worker_system;
+use crate::core::ai::chat::prompts::{read_only_worker_system, worker_system};
 use crate::core::ai::sanitize::{clean, redact_tokens};
 use crate::core::{
     ai::{
@@ -1738,6 +1738,15 @@ impl RunManager {
             && !live.review.corrects(id)
         {
             request.system = worker_system(&request.system);
+        } else if session.is_some()
+            && spec.task == Task::Simple
+            && !spec.writes()
+            && live.review.system(id).is_none()
+            && !live.review.corrects(id)
+        {
+            // Its Write was removed (a read-only goal): `simple.md` still asks
+            // for the write tools, so say they are not there.
+            request.system = read_only_worker_system(&request.system);
         }
         // The one message goes whole and Ollama cuts what passes its window
         // without saying so: the trace says it (#557). The runner stamps the

@@ -193,3 +193,52 @@ fn a_worker_text_asking_for_a_simple_worker_creates_nothing() {
     run.on_event(now, id, WorkerEvent::Done { text: text.into() });
     assert_eq!(run.worker_count(), 1);
 }
+
+fn write_off() -> FamilySet {
+    FamilySet::ALL.without(Family::Write)
+}
+
+// Review fix: a read-only goal with the menu's Write off still starts a
+// `simple` worker, without write tools; WRITE_OFF is for a writer only.
+#[test]
+fn a_simple_spawn_on_a_read_only_goal_with_write_off_starts_without_write() {
+    let mut run = run_with(write_off());
+    read_only(&mut run);
+    let id = run
+        .spawn(Instant::now(), Task::Simple, "explain a.rs")
+        .unwrap();
+    assert_eq!(run.status(id), Some(WorkerStatus::Running));
+    assert!(!run.spec(id).unwrap().writes());
+}
+
+// Review fix: a retry of that worker is not refused either.
+#[test]
+fn a_simple_retry_on_a_read_only_goal_with_write_off_starts_without_write() {
+    use super::run::UserChoice;
+    use super::worker::ErrorClass;
+    let mut run = run_with(write_off());
+    read_only(&mut run);
+    let now = Instant::now();
+    let id = run.spawn(now, Task::Simple, "explain a.rs").unwrap();
+    run.on_event(
+        now,
+        id,
+        WorkerEvent::Failed {
+            class: ErrorClass::Other,
+            text: "boom".into(),
+        },
+    );
+    run.decide(now, UserChoice::Retry).unwrap();
+    assert_eq!(run.status(id), Some(WorkerStatus::Running));
+    assert!(!run.spec(id).unwrap().writes());
+}
+
+// A code worker is still refused when Write is off.
+#[test]
+fn a_code_spawn_with_write_off_is_still_refused() {
+    let mut run = run_with(write_off());
+    assert_eq!(
+        run.spawn(Instant::now(), Task::Code, "x"),
+        Err(Refusal::WriteOff)
+    );
+}

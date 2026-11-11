@@ -813,3 +813,18 @@ fn a_simple_worker_gets_the_worker_text_after_its_prompt() {
         assert!(system.ends_with(WORKER.trim_end()), "{profile:?}");
     }
 }
+
+// A `simple` worker whose Write was removed (read-only goal) must not be told
+// to use write tools: the extra line says they are unavailable.
+#[test]
+fn a_simple_worker_without_write_tools_is_told_to_answer_in_text() {
+    for profile in Profile::ALL {
+        let base = builtin(profile, Task::Simple);
+        let got = read_only_worker_system(base);
+        assert!(got.starts_with(base.trim_end()), "{profile:?}");
+        for needle in ["write tools are not available", "read-only goal", "answer"] {
+            assert!(got.contains(needle), "{profile:?}: {needle}");
+        }
+        assert!(got.is_ascii());
+    }
+}
