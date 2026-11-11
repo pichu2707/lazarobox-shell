@@ -29,7 +29,7 @@ use crate::{
             checks::{self, Probed, Verdict},
             entry,
         },
-        mcp_secrets::redact_values,
+        mcp_secrets::{redact_list, redact_values},
         sanitize::clean,
     },
     runtime::mcp_secrets::load_for_start,
@@ -49,7 +49,7 @@ pub async fn probe(
     let loaded = load_for_start(secrets).await;
     // This server's own values only, as in a chat start.
     let own = loaded.secrets.lookup_for(server, &host);
-    let values = loaded.secrets.values_of(server);
+    let values = redact_list(server, &own);
     let connected = tokio::select! {
         result = connect(server, home, &own, &values, timeouts) => Some(result),
         () = cancel => None,

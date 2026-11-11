@@ -177,9 +177,12 @@ impl McpClient {
             Some(task) => finish_stderr(task, START_GRACE).await,
             None => None,
         };
-        // The whole tail is redacted before `stderr_note` cuts it.
-        let said =
-            said.map(|bytes| redact_values(&String::from_utf8_lossy(&bytes), &redact).into_bytes());
+        // The whole tail is redacted before `stderr_note` cuts it: once as it
+        // is, once cleaned (a color code can run through a value).
+        let said = said.map(|bytes| {
+            let text = redact_values(&String::from_utf8_lossy(&bytes), &redact);
+            redact_values(&clean(&text), &redact).into_bytes()
+        });
         let note = said.and_then(|bytes| stderr_note(&bytes));
         Err(match note {
             Some(note) => format!("{}: {}", error.reason(), redact_values(&note, &redact)),
