@@ -17,6 +17,10 @@ baseline.
   path outside the project creates no worker and says so in the pane and to
   the coordinator; its `outputs` decide whether the worker writes, and a
   `simple` that writes is refused on a read-only goal or with Write off.
+- `Ctrl+Space x` opens the `/exec` dialog and `Ctrl+Space f` the `/write`
+  dialog (`w` is the window group). A key never grants: only your `y` in the
+  dialog does. A refusal shows the command's line, the composer draft is kept,
+  and outside a chat a notice says Exec (or Write) is for chat panes.
 - `/exec` turns Exec on for one chat, on the same path as `/write`: type it
   in the composer and a dialog names Exec and the folder and says every
   command still asks. Only a lowercase `y` grants it; `n` and Esc say `Exec
