@@ -97,13 +97,13 @@ fn spawn_agent_accepts_simple_and_still_refuses_deploy_and_orchestrate() {
         ),
         Ok(OrchCall::SpawnSimple { .. })
     ));
-    assert_eq!(
+    assert!(matches!(
         parse(
             "spawn_agent",
             &json!({ "kind": "simple", "prompt": "rename x to y in a.rs" })
         ),
-        Err(OrchError::ExtraArgument)
-    );
+        Ok(OrchCall::SpawnSimple { brief }) if brief.free_text
+    ));
     for kind in ["deploy", "orchestrate"] {
         assert_eq!(
             parse("spawn_agent", &json!({ "kind": kind, "prompt": "p" })),
