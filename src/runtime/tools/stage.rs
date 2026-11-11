@@ -247,9 +247,9 @@ impl Stages {
     }
 
     /// Drops whatever `key` holds. How many entries were lost; `None` when
-    /// nothing worth a notice was: an empty batch is no loss. A pane close
-    /// goes through [`Stages::discard_pane`]; tests use this to clear one key.
-    #[cfg(test)]
+    /// nothing worth a notice was: an empty batch is no loss. A worker's split
+    /// (W9b) discards its batch here; a pane close goes through
+    /// [`Stages::discard_pane`].
     pub fn discard_key(&mut self, key: StageKey) -> Option<usize> {
         let lost = self.batches.remove(&key)?.entries().len();
         (lost > 0).then_some(lost)

@@ -24,6 +24,7 @@ use crate::{
         orchestra::{
             WorkerKey,
             changes::{Change, StagedDiff, StagedText, diff_hash},
+            limit::{Count, count},
         },
         tools::{
             Call, ToolError,
@@ -613,6 +614,31 @@ pub(super) fn staged_changes(stages: &Mutex<Stages>, key: StageKey, env: &ToolEn
         .iter()
         .map(|staged| ledger_change(env, staged))
         .collect()
+}
+
+/// The counted lines each staged file of the batch of `key` adds over what is
+/// on the disk, by project path (W9, the counter's contract). Folders have none.
+pub(super) fn staged_counts(
+    stages: &Mutex<Stages>,
+    key: StageKey,
+    env: &ToolEnv,
+) -> Vec<(String, Count)> {
+    let stages = lock(stages);
+    let Some(batch) = stages.batch(key) else {
+        return Vec::new();
+    };
+    let files = batch
+        .entries()
+        .iter()
+        .filter_map(|staged| match &staged.entry {
+            Entry::File { text, base } => {
+                let path = ledger_path(env, &staged.target.real);
+                let counted = count(&path, base.as_deref(), text);
+                Some((path, counted))
+            }
+            Entry::Dir => None,
+        });
+    files.collect()
 }
 
 /// What a review may be shown of the batch of `key`: the files `allow` lets

@@ -34,6 +34,14 @@ baseline.
   a line naming the brief and the limit. The turn cap still ends a run stuck
   waiting, and its line names the open clarification. The `orchestrate`
   prompts teach the coordinator the rule.
+- A `simple` worker whose batch leaves a file above 400 counted lines asks
+  you before the batch is reviewed or proposed, and before the mandatory
+  review: `y` keeps the batch whole, `n` or Esc split the work and discard
+  the staged batch, with the count shown (`split chosen: N staged files
+  discarded`). The worker ends, and the coordinator is told to issue two new
+  briefs; a split is not a clarification round. No approval mode and no
+  timer answers it, and the worker's clock stops while it waits. Test
+  files have no cap; an unknown language counts every line and says so.
 - `/exec` turns Exec on for one chat, on the same path as `/write`: type it
   in the composer and a dialog names Exec and the folder and says every
   command still asks. Only a lowercase `y` grants it; `n` and Esc say `Exec

@@ -234,6 +234,21 @@ pub enum ApprovalAsk {
         /// Why the change is `high` and which paths it holds, one clean line.
         change: String,
     },
+    /// A `simple` worker's staged batch holds a file over the 400-line limit,
+    /// or one outside its brief (W9, D14, decision K2): the user is asked
+    /// before the batch is reviewed or proposed. `y` keeps the batch whole;
+    /// `n` or Esc splits the work and discards the staged batch. Never routed
+    /// by the approval mode, and only the user answers it.
+    Limit {
+        /// The worker whose batch it is: the session the answer goes to.
+        worker: WorkerKey,
+        /// That worker's label (see [`worker_label`]), one clean line.
+        label: String,
+        /// The files over the limit, each with its counted lines.
+        over: Vec<LimitFile>,
+        /// The staged files the brief does not list, one clean line each.
+        outside: Vec<String>,
+    },
     /// Change the chat folder (the user's `/cd`, never a tool call). `from`
     /// is the current folder as one sanitized line, `to` the resolved folder
     /// that becomes the chat's on `y`, and `note` a fact the user must see
@@ -246,6 +261,15 @@ pub enum ApprovalAsk {
         note: Option<String>,
         checking: bool,
     },
+}
+
+/// One file of a limit ask: the counted lines a write adds to it, whether
+/// every added line was counted (an unknown language), all one clean line.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LimitFile {
+    pub path: String,
+    pub lines: usize,
+    pub every_line: bool,
 }
 
 /// Where a read leads, as the host found it on the real path (every link
@@ -289,7 +313,7 @@ impl ApprovalAsk {
     /// a batch it proposed): only those queue behind a pending approval.
     pub fn is_worker(&self) -> bool {
         match self {
-            Self::WorkerRead { .. } | Self::Consent { .. } => true,
+            Self::WorkerRead { .. } | Self::Consent { .. } | Self::Limit { .. } => true,
             Self::Exec { worker, .. } => worker.is_some(),
             Self::Batch(review) => review.label().is_some(),
             _ => false,
@@ -301,7 +325,9 @@ impl ApprovalAsk {
     /// that session and no other.
     pub fn worker(&self) -> Option<WorkerKey> {
         match self {
-            Self::WorkerRead { worker, .. } | Self::Consent { worker, .. } => Some(*worker),
+            Self::WorkerRead { worker, .. }
+            | Self::Consent { worker, .. }
+            | Self::Limit { worker, .. } => Some(*worker),
             Self::Exec { worker, .. } => worker.as_ref().map(|(key, _)| *key),
             Self::Batch(review) => review.worker(),
             _ => None,
@@ -1013,6 +1039,8 @@ pub const FOLDER_KEYS: &str = "y change folder · any other key cancels";
 pub const FOLDER_CHECKING_KEYS: &str = "Esc cancels";
 /// The keys of the consent prompt of a receipt-driven review.
 pub const CONSENT_KEYS: &str = "y review it · n skip the review";
+/// The keys of the limit ask of a `simple` worker (decision K2).
+pub const LIMIT_KEYS: &str = "y keep · n or Esc split";
 /// The keys of the `/github` dialog. ASCII: it must read on a Linux console.
 pub const GITHUB_GRANT_KEYS: &str = "y allow | n or Esc decline";
 /// What the `/github` dialog adds under the repository. ASCII.
@@ -1300,6 +1328,28 @@ mod tests {
         utf8: true,
         github_read: None,
     };
+
+    // 22.2 (W9b, D14): no mode routes the limit ask of a worker: it prompts.
+    #[test]
+    fn a_limit_ask_is_never_routed_by_a_mode() {
+        let ask = ApprovalAsk::Limit {
+            worker: WorkerKey::for_test(1, 1),
+            label: "simple x>y".to_owned(),
+            over: vec![LimitFile {
+                path: "src/a.rs".to_owned(),
+                lines: 401,
+                every_line: false,
+            }],
+            outside: Vec::new(),
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            assert!(matches!(
+                route(&ask, Origin::Tool, mode, FREE),
+                Route::Prompt(None)
+            ));
+            assert_eq!(answers_itself(&ask, mode, false), None);
+        }
+    }
 
     fn run_ask() -> ApprovalAsk {
         ask_of("cd x")

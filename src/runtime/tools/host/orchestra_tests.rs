@@ -23,6 +23,7 @@ use crate::core::{
         orchestra::{
             RunId, Toolset, WorkerId,
             changes::{Change, ChangeLedger},
+            limit::Count,
             review::{self as risk, Assessment, Tier},
             run::{Roster, Run, UserChoice, WorkerEvent},
             scope::ReadScope,
@@ -393,6 +394,8 @@ struct Scoped {
     held: Mutex<Vec<usize>>,
     /// The worker called `needs_specification` (W8c).
     closed: std::sync::atomic::AtomicBool,
+    /// The worker is a `simple` one: a file over the limit is listed (W9b).
+    limited: bool,
 }
 
 impl Scoped {
@@ -427,6 +430,7 @@ impl Scoped {
             own: Pending::new(),
             held: Mutex::default(),
             closed: Default::default(),
+            limited: false,
         })
     }
 
@@ -551,6 +555,23 @@ impl Orchestra for Scoped {
 
     fn applied(&self, _: RunId, _: WorkerId, paths: &[String]) {
         self.ledger.lock().unwrap().applied(paths);
+    }
+
+    fn over_limit(
+        &self,
+        _: RunId,
+        _: WorkerId,
+        counts: Vec<(String, Count)>,
+    ) -> Vec<(String, Count)> {
+        let each = counts.into_iter();
+        each.filter(|(_, count)| self.limited && count.over())
+            .collect()
+    }
+
+    fn split(&self, _: RunId, _: WorkerId, files: Vec<String>) {
+        let line = format!("split {}", files.join(","));
+        self.log.lock().unwrap().push(line);
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -1353,13 +1374,25 @@ struct ByAsk {
     log: Arc<Mutex<Vec<String>>>,
     ids: Mutex<Vec<(CallId, &'static str)>>,
     asks: Mutex<Vec<ApprovalAsk>>,
+    /// The answer to the limit ask (W9b).
+    limit: Decision,
+    /// The worker's own count of asks, and what it was as each limit ask began.
+    own: Pending,
+    limit_held: Mutex<Vec<usize>>,
 }
 
 impl ByAsk {
     fn new(handle: &Scoped, consent: Decision, batch: Decision) -> Arc<Self> {
+        Self::limited(handle, consent, batch, Decision::Sent)
+    }
+
+    fn limited(handle: &Scoped, consent: Decision, batch: Decision, limit: Decision) -> Arc<Self> {
         Arc::new(Self {
             consent,
             batch,
+            limit,
+            own: handle.own.clone(),
+            limit_held: Mutex::default(),
             log: handle.log.clone(),
             ids: Mutex::default(),
             asks: Mutex::default(),
@@ -1372,6 +1405,10 @@ impl Approver for ByAsk {
         let (kind, answer) = match ask {
             ApprovalAsk::Consent { .. } => ("consent", self.consent),
             ApprovalAsk::Batch(_) => ("batch", self.batch),
+            ApprovalAsk::Limit { .. } => {
+                self.limit_held.lock().unwrap().push(self.own.count());
+                ("limit", self.limit)
+            }
             other => panic!("{other:?}"),
         };
         self.log.lock().unwrap().push(kind.to_owned());
@@ -2381,4 +2418,153 @@ async fn a_batch_approved_after_the_worker_asked_is_not_applied() {
         late.is_error && late.text.contains("clearer brief"),
         "{late:?}"
     );
+}
+
+/// The text of `n` code rows, as a staged file of `n` counted lines.
+#[cfg(target_os = "linux")]
+fn rows(n: usize) -> String {
+    "let x = 1;\n".repeat(n)
+}
+
+/// A `simple` worker of a fake run, with the limit answered by `limit`.
+#[cfg(target_os = "linux")]
+fn limited(home: &Path, cheap: bool, limit: Decision) -> (Arc<Scoped>, Arc<ByAsk>) {
+    for dir in ["src", "tests"] {
+        std::fs::create_dir_all(home.join("dev/app").join(dir)).unwrap();
+    }
+    let mut fake = Scoped::over(home, &["~/dev/app"]);
+    let only = Arc::get_mut(&mut fake).unwrap();
+    (only.limited, only.cheap) = (true, cheap);
+    let user = ByAsk::limited(&fake, Decision::Sent, Decision::Sent, limit);
+    (fake, user)
+}
+
+// 22.1 (D14, spec "401 counted lines asks", "Ask first, review after"): a
+// `simple` worker's 401-line file gets ONE limit ask, labelled with the
+// worker, before the mandatory review and the seal.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_file_over_the_limit_asks_before_the_review_and_the_batch() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = limited(&home, true, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    assert!(!d.call(write_call("src/a.rs", &rows(401))).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(!out.is_error, "{out:?}");
+    assert_eq!(
+        *fake.log.lock().unwrap(),
+        ["limit", "review Mandatory", "batch"]
+    );
+    let asks = user.asks.lock().unwrap().clone();
+    let ApprovalAsk::Limit {
+        worker,
+        label,
+        over,
+        outside,
+    } = &asks[0]
+    else {
+        panic!("{asks:?}");
+    };
+    assert_eq!(worker.worker, WorkerId(1));
+    assert_eq!(label, "1/1 review claude>opus");
+    assert_eq!(over.len(), 1);
+    assert_eq!((over[0].path.as_str(), over[0].lines), ("src/a.rs", 401));
+    assert!(outside.is_empty());
+    let ids = user.ids.lock().unwrap().clone();
+    assert_ne!(ids[0].0, ids[1].0, "the limit ask has a wait of its own");
+}
+
+// 22.1: 400 counted lines asks nothing, and neither does a test file of 900.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_file_within_the_limit_or_a_test_file_goes_straight_to_the_batch() {
+    for (path, n) in [("src/a.rs", 400), ("tests/a.rs", 900)] {
+        let (_dir, home, host) = fixture();
+        project(&home);
+        let (fake, user) = limited(&home, false, Decision::Sent);
+        let d = writer(&host, Locality::Cloud, &home, fake.clone(), user);
+        assert!(!d.call(write_call(path, &rows(n))).await.is_error);
+        assert!(!d.call(Call::ProposeBatch).await.is_error);
+        assert_eq!(*fake.log.lock().unwrap(), ["batch"], "{path}");
+    }
+}
+
+// 22.2 (clock, risk 4): the author's own count holds while the limit ask
+// waits, and is let go after it.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_limit_ask_holds_the_authors_own_clock() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = limited(&home, false, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    assert!(!d.call(write_call("src/a.rs", &rows(401))).await.is_error);
+    assert!(!d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(*user.limit_held.lock().unwrap(), vec![1]);
+    assert_eq!(fake.own.count(), 0, "let go after the answer");
+}
+
+// 22.4 (owner item 6, spec "Split ends the worker", "Split discards the
+// staged batch"): `n` or Esc discards the whole staged batch with the count
+// shown, records the split, and nothing is reviewed or proposed.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_split_discards_the_staged_batch_and_says_how_many() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = limited(&home, true, DECLINED);
+    let (d, seen) = writer_rows(&host, &home, fake.clone(), user.clone());
+    assert!(!d.call(write_call("src/a.rs", &rows(401))).await.is_error);
+    assert!(!d.call(write_call("src/b.rs", "x")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(
+        out.text.contains("split chosen: 2 staged files discarded"),
+        "{out:?}"
+    );
+    assert_eq!(*fake.log.lock().unwrap(), ["limit", "split src/a.rs"]);
+    let origin = home.join("dev/app");
+    let staged = host.staged_changes(StageKey::Pane(PANE), &origin).await;
+    assert_eq!(staged, Some(Vec::new()));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let notices: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::Notice(line) => Some(line.clone()),
+            _ => None,
+        })
+        .collect();
+    let said = notices
+        .iter()
+        .any(|n| n.contains("split chosen: 2 staged files discarded"));
+    assert!(said, "{notices:?}");
+    // The worker may not write again: the split ended its work.
+    assert!(d.call(write_call("src/c.rs", "x")).await.is_error);
+}
+
+// 22.4, 22.7: an ask nobody answered (cancelled, expired) is no split: the
+// batch stays staged, nothing is recorded, and proposing again asks again.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_limit_ask_nobody_answered_discards_nothing_and_asks_again() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = limited(&home, false, Decision::Denied("turn ended"));
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    assert!(!d.call(write_call("src/a.rs", &rows(401))).await.is_error);
+    for _ in 0..2 {
+        let out = d.call(Call::ProposeBatch).await;
+        assert!(out.is_error && out.text.contains("not answered"), "{out:?}");
+    }
+    assert_eq!(*fake.log.lock().unwrap(), ["limit", "limit"]);
+    let origin = home.join("dev/app");
+    let staged = host.staged_changes(StageKey::Pane(PANE), &origin).await;
+    assert_eq!(staged.map(|s| s.len()), Some(1));
 }

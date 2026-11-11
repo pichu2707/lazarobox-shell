@@ -160,6 +160,8 @@ mod gate_tests;
 #[cfg(test)]
 mod ledger_tests;
 #[cfg(test)]
+mod limit_run_tests;
+#[cfg(test)]
 mod limit_tests;
 #[cfg(test)]
 mod persist_tests;

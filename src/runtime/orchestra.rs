@@ -76,6 +76,7 @@ use crate::core::{
             event::{Degrade, shared_engine_notice},
             feature::FeatureError,
             ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
+            limit::Count,
             review::Assessment,
             rounds::ROUNDS,
             run::{
@@ -2143,6 +2144,25 @@ impl Orchestra for Bound {
     fn applied(&self, run: RunId, worker: WorkerId, paths: &[String]) {
         if let Some(manager) = self.manager.upgrade() {
             manager.on_run(self.pane, run, |live| live.run.applied(worker, paths));
+        }
+    }
+
+    fn over_limit(
+        &self,
+        run: RunId,
+        worker: WorkerId,
+        counts: Vec<(String, Count)>,
+    ) -> Vec<(String, Count)> {
+        let manager = self.manager.upgrade().filter(|_| run == self.run);
+        let listed = manager.and_then(|manager| {
+            manager.on_run(self.pane, run, |live| live.run.over_limit(worker, &counts))
+        });
+        listed.unwrap_or_default()
+    }
+
+    fn split(&self, run: RunId, worker: WorkerId, files: Vec<String>) {
+        if let Some(manager) = self.manager.upgrade().filter(|_| run == self.run) {
+            manager.on_run(self.pane, run, |live| live.run.split(worker, &files));
         }
     }
 }
