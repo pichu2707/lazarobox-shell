@@ -48,6 +48,13 @@ const DEFAULT_LENSES: [Lens; 2] = [Lens::Risk, Lens::Reliability];
 /// Why the default lenses are picked.
 const DEFAULT_WHY: &str = "default lens for a high-risk change";
 
+/// Corrections a worker's batch may get across its proposals. Each proposal
+/// is a review of its own with its one correction; a small model that keeps
+/// re-proposing the same batch, with trivial blockers each time, would get
+/// one correction per proposal for ever. Past this many the review still
+/// looks and reports, but the batch goes to the user with its blockers open.
+pub(super) const MAX_CORRECTIONS: u32 = 3;
+
 /// A finished review, kept for the receipt (7b.3).
 #[derive(Clone, Debug)]
 pub struct Reviewed {
@@ -135,6 +142,9 @@ pub(super) struct State {
     /// or stages into (the correction): its proposer. A reader's entry goes
     /// with its review; a correction's stays, like `correcting`.
     pub(super) proposers: HashMap<WorkerId, WorkerId>,
+    /// Corrections started for each proposer's batch since it last landed
+    /// (an apply); bounded by [`MAX_CORRECTIONS`].
+    pub(super) corrections: HashMap<WorkerId, u32>,
     /// What review workers could not read, by worker.
     pub(super) unread: HashMap<WorkerId, Vec<String>>,
 }
@@ -741,11 +751,31 @@ impl RunManager {
             }
         }
         review.settle_unanswered().map_err(|e| other(refused(e)))?;
+        let spent = self
+            .on_run(pane, run, |live| {
+                live.review.corrections.get(&worker).copied().unwrap_or(0)
+            })
+            .ok_or_else(|| Stop::Start(ENDED.to_owned()))?;
+        if spent >= MAX_CORRECTIONS && !review.blockers().is_empty() {
+            let rounds = if spent == 1 { "round" } else { "rounds" };
+            self.say(
+                pane,
+                run,
+                format!(
+                    "review of worker {}: correction limit reached ({spent} correction {rounds} ran for this batch); no more corrections, your batch review follows with the blockers open",
+                    worker.0
+                ),
+            );
+            return Ok(());
+        }
         let targets = match review.begin_correction() {
             Ok(targets) => targets,
             Err(ReviewError::NoBlockers) => return Ok(()),
             Err(e) => return Err(other(refused(e))),
         };
+        self.on_run(pane, run, |live| {
+            *live.review.corrections.entry(worker).or_default() += 1;
+        });
         let open = self
             .correct(
                 pane, run, worker, guard, changes, reviewed, review, &targets,
