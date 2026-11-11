@@ -10,6 +10,18 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- A new `simple` task for direct, fully specified work. The Models tab gets a
+  `simple` row (`[ai.tasks.simple]`) after `orchestrate`; unassigned it uses
+  `general`, `Set all tasks` leaves it alone, and a local server engine on it
+  is not marked `not recommended`. With ORCH on, the coordinator can start a
+  `simple` worker with `spawn_agent`: it gets the read, write and
+  `run_command` tools under the menu's Write and Exec switches, its own
+  prompt (override file `simple.md`), and on a read-only goal it starts
+  without the write tools instead of being refused. An older build ignores
+  the new table.
+
 ## [1.17.0] - 2026-11-10
 
 ### Added

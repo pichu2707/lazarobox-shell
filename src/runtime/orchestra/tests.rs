@@ -3426,7 +3426,9 @@ async fn a_read_only_goal_refuses_a_code_worker_with_a_reason() {
         .await;
     assert_eq!(
         handle.call(spawn(Task::Code, "edit it")).await,
-        error("code workers are not spawned for a read-only goal")
+        error(
+            "code workers are not spawned for a read-only goal; a simple worker starts without write tools"
+        )
     );
     assert!(
         lab.sent()

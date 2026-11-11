@@ -87,6 +87,10 @@ pub enum Toolset {
     /// through the user's review; a command runs only after that batch is
     /// applied, and asks the user every time. The menu caps Write and Exec.
     Code,
+    /// The `simple` worker (W8a): the same families as `Code`, for a direct,
+    /// fully specified task. Kept apart from `Code` so a read-only goal can
+    /// start it without Write instead of refusing it.
+    Simple,
     /// The orchestration tools and the pane reads (`list_panes`,
     /// `read_pane`), for the orchestrator turn only.
     Orchestrator,
@@ -101,7 +105,7 @@ impl Toolset {
         let read = FamilySet::EMPTY.with(Family::Read);
         match self {
             Self::ReadOnly => read,
-            Self::Code => read.with(Family::Write).with(Family::Exec),
+            Self::Code | Self::Simple => read.with(Family::Write).with(Family::Exec),
             Self::Orchestrator => read.with(Family::PaneRead).with(Family::Orchestra),
         }
     }
@@ -116,11 +120,12 @@ impl Toolset {
             .fold(self.families(), FamilySet::without)
     }
 
-    /// The toolset of a worker kind: `Code` for a `code` worker, read-only
-    /// for every other kind.
+    /// The toolset of a worker kind: `Code` for a `code` worker, `Simple`
+    /// for a `simple` one, read-only for every other kind.
     pub fn for_kind(task: Task) -> Self {
         match task {
             Task::Code => Self::Code,
+            Task::Simple => Self::Simple,
             _ => Self::ReadOnly,
         }
     }
@@ -146,6 +151,8 @@ mod receipt_tests;
 mod review_tests;
 #[cfg(test)]
 mod share_tests;
+#[cfg(test)]
+mod simple_tests;
 #[cfg(test)]
 mod steps_tests;
 #[cfg(test)]

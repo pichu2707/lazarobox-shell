@@ -2235,7 +2235,8 @@ mod tests {
                 "chat",
                 "review",
                 "summarize",
-                "orchestrate"
+                "orchestrate",
+                "simple"
             ]
         );
         let tables: Vec<&str> = Task::ALL.iter().map(|t| t.table()).collect();
@@ -2247,7 +2248,8 @@ mod tests {
                 "ai.tasks.chat",
                 "ai.tasks.review",
                 "ai.tasks.summarize",
-                "ai.tasks.orchestrate"
+                "ai.tasks.orchestrate",
+                "ai.tasks.simple"
             ]
         );
     }

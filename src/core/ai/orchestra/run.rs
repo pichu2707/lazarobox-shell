@@ -564,9 +564,16 @@ impl Run {
         let (spec, refusal) = self.resolve(task, prompt);
         // A read-only goal is judged by the role, before the menu: turning
         // Write on would not help.
-        let writer = spec.toolset.families().contains(Family::Write);
+        let mut spec = spec;
+        let mut writer = spec.toolset.families().contains(Family::Write);
         if self.steps.read_only() && writer {
-            return Err(Refusal::ReadOnly);
+            // A `simple` worker is not refused: it starts without Write
+            // (W8a, interim until `outputs` in W8b).
+            if spec.task != Task::Simple {
+                return Err(Refusal::ReadOnly);
+            }
+            spec.families = spec.families.without(Family::Write);
+            writer = false;
         }
         if self.slots.len() >= self.limits.workers {
             return Err(Refusal::WorkerCap(self.limits.workers));
@@ -613,7 +620,7 @@ impl Run {
         self.slots[index(id)].started = None;
         // A read-only goal starts no code worker, however it got here (a
         // retry, a relaunch).
-        let code = self.slots[index(id)].spec.writes();
+        let code = self.refuses_on_read_only(&self.slots[index(id)].spec);
         // An engine that cannot run is a setup problem; a read-only goal is not.
         let refusal = refusal
             .map(|reason| (ErrorClass::Setup, reason))
@@ -651,9 +658,14 @@ impl Run {
             };
             // Starting is a new process: the menu is read again now, and a
             // writer that lost Write meanwhile is refused, not run bare.
+            let strip = self.steps.read_only() && self.slots[index(next)].spec.task == Task::Simple;
             let spec = &mut self.slots[index(next)].spec;
             spec.families = spec.toolset.capped(self.ceiling);
-            if spec.toolset.families().contains(Family::Write) && !spec.writes() {
+            if strip {
+                // A `simple` worker on a read-only goal runs without Write.
+                spec.families = spec.families.without(Family::Write);
+            }
+            if !strip && spec.toolset.families().contains(Family::Write) && !spec.writes() {
                 let error = (ErrorClass::Setup, WRITE_OFF.to_owned());
                 self.end(now, next, WorkerStatus::Refused, "", Some(error));
                 continue;
@@ -662,6 +674,12 @@ impl Run {
             (slot.status, slot.started) = (WorkerStatus::Running, Some(now));
             slot.no_tools = false;
         }
+    }
+
+    /// Whether a read-only goal refuses the worker: it writes and is not a
+    /// `simple` one, which starts without Write instead.
+    fn refuses_on_read_only(&self, spec: &WorkerSpec) -> bool {
+        spec.writes() && spec.task != Task::Simple
     }
 
     fn resolve(&self, task: Task, prompt: &str) -> (WorkerSpec, Option<String>) {
@@ -1033,7 +1051,7 @@ impl Run {
         let queued: Vec<_> = self.queue.iter().copied().collect();
         let code: Vec<_> = queued
             .into_iter()
-            .filter(|id| self.slots[index(*id)].spec.writes())
+            .filter(|id| self.refuses_on_read_only(&self.slots[index(*id)].spec))
             .collect();
         for id in &code {
             let slot = &mut self.slots[index(*id)];
