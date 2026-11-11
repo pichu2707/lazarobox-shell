@@ -30,6 +30,13 @@ baseline.
 - A worker whose task row is unassigned (for example `simple`, which runs on
   `general`) now says `(default)` on its row in the orchestra panel, like the
   AI menu row does, instead of showing only `engine>model`.
+- An orchestrator turn whose coordinator cannot get its tools (for example the
+  jail refuses the tools program because its folder is writable by group) now
+  ends before the model is called, with a visible error naming the cause and
+  the fix, instead of sending a text-only turn where the coordinator says it
+  has no `spawn_agent` tool. The advice fits the cause: permissions only for
+  a path others can write, otherwise to assign another engine. Plain tool
+  chats and workers still degrade to text with the notice.
 
 ## [1.18.0] - 2026-11-11
 
