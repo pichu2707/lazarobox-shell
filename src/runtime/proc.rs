@@ -294,6 +294,7 @@ enum GoneStep {
 /// deadline and, when a stall was seen, extends the deadline once.
 #[cfg(test)]
 struct GoneWatch {
+    start: std::time::Instant,
     last: std::time::Instant,
     end: std::time::Instant,
     grace_end: Option<std::time::Instant>,
@@ -305,6 +306,7 @@ struct GoneWatch {
 impl GoneWatch {
     fn new(now: std::time::Instant, within: std::time::Duration) -> Self {
         Self {
+            start: now,
             last: now,
             end: now + within,
             grace_end: None,
@@ -340,6 +342,11 @@ impl GoneWatch {
             }
             Some(_) => GoneStep::Fail,
         }
+    }
+
+    /// How long the wait has run, as of the last poll.
+    fn elapsed(&self) -> std::time::Duration {
+        self.last.saturating_duration_since(self.start)
     }
 
     fn largest_gap(&self) -> std::time::Duration {
@@ -397,18 +404,22 @@ fn describe_with(pid: libc::pid_t, watch: &GoneWatch) -> String {
         Ok(out) => format!("ps: {}", String::from_utf8_lossy(&out.stdout).trim()),
         Err(e) => format!("no /proc here and `ps` could not run: {e}"),
     };
-    let mut text = format!(
-        "pid {pid} still runs after {GONE_WITHIN:?}: state {:?} {more}\n\
+    let text = format!(
+        "pid {pid} still runs after {:?}: state {:?} {more}\n\
          largest poll gap {:?} (a stall is above {STALL_GAP:?}); stall extension: {}",
+        watch.elapsed(),
         process_state(pid),
         watch.largest_gap(),
         if watch.extended() { "yes" } else { "no" },
     );
     #[cfg(target_os = "linux")]
-    for path in ["/proc/loadavg", "/proc/pressure/cpu"] {
-        text.push('\n');
-        text.push_str(&read_or_missing(path));
-    }
+    let text = {
+        let load: Vec<String> = ["/proc/loadavg", "/proc/pressure/cpu"]
+            .iter()
+            .map(|path| read_or_missing(path))
+            .collect();
+        format!("{text}\n{}", load.join("\n"))
+    };
     text
 }
 
