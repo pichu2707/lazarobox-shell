@@ -652,17 +652,19 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     };
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The command is the sanitizer's, so the ask shows what would be typed.
-    let mut checked: Result<Call, Cow<'static, str>> = match &call {
+    // `if let` guards need a newer Rust than the MSRV, so the closing is a
+    // second element of the matched pair.
+    let mut checked: Result<Call, Cow<'static, str>> = match (&call, closed(&scope, &call)) {
         // What the turn does not offer is refused as the parse refuses it.
-        call if !scope.offers(call) => Err(refusal_text(ToolError::UnknownTool).into()),
+        (call, _) if !scope.offers(call) => Err(refusal_text(ToolError::UnknownTool).into()),
         // A worker that asked for a clearer brief writes and runs nothing.
-        call if let Some(text) = closed(&scope, call) => Err(text.into()),
-        Call::RunInPane { command } => command::validate(command)
+        (_, Some(text)) => Err(text.into()),
+        (Call::RunInPane { command }, None) => command::validate(command)
             .map(|valid| Call::RunInPane {
                 command: valid.as_str().to_owned(),
             })
             .map_err(|refusal| refusal.reason().into()),
-        other => files::gate(&scope, other)
+        (other, None) => files::gate(&scope, other)
             .map(|()| other.clone())
             .map_err(Cow::from),
     };
