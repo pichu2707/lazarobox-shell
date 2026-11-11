@@ -105,15 +105,15 @@ The probe action MUST ask `probe <name>? (y/n)` and run the mcp-catalog probe on
 - THEN the server process is gone within 3 seconds and the screen shows the probe as stopped
 
 ### Requirement: Secret fields [S6a2]
-Revised on 2026-11-11 after review (owner resolution of proposal open question 15: no character of a confidential value is ever shown).
+Revised on 2026-11-11 after review (proposal open question 15, resolved by the orchestrator on 2026-11-11 under the owner's instruction to proceed; pending owner confirmation: no character of a confidential value is ever shown).
 
-Terms: a catalog `Var` has `secret: true` when its value lives in `secrets.toml` (the existing field), and, added here, `confidential: true` when the value is a credential: `CLARITY_API_TOKEN` and `GOOGLE_OAUTH_CLIENT_SECRET` are confidential; project ids, `GOOGLE_OAUTH_CLIENT_ID` (it appears in every sign-in link), `USER_GOOGLE_EMAIL`, paths and presets are not.
+Terms: a catalog `Var` has `secret: true` when its value lives in `secrets.toml` (the existing field), and, added here, every `secret: true` value is **confidential by default**; an entry opts a value out explicitly (`shown: true`) only when it is meant to be seen: `GOOGLE_CLOUD_PROJECT`, `GOOGLE_OAUTH_CLIENT_ID` (it appears in every sign-in link), `USER_GOOGLE_EMAIL`, `GSC_OAUTH_CLIENT_SECRETS_FILE`, `GSC_CONFIG_DIR`, `GSC_CREDENTIALS_PATH`, `GSC_SKIP_OAUTH` and `WORKSPACE_MCP_DISABLE_LOCAL_FILES`. Today the confidential values are `CLARITY_API_TOKEN` and `GOOGLE_OAUTH_CLIENT_SECRET`, and a value added later is confidential unless it is opted out by name.
 
 On an entry screen whose entry names at least one value for `secrets.toml`, the fill-values action (key `f`, provisional) MUST open a field list inside the popup body: one row per such name of the entry (for `gsc`, those of the selected way). A confidential row shows only `not set` or `set`. A non-confidential row shows `not set` or its value in full (sanitized, cut to the popup width). A preset row shows its preset and is written by its Enter without typing. When the declared server's `command` differs from the catalog entry's command, the list's first row reads `declared command differs from the catalog: <command>` (sanitized), and every save asks `save <NAME> for a server that runs <command>? (y/n)` first (a plain `y` continues, anything else cancels with `not saved`).
 
 Enter on a typed name opens a field with the hint `type or paste <NAME>; Enter saves · Esc cancels`. A confidential field draws a fixed-width mask, `••••••••` once it holds at least one character, whatever the length (the length is never shown); a non-confidential field shows its text. The field accepts typed and pasted text up to 4096 bytes on one line; a control character, a line break or an over-long value is refused with a notice and nothing is saved. Enter on an empty field saves nothing and shows `empty value not saved; edit secrets.toml by hand to remove a value`. Enter on a non-empty field: when the table already holds a different non-empty value for that name, the area MUST ask `replace the saved <NAME>? (y/n)` and only a plain `y` continues (any other key keeps the old value and says `not replaced`); then it sends the save (mcp-secrets, Menu save) and shows its result as a one-line notice. Esc closes the field and drops the typed text. A saved value reaches its server at the next start of that server; the area says `restart the chat or probe again to use it`.
 
-The field list also offers `d` (delete backup), shown when `secrets.toml.bak` exists: `delete secrets.toml.bak? It holds your previous values (y/n)`, then mcp-secrets "delete backup". On the `ga4` and `gsc` entries it offers `o` (OAuth client): a form with the client id (non-confidential) and the client secret (confidential) that writes `google-oauth-client.json` (mcp-secrets, OAuth client file).
+The field list also offers `d` (delete backup), shown when `secrets.toml.bak` exists: `delete secrets.toml.bak? It holds your previous values (y/n)`, then mcp-secrets "delete backup". [S6a3] On the `ga4` and `gsc` entries it offers `o` (OAuth client): a form with the client id (non-confidential) and the client secret (confidential) that writes `google-oauth-client.json` (mcp-secrets, OAuth client file).
 
 What the value may reach is stated as testable claims:
 - It comes only from key and paste events of the menu while that field is open: while a field is open, `AppEvent::Paste` MUST go to the field and MUST NOT reach the chat input or any other paste handler (`App::on_paste`, src/app.rs `update`), and no model, tool call, MCP call, chat command, config key or other program can open the field, fill it or send its save.
@@ -172,7 +172,7 @@ What the value may reach is stated as testable claims:
 - THEN no save of `secrets.toml` was sent and the file is byte-identical
 
 #### Scenario: The value appears nowhere else [auto]
-- GIVEN `tok-7f3a9c1e2b4d6f80` saved through the field
+- GIVEN `tok-7f3a9c1e2b4d6f80` saved through the `CLARITY_API_TOKEN` field (a confidential value)
 - WHEN the notices, the footer, the `Debug` output of every menu command, effect and event carrying it, the log file, the clipboard and the render snapshots are inspected
 - THEN none holds `tok-7f3a9c1e2b4d6f80` or any 4-character part of it
 
@@ -190,7 +190,7 @@ The link action (key `g`, provisional) MUST be offered only on the `gsc` entry w
 - `[gsc]` holds `GSC_OAUTH_CLIENT_SECRETS_FILE` and `GSC_CONFIG_DIR` as absolute paths, and `GSC_SKIP_OAUTH` is not `true`, `1` or `yes` (otherwise `fill the OAuth values first (f)`);
 - the client file named by `GSC_OAUTH_CLIENT_SECRETS_FILE` exists (otherwise `add your Desktop OAuth client first (o)`);
 - the values the line will use are the values the declared server will get: they come from the same `secrets.toml` read, and when the declared server's `env` lacks `GSC_CONFIG_DIR` or `GSC_OAUTH_CLIENT_SECRETS_FILE`, or the host environment would give the server another value, the area refuses with `the declared gsc entry does not pass <NAME>; paste the current entry`;
-- `uv` is on `PATH`, and `uv tool list` (run by lazarobox as a direct argv with a 5-second timeout, output parsed, never shown raw) lists `mcp-search-console v0.4.2`; otherwise `install mcp-search-console 0.4.2 first (i)` or `uv not found: install uv first`;
+- `uv` is on `PATH`, and `uv tool list` (run by lazarobox as a direct argv with a 5-second timeout, output parsed, never shown raw) holds the substring `mcp-search-console v0.4.2` (a plain substring match on the output, done behind a test seam: the command runner is a parameter, so tests give a fake output); otherwise the notice names what was found and the fix: `mcp-search-console <version found, or: not installed>; run: uv tool install --force mcp-search-console==0.4.2` (the version is the text after `mcp-search-console v` on its line, sanitized, at most 20 characters), or `uv not found: install uv first`;
 - `uv tool dir` (same way) prints one absolute folder; lazarobox uses that folder, never `$(uv tool dir)` in the line, so the path can never expand to empty.
 
 The line is built by lazarobox from those resolved values, each single-quoted (a `'` inside becomes `'\''`; a value with a control character is refused):
@@ -215,9 +215,9 @@ Only non-confidential values (paths) are in it, so it may appear in the pane and
 - THEN the path is single-quoted with the `'` escaped, and a path with a control character is refused with a notice
 
 #### Scenario: gsc without uv or the pinned version [auto]
-- GIVEN no `uv` on `PATH`, and in another run a `uv tool list` that shows `mcp-search-console v0.4.3`
+- GIVEN no `uv` on `PATH`, in another run a fake `uv tool list` output holding `mcp-search-console v0.4.3`, and in a third an output without `mcp-search-console`
 - WHEN `g` is pressed
-- THEN no prompt is shown, nothing runs, and the notice says to install uv, or to install mcp-search-console 0.4.2
+- THEN no prompt is shown and nothing runs, and the notices are `uv not found: install uv first`, `mcp-search-console 0.4.3; run: uv tool install --force mcp-search-console==0.4.2` and `mcp-search-console not installed; run: uv tool install --force mcp-search-console==0.4.2`
 
 #### Scenario: gsc values the server would not get [auto]
 - GIVEN a declared `gsc` whose `env` lacks `GSC_CONFIG_DIR` (pasted from S5)
