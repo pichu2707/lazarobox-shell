@@ -21,32 +21,49 @@ use crate::{
 /// The row of the ask, a call of its own.
 const ROW: &str = "limit";
 
-/// What the user's `n` or Esc answers with.
-const USER_DECLINED: &str = "the user declined";
+/// What a batch whose lines cannot be counted is never proposed with.
+const NO_COUNT: &str = "could not count the staged lines: nothing is proposed";
 
 /// What the step decides for the batch.
 pub(super) enum Limited {
-    /// Review and seal the batch whole.
-    Go,
+    /// Review and seal the batch whole. The files the user was asked about,
+    /// kept or not: a later check does not ask about them again.
+    Go(Vec<String>),
     /// The call ends here with this text and nothing is proposed.
     Stop(String),
 }
 
-/// Asks about the files of the worker's staged batch that are over the limit.
-pub(super) async fn before_batch(host: &ToolHost, scope: &TurnScope) -> Limited {
+/// Asks about the files of the worker's staged batch that are over the limit
+/// and not in `asked`. It runs before the review and again before the seal:
+/// a correction or a sibling stages into the batch in between, and a batch
+/// that cannot be counted is never proposed unasked.
+pub(super) async fn check(host: &ToolHost, scope: &TurnScope, asked: &[String]) -> Limited {
     let (Some(worker), Some(key)) = (&scope.read_scope, scope.stage_key) else {
-        return Limited::Go;
+        return Limited::Go(Vec::new());
     };
     let (stages, env) = (host.stages.clone(), host.env(&scope.origin));
     let taken = tokio::task::spawn_blocking(move || files::staged_counts(&stages, key, &env));
-    let counts = taken.await.unwrap_or_default();
+    let Ok(counts) = taken.await else {
+        return Limited::Stop(NO_COUNT.to_owned());
+    };
     // The staged files the brief does not list ride in the same ask (C).
     let paths = counts.iter().map(|(path, _)| path.clone()).collect();
     let outside = worker.handle.outside_brief(worker.run, worker.worker, paths);
-    let over = worker.handle.over_limit(worker.run, worker.worker, counts);
+    let Some(listed) = worker.handle.over_limit(worker.run, worker.worker, counts) else {
+        return Limited::Stop(NO_COUNT.to_owned());
+    };
+    let fresh = |path: &String| !asked.contains(path);
+    let over: Vec<_> = listed.into_iter().filter(|(p, _)| fresh(p)).collect();
+    let outside: Vec<String> = outside.into_iter().filter(fresh).collect();
     if over.is_empty() && outside.is_empty() {
-        return Limited::Go;
+        return Limited::Go(asked.to_vec());
     }
+    let asked_now: Vec<String> = asked
+        .iter()
+        .cloned()
+        .chain(over.iter().map(|(path, _)| path.clone()))
+        .chain(outside.iter().cloned())
+        .collect();
     let label = worker.ask_label();
     let ask = limit_ask(worker.key(), &label, &over, &outside);
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
@@ -63,9 +80,9 @@ pub(super) async fn before_batch(host: &ToolHost, scope: &TurnScope) -> Limited 
         id,
         name: ROW.to_owned(),
         summary: clip(if over.is_empty() {
-            "write a file outside the brief?"
+            "outside the brief?"
         } else {
-            "write past the line limit in a file?"
+            "line limit?"
         }),
         approval: Some(Box::new(ask)),
     };
@@ -81,10 +98,10 @@ pub(super) async fn before_batch(host: &ToolHost, scope: &TurnScope) -> Limited 
     match pending.await {
         Answer::Decided(Decision::Sent) => {
             owed.answer(ToolStatus::Ok, "kept whole");
-            Limited::Go
+            Limited::Go(asked_now)
         }
-        Answer::Decided(Decision::Denied(USER_DECLINED)) => {
-            let lost = files::lock(&host.stages).discard_key(key).unwrap_or(0);
+        Answer::Decided(Decision::Denied(crate::app::DECLINED)) => {
+            let lost = files::discard_files(&host.stages, key);
             // Only a file over the limit is a split; a decline of files
             // outside the brief is neither a split nor a round (K2).
             let said = if over.is_empty() {

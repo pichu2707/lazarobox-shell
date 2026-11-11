@@ -788,7 +788,7 @@ impl App {
                 outside,
                 ..
             } => Some(ApprovalPrompt {
-                target: worker_target(Some(label), "write past the line limit in a file?"),
+                target: worker_target(Some(label), "line limit?"),
                 command: limit_text(over, outside),
                 keys: LIMIT_KEYS,
                 armed,

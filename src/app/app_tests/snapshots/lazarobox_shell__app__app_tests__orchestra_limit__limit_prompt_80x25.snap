@@ -19,7 +19,7 @@ expression: screen
                                        │
                                        │
                                        │
-                                       │worker simple ollama>llama3: write past
+                                       │worker simple ollama>llama3: line limit?
                                        │src/a.rs: 450 counted lines; notes.xyz:
                                        │500 lines, every line counted; outside t
                                        │he brief: src/b.rs

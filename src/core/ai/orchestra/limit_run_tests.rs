@@ -5,6 +5,7 @@
 use std::time::Instant;
 
 use super::WorkerKey;
+use super::changes::Change;
 use super::clarify_tests::{done, run, simple};
 use super::limit::{Count, count, limit_ask};
 use super::worker::Closing;
@@ -172,4 +173,54 @@ fn the_ask_is_a_worker_ask_with_clean_text() {
     assert!(!over[0].every_line && over[1].every_line);
     assert!(!over[1].path.contains('\n'));
     assert_eq!(outside, ["src/b.rs"]);
+}
+
+fn staged(path: &str, applied: bool) -> Change {
+    Change {
+        path: path.to_owned(),
+        size: Some(10),
+        hash: "h".to_owned(),
+        applied,
+    }
+}
+
+// Review fix 1: a split discards the staged batch, so `collect` must not list
+// its files as `not applied` (the coordinator would call them drafts): the
+// ones still pending read `discarded`, the applied ones stay `applied`.
+#[test]
+fn a_split_marks_the_pending_files_discarded_in_collect() {
+    let mut run = run();
+    let id = simple(&mut run, &["src/a.rs", "src/b.rs"]);
+    run.staged(id, staged("src/b.rs", false));
+    run.applied(id, &["src/b.rs".to_owned()]);
+    run.staged(id, staged("src/a.rs", false));
+    assert!(run.split(id, &["src/a.rs".to_owned()]));
+    done(&mut run, id, "stopped");
+    let text = run.collect_wrapped([1; 8], id).unwrap();
+    assert!(
+        text.contains("src/a.rs (10 bytes, diff h): discarded"),
+        "{text}"
+    );
+    assert!(
+        text.contains("src/b.rs (10 bytes, diff h): applied"),
+        "{text}"
+    );
+    assert!(!text.contains("not applied"), "{text}");
+    assert!(
+        text.contains("split chosen: src/a.rs (discarded)"),
+        "{text}"
+    );
+    assert_eq!(run.ledger(id).unwrap().pending(), 0);
+}
+
+// Staging a path again after the split (it cannot: the worker is closed) or
+// by a retry makes it pending again, not discarded.
+#[test]
+fn a_file_staged_again_is_no_longer_discarded() {
+    let mut run = run();
+    let id = simple(&mut run, &["src/a.rs"]);
+    run.staged(id, staged("src/a.rs", false));
+    assert!(run.split(id, &["src/a.rs".to_owned()]));
+    run.staged(id, staged("src/a.rs", false));
+    assert_eq!(run.ledger(id).unwrap().pending(), 1);
 }

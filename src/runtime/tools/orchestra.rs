@@ -191,14 +191,16 @@ pub trait Orchestra: Send + Sync {
 
     /// The files of the batch `worker` proposes (`counts`, per project path)
     /// that go over the line limit with what it applied before (W9). Only a
-    /// `simple` worker has a cap: the default lists nothing.
+    /// `simple` worker has a cap: the default lists nothing. `None` when the
+    /// run cannot be reached: the lines cannot be counted, and the host must
+    /// not propose the batch unasked.
     fn over_limit(
         &self,
         _run: RunId,
         _worker: WorkerId,
         _counts: Vec<(String, Count)>,
-    ) -> Vec<(String, Count)> {
-        Vec::new()
+    ) -> Option<Vec<(String, Count)>> {
+        Some(Vec::new())
     }
 
     /// The staged `paths` a `simple` worker's brief does not list among its

@@ -41,7 +41,9 @@ baseline.
   discarded`). The worker ends, and the coordinator is told to issue two new
   briefs; a split is not a clarification round. No approval mode and no
   timer answers it, and the worker's clock stops while it waits. Test
-  files have no cap; an unknown language counts every line and says so.
+  files have no cap; an unknown language counts every line and says so. After
+  a split `collect` marks the discarded files `discarded`; a batch whose lines
+  cannot be counted is not proposed.
 - The same ask names the files a `simple` worker staged that its brief does
   not list (`outside the brief: ...`), inside the run's scope; a secret path
   or one outside the chat's folder is still refused at staging, never asked.
