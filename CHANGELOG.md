@@ -10,7 +10,18 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Google Search Console joins the `Connectors` area (`gsc`), connected with a
+  service account: `GSC_CREDENTIALS_PATH` (a path, in `secrets.toml`) and
+  `GSC_SKIP_OAUTH = "true"`, no login step, and `GSC_ALLOW_DESTRUCTIVE` is
+  never declared. See "Conectar un servicio" in the README.
+
 ### Fixed
+
+- A review that cannot start while the author keeps re-proposing no longer
+  floods the pane: the same notice (and its blocked receipt) is one line with
+  a count, `(22 times)`. A different cause is still its own line.
 
 - When an orchestrator run ends (`run_timeout_mins`, a stop or a cancel), the
   batch reviews and asks of its workers still on screen close with `review
@@ -19,6 +30,13 @@ baseline.
 - A worker whose task row is unassigned (for example `simple`, which runs on
   `general`) now says `(default)` on its row in the orchestra panel, like the
   AI menu row does, instead of showing only `engine>model`.
+- An orchestrator turn whose coordinator cannot get its tools (for example the
+  jail refuses the tools program because its folder is writable by group) now
+  ends before the model is called, with a visible error naming the cause and
+  the fix, instead of sending a text-only turn where the coordinator says it
+  has no `spawn_agent` tool. The advice fits the cause: permissions only for
+  a path others can write, otherwise to assign another engine. Plain tool
+  chats and workers still degrade to text with the notice.
 - Orchestrator notices name the right thing: the Write-off refusal says "a
   worker that writes files" (it also fires for a `simple` brief with
   `outputs`), and the "needs specification" line of a clarification round

@@ -85,6 +85,10 @@ pub struct McpWire {
     pub socket: PathBuf,
     pub token: Secret,
     pub unwire: Unwire,
+    /// The turn is an orchestrator's coordinator: without its tools it cannot
+    /// do its job, so it ends instead of running as text. A plain chat and a
+    /// worker turn are not: they go on as text with a notice.
+    pub coordinator: bool,
 }
 
 /// What claude gets for one turn with tools.
@@ -290,6 +294,7 @@ mod tests {
             socket: PathBuf::from("/run/user/1000/lazarobox/s-42-1.sock"),
             token: Secret::new("0123456789abcdef0123456789abcdef"),
             unwire: Unwire::none(),
+            coordinator: false,
         }
     }
 

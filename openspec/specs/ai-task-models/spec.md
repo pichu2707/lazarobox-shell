@@ -6,13 +6,14 @@ Defines which AI tasks exist, how each task gets an engine and a model, and whic
 
 ## Requirements
 
-### Requirement: Fixed task set [S1]
-The tasks MUST be fixed and ordered: `general`, `code`, `chat`, `review`, `summarize`, `orchestrate`. Task ids are lowercase and are the `config.toml` table names. There is no way to add, rename or remove a task. A task assignment is an engine id plus a model name. A task is "assigned" only when its engine is non-empty; a model without an engine is treated as unassigned (the file keeps it).
+### Requirement: Fixed task set [S1, W8]
+The tasks MUST be fixed and ordered: `general`, `code`, `chat`, `review`, `summarize`, `orchestrate`, `simple`. Task ids are lowercase and are the `config.toml` table names. There is no way to add, rename or remove a task. A task assignment is an engine id plus a model name. A task is "assigned" only when its engine is non-empty; a model without an engine is treated as unassigned (the file keeps it).
+(Previously: six tasks, `simple` did not exist)
 
 #### Scenario: Task set integrity [auto]
 - GIVEN the task table
 - WHEN it is validated
-- THEN it has exactly `general`, `code`, `chat`, `review`, `summarize`, `orchestrate` in that order, with unique ids
+- THEN it has exactly `general`, `code`, `chat`, `review`, `summarize`, `orchestrate`, `simple` in that order, with unique ids
 
 ### Requirement: Fallback to general
 A task other than `general` that is not assigned MUST use the `general` assignment as its effective assignment. `general` has no fallback: with no engine it is "not set". Row labels: an unassigned non-general task shows `(default)`; an unset `general` shows `(not set)`; an assigned task shows `<engine> › <model>`, or only `<engine>` when its model is empty.
@@ -230,7 +231,7 @@ A model that is in use MUST NOT be deleted from the menu, and the refusal MUST s
 - THEN nothing is sent, the screen closes and the notice names who uses it
 
 ### Requirement: Runtime use of every task assignment [S1]
-Each task MUST be used at runtime through its effective assignment (own assignment, else `general`; see Fallback to general), read from the current configuration on every use, so a saved change applies from the next message or the next worker spawn. A chat turn uses `chat`, except in an orchestrating pane (global gate on and the pane's ORCH mode on), where the turn uses `orchestrate`; each orchestrator worker uses the assignment of its kind (`general`, `code`, `chat`, `review`, `summarize`). The model MUST be validated against detection before use: for a server engine the model MUST be non-empty and among the detected models (exact match, with the Ollama tag-less equals `:latest` rule); otherwise the chat shows the model guidance (or the worker is `refused`) and nothing is sent. For a CLI engine the model is not validated (empty and `default` mean the CLI's own default). The runtime MUST NOT change any assignment on its own, MUST NOT pick another engine when the effective one is unusable, and MUST NOT write the config; only a user choice in the menu changes an assignment. The picker opened from a worker failure alert does not change any assignment: its choice is a run-scoped override (see agent-orchestrator) that is never written to the draft or the file.
+Each task MUST be used at runtime through its effective assignment (own assignment, else `general`; see Fallback to general), read from the current configuration on every use, so a saved change applies from the next message or the next worker spawn. A chat turn uses `chat`, except in an orchestrating pane (global gate on and the pane's ORCH mode on), where the turn uses `orchestrate`; each orchestrator worker uses the assignment of its kind (`general`, `code`, `chat`, `review`, `summarize`, `simple`). The model MUST be validated against detection before use: for a server engine the model MUST be non-empty and among the detected models (exact match, with the Ollama tag-less equals `:latest` rule); otherwise the chat shows the model guidance (or the worker is `refused`) and nothing is sent. For a CLI engine the model is not validated (empty and `default` mean the CLI's own default). The runtime MUST NOT change any assignment on its own, MUST NOT pick another engine when the effective one is unusable, and MUST NOT write the config; only a user choice in the menu changes an assignment. The picker opened from a worker failure alert does not change any assignment: its choice is a run-scoped override (see agent-orchestrator) that is never written to the draft or the file.
 
 #### Scenario: Effective assignment used [auto]
 - GIVEN `general` is `claude` / `sonnet` and `chat` is `ollama` / `llama3:8b`, both available
@@ -271,6 +272,11 @@ Each task MUST be used at runtime through its effective assignment (own assignme
 - GIVEN an orchestrating pane, `review` is `codex` / `default` and `code` is `claude` / `sonnet`
 - WHEN a `review` worker and then a `code` worker are spawned
 - THEN they run on codex / `default` and claude / `sonnet` respectively
+
+#### Scenario: Worker kind uses its own row for simple [auto]
+- GIVEN an orchestrating pane, `simple` is `ollama` / `llama3:8b` and `general` is `claude` / `sonnet`
+- WHEN a `simple` worker is spawned
+- THEN it runs on ollama / `llama3:8b`, and with `simple` unassigned it runs on claude / `sonnet`
 
 #### Scenario: Summarize row is now used [auto]
 - GIVEN `summarize` is `claude` / `haiku`
@@ -401,3 +407,29 @@ Unless `[ai] tool_mark` overrides it (see the configuration spec), the tool mark
 - GIVEN `orchestrate` is `claude` / `opus`
 - WHEN `codex` / `default` is chosen for Set all tasks
 - THEN the five tasks are `codex` / `default` and `orchestrate` is still `claude` / `opus`, and the aggregate ignores `orchestrate`
+
+### Requirement: Simple fallback and use [W8]
+`simple` follows Fallback to general: unassigned, it uses the `general` assignment and its row shows `(default)`, which MUST be visible. If the effective assignment is a cloud engine, the worker is not a cheap author, and no notice other than the visible `(default)` row is required, because the menu chose it. An orchestrator worker of kind `simple` MUST run on the effective `simple` assignment read at spawn time. The runtime MUST NOT pick another engine or model, MUST NOT escalate to the cloud, and MUST NOT write the config. The server engines are not marked `not recommended` for `simple`.
+
+#### Scenario: Simple falls back [W8, auto]
+- GIVEN `simple` unassigned and `general` is `claude` / `sonnet`
+- WHEN a `simple` worker is spawned
+- THEN it runs on claude / `sonnet` and the row reads `(default)`
+
+#### Scenario: Simple on a local model [W8, auto]
+- GIVEN `simple` is `ollama` / `llama3:8b` (available)
+- WHEN a `simple` worker is spawned
+- THEN it runs on ollama / `llama3:8b`, and no other engine is contacted
+
+#### Scenario: Unusable simple engine [W8, auto]
+- GIVEN `simple` is `ollama` with a model that is not downloaded
+- WHEN a `simple` worker is spawned
+- THEN it ends `refused` naming the model and `download required`, the assignments are unchanged and no other engine is contacted
+
+### Requirement: Set all excludes Simple [W8]
+`Set all tasks` MUST write, clear and summarize the five tasks `general`, `code`, `chat`, `review` and `summarize` only, and MUST NOT read or write `simple` (as for `orchestrate`).
+
+#### Scenario: Set all leaves simple alone [W8, auto]
+- GIVEN `simple` is `ollama` / `llama3:8b`
+- WHEN `codex` / `default` is chosen for Set all tasks
+- THEN the five tasks are `codex` / `default`, `simple` is still `ollama` / `llama3:8b`, and the aggregate ignores `simple`
