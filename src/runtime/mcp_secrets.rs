@@ -3,7 +3,9 @@
 //! may read or write (mode 0600 or stricter). Called off the UI thread, on
 //! each start of a chat's user servers, so an edit applies at the next start.
 //!
-//! Nothing here ever creates, writes, renames or chmods the file.
+//! Nothing here ever creates, writes, renames or chmods the file. The one
+//! exception is the menu save of one value and the deletion of its backup,
+//! in `runtime::secrets_write` (C6 amended).
 
 use std::{
     fs::OpenOptions,
