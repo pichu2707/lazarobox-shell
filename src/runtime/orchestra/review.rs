@@ -673,21 +673,15 @@ impl RunManager {
         let wrap = || {
             (self.nonce)().ok_or_else(|| Stop::Start("a prompt cannot be wrapped now".to_owned()))
         };
-        let (profile, room) = self
+        // The lenses, the refuter and the correction are internal workers
+        // (D22): `max_workers` bounds the coordinator's, not these.
+        let (profile, notices) = self
             .on_run(pane, run, |live| {
-                let limits = live.run.limits();
-                let room = limits.workers.saturating_sub(live.run.worker_count());
-                (live.profile, (room, limits.workers))
+                (live.profile, live.run.review_notices(worker))
             })
             .ok_or_else(|| Stop::Start(ENDED.to_owned()))?;
-        // Two lenses and the refuter: all or none, so no lens is left
-        // running while the next cannot start.
-        let need = DEFAULT_LENSES.len() + 1;
-        if room.0 < need {
-            return Err(Stop::Start(format!(
-                "max_workers is {} and leaves room for {} more, a review needs {need}",
-                room.1, room.0
-            )));
+        for notice in notices {
+            self.say(pane, run, notice);
         }
         let diff = self.diff_text(pane, run, worker).await;
         let mut lenses = Vec::new();
@@ -825,23 +819,6 @@ impl RunManager {
         review: &Review,
         targets: &[usize],
     ) -> Result<Vec<usize>, Stop> {
-        // The correction and its check: both or neither, so a correction is
-        // never left unchecked for want of a slot.
-        let room = self.on_run(pane, run, |live| {
-            let workers = live.run.limits().workers;
-            workers.saturating_sub(live.run.worker_count())
-        });
-        let room = room.ok_or_else(|| Stop::Other(ENDED.to_owned()))?;
-        if room < 2 {
-            self.say(
-                pane,
-                run,
-                format!(
-                    "the correction was skipped: max_workers leaves room for {room} more worker(s), a correction and its check need 2; the blockers stay open"
-                ),
-            );
-            return Ok(targets.to_vec());
-        }
         let nonce = (self.nonce)()
             .ok_or_else(|| Stop::Start("a prompt cannot be wrapped now".to_owned()))?;
         let blockers: Vec<&Finding> = targets
@@ -1023,6 +1000,7 @@ impl RunManager {
                     // Nobody can spawn a correction: the review goes on at the
                     // next propose_batch, so the step is the menu's alone.
                     Refusal::WriteOff => WRITE_OFF_CORRECTION.to_owned(),
+                    // Internal workers are outside the cap: never refused.
                     Refusal::WorkerCap(cap) => format!("max_workers is {cap}"),
                     Refusal::Gate(_) => "a step gate refused an internal worker".to_owned(),
                 })?;

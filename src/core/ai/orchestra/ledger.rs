@@ -256,6 +256,16 @@ impl Row {
         }
     }
 
+    /// The row of a worker lazarobox started itself (D22): it has no handoff
+    /// to wait for, so an ended one is never pending.
+    pub(super) fn internal(mut self) -> Self {
+        if self.pending {
+            self.pending = false;
+            self.summary = "internal, no handoff".to_owned();
+        }
+        self
+    }
+
     /// The row with the flags its handoff's check raised.
     pub(super) fn flagged(mut self, flags: Vec<String>) -> Self {
         self.flags = flags;
