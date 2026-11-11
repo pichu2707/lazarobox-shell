@@ -319,6 +319,11 @@ A `simple` worker MUST NOT write more than 400 counted lines of code to one file
 - WHEN the worker calls `propose_batch`
 - THEN no ask appears
 
+#### Scenario: A later batch over the limit asks again [W9, auto]
+- GIVEN a file already over 400 counted lines for the brief after an earlier batch, where the user answered `keep`
+- WHEN a later batch of the same brief touches that file
+- THEN the ask appears again: the limit counts the lines written for the brief, and a kept `y` is not remembered per file (owner decision, 2026-11-11)
+
 #### Scenario: Small edit in a large file [W9, auto]
 - GIVEN a file of 2,000 lines and an edit that writes 12 lines
 - WHEN the worker calls `propose_batch`
@@ -341,6 +346,11 @@ A `simple` worker that stages a write to a path its brief does not list MUST be 
 - GIVEN a brief listing `src/a.rs` and a staged write to `src/b.rs`, both inside the scope
 - WHEN the worker calls `propose_batch`
 - THEN one ask names `src/b.rs` and nothing is proposed before the user answers
+
+#### Scenario: A project-root output covers every file [W9, auto]
+- GIVEN a `simple` brief whose outputs list `.` (the project root, granted by the coordinator on purpose)
+- WHEN the worker stages a write to any file inside the scope and calls `propose_batch`
+- THEN no outside-the-brief ask is raised for that brief (owner decision, 2026-11-11)
 
 #### Scenario: Outside the scope is refused, not asked [W9, auto]
 - GIVEN a staged write to `.env` or `../other/x.rs`
