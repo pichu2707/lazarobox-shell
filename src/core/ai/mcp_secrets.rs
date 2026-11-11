@@ -2,7 +2,8 @@
 //! `mcp-secrets`, decision C6).
 //!
 //! The file sits next to `config.toml` and the user edits it: lazarobox never
-//! creates, writes or chmods it. Each top-level table is named after a server
+//! creates, writes or chmods it, except by the menu save of one value (see
+//! [`edit`] and `runtime::secrets_write`). Each top-level table is named after a server
 //! and holds that server's variables. A value reaches only the server whose
 //! name is its table, and only for a name its `[[ai.mcp.servers]]` entry lists
 //! in `env` ([`Secrets::lookup_for`]); the spawn code still drops `HOME`, the
@@ -255,9 +256,7 @@ pub fn redact_values(text: &str, values: &[String]) -> String {
 /// The problem of text that is not UTF-8 or not TOML, by the line of byte
 /// `at`: never the parser's message, which can quote a value.
 fn syntax_problem(bytes: &[u8], at: usize) -> String {
-    let before = &bytes[..at.min(bytes.len())];
-    let line = before.iter().filter(|&&b| b == b'\n').count() + 1;
-    format!("secrets.toml: not valid TOML (line {line})")
+    format!("secrets.toml: not valid TOML (line {})", line_of(bytes, at))
 }
 
 /// A table or key name as a problem shows it: bare when TOML would write it
@@ -279,6 +278,9 @@ fn shown(name: &str) -> String {
         text
     }
 }
+
+mod save;
+pub use save::{Refusal, edit, line_of};
 
 #[cfg(test)]
 mod tests;

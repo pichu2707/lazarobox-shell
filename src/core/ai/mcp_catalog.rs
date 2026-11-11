@@ -2,7 +2,8 @@
 //! reimplements none of them). Pure static data, no IO. A server is a catalog
 //! entry only when the user declared it under the entry's id in
 //! `[[ai.mcp.servers]]`; the catalog never adds, removes or rewrites a declared
-//! server, and it never writes `config.toml` or `secrets.toml` (C4, C6).
+//! server, and it never writes `config.toml` or `secrets.toml` (C4, C6): the
+//! one write to `secrets.toml` is the menu save in `runtime::secrets_write`.
 //!
 //! The read/write class of a tool is recorded here and read by nobody in
 //! approval: every call to a connector tool still needs the user's `y` (C11).
