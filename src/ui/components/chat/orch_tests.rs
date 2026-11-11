@@ -158,6 +158,7 @@ fn worker(id: u32, kind: Task, status: WorkerStatus, elapsed: Option<u64>) -> Wo
         usage: None,
         partial: false,
         overridden: false,
+        clarifying: false,
     }
 }
 

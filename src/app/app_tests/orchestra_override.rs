@@ -218,6 +218,7 @@ fn kind_row(id: u32, kind: Task, engine: &str, model: Option<&str>) -> Orchestra
         usage: None,
         partial: false,
         overridden: false,
+        clarifying: false,
     })
 }
 

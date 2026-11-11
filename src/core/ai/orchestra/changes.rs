@@ -99,6 +99,9 @@ pub enum Disclosure {
     /// A worker staged `files` paths and its batch was never proposed: the
     /// pane holds it as an orphan.
     StagedNotProposed { files: usize },
+    /// A `simple` worker called `needs_specification` and ended (W8c): its
+    /// brief needs an answer.
+    NeedsSpecification,
 }
 
 /// A short fingerprint of a staged change: FNV-1a 64 over the text it

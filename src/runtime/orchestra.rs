@@ -1685,6 +1685,7 @@ impl RunManager {
             usage: live.run.usage(id),
             partial: live.run.usage_partial(id),
             overridden: false,
+            clarifying: live.run.clarifying(id),
         };
         self.send(pane, OrchestraEvent::Worker(row));
     }
@@ -2102,6 +2103,22 @@ impl Orchestra for Bound {
         if let Some(manager) = self.manager.upgrade() {
             manager.on_run(self.pane, run, |live| live.run.ran(worker, ran));
         }
+    }
+
+    fn clarify(&self, run: RunId, worker: WorkerId, what: &str) -> bool {
+        // Redacted and masked like a refusal's reason before the run keeps it.
+        let what = refusal_reason(what);
+        let manager = self.manager.upgrade();
+        manager
+            .and_then(|manager| manager.on_run(self.pane, run, |live| live.run.clarify(worker, &what)))
+            .unwrap_or(false)
+    }
+
+    fn clarifying(&self, run: RunId, worker: WorkerId) -> bool {
+        let manager = self.manager.upgrade();
+        manager
+            .and_then(|manager| manager.on_run(self.pane, run, |live| live.run.clarifying(worker)))
+            .unwrap_or(false)
     }
 
     fn receipt_line(&self, run: RunId, worker: WorkerId, current: &[Change]) -> Option<String> {

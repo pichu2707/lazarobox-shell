@@ -55,6 +55,7 @@ pub(super) fn row(run: RunId, id: u32, status: WorkerStatus) -> OrchestraEvent {
         usage: None,
         partial: false,
         overridden: false,
+        clarifying: false,
     })
 }
 
@@ -131,6 +132,7 @@ pub(super) fn handed_off(verdict: Verdict) -> OrchestraEvent {
             decisions: "none".into(),
             audit: None,
             extra: String::new(),
+            clarification: String::new(),
         }),
     }
 }

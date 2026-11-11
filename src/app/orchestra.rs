@@ -1333,6 +1333,10 @@ fn disclosure_line(worker: WorkerId, workers: usize, who: &str, what: Disclosure
             let noun = if files == 1 { "file" } else { "files" };
             format!("staged {files} {noun} {NEVER_PROPOSED}")
         }
+        Disclosure::NeedsSpecification => format!(
+            "needs specification: brief {} needs an answer from the coordinator or you",
+            worker.0
+        ),
     };
     worker_notice(worker, workers, who, &said)
 }

@@ -94,6 +94,20 @@ pub trait Orchestra: Send + Sync {
     /// it ended as `ran` says (W6): `collect` shows it to the coordinator.
     fn ran(&self, _run: RunId, _worker: WorkerId, _ran: Ran) {}
 
+    /// `worker` of `run` called `needs_specification` with `what` (W8c). The
+    /// run records it as the worker's closing. `false` when it was not
+    /// recorded (the worker is not running, was not offered the tool, or had
+    /// already closed).
+    fn clarify(&self, _run: RunId, _worker: WorkerId, _what: &str) -> bool {
+        false
+    }
+
+    /// Whether `worker` of `run` has called `needs_specification`: its write
+    /// and command tools are then refused.
+    fn clarifying(&self, _run: RunId, _worker: WorkerId) -> bool {
+        false
+    }
+
     /// The risk of the change set `worker` of `run` is about to propose,
     /// with whatever the orchestrator raised for the run (S7b, D16). The
     /// default is the path rules alone.
