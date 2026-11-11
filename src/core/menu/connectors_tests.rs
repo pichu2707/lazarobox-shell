@@ -13,7 +13,7 @@ use crate::core::ai::{
         checks::{Probed, Verdict},
         presence::Presence,
     },
-    mcp_secrets::Secrets,
+    mcp_secrets::{Loaded, Secrets, mode_problem},
 };
 
 pub(super) fn declared(name: &str, enabled: bool) -> McpServer {
@@ -48,10 +48,7 @@ pub(super) fn area(servers: Vec<McpServer>) -> MenuState {
 
 /// What `config.toml` and `secrets.toml` hold, as the runtime reads them.
 pub(super) fn presence(config: &str, secrets: &str) -> Presence {
-    Presence::read(
-        Ok(config.to_owned()),
-        &Secrets::parse(secrets.as_bytes()).secrets,
-    )
+    Presence::read(Ok(config.to_owned()), &Secrets::parse(secrets.as_bytes()))
 }
 
 pub(super) fn texts(m: &MenuState) -> Vec<String> {
@@ -222,7 +219,7 @@ fn a_config_that_cannot_be_read_keeps_the_startup_list_and_says_so() {
     let mut m = area(vec![declared("clarity", true)]);
     m.presence_reply(Presence::read(
         Err(io::Error::from(io::ErrorKind::PermissionDenied)),
-        &Secrets::parse(b"[clarity]\nCLARITY_API_TOKEN = \"t\"\n").secrets,
+        &Secrets::parse(b"[clarity]\nCLARITY_API_TOKEN = \"t\"\n"),
     ));
     assert_eq!(texts(&m)[1], "Clarity: declared");
     assert!(
@@ -273,4 +270,31 @@ fn opening_the_area_again_asks_the_disk_again() {
         "Clarity: not declared",
         "the old copy is dropped"
     );
+}
+
+// A reordered file is the same list: no false restart. A changed entry is not.
+#[test]
+fn reordering_the_entries_asks_for_no_restart_and_changing_one_does() {
+    let startup = vec![declared("clarity", true), declared("ga4", true)];
+    let mut m = area(startup.clone());
+    let reordered = "[[ai.mcp.servers]]\nname = \"ga4\"\ncommand = \"x\"\n\
+                     [[ai.mcp.servers]]\nname = \"clarity\"\ncommand = \"x\"\n";
+    m.presence_reply(presence(reordered, ""));
+    assert!(!texts(&m).iter().any(|l| l.contains("restart lazarobox")));
+    let changed = reordered.replacen("command = \"x\"", "command = \"y\"", 1);
+    m.presence_reply(presence(&changed, ""));
+    assert!(texts(&m).iter().any(|l| l.contains("restart lazarobox")));
+}
+
+// Spec (visible notices): `values missing` says why when the file is not used.
+#[test]
+fn a_secrets_file_that_is_not_used_is_named_next_to_the_missing_values() {
+    let mut m = area(Vec::new());
+    let loaded = Loaded::problem(mode_problem(std::path::Path::new("/h/secrets.toml")));
+    m.presence_reply(Presence::read(Ok(CLARITY.to_owned()), &loaded));
+    assert_eq!(texts(&m)[1], "Clarity: values missing: CLARITY_API_TOKEN");
+    let all = texts(&m).join(" ");
+    assert!(all.contains("secrets.toml: mode must be 0600"), "{all}");
+    assert!(all.contains("chmod 600 /h/secrets.toml"), "{all}");
+    assert!(!format!("{m:?}").contains("sk-"));
 }

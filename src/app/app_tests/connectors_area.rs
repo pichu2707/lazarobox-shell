@@ -9,7 +9,7 @@ use crate::core::{
             checks::{Probed, Verdict},
             presence::Presence,
         },
-        mcp_secrets::Secrets,
+        mcp_secrets::Loaded,
     },
     config::Config as FileConfig,
 };
@@ -65,7 +65,7 @@ fn the_menu_opens_with_the_startup_servers() {
 #[test]
 fn a_pasted_entry_asks_for_a_restart() {
     let mut a = in_area();
-    let none = Presence::read(Ok(String::new()), &Secrets::default());
+    let none = Presence::read(Ok(String::new()), &Loaded::default());
     tap(&mut a, AppEvent::McpPresence(none));
     assert_eq!(rows(&a)[1], "Clarity: not declared");
     assert!(rows(&a).contains(&"restart lazarobox to use it in chats".to_owned()));
@@ -74,7 +74,7 @@ fn a_pasted_entry_asks_for_a_restart() {
 #[test]
 fn a_presence_reply_after_the_menu_closed_changes_nothing() {
     let mut a = launched(80, 25);
-    let none = Presence::read(Ok(String::new()), &Secrets::default());
+    let none = Presence::read(Ok(String::new()), &Loaded::default());
     assert_eq!(tap(&mut a, AppEvent::McpPresence(none)), []);
 }
 

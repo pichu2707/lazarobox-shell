@@ -7,7 +7,7 @@ use std::{collections::HashSet, io};
 
 use super::entries;
 use crate::core::{
-    ai::{config::McpServer, mcp_secrets::Secrets},
+    ai::{config::McpServer, mcp_secrets::Loaded},
     config::Config,
 };
 
@@ -17,6 +17,9 @@ pub struct Presence {
     /// `None` when `config.toml` could not be read or parsed.
     pub servers: Option<Vec<McpServer>>,
     set: HashSet<(String, String)>,
+    /// What made `secrets.toml` unused or partly unused: one line each, naming
+    /// a table, a key or a path at most, never a value.
+    pub problems: Vec<String>,
 }
 
 impl std::fmt::Debug for Presence {
@@ -24,6 +27,7 @@ impl std::fmt::Debug for Presence {
         f.debug_struct("Presence")
             .field("servers", &self.servers)
             .field("set", &self.set.len())
+            .field("problems", &self.problems.len())
             .finish()
     }
 }
@@ -32,7 +36,7 @@ impl Presence {
     /// Builds it from the read of `config.toml` (a missing file declares
     /// nothing) and the parsed `secrets.toml`. Only the secret names of the
     /// catalog are looked up.
-    pub fn read(config: io::Result<String>, secrets: &Secrets) -> Self {
+    pub fn read(config: io::Result<String>, loaded: &Loaded) -> Self {
         let servers = match config {
             Ok(text) => Config::parse(&text)
                 .ok()
@@ -50,13 +54,18 @@ impl Presence {
                     .map(move |v| (entry, v))
             })
             .filter(|(entry, v)| {
-                secrets
+                loaded
+                    .secrets
                     .value(entry.id, v.name)
                     .is_some_and(|s| !s.is_empty())
             })
             .map(|(entry, v)| (entry.id.to_owned(), v.name.to_owned()))
             .collect();
-        Self { servers, set }
+        Self {
+            servers,
+            set,
+            problems: loaded.problems.clone(),
+        }
     }
 
     /// Whether `name` of `server` has a non-empty value.

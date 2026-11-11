@@ -20,7 +20,37 @@ use crate::core::ai::{
 pub(super) const RESTART: &str = "restart lazarobox to use it in chats";
 const UNREAD: &str = "config.toml could not be read; showing the list loaded at startup";
 const HINT_LIST: &str = "j/k move · Esc back";
+/// Text is cut here; the popup is 62 wide and the renderer clips.
+const WRAP: usize = 56;
 const UNBOUND: &str = "no such key here";
+
+/// `text` cut at [`WRAP`] columns on word boundaries (a long word is split).
+fn wrap(text: &str, indent: &str) -> Vec<Row> {
+    let room = WRAP - indent.len();
+    let mut lines = vec![String::new()];
+    for word in text.split_whitespace() {
+        let mut word = word.to_owned();
+        while word.chars().count() > room {
+            let head: String = word.chars().take(room).collect();
+            word = word.chars().skip(room).collect();
+            lines.push(head);
+        }
+        let line = lines.last_mut().expect("one line");
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > room {
+            lines.push(word);
+        } else if line.is_empty() {
+            *line = word;
+        } else {
+            line.push(' ');
+            line.push_str(&word);
+        }
+    }
+    lines
+        .into_iter()
+        .filter(|l| !l.is_empty())
+        .map(|l| Row::Text(Cow::Owned(format!("{indent}{l}"))))
+        .collect()
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Screen {
@@ -96,12 +126,18 @@ impl Connectors {
         self.notice.take()
     }
 
-    /// The disk copy differs from what the chats loaded at startup.
+    /// The disk copy differs from what the chats loaded at startup. The order
+    /// of the entries does not matter.
     fn restart(&self) -> bool {
+        let sorted = |list: &[McpServer]| {
+            let mut list = list.to_vec();
+            list.sort_by(|a, b| (&a.name, &a.project).cmp(&(&b.name, &b.project)));
+            list
+        };
         self.presence
             .as_ref()
             .and_then(|p| p.servers.as_ref())
-            .is_some_and(|disk| *disk != self.startup)
+            .is_some_and(|disk| sorted(disk) != sorted(&self.startup))
     }
 
     /// The state of an entry, as the list shows it.
@@ -162,9 +198,13 @@ impl Connectors {
             });
         }
         if self.presence.as_ref().is_some_and(|p| p.servers.is_none()) {
-            rows.push(Row::Text(Cow::Borrowed(UNREAD)));
+            rows.extend(wrap(UNREAD, ""));
         } else if self.restart() {
             rows.push(Row::Text(Cow::Borrowed(RESTART)));
+        }
+        // Why a value may be missing: the file is not used, or has errors.
+        for problem in self.presence.iter().flat_map(|p| &p.problems).take(3) {
+            rows.extend(wrap(problem, ""));
         }
         rows
     }
