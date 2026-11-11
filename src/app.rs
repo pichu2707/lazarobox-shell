@@ -2420,6 +2420,7 @@ impl App {
                 .with_connectors(
                     self.ai.mcp_servers().to_vec(),
                     self.mcp_probes.values().cloned().collect(),
+                    self.config_path.clone(),
                 )
                 .with_feedback(crate::core::menu::feedback::Facts {
                     engines: self

@@ -1283,14 +1283,15 @@ impl MenuState {
         }
     }
 
-    /// The servers loaded at startup and this session's probe reports, for
-    /// the Connectors area.
+    /// The servers loaded at startup, this session's probe reports and the
+    /// path of `config.toml`, for the Connectors area.
     pub fn with_connectors(
         mut self,
         servers: Vec<crate::core::ai::config::McpServer>,
         probes: Vec<Probed>,
+        config_path: Option<std::path::PathBuf>,
     ) -> Self {
-        self.connectors = connectors::Connectors::new(servers, probes);
+        self.connectors = connectors::Connectors::new(servers, probes, config_path);
         self
     }
 

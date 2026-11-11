@@ -1,0 +1,22 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(62, POPUP_H, &menu))"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
+│ log in to ga4? (y/n)                                       │
+│ Runs in a new tab, with Enter:                             │
+│   gcloud auth application-default login --scopes           │
+│   https://www.googleapis.com/auth/analytics.readonly,htt   │
+│   ps://www.googleapis.com/auth/cloud-platform              │
+│   --client-id-file=~/.config/lazarobox/google-oauth-clie   │
+│   nt.json                                                  │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ y yes · any other key cancels                              │
+└────────────────────────────────────────────────────────────┘
