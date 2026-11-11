@@ -1701,7 +1701,7 @@ mod tests {
         );
         let ai = lines(&draw(62, POPUP_H, &ai_tab()));
         assert!(ai[2].starts_with("│ Set all tasks"), "{}", ai[2]);
-        assert!(ai[9].starts_with("│ Hugging Face"), "{}", ai[9]);
+        assert!(ai[10].starts_with("│ Hugging Face"), "{}", ai[10]);
     }
 
     // Spec (config-menu): the caution line of a family that can change files

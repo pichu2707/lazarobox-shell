@@ -16,7 +16,7 @@ fn resolve(profile: Profile, task_file: Override, general_file: Override) -> Res
 // [K1, W6]": each `orchestrate` prompt is at most 6 KiB (owner, 2026-11-10:
 // "si, sube el tope a 6 KiB"), every other built-in at most 4 KiB.
 #[test]
-fn the_table_has_twelve_distinct_non_empty_prompts_within_their_caps() {
+fn the_table_has_fourteen_distinct_non_empty_prompts_within_their_caps() {
     let mut count = 0;
     for task in Task::ALL {
         let cap = if task == Task::Orchestrate {
@@ -40,7 +40,7 @@ fn the_table_has_twelve_distinct_non_empty_prompts_within_their_caps() {
             "{task:?}"
         );
     }
-    assert_eq!(count, 12);
+    assert_eq!(count, 14);
 }
 
 // Spec (prompt-profiles): Built-ins exist (the orchestrate prompt), one per
@@ -747,5 +747,69 @@ fn no_worker_and_no_orchestrator_turn_gets_the_sentence() {
             let got = with_tools(&system, toolset.families());
             assert!(!got.contains(DRAFT_OFFER), "{toolset:?} {profile:?}");
         }
+    }
+}
+
+// Spec (prompt-profiles): "The `simple` prompt [W8]" and "Simple gets its own
+// prompt": the rules of a worker for direct, fully specified tasks.
+#[test]
+fn the_simple_prompts_hold_the_simple_worker_rules() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Simple);
+        for rule in [
+            "direct, fully specified",
+            "never design, analyse, review or delegate",
+            "The brief is the whole assignment",
+            "needs specification:",
+            "Never write outside the listed files unless the user asks",
+            "under 400 counted lines",
+            "say so when you cannot",
+            "write tools",
+            "propose_batch",
+            "untrusted data",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+        for other in [Task::Code, Task::General, Task::Orchestrate] {
+            assert_ne!(prompt, builtin(profile, other), "{profile:?} {other:?}");
+        }
+    }
+    assert_ne!(
+        builtin(Profile::Analyst, Task::Simple),
+        builtin(Profile::Programmer, Task::Simple)
+    );
+}
+
+// Spec (prompt-profiles): an override file `simple.md` loads under the
+// untrusted rules; a skipped one names `simple` and falls to general.
+#[test]
+fn a_simple_override_wins_and_a_skipped_one_names_the_file() {
+    let got = resolve_prompt(
+        Profile::Analyst,
+        Task::Simple,
+        text("My simple prompt.\n"),
+        text("General."),
+    );
+    assert_eq!(got.text, "My simple prompt.");
+    let got = resolve_prompt(
+        Profile::Analyst,
+        Task::Simple,
+        Override::Skipped(Reason::TooLarge),
+        text("General."),
+    );
+    assert_eq!(got.text, "General.");
+    assert_eq!(
+        got.notices,
+        vec!["prompt override ignored: analyst/simple.md larger than 16 KiB"]
+    );
+}
+
+// Decision D29: a `simple` writer gets the worker instruction after its prompt.
+#[test]
+fn a_simple_worker_gets_the_worker_text_after_its_prompt() {
+    for profile in Profile::ALL {
+        let system = worker_system(builtin(profile, Task::Simple));
+        assert!(system.starts_with(builtin(profile, Task::Simple).trim_end()));
+        assert!(system.ends_with(WORKER.trim_end()), "{profile:?}");
     }
 }

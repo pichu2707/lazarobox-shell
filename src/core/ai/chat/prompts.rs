@@ -60,6 +60,8 @@ pub fn builtin(profile: Profile, task: Task) -> &'static str {
             include_str!("prompts/programmer/orchestrate.md"),
             include_str!("prompts/programmer/orchestrate_odd.md")
         ),
+        (Profile::Analyst, Task::Simple) => include_str!("prompts/analyst/simple.md"),
+        (Profile::Programmer, Task::Simple) => include_str!("prompts/programmer/simple.md"),
     }
 }
 

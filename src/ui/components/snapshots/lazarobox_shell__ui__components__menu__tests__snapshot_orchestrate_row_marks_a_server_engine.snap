@@ -11,8 +11,8 @@ expression: "text(&draw(62, POPUP_H, &orchestrating(\"llama3:8b\")))"
 │ review                                           (default) │
 │ summarize                                        (default) │
 │ orchestrate           ollama › llama3:8b · not recommended │
+│ simple                                           (default) │
 │ Hugging Face                                 not connected │
-│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │
