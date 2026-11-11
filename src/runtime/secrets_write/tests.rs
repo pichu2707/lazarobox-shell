@@ -148,10 +148,9 @@ impl SaveFs for TestFs {
     fn stat_at(&self, dir: &OwnedFd, name: &str) -> io::Result<Stat> {
         if name == "secrets.toml" {
             let nth = self.rechecks.replace(self.rechecks.get() + 1);
-            if let Some((at, hook)) = &self.on_recheck {
-                if *at == nth {
-                    hook();
-                }
+            let due = self.on_recheck.as_ref().filter(|(at, _)| *at == nth);
+            if let Some((_, hook)) = due {
+                hook();
             }
         }
         RealFs.stat_at(dir, name)
