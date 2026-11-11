@@ -128,10 +128,12 @@ impl ConfigEdit {
     }
 
     /// Whether the edit deletes its key instead of writing it: a cleared
-    /// `orchestrate` slot is absent from the file, not a pair of empty
+    /// `orchestrate` or `simple` slot is absent from the file, not a pair of empty
     /// strings.
     pub fn is_removal(&self) -> bool {
-        (self.table == Task::Orchestrate.table() || (self.table == USAGE_TABLE && self.is_limit()))
+        (self.table == Task::Orchestrate.table()
+            || self.table == Task::Simple.table()
+            || (self.table == USAGE_TABLE && self.is_limit()))
             && self.value.is_empty()
     }
 

@@ -52,8 +52,10 @@ impl Step {
     }
 }
 
-/// The reason a `code` worker is refused on a read-only goal.
-pub const READ_ONLY: &str = "code workers are not spawned for a read-only goal";
+/// The reason a `code` worker is refused on a read-only goal. A `simple`
+/// worker is not refused: it starts without its write tools (W8a).
+pub const READ_ONLY: &str =
+    "code workers are not spawned for a read-only goal; a simple worker starts without write tools";
 
 /// The reason a `code` worker is refused while Write is off. The step is the
 /// chat's: the user types `/write`. The backticks keep the coordinator-bound

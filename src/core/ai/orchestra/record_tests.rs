@@ -202,3 +202,18 @@ fn a_goal_that_hides_the_nonce_behind_a_format_character_gets_another() {
         .expect("an opening tag");
     assert_ne!(nonce, first, "{text}");
 }
+
+// Design D26 (W8a) GUARD: a stored worker of kind `simple` shows in the
+// interruption line and the resume message, and a kind this build does not
+// know is shown as text, never dropped.
+#[test]
+fn a_stored_simple_worker_is_counted_and_listed_and_an_unknown_kind_is_kept() {
+    for kind in ["simple", "some-future-kind"] {
+        let mut w = worker(2, "running");
+        w.kind = kind.into();
+        let r = record("fix the parser", vec![worker(1, "done"), w]);
+        assert!(r.interrupted_line().contains("1 worker unfinished"));
+        let text = r.resume_message();
+        assert!(text.contains("worker 2") && text.contains(kind), "{text}");
+    }
+}

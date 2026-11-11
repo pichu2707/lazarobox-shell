@@ -38,6 +38,16 @@ baseline.
   three more workers under `max_workers` (two lenses and the refuter): with
   less it does not start, says so, and the batch goes on unreviewed, so keep
   `max_workers` high enough when authors are local.
+- A new `simple` task for direct, fully specified work. The Models tab gets a
+  `simple` row (`[ai.tasks.simple]`) after `orchestrate`; unassigned it uses
+  `general`, `Set all tasks` leaves it alone, and a local server engine on it
+  is not marked `not recommended`. With ORCH on, the coordinator can start a
+  `simple` worker with `spawn_agent`: it gets the read, write and
+  `run_command` tools under the menu's Write and Exec switches, its own
+  prompt (override file `simple.md`), and on a read-only goal it starts
+  with the read tools only (no write, no `run_command`) instead of being
+  refused. An older build ignores
+  the new table.
 
 ### Changed
 
