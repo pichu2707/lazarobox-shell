@@ -12,6 +12,7 @@ use super::commands::{Commands, Ran};
 use super::feature::{FeatureDoc, FeatureError};
 use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
 use super::receipt::{self, Evidence};
+use super::review;
 use super::steps::{Gate, Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
 use super::textcall;
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
@@ -232,6 +233,10 @@ struct Slot {
     parked: bool,
     /// The current turn runs without tools: no write tool was offered to it.
     no_tools: bool,
+    /// Started by lazarobox itself (a review lens, the refuter, a
+    /// correction): outside `max_workers` and with no handoff to wait for
+    /// (D22), still shown with its row.
+    internal: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -399,6 +404,18 @@ impl Run {
         self.slots.len()
     }
 
+    /// How many workers the coordinator spawned: what `max_workers` bounds.
+    /// Internal workers (D22) are not counted.
+    fn public_count(&self) -> usize {
+        self.slots.iter().filter(|slot| !slot.internal).count()
+    }
+
+    /// Whether lazarobox started the worker itself (a review lens, the
+    /// refuter, a correction).
+    pub fn is_internal(&self, id: WorkerId) -> bool {
+        self.slots.get(index(id)).is_some_and(|slot| slot.internal)
+    }
+
     /// Whether the run made no worker and was not cancelled: an orchestrator
     /// turn that ends now answered in text alone (agent-orchestrator [W1]).
     pub fn undelegated(&self) -> bool {
@@ -438,6 +455,19 @@ impl Run {
     pub fn cheap(&self, id: WorkerId) -> bool {
         self.spec(id)
             .is_some_and(|spec| cheap(&spec.engine, spec.model.as_deref()))
+    }
+
+    /// The notices a review of worker `id`'s change says as it starts (D22):
+    /// the Review row as the roster resolved it against the author's spec.
+    /// Empty when the row cannot run (the lens is refused, and that says so).
+    pub fn review_notices(&self, id: WorkerId) -> Vec<String> {
+        let (Some(author), Availability::Ready { engine, model }) =
+            (self.spec(id), self.roster.get(Task::Review))
+        else {
+            return Vec::new();
+        };
+        let author = (author.engine.as_str(), author.model.as_deref());
+        review::notices(id, author, (engine.as_str(), model.as_deref()))
     }
 
     /// What worker `id` reported using so far; `None` when its engine
@@ -623,7 +653,7 @@ impl Run {
         if self.steps.read_only() && writer {
             return Err(Refusal::ReadOnly);
         }
-        if self.slots.len() >= self.limits.workers {
+        if gated && self.public_count() >= self.limits.workers {
             return Err(Refusal::WorkerCap(self.limits.workers));
         }
         if writer && gated && !self.gates_lifted {
@@ -653,6 +683,7 @@ impl Run {
             handoff: None,
             parked: false,
             no_tools: false,
+            internal: !gated,
         });
         let id = WorkerId(self.slots.len() as u32);
         if writer {
@@ -1204,6 +1235,7 @@ impl Run {
         numbered
             .filter(|(_, slot)| {
                 slot.handoff.is_none()
+                    && !slot.internal
                     && !matches!(slot.status, WorkerStatus::Queued | WorkerStatus::Running)
             })
             .map(|(i, _)| WorkerId(i as u32 + 1))
@@ -1298,6 +1330,7 @@ impl Run {
         let rows = self.slots.iter().enumerate().map(|(i, slot)| {
             let id = WorkerId(i as u32 + 1);
             let row = Row::new(id, slot.spec.task, slot.status, slot.handoff.as_ref());
+            let row = if slot.internal { row.internal() } else { row };
             row.flagged(self.audit(id).map(|a| a.flags()).unwrap_or_default())
         });
         let feature = self.feature.as_ref();
