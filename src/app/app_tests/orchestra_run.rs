@@ -55,6 +55,7 @@ pub(super) fn row(run: RunId, id: u32, status: WorkerStatus) -> OrchestraEvent {
         usage: None,
         partial: false,
         overridden: false,
+        inherited: false,
         clarifying: None,
         split: false,
     })
@@ -731,6 +732,49 @@ fn a_review_line_reaches_the_transcript() {
         text: "review of worker 1: the change was not reviewed".to_owned(),
     }));
     assert!(transcript(&a).contains("the change was not reviewed"));
+}
+
+/// The worker rows of the pane, as the panel shows them.
+fn worker_lines(a: &App) -> String {
+    chat_of(a)
+        .lines(80)
+        .iter()
+        .map(|l| l.text.trim_end().to_owned())
+        .filter(|l| l.contains(" running"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn kind_row(id: u32, kind: Task, engine: &str, model: &str) -> OrchestraEvent {
+    let OrchestraEvent::Worker(mut worker) = row(RUN, id, WorkerStatus::Running) else {
+        unreachable!()
+    };
+    worker.kind = kind;
+    worker.engine = engine.into();
+    worker.model = Some(model.into());
+    OrchestraEvent::Worker(worker)
+}
+
+// A task row left unassigned runs on `general`, which the AI menu says with
+// `(default)`: the worker row says it too. An assigned row says nothing, and
+// `general` itself neither.
+#[test]
+fn a_worker_on_an_unassigned_task_row_says_default() {
+    use crate::core::ai::config::Assignment;
+    let mut ai = orch_ai();
+    let on = |engine: &str, model: &str| Assignment {
+        engine: Some(engine.into()),
+        model: Some(model.into()),
+    };
+    ai.set(Task::General, on("ollama", "llama3:8b"));
+    ai.set(Task::Review, on("codex", "gpt-5"));
+    let mut a = orch_app_with(ai);
+    toggle(&mut a);
+    ask(&mut a, "plan it");
+    a.update(event(kind_row(1, Task::Simple, "ollama", "llama3:8b")));
+    a.update(event(kind_row(2, Task::Review, "codex", "gpt-5")));
+    a.update(event(kind_row(3, Task::General, "ollama", "llama3:8b")));
+    insta::assert_snapshot!("orch_worker_default_label", worker_lines(&a));
 }
 
 fn disclosed(id: u32, what: Disclosure) -> OrchestraEvent {

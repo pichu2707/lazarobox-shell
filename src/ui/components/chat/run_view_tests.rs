@@ -38,6 +38,7 @@ fn viewing() -> ChatState {
         usage: None,
         partial: false,
         overridden: false,
+        inherited: false,
         clarifying: None,
         split: false,
     });

@@ -16,6 +16,9 @@ baseline.
   batch reviews and asks of its workers still on screen close with `review
   closed: the run ended; nothing was written`, and a late `y` no longer writes
   a batch the run had already denied.
+- A worker whose task row is unassigned (for example `simple`, which runs on
+  `general`) now says `(default)` on its row in the orchestra panel, like the
+  AI menu row does, instead of showing only `engine>model`.
 - Orchestrator notices name the right thing: the Write-off refusal says "a
   worker that writes files" (it also fires for a `simple` brief with
   `outputs`), and the "needs specification" line of a clarification round
