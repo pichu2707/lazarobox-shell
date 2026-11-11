@@ -7,11 +7,11 @@ use std::{
 
 use super::*;
 use crate::core::ai::tools::mcp::PROTOCOL_VERSION;
-use crate::runtime::proc::process_state;
+use crate::runtime::proc::{process_state, stopped, wait_gone};
 
 /// Polling returns as soon as the condition holds, so a generous bound costs
 /// nothing on a pass and keeps a loaded runner from failing the tests.
-const BOUND: Duration = Duration::from_secs(20);
+const BOUND: Duration = crate::runtime::proc::GONE_WITHIN;
 
 struct Lab {
     home: PathBuf,
@@ -83,18 +83,6 @@ async fn appears(path: &Path) -> String {
         assert!(Instant::now() < end, "{} never appeared", path.display());
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-}
-
-fn gone(pid: libc::pid_t) -> bool {
-    matches!(process_state(pid), None | Some('Z'))
-}
-
-async fn wait_gone(pid: libc::pid_t) -> bool {
-    let end = Instant::now() + BOUND;
-    while !gone(pid) && Instant::now() < end {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    gone(pid)
 }
 
 #[tokio::test]
@@ -320,7 +308,7 @@ async fn family(lab: &Lab) -> (McpClient, libc::pid_t, libc::pid_t) {
 async fn shutdown_leaves_no_orphan_grandchild() {
     let lab = lab();
     let (client, leader, grand) = family(&lab).await;
-    assert!(!gone(leader) && !gone(grand), "the family runs");
+    assert!(!stopped(leader) && !stopped(grand), "the family runs");
     client.shutdown().await;
     assert!(
         wait_gone(leader).await,

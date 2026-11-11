@@ -992,10 +992,7 @@ fn is_gone(pid: i32, allow_zombie: bool) -> bool {
     }
 }
 
-/// How long a group may take to die once it was signalled. Polling returns as
-/// soon as it is gone, so a generous bound costs nothing on a pass and keeps a
-/// loaded CI runner from failing the tests.
-const GONE: Duration = Duration::from_secs(20);
+use crate::runtime::proc::{GONE_WITHIN as GONE, describe};
 
 /// Waits up to `bound` for the leader to be reaped and the grandchild to die.
 async fn wait_gone(pids: &[(i32, i32)], bound: Duration) -> bool {
@@ -1010,6 +1007,13 @@ async fn wait_gone(pids: &[(i32, i32)], bound: Duration) -> bool {
             return true;
         }
         if Instant::now() >= deadline {
+            for &(leader, grand) in pids {
+                eprintln!(
+                    "leader: {}\ngrandchild: {}",
+                    describe(leader),
+                    describe(grand)
+                );
+            }
             return false;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;

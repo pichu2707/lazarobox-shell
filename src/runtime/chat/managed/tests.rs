@@ -167,13 +167,7 @@ async fn shutdown_stops_the_server_and_its_children() {
     };
     managed.shutdown().await;
     assert!(gone(pid), "the server is left");
-    for _ in 0..100 {
-        if gone(grandchild) {
-            break;
-        }
-        sleep(Duration::from_millis(20)).await;
-    }
-    assert!(gone(grandchild), "its child is left");
+    assert!(ends(grandchild).await, "its child is left");
     assert_eq!(managed.pid().await, None);
 }
 
@@ -384,15 +378,9 @@ async fn child_of(path: &Path) -> u32 {
     wait_for_pid(path).await
 }
 
-/// Waits up to 2 s for `pid` to be gone.
+/// Waits for `pid` to be gone (reaped: these servers are our children).
 async fn ends(pid: u32) -> bool {
-    for _ in 0..100 {
-        if gone(pid) {
-            return true;
-        }
-        sleep(Duration::from_millis(20)).await;
-    }
-    false
+    crate::runtime::proc::wait_gone_with(pid as libc::pid_t, false).await
 }
 
 // Spec: nothing lazarobox started outlives it (verifier A2): a server that

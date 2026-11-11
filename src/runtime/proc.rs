@@ -256,6 +256,81 @@ pub(crate) fn process_state(pid: libc::pid_t) -> Option<char> {
     }
 }
 
+/// How long a test waits for a signalled process to be gone. Polling returns
+/// as soon as it is, so a generous bound costs nothing on a pass; it only
+/// matters on a runner so starved that a SIGKILLed process is not scheduled to
+/// exit for seconds. Tests of the runtime use this one bound, never their own.
+#[cfg(test)]
+pub(crate) const GONE_WITHIN: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// No such process, or only a zombie nobody has collected yet.
+#[cfg(test)]
+pub(crate) fn stopped(pid: libc::pid_t) -> bool {
+    matches!(process_state(pid), None | Some('Z'))
+}
+
+/// What a process that should be gone is doing: pid, state letter and, on
+/// Linux, the State/PPid/Name lines of `/proc`.
+#[cfg(test)]
+pub(crate) fn describe(pid: libc::pid_t) -> String {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    let status: Vec<&str> = status
+        .lines()
+        .filter(|l| {
+            ["State:", "PPid:", "Name:"]
+                .iter()
+                .any(|k| l.starts_with(k))
+        })
+        .collect();
+    format!(
+        "pid {pid} still runs after {GONE_WITHIN:?}: state {:?} {status:?}",
+        process_state(pid)
+    )
+}
+
+/// Waits (on the async clock) for `pid` to be gone, a zombie counting as gone
+/// unless `zombie` is false. Says what it found on stderr when it gives up, so
+/// the output of the failed test shows it.
+#[cfg(test)]
+pub(crate) async fn wait_gone_with(pid: libc::pid_t, zombie: bool) -> bool {
+    let done = |pid| {
+        if zombie {
+            stopped(pid)
+        } else {
+            process_state(pid).is_none()
+        }
+    };
+    let end = std::time::Instant::now() + GONE_WITHIN;
+    while !done(pid) && std::time::Instant::now() < end {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let gone = done(pid);
+    if !gone {
+        eprintln!("{}", describe(pid));
+    }
+    gone
+}
+
+/// [`wait_gone_with`] counting a zombie as gone.
+#[cfg(test)]
+pub(crate) async fn wait_gone(pid: libc::pid_t) -> bool {
+    wait_gone_with(pid, true).await
+}
+
+/// [`wait_gone`] for a test that cannot use the async clock.
+#[cfg(test)]
+pub(crate) fn wait_gone_blocking(pid: libc::pid_t) -> bool {
+    let end = std::time::Instant::now() + GONE_WITHIN;
+    while !stopped(pid) && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let gone = stopped(pid);
+    if !gone {
+        eprintln!("{}", describe(pid));
+    }
+    gone
+}
+
 /// Reads the outcome of `ps -o stat= -p PID`, failing closed: only "ps ran
 /// and found no such pid" (exit status 1, empty output, as on macOS/BSD)
 /// counts as gone. A `ps` that cannot run, or ends any other way, panics so
@@ -439,20 +514,6 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    /// No such process, or only a zombie nobody has collected yet.
-    fn is_gone(pid: libc::pid_t) -> bool {
-        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Err(_) => true,
-            Ok(stat) => stat
-                .rsplit(')')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .starts_with('Z'),
-        }
-    }
-
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn kill_and_reap_takes_down_grandchildren_of_a_leader_that_exited() {
         use tokio::io::AsyncReadExt;
@@ -486,11 +547,33 @@ mod tests {
             .expect("wait succeeds");
         assert!(status.success());
         assert!(!group.is_armed(), "reaping disarms the guard");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !is_gone(grandchild) && std::time::Instant::now() < deadline {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        assert!(is_gone(grandchild), "the group's grandchild is killed");
+        assert!(
+            super::wait_gone(grandchild).await,
+            "the group's grandchild is killed"
+        );
+    }
+
+    // The shared diagnostic names the pid and the state a "stopped" process
+    // was left in, and a killed one (zombie or reaped) is gone.
+    #[tokio::test]
+    async fn a_process_that_still_runs_is_described_and_a_killed_one_is_gone() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id() as libc::pid_t;
+        assert!(!stopped(pid));
+        let why = describe(pid);
+        assert!(
+            why.contains(&format!("pid {pid} still runs"))
+                && why.contains("state Some(")
+                && why.contains("PPid:"),
+            "{why}"
+        );
+        child.kill().unwrap();
+        assert!(wait_gone(pid).await);
+        child.wait().unwrap();
+        assert!(wait_gone_blocking(pid));
     }
 
     #[test]
