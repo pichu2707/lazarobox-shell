@@ -9080,6 +9080,8 @@ mod app_tests {
 
     /// `/exec`, its dialog and where the grant ends.
     mod exec_grant;
+    /// Where the `/exec` grant ends and what it widens.
+    mod exec_grant_end;
     /// The auto-run block after a GitHub read.
     mod github_block;
     /// `/github` and its dialog.
