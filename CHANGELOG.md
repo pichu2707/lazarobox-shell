@@ -37,7 +37,6 @@ baseline.
   batches is applied; after that the review still reports, a line and the
   receipt say the correction limit was reached and how many rounds ran, and
   the batch goes to your review with its blockers open.
-### Fixed
 
 - A worker's first `run_command` in a folder it had only staged was answered
   with a bare `path not available`, and the same call ran once its batch was
@@ -45,7 +44,6 @@ baseline.
   batch stages that folder, and a `cwd` that is not a folder is named in the
   refusal, the same text whatever is there. Secret and hidden places keep the
   bare refusal.
-### Fixed
 
 - A llama.cpp server that serves its model under another id (for example the
   GGUF path, because `llama-server` runs without `--alias`) no longer reads
