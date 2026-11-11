@@ -50,7 +50,7 @@ fn a_trailing_comment_counts_as_code() {
 
 #[test]
 fn a_block_comment_is_tracked_across_added_rows() {
-    let t = "/* open\nstill comment\nfn fake() {}\nclose */\nlet x = 1;\n";
+    let t = "/* open\n * still comment\n * more\n */\nlet x = 1;\n";
     assert_eq!(count("a.rs", None, t).lines, 1);
     // Code after a closing marker counts.
     assert_eq!(count("a.rs", None, "/* a\nb */ let x = 1;\n").lines, 1);
@@ -112,6 +112,11 @@ fn an_opener_inside_a_string_or_never_closed_does_not_silence_code() {
         rows(500, "let y =")
     );
     assert!(count("a.rs", None, &raw).lines >= 501);
+    // A real comment after the string, and a `*/` inside a later string.
+    let later = format!("{raw}/* real */\nlet t = 1;\n");
+    assert!(count("a.rs", None, &later).lines >= 502);
+    let closer = format!("/* not\n{}let t = \"*/\";\n", rows(500, "let y ="));
+    assert!(count("a.rs", None, &closer).lines >= 501);
     let open = format!("/* never closed\n{}", rows(500, "let y ="));
     assert!(count("a.rs", None, &open).lines >= 500);
     let doc = format!("\"\"\"never closed\n{}", rows(500, "y ="));
@@ -132,7 +137,10 @@ fn a_block_never_reaches_across_context_rows_or_hunks() {
 
 #[test]
 fn a_closed_block_still_hides_its_rows_inside_a_run() {
-    assert_eq!(count("a.rs", None, "/* a\nb\nc */\nlet x = 1;\n").lines, 1);
+    assert_eq!(
+        count("a.rs", None, "/* a\n * b\n * c */\nlet x = 1;\n").lines,
+        1
+    );
 }
 
 #[test]
@@ -291,4 +299,38 @@ fn the_flags_of_a_sum_follow_its_writes() {
     assert!(w.total("a.xyz").every_line);
     w.add("tests/t.rs", count("tests/t.rs", None, &rows(900, "x")));
     assert!(w.total("tests/t.rs").test && !w.total("tests/t.rs").over());
+}
+
+#[test]
+fn a_string_opened_by_code_is_parity_tracked_across_docstrings() {
+    let t = format!(
+        "x = \"\"\"\nb\n\"\"\"\n{}z = \"\"\"\nb\n\"\"\"\n",
+        rows(500, "y =")
+    );
+    assert!(count("a.py", None, &t).lines >= 505);
+    let doc = format!(
+        "x = \"\"\"\nb\n\"\"\"\n{}def f():\n    \"\"\"doc\n    more\n    \"\"\"\n",
+        rows(500, "y =")
+    );
+    assert!(count("a.py", None, &doc).lines >= 503);
+    let single = format!("x = '''\nb\n'''\n{}", rows(500, "y ="));
+    assert!(count("a.py", None, &single).lines >= 503);
+}
+
+#[test]
+fn a_real_docstring_is_still_hidden_and_plain_block_rows_are_counted() {
+    let t = "def f():\n    \"\"\"doc\n    more\n    \"\"\"\n    return 1\n";
+    assert_eq!(count("a.py", None, t).lines, 2);
+    // Accepted over-count: interior rows of a block that do not look like a
+    // comment (no leading `*`) are code.
+    assert_eq!(count("a.rs", None, "/* a\nplain\nplain */\n").lines, 2);
+    let doc = "/** doc\n * x\n */\nfn a() {}\n";
+    assert_eq!(count("a.rs", None, doc).lines, 1);
+}
+
+#[test]
+fn a_drive_path_is_absolute() {
+    assert!(!count("C:\\p\\tests\\a.rs", None, "x\n").test);
+    assert!(!count("\\\\srv\\tests\\a.rs", None, "x\n").test);
+    assert!(count("C:\\p\\a_test.rs", None, "x\n").test);
 }

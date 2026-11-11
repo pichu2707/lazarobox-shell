@@ -126,7 +126,8 @@ fn lang_of(path: &str) -> Option<&'static Lang> {
 /// rules, so `attests.rs` and `latest.rs` are not tests.
 pub fn is_test(path: &str) -> bool {
     let key = normalize(path);
-    let relative = !key.starts_with('/') && !key.starts_with("..");
+    let drive = matches!(key.as_bytes(), [d, b':', ..] if d.is_ascii_alphabetic());
+    let relative = !drive && !key.starts_with('/') && !key.starts_with("..");
     let mut parts = key.rsplit('/');
     let name = parts.next().unwrap_or("");
     let stem = name.rsplit_once('.').map_or("", |(stem, _)| stem);
@@ -182,22 +183,62 @@ fn code_rows(lang: &Lang, diff: &Diff) -> usize {
 
 fn run_code(lang: &Lang, run: &[&str]) -> usize {
     let mut open: Option<&str> = None;
-    (0..run.len())
-        .filter(|&i| is_code(lang, run[i], &run[i + 1..], &mut open))
-        .count()
+    // The triple quote of a string a row of code opened and nothing closed.
+    let mut string: Option<&str> = None;
+    let mut code = 0;
+    for (i, row) in run.iter().enumerate() {
+        if let Some(q) = string {
+            // Inside a string: code, until the row that closes it.
+            code += 1;
+            if row.matches(q).count() % 2 == 1 {
+                string = None;
+            }
+            continue;
+        }
+        if !is_code(lang, row, &run[i + 1..], &mut open) {
+            continue;
+        }
+        code += 1;
+        if lang.triple && open.is_none() {
+            string = TRIPLES
+                .iter()
+                .copied()
+                .find(|q| row.matches(q).count() % 2 == 1);
+        }
+    }
+    code
 }
+
+/// The triple quotes of a docstring or a multi-row string.
+const TRIPLES: [&str; 2] = ["\"\"\"", "'''"];
 
 /// Whether a row is code, given the block still open before it and the rows
 /// of the run after it.
 fn is_code(lang: &Lang, row: &str, later: &[&str], open: &mut Option<&'static str>) -> bool {
     let mut rest = row.trim();
+    // The block was opened on this row: its first row is always the comment.
+    let mut fresh = false;
     loop {
         if let Some(close) = *open {
+            // A docstring hides its rows. A block comment hides only rows
+            // that look like one (a leading `*`) and its closing row; any
+            // other row is code and ends the block, so a marker inside a
+            // string cannot silence what follows.
+            let looks = fresh || TRIPLES.contains(&close) || rest.starts_with('*');
             let Some(at) = rest.find(close) else {
-                return false;
+                if looks {
+                    return false;
+                }
+                *open = None;
+                return true;
             };
+            if !(looks || rest.starts_with(close) || rest.ends_with(close)) {
+                *open = None;
+                return true;
+            }
             *open = None;
             rest = rest[at + close.len()..].trim();
+            fresh = false;
         }
         if rest.is_empty() {
             return false;
@@ -205,8 +246,8 @@ fn is_code(lang: &Lang, row: &str, later: &[&str], open: &mut Option<&'static st
         let opener = lang
             .block
             .into_iter()
-            .chain(lang.triple.then_some(("\"\"\"", "\"\"\"")))
-            .chain(lang.triple.then_some(("'''", "'''")))
+            .chain(lang.triple.then_some((TRIPLES[0], TRIPLES[0])))
+            .chain(lang.triple.then_some((TRIPLES[1], TRIPLES[1])))
             .find(|(o, _)| rest.starts_with(o));
         if let Some((o, c)) = opener {
             let after = &rest[o.len()..];
@@ -215,6 +256,7 @@ fn is_code(lang: &Lang, row: &str, later: &[&str], open: &mut Option<&'static st
             }
             *open = Some(c);
             rest = after;
+            fresh = true;
             continue;
         }
         return !lang.line.iter().any(|m| rest.starts_with(m));
