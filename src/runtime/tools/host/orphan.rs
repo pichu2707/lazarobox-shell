@@ -14,7 +14,10 @@ use super::{ToolHost, files::lock};
 use crate::{
     core::{
         ai::{
-            chat::review::{Badge, BatchEvent, BatchReview, ReviewDoc, TOO_LARGE, closed_notice},
+            chat::review::{
+                Badge, BatchEvent, BatchReview, RUN_ENDED, ReviewDoc, TOO_LARGE, closed_notice,
+            },
+            orchestra::RunId,
             tools::stage::{BatchId, StageKey, State},
         },
         layout::PaneId,
@@ -45,6 +48,19 @@ impl ToolHost {
             Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner().badges(live)),
             Err(TryLockError::WouldBlock) => None,
         }
+    }
+
+    /// Run `run` of `pane` ended: the batches its workers proposed were
+    /// denied with it, so they are dropped and never turn into an orphan a
+    /// later `y` could write. How many were dropped.
+    pub fn end_run_batches(&self, pane: PaneId, run: RunId) -> usize {
+        lock(&self.stages).discard_asked(pane, run)
+    }
+
+    /// The id of the batch of `key`, for a test that answers it.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn batch_id_for_test(&self, key: StageKey) -> Option<BatchId> {
+        lock(&self.stages).batch(key).map(|batch| batch.id())
     }
 
     /// Whether the batch of `key` holds entries and was never proposed: its
@@ -83,8 +99,29 @@ impl ToolHost {
         turn_live: bool,
         drive_grant: Option<PathBuf>,
     ) -> BatchEvent {
+        self.apply_batch_of(id, turn_live, drive_grant, true)
+    }
+
+    /// [`ToolHost::apply_batch`] told whether the run of the worker that
+    /// proposed the batch is still live: a batch of an ended run is refused.
+    pub fn apply_batch_of(
+        &self,
+        id: BatchId,
+        turn_live: bool,
+        drive_grant: Option<PathBuf>,
+        run_live: bool,
+    ) -> BatchEvent {
         if turn_live {
             return refused(LIVE);
+        }
+        // A batch a worker proposed belongs to its run: once the run is over
+        // it was denied, and no `y` writes it, whatever view is still open.
+        let denied = lock(&self.stages)
+            .batch(id.key)
+            .is_some_and(|batch| batch.asked() && matches!(id.key, StageKey::Worker(..)));
+        if denied && !run_live {
+            let _ = lock(&self.stages).discard(id);
+            return refused(RUN_ENDED);
         }
         let mut env = self.env(Path::new("/"));
         env.drive_grant = drive_grant;
