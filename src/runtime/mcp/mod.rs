@@ -28,6 +28,8 @@ pub mod client;
 pub mod external;
 pub mod presence;
 pub mod probe;
+#[cfg(test)]
+mod redact_tests;
 mod session;
 pub mod shim;
 

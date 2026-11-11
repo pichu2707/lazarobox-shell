@@ -83,12 +83,15 @@ fn a_probe_reply_updates_the_open_area() {
     let mut a = in_area();
     tap(
         &mut a,
-        AppEvent::McpProbe(Probed {
-            server: "clarity".to_owned(),
-            verdict: Verdict::Failed,
-            lines: vec!["mcp: clarity unavailable: boom".to_owned()],
-            problems: Vec::new(),
-        }),
+        AppEvent::McpProbe(
+            0,
+            Probed {
+                server: "clarity".to_owned(),
+                verdict: Verdict::Failed,
+                lines: vec!["mcp: clarity unavailable: boom".to_owned()],
+                problems: Vec::new(),
+            },
+        ),
     );
     assert_eq!(rows(&a)[1], "Clarity: declared · probe: failed");
 }
@@ -112,6 +115,6 @@ fn visiting_the_area_saves_and_types_nothing() {
     assert!(
         !effects
             .iter()
-            .any(|e| matches!(e, Effect::SpawnPane(..) | Effect::McpProbe(_)))
+            .any(|e| matches!(e, Effect::SpawnPane(..) | Effect::McpProbe(..)))
     );
 }

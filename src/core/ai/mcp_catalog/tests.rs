@@ -374,3 +374,21 @@ fn a_failed_probe_names_the_handshake_in_seconds_for_a_timeout_only() {
         "mcp: clarity unavailable: could not start clarity"
     );
 }
+
+#[test]
+fn every_install_and_login_line_is_one_plain_line() {
+    use crate::core::ai::sanitize::is_format;
+    for e in entries() {
+        let lines = [Some(e.install), e.login.map(|l| l.line)];
+        for line in lines.into_iter().flatten() {
+            assert!(!line.trim().is_empty(), "{}: empty line", e.id);
+            // Typed into a shell and sent with Enter: one line, no control
+            // character, no bidi or other format character.
+            assert!(
+                !line.chars().any(|c| c.is_control() || is_format(c)),
+                "{}: {line:?}",
+                e.id
+            );
+        }
+    }
+}
