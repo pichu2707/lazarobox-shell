@@ -235,7 +235,7 @@ async fn a_folder_outside_the_root_and_a_broad_root_are_refused() {
     let w = world();
     std::fs::create_dir_all(w.proj.join("src")).unwrap();
     std::os::unix::fs::symlink(&w.home, w.proj.join("out")).unwrap();
-    for cwd in ["..", "/tmp", "out", "missing", "src/../.."] {
+    for cwd in ["..", "/tmp", "out", "src/../.."] {
         let call = command("cargo", &["test"], Some(cwd));
         assert_eq!(
             refused(&w, call).await,
@@ -1701,4 +1701,37 @@ async fn a_workers_command_answered_otherwise_than_yes_is_recorded_as_denied() {
         [&RanEnd::Denied],
         "{ran:?}"
     );
+}
+
+// Bug (promo video): a worker staged a folder, then ran a command in it. The
+// folder is only staged, so it is not on disk; the disk check came first and
+// answered a bare `path not available`, and the same call ran once the batch
+// was applied. The staged batch is the reason, and the model must get it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_worker_running_in_a_staged_folder_is_told_to_propose_first() {
+    let w = world();
+    let asks = Asks::new(Decision::Sent);
+    let (d, _rx) = w.worker_turn(asks.clone(), Arc::default());
+    let made = d.call(Call::CreateDir { path: "web".into() }).await;
+    assert!(!made.is_error, "{made:?}");
+    let out = d.call(command("cargo", &["test"], Some("web"))).await;
+    assert!(out.is_error, "{out:?}");
+    assert!(out.text.contains("propose them first"), "{out:?}");
+    assert!(asks.asked().is_empty(), "no prompt opened");
+}
+
+// A folder that is not there says so, and which one: a bare refusal gave the
+// next occurrence nothing to diagnose. A link out, `..` and an absolute path
+// stay bare, so nothing about places outside the root leaks.
+#[tokio::test]
+async fn a_missing_folder_is_named_in_the_refusal() {
+    let w = world();
+    let (text, asked) = refused(&w, command("cargo", &["test"], Some("web/app"))).await;
+    assert!(!asked);
+    assert!(
+        text.starts_with("path not available: the folder web/app/ does not exist"),
+        "{text}"
+    );
+    assert!(text.contains("relative to the chat's folder"), "{text}");
 }

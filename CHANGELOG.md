@@ -10,6 +10,14 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- A worker's first `run_command` in a folder it had only staged was answered
+  with a bare `path not available`, and the same call ran once its batch was
+  applied. It now gets the real reason (`propose them first`), and a folder
+  that is not on disk is named in the refusal. A link out of the project
+  keeps the bare refusal.
+
 ## [1.19.0] - 2026-11-11
 
 ### Added

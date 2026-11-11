@@ -167,13 +167,16 @@ pub(super) async fn plan(host: &ToolHost, scope: &TurnScope, call: &Call) -> Res
     let worker = scope.read_scope.is_some();
     let stages = host.stages.clone();
     let judged = tokio::task::spawn_blocking(move || {
-        let found = inspect(&env, &origin, &args)?;
-        staged(&stages, key)?;
-        // A worker's command runs only after its own batch was applied (W6).
-        if worker && !lock(&stages).applied(key) {
-            return Err(NOT_APPLIED.into());
-        }
-        Ok::<_, Cow<'static, str>>(found)
+        // What the worker's own batch says, judged first: a folder it staged
+        // is not on disk, and the disk check would blame the path.
+        let pending: Option<Cow<'static, str>> = match staged(&stages, key) {
+            Err(why) => Some(why.into()),
+            // A worker's command runs only after its own batch was applied (W6).
+            Ok(()) if worker && !lock(&stages).applied(key) => Some(NOT_APPLIED.into()),
+            Ok(()) => None,
+        };
+        let found = inspect(&env, &origin, &args, pending.clone())?;
+        pending.map_or(Ok::<_, Cow<'static, str>>(found), Err)
     })
     .await
     .map_err(|_| COULD_NOT)??;
@@ -294,16 +297,17 @@ fn inspect(
     env: &ToolEnv,
     origin: &Path,
     args: &Value,
+    pending: Option<Cow<'static, str>>,
 ) -> Result<(RunRequest, PathBuf, PathBuf, Option<Pin>), Cow<'static, str>> {
     let (roots, root) = root_of(env, origin)?;
     let rel = match args["cwd"].as_str() {
         Some(text) => plain_relative(text).ok_or(REFUSED)?,
         None => PathBuf::new(),
     };
-    let cwd = fs::canonicalize(root.join(rel))
+    let cwd = fs::canonicalize(root.join(&rel))
         .ok()
         .filter(|cwd| cwd.starts_with(&root) && cwd.is_dir() && roots.judge_real(cwd))
-        .ok_or(REFUSED)?;
+        .ok_or_else(|| missing_folder(env, &root, &rel, pending))?;
     let package = Package::read(&cwd);
     // A manager walks up to a parent `package.json` that nothing here would
     // show or pin, so a script runs only from the folder that has its own.
@@ -323,6 +327,38 @@ fn inspect(
     }
     let pin = pin(&request, &package);
     Ok((request, root, cwd, pin))
+}
+
+/// Why `root/rel` cannot be the folder of a command. When it is simply not on
+/// disk (inside the root, nothing followed to get there) the text names it, or
+/// is what the worker's own batch says when that is pending: the folder may
+/// be staged. Anything else (a link out, a file, a refused place) stays the
+/// bare refusal, so nothing about places outside the root leaks.
+fn missing_folder(
+    env: &ToolEnv,
+    root: &Path,
+    rel: &Path,
+    pending: Option<Cow<'static, str>>,
+) -> Cow<'static, str> {
+    let target = root.join(rel);
+    // The deepest part that exists is a real folder inside the root, and the
+    // part below it is not there (no link is followed to the missing part).
+    let absent = target
+        .ancestors()
+        .find(|up| fs::symlink_metadata(up).is_ok())
+        .and_then(|up| fs::canonicalize(up).ok())
+        .is_some_and(|up| up.starts_with(root) && up.is_dir())
+        && fs::symlink_metadata(&target).is_err();
+    match (absent, pending) {
+        (false, _) => REFUSED.into(),
+        (true, Some(why)) => why,
+        (true, None) => format!(
+            "{REFUSED}: the folder {}/ does not exist (paths are relative to the chat's folder {})",
+            rel.display(),
+            super::files::chat_folder(env)
+        )
+        .into(),
+    }
 }
 
 /// A command runs against the disk, never against staged content.
