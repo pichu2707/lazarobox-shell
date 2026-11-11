@@ -547,6 +547,7 @@ A `high` change, or any change the user asks to review, MUST ask the user for co
 - Only a severe finding the change caused MUST block. A finding that already held before the change is a follow-up.
 - Inferential blockers MUST go to one refuter worker before they count.
 - At most one bounded correction MUST run, by a `code` worker, scoped to the blockers that survived; its result is validated against those blockers only.
+- The corrections MUST be bounded across a worker's proposals: they share at most three corrections until one of that worker's batches is applied (a rejection does not reset the count). Past that the review still runs and reports, no correction starts, the transcript and the receipt (`correction: limit reached (3 rounds)`) say the correction limit was reached and how many rounds ran, and the batch goes to the user's batch review with its blockers open.
 - The review MUST end in a receipt handoff (tier, lenses, findings, correction, outcome), shown in the batch review next to the diff.
 A receipt MUST NOT approve the batch, and the orchestrator MUST NOT consent or approve anything.
 (Previously: consent was asked for every reviewed change, whoever the author)
@@ -570,6 +571,11 @@ A receipt MUST NOT approve the batch, and the orchestrator MUST NOT consent or a
 - GIVEN a review whose correction still leaves a blocker
 - WHEN the correction result is validated
 - THEN no second correction runs, and the receipt names the open blocker for the user to decide
+
+#### Scenario: Corrections of a batch are bounded [S7b, auto]
+- GIVEN an author whose proposals keep a blocker standing after each of three corrections
+- WHEN its fourth proposal is reviewed
+- THEN no correction starts, a line and the receipt (`correction: limit reached (3 rounds)`) say the correction limit was reached after 3 rounds, and the batch goes to the user's batch review with the blocker open, neither dropped nor applied
 
 #### Scenario: A receipt never approves [S7b, auto]
 - GIVEN a receipt with no blockers
