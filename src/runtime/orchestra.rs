@@ -1939,22 +1939,23 @@ impl RunManager {
         let host = self.tooling.as_ref().map(|tooling| &tooling.host);
         let batch = review::batch_of(pane, live.run.id(), id);
         let unproposed = || host.is_some_and(|host| host.unproposed(batch));
-        let (Some(what), Some(spec)) = (live.run.disclosure(id, unproposed), live.run.spec(id))
-        else {
+        let Some(spec) = live.run.spec(id) else {
             return;
         };
-        self.send(
-            pane,
-            OrchestraEvent::Disclosed {
-                run: live.run.id(),
-                worker: id,
-                workers: live.run.worker_count(),
-                kind: spec.task,
-                engine: spec.engine.clone(),
-                model: spec.model.clone(),
-                what,
-            },
-        );
+        for what in live.run.disclosures(id, unproposed) {
+            self.send(
+                pane,
+                OrchestraEvent::Disclosed {
+                    run: live.run.id(),
+                    worker: id,
+                    workers: live.run.worker_count(),
+                    kind: spec.task,
+                    engine: spec.engine.clone(),
+                    model: spec.model.clone(),
+                    what,
+                },
+            );
+        }
     }
 }
 

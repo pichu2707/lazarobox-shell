@@ -501,12 +501,32 @@ impl Run {
         id: WorkerId,
         unproposed: impl FnOnce() -> bool,
     ) -> Option<Disclosure> {
+        self.disclosures(id, unproposed).into_iter().next()
+    }
+
+    /// Every fact [`Self::disclosure`] could say: a worker that asked for a
+    /// clearer brief (W8c) says so, and an unproposed batch it staged is
+    /// still said beside it. An empty ledger is expected of it and silent.
+    pub fn disclosures(&self, id: WorkerId, unproposed: impl FnOnce() -> bool) -> Vec<Disclosure> {
+        let Some(slot) = self.slot(id) else {
+            return Vec::new();
+        };
+        let asked = slot.status == WorkerStatus::Done && slot.closing.is_some();
+        let mut said = Vec::new();
+        if asked {
+            said.push(Disclosure::NeedsSpecification);
+        }
+        said.extend(
+            self.silent(id, unproposed)
+                .filter(|what| !asked || matches!(what, Disclosure::StagedNotProposed { .. })),
+        );
+        said
+    }
+
+    fn silent(&self, id: WorkerId, unproposed: impl FnOnce() -> bool) -> Option<Disclosure> {
         let slot = self.slot(id)?;
         if matches!(slot.status, WorkerStatus::Queued | WorkerStatus::Running) {
             return None;
-        }
-        if slot.status == WorkerStatus::Done && slot.closing.is_some() {
-            return Some(Disclosure::NeedsSpecification);
         }
         let files = slot.ledger.pending();
         if slot.ledger.changes().is_empty() {
@@ -727,6 +747,9 @@ impl Run {
     fn enqueue(&mut self, now: Instant, id: WorkerId, refusal: Option<String>, front: bool) {
         // A new attempt starts the clock over, so a refusal reports no time.
         self.slots[index(id)].started = None;
+        // A new attempt starts over, even one refused at once: the closing of
+        // the last attempt must not show in `collect`.
+        self.slots[index(id)].closing = None;
         // A read-only goal starts no code worker, however it got here (a
         // retry, a relaunch).
         let code = self.refuses_on_read_only(&self.slots[index(id)].spec);
@@ -743,7 +766,6 @@ impl Run {
         slot.result = None;
         slot.reported = false;
         slot.parked = false;
-        slot.closing = None;
         slot.status = WorkerStatus::Queued;
         if front {
             self.queue.push_front(id);

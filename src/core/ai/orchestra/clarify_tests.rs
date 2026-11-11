@@ -234,3 +234,56 @@ fn the_handoff_records_the_clarification() {
             .contains("clarification")
     );
 }
+
+// Review fix: a refused retry (the engine is gone) keeps no closing, or
+// `collect` would still say the worker needs specification.
+#[test]
+fn a_refused_retry_drops_the_closing_too() {
+    let mut run = run();
+    let id = simple(&mut run, &["src/a.rs"]);
+    assert!(run.clarify(id, "which file?"));
+    let failed = WorkerEvent::Failed {
+        class: ErrorClass::Other,
+        text: "boom".into(),
+    };
+    run.on_event(Instant::now(), id, failed);
+    // The relaunch finds no engine for `simple`: the worker is refused.
+    let roster = Roster::new(vec![]);
+    run.decide(Instant::now(), UserChoice::Relaunch(roster))
+        .unwrap();
+    assert_eq!(run.status(id), Some(WorkerStatus::Refused));
+    assert!(!run.clarifying(id));
+}
+
+// Review fix: the notice for a clarification does not hide an orphan batch:
+// both are disclosed.
+#[test]
+fn a_clarifying_worker_with_an_unproposed_batch_discloses_both() {
+    use super::changes::Change;
+    let mut run = run();
+    let id = simple(&mut run, &["src/a.rs"]);
+    let change = Change {
+        path: "src/a.rs".into(),
+        size: Some(3),
+        hash: "h".into(),
+        applied: false,
+    };
+    run.staged(id, change);
+    assert!(run.clarify(id, "which file?"));
+    done(&mut run, id, "stopped");
+    assert_eq!(
+        run.disclosures(id, || true),
+        [
+            Disclosure::NeedsSpecification,
+            Disclosure::StagedNotProposed { files: 1 }
+        ]
+    );
+    // With nothing staged, the empty ledger is expected and says nothing.
+    let bare = simple(&mut run, &["src/b.rs"]);
+    assert!(run.clarify(bare, "which?"));
+    done(&mut run, bare, "stopped");
+    assert_eq!(
+        run.disclosures(bare, || true),
+        [Disclosure::NeedsSpecification]
+    );
+}
