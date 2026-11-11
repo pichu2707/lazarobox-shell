@@ -699,10 +699,12 @@ impl Run {
         }
     }
 
-    /// Whether a read-only goal refuses the worker: it writes and is not a
-    /// `simple` one, which starts without Write instead.
+    /// Whether a read-only goal refuses the worker: it writes and its tools
+    /// are not taken away. A `simple` worker queued before the goal turned
+    /// read-only still holds Write until `promote` strips it, so it is
+    /// exempt through [`Self::strips_tools`], the one rule.
     fn refuses_on_read_only(&self, spec: &WorkerSpec) -> bool {
-        spec.writes() && spec.task != Task::Simple
+        spec.writes() && !self.strips_tools(spec.task)
     }
 
     fn resolve(&self, task: Task, prompt: &str) -> (WorkerSpec, Option<String>) {
