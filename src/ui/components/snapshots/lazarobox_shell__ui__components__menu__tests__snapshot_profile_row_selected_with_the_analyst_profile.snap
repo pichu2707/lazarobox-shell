@@ -3,7 +3,7 @@ source: src/ui/components/menu.rs
 expression: "text(&draw(62, POPUP_H, &menu))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ Models │ Tools │ Chat               ⇥ Tab · 1-5 │
+│ Settings │ Models │ Tools │ Connectors │ Chat  ⇥ Tab · 1-5 │
 │ Profile                                            analyst │
 │ Context                                                 on │
 │ Memory                                                 off │

@@ -3,7 +3,7 @@ source: src/ui/components/menu/tests/install.rs
 expression: show(&menu)
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ Models │ Tools │ Chat                           │
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
 │ Install llama-server: downloading                          │
 │ cancelling…                                                │
 │                                                            │
