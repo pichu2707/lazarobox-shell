@@ -9,7 +9,7 @@ use crate::{
     core::ai::mcp_catalog::checks::Verdict,
     runtime::{
         mcp::external::fake::{Lab, host_env, lab, timeouts},
-        proc::process_state,
+        proc::wait_gone_blocking,
     },
 };
 
@@ -44,18 +44,10 @@ async fn wait_for_pid(path: &str) {
     }
 }
 
-fn gone(pid: libc::pid_t) -> bool {
-    matches!(process_state(pid), None | Some('Z'))
-}
-
 /// Blocks (without the async clock) until the server of `name` is stopped.
 fn assert_reaped(lab: &Lab, name: &str) {
     let pid = pid_of(lab, name);
-    let end = Instant::now() + Duration::from_secs(3);
-    while !gone(pid) && Instant::now() < end {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(gone(pid), "the server is stopped");
+    assert!(wait_gone_blocking(pid), "the server is stopped");
 }
 
 async fn never() {
@@ -166,12 +158,14 @@ async fn a_client_dropped_right_after_spawn_kills_the_whole_group() {
     wait_for_pid(&format!("{base}.child")).await;
     drop(client);
     let child = read_pid(&format!("{base}.child"));
-    let end = Instant::now() + Duration::from_secs(3);
-    while !(gone(child) && gone(pid_of(&lab, "clarity"))) && Instant::now() < end {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(gone(pid_of(&lab, "clarity")), "the leader is stopped");
-    assert!(gone(child), "what the leader started is stopped");
+    assert!(
+        wait_gone_blocking(pid_of(&lab, "clarity")),
+        "the leader is stopped"
+    );
+    assert!(
+        wait_gone_blocking(child),
+        "what the leader started is stopped"
+    );
 }
 
 #[tokio::test]
