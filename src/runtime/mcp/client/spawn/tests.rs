@@ -322,8 +322,16 @@ async fn shutdown_leaves_no_orphan_grandchild() {
     let (client, leader, grand) = family(&lab).await;
     assert!(!gone(leader) && !gone(grand), "the family runs");
     client.shutdown().await;
-    assert!(wait_gone(leader).await, "the leader is reaped");
-    assert!(wait_gone(grand).await, "the grandchild dies with the group");
+    assert!(
+        wait_gone(leader).await,
+        "the leader is reaped: {:?}",
+        process_state(leader)
+    );
+    assert!(
+        wait_gone(grand).await,
+        "the grandchild dies with the group: {:?}",
+        process_state(grand)
+    );
 }
 
 #[tokio::test]

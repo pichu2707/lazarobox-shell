@@ -48,14 +48,61 @@ fn gone(pid: libc::pid_t) -> bool {
     matches!(process_state(pid), None | Some('Z'))
 }
 
-/// Blocks (without the async clock) until the server of `name` is stopped.
-fn assert_reaped(lab: &Lab, name: &str) {
-    let pid = pid_of(lab, name);
-    let end = Instant::now() + Duration::from_secs(3);
+/// How long a stopped server may take to go. Polling returns as soon as it is
+/// gone, so a generous bound costs nothing on a pass; it only matters on a
+/// runner so loaded that a SIGKILLed process is not scheduled to exit for
+/// seconds (the 3 s that was here flaked on CI).
+const STOPPED_WITHIN: Duration = Duration::from_secs(20);
+
+/// Blocks (without the async clock) until `pid` is gone or a zombie. The
+/// error says what state it was left in, so a failure can be diagnosed.
+fn stopped_within(pid: libc::pid_t, within: Duration) -> Result<(), String> {
+    let end = Instant::now() + within;
     while !gone(pid) && Instant::now() < end {
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(gone(pid), "the server is stopped");
+    if gone(pid) {
+        return Ok(());
+    }
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    let status: Vec<&str> = status
+        .lines()
+        .filter(|l| {
+            ["State:", "PPid:", "Name:"]
+                .iter()
+                .any(|k| l.starts_with(k))
+        })
+        .collect();
+    Err(format!(
+        "pid {pid} still runs after {within:?}: state {:?} {status:?}",
+        process_state(pid)
+    ))
+}
+
+/// Blocks (without the async clock) until the server of `name` is stopped.
+fn assert_reaped(lab: &Lab, name: &str) {
+    let pid = pid_of(lab, name);
+    if let Err(why) = stopped_within(pid, STOPPED_WITHIN) {
+        panic!("the server is stopped: {why}");
+    }
+}
+
+#[test]
+fn a_process_that_still_runs_is_reported_with_its_state() {
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let pid = child.id() as libc::pid_t;
+    let why = stopped_within(pid, Duration::from_millis(100)).unwrap_err();
+    assert!(
+        why.contains(&format!("pid {pid} still runs")) && why.contains("state Some('S')"),
+        "{why}"
+    );
+    child.kill().unwrap();
+    // Killed but not yet waited: a zombie counts as stopped.
+    assert_eq!(stopped_within(pid, Duration::from_secs(5)), Ok(()));
+    child.wait().unwrap();
 }
 
 async fn never() {
