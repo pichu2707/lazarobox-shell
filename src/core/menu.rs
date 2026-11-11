@@ -1033,6 +1033,15 @@ pub enum MenuCommand {
     /// opener (see [`MenuState::with_opener`]); without one the link is a
     /// [`MenuCommand::Copy`].
     Open(String),
+    /// Probe this declared server (the `y` was answered); the report comes
+    /// back through the app, one `AppEvent::McpProbe`.
+    Probe(Box<crate::core::ai::config::McpServer>),
+    /// Esc while a probe runs: stop it.
+    CancelProbe,
+    /// Run this catalog install or login line in a new shell tab (the `y`
+    /// was answered, with the full line on screen): it is typed there and
+    /// sent with Enter.
+    Connector(String),
     /// Send this Feedback request with `gh` (find similar issues, create,
     /// or comment); the answer comes back through
     /// [`MenuState::feedback_reply`].

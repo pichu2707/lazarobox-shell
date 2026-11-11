@@ -344,3 +344,31 @@ fn names_from_a_server_are_cleaned_in_the_lines() {
     assert_eq!(lines.len(), 1);
     assert!(!lines[0].contains('\u{1b}'));
 }
+
+#[test]
+fn a_started_probe_says_how_many_tools_and_keeps_every_check_line() {
+    let kept = names(&["run_report", "x", "y"]);
+    let lines = checks::started("ga4", entry("ga4"), 3, &kept);
+    assert_eq!(lines[0], "mcp: started ga4 (3 tools)");
+    assert_eq!(
+        lines[1..],
+        checks::report("ga4", entry("ga4"), 3, &kept)[..]
+    );
+    assert_eq!(lines.len(), 2, "{lines:?}");
+}
+
+#[test]
+fn a_failed_probe_names_the_handshake_in_seconds_for_a_timeout_only() {
+    assert_eq!(
+        checks::failed("clarity", "timed out", 20),
+        "mcp: clarity unavailable: timed out after 20 s"
+    );
+    assert_eq!(
+        checks::failed("clarity", "timed out: no token", 20),
+        "mcp: clarity unavailable: timed out after 20 s: no token"
+    );
+    assert_eq!(
+        checks::failed("clarity", "could not start clarity", 20),
+        "mcp: clarity unavailable: could not start clarity"
+    );
+}

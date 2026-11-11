@@ -680,6 +680,16 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
                 )),
         )
         .with_store(chat_store::spawn_at(store_path, store_tx))
+        // The Connectors probe: the chat start path with the same values, on
+        // the Hub's channel; one `y` per probe.
+        .with_prober(mcp::probe::Prober::new(
+            servers_home.clone().unwrap_or_default(),
+            crate::core::ai::mcp_secrets::secrets_path(
+                env::var_os("XDG_CONFIG_HOME"),
+                env::var_os("HOME"),
+            ),
+            hub_tx.clone(),
+        ))
         // The picker's Hugging Face screens: curl from the same PATH as the
         // update check, into the Hugging Face cache.
         .with_hub(hf::Hub::new(
@@ -1438,6 +1448,8 @@ struct Panes {
     /// The Hugging Face requests and download. `None` ignores the hub
     /// effects (unit tests).
     hub: Option<hf::Hub>,
+    /// The connector probe. `None` ignores its effects (unit tests).
+    prober: Option<mcp::probe::Prober>,
     /// The Ollama library requests and pull. `None` ignores the Ollama
     /// effects (unit tests).
     ollama: Option<ollama_lib::Ollama>,
@@ -1488,6 +1500,7 @@ impl Panes {
             sessions: Vec::new(),
             list_running: Box::new(jobs::running),
             hub: None,
+            prober: None,
             ollama: None,
             deletes: None,
             installer: None,
@@ -1700,6 +1713,11 @@ impl Panes {
     /// Sets what runs the Hugging Face effects.
     fn with_hub(mut self, hub: hf::Hub) -> Self {
         self.hub = Some(hub);
+        self
+    }
+
+    fn with_prober(mut self, prober: mcp::probe::Prober) -> Self {
+        self.prober = Some(prober);
         self
     }
 
@@ -2248,6 +2266,17 @@ impl Panes {
                 Effect::HfAccount(ask) => {
                     if let Some(hub) = self.hub.as_mut() {
                         hub.account(ask);
+                    }
+                }
+                // Both return at once: the probe runs on its own task.
+                Effect::McpProbe(server) => {
+                    if let Some(prober) = self.prober.as_mut() {
+                        prober.start(*server);
+                    }
+                }
+                Effect::CancelMcpProbe => {
+                    if let Some(prober) = self.prober.as_mut() {
+                        prober.cancel();
                     }
                 }
                 Effect::NotifyTest { mode, sound } => {

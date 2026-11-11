@@ -59,6 +59,14 @@ const MESSAGE_MAX: usize = 200;
 /// How long a `notifications/cancelled` may take to be written.
 const CANCEL_WRITE: Duration = Duration::from_secs(1);
 
+/// What `tools/list` gave: the tools kept, and how many the filter admitted
+/// before the cap (what the probe reports).
+#[derive(Debug)]
+pub struct Listed {
+    pub tools: Vec<ExternalTool>,
+    pub admitted: usize,
+}
+
 /// How long each kind of wait may last.
 #[derive(Clone, Copy, Debug)]
 pub struct Timeouts {
@@ -179,6 +187,16 @@ impl McpClient {
     /// first page is read: a `nextCursor` is ignored, since the cap is smaller
     /// than any page worth following.
     pub async fn list_tools(&mut self) -> Result<Vec<ExternalTool>, ClientError> {
+        Ok(self.list_tools_with(|_| true).await?.tools)
+    }
+
+    /// [`McpClient::list_tools`] where `keep` decides, by the server's own
+    /// name, which tools are registered. It runs BEFORE the [`MAX_TOOLS`] cut,
+    /// so a tool it refuses never takes the place of one it admits.
+    pub async fn list_tools_with(
+        &mut self,
+        keep: impl Fn(&str) -> bool,
+    ) -> Result<Listed, ClientError> {
         let limit = self.timeouts.handshake;
         let result = self
             .request("tools/list", Value::Null, limit, std::future::pending())
@@ -187,7 +205,16 @@ impl McpClient {
             .get("tools")
             .and_then(Value::as_array)
             .ok_or(ClientError::Protocol("no tools array"))?;
-        Ok(tools.iter().filter_map(read_tool).take(MAX_TOOLS).collect())
+        let admitted: Vec<ExternalTool> = tools
+            .iter()
+            .filter_map(read_tool)
+            .filter(|t| keep(&t.name))
+            .collect();
+        let count = admitted.len();
+        Ok(Listed {
+            tools: admitted.into_iter().take(MAX_TOOLS).collect(),
+            admitted: count,
+        })
     }
 
     /// Calls the tool `raw` (the server's own name for it). Never fails: a

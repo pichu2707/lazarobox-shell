@@ -41,7 +41,7 @@ impl App {
 
     /// Whether the probe waits for a key: the runtime sends `ProbeTick`.
     pub fn probe_waiting(&self) -> bool {
-        self.probe.as_ref().is_some_and(Probe::is_waiting)
+        self.probe.as_ref().is_some_and(Probe::is_waiting) || self.typing_waiting()
     }
 
     /// Adds `text` after the notice that is showing, so neither is lost.
@@ -72,15 +72,18 @@ impl App {
 
     pub(super) fn on_probe_tick(&mut self) -> Vec<Effect> {
         let now = (self.clock)();
-        let was_waiting = self.probe_waiting();
+        let typed = self.type_due_connectors(now);
+        let was_waiting = self.probe.as_ref().is_some_and(Probe::is_waiting);
         let outcome = self.probe.as_mut().and_then(|probe| probe.on_tick(now));
-        if was_waiting && !self.probe_waiting() {
+        if was_waiting && !self.probe.as_ref().is_some_and(Probe::is_waiting) {
             // The window passed with no deciding key: nothing is stored and
             // nothing is offered; the probe runs again on the next start.
             self.drop_check_notice();
             self.dirty = true;
         }
-        self.probe_done(outcome)
+        let mut effects = self.probe_done(outcome);
+        effects.extend(typed);
+        effects
     }
 
     /// Removes the "Checking…" part of the notice and keeps what was joined

@@ -168,6 +168,21 @@ async fn at_most_64_tools_are_kept() {
 }
 
 #[tokio::test]
+async fn the_filter_runs_before_the_cap_and_counts_what_it_admits() {
+    let (mut client, mut fake) = pair(timeouts());
+    // 10 tools the filter refuses come first: they must not take a place.
+    let many: Vec<Value> = (0..80)
+        .map(|i| json!({"name": format!("{}{i}", if i < 10 { "no" } else { "t" })}))
+        .collect();
+    let keep = |name: &str| !name.starts_with("no");
+    let (listed, ()) = tokio::join!(client.list_tools_with(keep), fake.answer_list(json!(many)));
+    let listed = listed.unwrap();
+    assert_eq!(listed.admitted, 70);
+    assert_eq!(listed.tools.len(), 64);
+    assert_eq!(listed.tools[0].name, "t10");
+}
+
+#[tokio::test]
 async fn hostile_metadata_is_sanitized_and_capped() {
     let (mut client, mut fake) = pair(timeouts());
     let huge = "x".repeat(100 * 1024);
