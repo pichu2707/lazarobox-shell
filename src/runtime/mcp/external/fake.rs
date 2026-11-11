@@ -96,6 +96,15 @@ impl Lab {
         server
     }
 
+    /// A server that says `text` on stderr (verbatim: a single
+    /// quote is not allowed) and dies; it is given `CLARITY_API_TOKEN`.
+    pub fn says(&self, name: &str, text: &str) -> McpServer {
+        let mut server = self.server(name, "ping", "pong");
+        server.args[1] = format!("printf '%s\\n' '{text}' >&2; exit 1");
+        server.env = vec!["CLARITY_API_TOKEN".to_owned()];
+        server
+    }
+
     /// A server that answers `initialize` and then `tools/list` with an error
     /// whose text is `pad` characters and then its `CLARITY_API_TOKEN`: the 200
     /// character cut of a message would show the start of the token.

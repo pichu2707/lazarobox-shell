@@ -236,7 +236,7 @@ impl McpClient {
         match self.request("tools/call", params, limit, cancel).await {
             Ok(result) => Outcome {
                 is_error: result.get("isError") == Some(&Value::Bool(true)),
-                text: content_text(&result),
+                text: content_text(&result, &self.redact),
             },
             Err(error) => Outcome {
                 text: format!("mcp error: {}", error.reason()),
@@ -429,7 +429,7 @@ fn clean_value(value: &Value, depth: usize) -> Option<Value> {
 /// The text of a call result: its text blocks, one per line, and a marker for
 /// any other kind. Cleaned and capped at [`OUTPUT_CAP`] here as well; the untrusted
 /// wrapper is the host's.
-fn content_text(result: &Value) -> String {
+fn content_text(result: &Value, redact: &[String]) -> String {
     let blocks = result.get("content").and_then(Value::as_array);
     let text = blocks
         .into_iter()
@@ -449,7 +449,11 @@ fn content_text(result: &Value) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let mut text = clean(&text);
+    // The values this server was given are removed before the text is cleaned
+    // and cut (a cut must not leave the start of one), and again after
+    // `clean`, which can join the pieces of one.
+    let text = redact_values(&text, redact);
+    let mut text = redact_values(&clean(&text), redact);
     let mut end = text.len().min(OUTPUT_CAP);
     while !text.is_char_boundary(end) {
         end -= 1;

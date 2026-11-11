@@ -31,7 +31,7 @@ use super::{
 use crate::core::ai::{
     config::McpServer,
     mcp_catalog::admits,
-    mcp_secrets::{Secrets, redact_values},
+    mcp_secrets::{Secrets, redact_list, redact_values},
     sanitize::clean,
     tools::servers::{Qualified, qualify},
 };
@@ -90,7 +90,7 @@ async fn start_one(
 ) -> (String, Result<(McpClient, Listed), String>) {
     // This server's own values only: a value never reaches another server.
     let own = secrets.lookup_for(server, lookup);
-    let values = secrets.values_of(server);
+    let values = redact_list(server, &own);
     (
         clean(&server.name),
         connect(server, home, &own, &values, timeouts).await,
