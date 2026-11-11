@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Windows Terminal under WSL has a test record (`docs/terminals/windows-terminal/`)
+  and counts as a recorded terminal. `Alt+Enter` is taken by Windows Terminal
+  for fullscreen: use `Ctrl+J` for a newline in the chat, or unbind the key.
+
 ### Changed
 
 - With ORCH on, the coordinator now delegates by default: a request that
@@ -17,6 +23,7 @@ baseline.
   do not mention it, and the coordinator no longer writes the code in its
   reply (quoting code to answer a question is still fine). It still answers
   questions, plans and summarises directly.
+
 ### Fixed
 
 - The orchestrator's model review no longer starts a correction worker for

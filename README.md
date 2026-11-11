@@ -92,7 +92,7 @@ Compatibilidad de plataformas:
 
 - **Linux:** soportado. Es la única plataforma probada a mano.
 - **macOS:** sin soporte oficial. El CI compila lazarobox y pasa todos sus tests en macOS (arm64 e Intel), y prueba el codex real dentro de la jaula Seatbelt, pero nadie ha usado la interfaz a mano en un Mac. El directorio de trabajo de los paneles se obtiene en Linux mediante `/proc`; en macOS solo se actualiza si el shell emite OSC 7.
-- **Windows (WSL):** se usa lazarobox dentro de WSL, en la consola de WSL (por ejemplo Windows Terminal); no hay versión nativa de Windows. Una terminal solo se considera soportada cuando tiene un registro de pruebas en [docs/terminals](docs/terminals/README.md), y el de Windows Terminal (WSL) está pendiente. `install-desktop` en WSL imprime notas sobre el lanzador: una entrada de usuario puede no aparecer en el menú Inicio de Windows (WSLg), y entonces se arranca desde la consola de WSL.
+- **Windows (WSL):** se usa lazarobox dentro de WSL, en la consola de WSL (por ejemplo Windows Terminal); no hay versión nativa de Windows. Una terminal solo se considera soportada cuando tiene un registro de pruebas en [docs/terminals](docs/terminals/README.md); Windows Terminal (WSL) tiene el suyo. En Windows Terminal, `Alt+Enter` pone la ventana a pantalla completa y no llega a lazarobox: usa `Ctrl+J` para un salto de línea en el chat. `install-desktop` en WSL imprime notas sobre el lanzador: una entrada de usuario puede no aparecer en el menú Inicio de Windows (WSLg), y entonces se arranca desde la consola de WSL.
 
 Desde el código fuente:
 
