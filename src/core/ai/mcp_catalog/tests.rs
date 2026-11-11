@@ -52,9 +52,9 @@ fn bare() -> Entry {
 // 2.1 integrity
 
 #[test]
-fn the_catalog_lists_clarity_then_ga4_in_analytics() {
+fn the_catalog_lists_clarity_ga4_then_gsc_in_analytics() {
     let ids: Vec<_> = entries().iter().map(|e| e.id).collect();
-    assert_eq!(ids, ["clarity", "ga4"]);
+    assert_eq!(ids, ["clarity", "ga4", "gsc"]);
     assert!(entries().iter().all(|e| e.group == Group::Analytics));
 }
 
@@ -221,6 +221,60 @@ fn the_ga4_guide_warns_about_testing_clients() {
     assert!(guide.contains("Desktop"));
     assert!(guide.contains("Google Analytics"));
     assert!(guide.contains("google-oauth-client.json"));
+}
+
+// 5.1 gsc with a service account
+
+#[test]
+fn gsc_uses_a_service_account_and_never_names_the_destructive_flag() {
+    let e = entry("gsc").unwrap();
+    assert_eq!(e.install, "uv tool install mcp-search-console");
+    assert_eq!(e.command, "mcp-search-console");
+    assert!(e.login.is_none());
+    let server = parse_snippet(e);
+    assert_eq!(server.env, ["GSC_CREDENTIALS_PATH", "GSC_SKIP_OAUTH"]);
+    assert_eq!(
+        secrets_template(e).unwrap(),
+        "[gsc]\nGSC_CREDENTIALS_PATH = \"\"\nGSC_SKIP_OAUTH = \"true\"\n"
+    );
+    let all = format!("{}{:?}", snippet(e), e);
+    assert!(!all.contains("GSC_ALLOW_DESTRUCTIVE"), "{all}");
+}
+
+#[test]
+fn the_gsc_guide_walks_through_the_service_account() {
+    let guide = entry("gsc").unwrap().guide.join("\n");
+    for word in [
+        "service account",
+        "Search Console API",
+        "JSON",
+        "0600",
+        "gsc-service-account.json",
+        "user of the property",
+    ] {
+        assert!(guide.contains(word), "{word}: {guide}");
+    }
+}
+
+#[test]
+fn gsc_classes_split_queries_from_sitemap_and_site_changes() {
+    for tool in [
+        "get_search_analytics",
+        "inspect_url_enhanced",
+        "list_sitemaps_enhanced",
+        "list_properties",
+    ] {
+        assert_eq!(class("gsc", tool), Class::Read, "{tool}");
+    }
+    for tool in [
+        "manage_sitemaps",
+        "submit_sitemap",
+        "delete_site",
+        "add_site",
+    ] {
+        assert_eq!(class("gsc", tool), Class::Write, "{tool}");
+    }
+    assert!(entry("gsc").unwrap().tools.len() < 64);
 }
 
 #[test]

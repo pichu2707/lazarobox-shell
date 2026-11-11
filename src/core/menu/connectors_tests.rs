@@ -83,15 +83,16 @@ fn the_connectors_tab_holds_one_row_with_none() {
     assert_eq!(texts(&m), ["Connectors: none"]);
 }
 
-// Spec: Count of declared entries (gsc does not exist yet: ga4 is disabled).
+// Spec: Count of declared entries (a disabled entry does not count).
 #[test]
 fn the_value_counts_declared_and_enabled_catalog_entries() {
     let servers = vec![
         declared("clarity", true),
         declared("fs", true),
+        declared("gsc", true),
         declared("ga4", false),
     ];
-    assert_eq!(texts(&on_row(servers)), ["Connectors: 1 declared"]);
+    assert_eq!(texts(&on_row(servers)), ["Connectors: 2 declared"]);
 }
 
 // Spec: Opens the area.
@@ -124,14 +125,26 @@ fn the_list_groups_the_entries_and_marks_them_not_declared() {
     let m = area(Vec::new());
     assert_eq!(
         texts(&m),
-        ["Analytics", "Clarity: not declared", "GA4: not declared"]
+        [
+            "Analytics",
+            "Clarity: not declared",
+            "GA4: not declared",
+            "Search Console: not declared"
+        ]
     );
 }
 
 #[test]
 fn a_disabled_entry_says_so_and_an_enabled_one_is_declared() {
     let m = area(vec![declared("clarity", false), declared("ga4", true)]);
-    assert_eq!(texts(&m)[1..], ["Clarity: disabled", "GA4: declared"]);
+    assert_eq!(
+        texts(&m)[1..],
+        [
+            "Clarity: disabled",
+            "GA4: declared",
+            "Search Console: not declared"
+        ]
+    );
 }
 
 // Spec: Missing values; the list uses the copy read from the disk.
@@ -202,7 +215,10 @@ fn j_and_k_move_the_cursor_and_enter_opens_an_entry() {
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), Some("GA4"));
     press(&mut m, 'j');
+    assert_eq!(selected_label(&m), Some("Search Console"));
+    press(&mut m, 'j');
     assert_eq!(selected_label(&m), Some("Clarity"), "wraps");
+    press(&mut m, 'k');
     press(&mut m, 'k');
     send(&mut m, key(KeyCode::Enter));
     assert!(texts(&m)[0].starts_with("GA4"));
