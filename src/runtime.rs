@@ -2269,9 +2269,9 @@ impl Panes {
                     }
                 }
                 // Both return at once: the probe runs on its own task.
-                Effect::McpProbe(server) => {
+                Effect::McpProbe(id, server) => {
                     if let Some(prober) = self.prober.as_mut() {
-                        prober.start(*server);
+                        prober.start(id, *server);
                     }
                 }
                 Effect::CancelMcpProbe => {

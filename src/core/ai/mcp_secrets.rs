@@ -169,6 +169,89 @@ impl Secrets {
     }
 }
 
+/// Every value the child of `server` gets (each name of its `env` through
+/// `lookup`, the file first and the host as fallback: what the child really
+/// receives), and the forms a log shows it in: percent-encoded (both cases of
+/// the hex digits) and JSON-escaped. What [`redact_values`] removes. An empty
+/// value is skipped.
+pub fn redact_list(server: &McpServer, lookup: &impl Fn(&str) -> Option<OsString>) -> Vec<String> {
+    let mut list: Vec<String> = Vec::new();
+    for name in &server.env {
+        let Some(value) = lookup(name) else { continue };
+        let value = value.to_string_lossy().into_owned();
+        if value.is_empty() {
+            continue;
+        }
+        let json = serde_json::to_string(&value).unwrap_or_default();
+        let json = json.trim_matches('"').to_owned();
+        let upper = percent_encode(&value);
+        let lower = percent_encode_lower(&value);
+        for form in [value, upper, lower, json] {
+            if !list.contains(&form) {
+                list.push(form);
+            }
+        }
+    }
+    list
+}
+
+fn percent_with(text: &str, digits: &[u8; 16]) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(char::from(digits[usize::from(byte >> 4)]));
+            out.push(char::from(digits[usize::from(byte & 15)]));
+        }
+    }
+    out
+}
+
+fn percent_encode(text: &str) -> String {
+    percent_with(text, b"0123456789ABCDEF")
+}
+
+fn percent_encode_lower(text: &str) -> String {
+    percent_with(text, b"0123456789abcdef")
+}
+
+/// What replaces a value in text that a server said.
+pub const REDACTED: &str = "[redacted]";
+
+/// `text` with every occurrence of each non-empty `values` entry replaced by
+/// [`REDACTED`], the longest value first so a value that holds another is not
+/// left half shown. Call it on the WHOLE text, before any cut: a cut may split
+/// a value and leave its start in view. Text a server says (stderr, an RPC
+/// error, a tool result) can echo a value in a shape no pattern knows. A value
+/// of one character, or of whitespace only, replaces every such character in
+/// the text: the text is mangled, never leaked.
+pub fn redact_values(text: &str, values: &[String]) -> String {
+    let mut ordered: Vec<&str> = values
+        .iter()
+        .map(String::as_str)
+        .filter(|v| !v.is_empty())
+        .collect();
+    ordered.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    // One pass, so a value that sits inside `[redacted]` is never matched.
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(first) = rest.chars().next() {
+        match ordered.iter().find(|v| rest.starts_with(**v)) {
+            Some(value) => {
+                out.push_str(REDACTED);
+                rest = &rest[value.len()..];
+            }
+            None => {
+                out.push(first);
+                rest = &rest[first.len_utf8()..];
+            }
+        }
+    }
+    out
+}
+
 /// The problem of text that is not UTF-8 or not TOML, by the line of byte
 /// `at`: never the parser's message, which can quote a value.
 fn syntax_problem(bytes: &[u8], at: usize) -> String {

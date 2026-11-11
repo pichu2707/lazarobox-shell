@@ -17,6 +17,69 @@ fn parse(text: &str) -> Loaded {
     Secrets::parse(text.as_bytes())
 }
 
+#[test]
+fn redact_list_holds_what_the_child_gets_from_the_file_and_from_the_host() {
+    let loaded =
+        parse("[clarity]\nCLARITY_API_TOKEN = \"sk-1\"\nOTHER = \"unlisted\"\nEMPTY = \"\"\n");
+    let s = server(
+        "clarity",
+        &["CLARITY_API_TOKEN", "EMPTY", "GITHUB_TOKEN", "NONE"],
+    );
+    let host = |name: &str| host(name);
+    let own = loaded.secrets.lookup_for(&s, &host);
+    let list = redact_list(&s, &own);
+    // The file's value (not the host's `host`, which the file wins over), the
+    // host fallback `gh`; never an empty value, an unlisted name or a name
+    // nobody has.
+    assert!(list.contains(&"sk-1".to_owned()), "{list:?}");
+    assert!(list.contains(&"gh".to_owned()), "{list:?}");
+    assert!(
+        !list
+            .iter()
+            .any(|v| v.is_empty() || v == "unlisted" || v == "host")
+    );
+}
+
+#[test]
+fn redact_list_adds_the_percent_and_json_escaped_forms() {
+    let s = server("x", &["A", "B"]);
+    let lookup = |name: &str| match name {
+        "A" => Some(OsString::from("p@ss w0rd/x")),
+        "B" => Some(OsString::from("a\"b\\c")),
+        _ => None,
+    };
+    let list = redact_list(&s, &lookup);
+    for form in [
+        "p@ss w0rd/x",
+        "p%40ss%20w0rd%2Fx",
+        "p%40ss%20w0rd%2fx",
+        "a\"b\\c",
+        "a\\\"b\\\\c",
+    ] {
+        assert!(list.contains(&form.to_owned()), "{form}: {list:?}");
+    }
+    let said = "dsn=u:p%40ss%20w0rd%2Fx@h json={\"k\":\"a\\\"b\\\\c\"}";
+    let shown = redact_values(said, &list);
+    assert!(
+        !shown.contains("p%40") && !shown.contains("a\\\"b"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn redact_values_replaces_every_occurrence_longest_first_and_skips_empty() {
+    let values = ["ab".to_owned(), String::new(), "abcd".to_owned()];
+    assert_eq!(
+        redact_values("x abcd y ab z abcd", &values),
+        "x [redacted] y [redacted] z [redacted]"
+    );
+    assert_eq!(redact_values("nothing here", &values), "nothing here");
+    assert_eq!(redact_values("keep", &[]), "keep");
+    // A value that is a piece of the placeholder is not matched in it.
+    let odd = ["ed".to_owned()];
+    assert_eq!(redact_values("ed ed", &odd), "[redacted] [redacted]");
+}
+
 /// The host of these tests: `CLARITY_API_TOKEN=host`, `GITHUB_TOKEN=gh` and a
 /// `PATH`, nothing else.
 fn host(name: &str) -> Option<OsString> {

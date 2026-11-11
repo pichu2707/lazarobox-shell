@@ -39,6 +39,7 @@ use super::{
     session::{Line, read_line},
 };
 use crate::core::ai::{
+    mcp_secrets::redact_values,
     sanitize::clean,
     tools::{
         ExternalTool,
@@ -129,6 +130,9 @@ pub struct McpClient {
     /// Set while a frame is being written. A write cut short by a timeout or
     /// a cancel never clears it, which marks the stream as holding half a frame.
     writing: bool,
+    /// The values of `secrets.toml` this server was given: removed from what
+    /// it says (an error message) before that text is cut or shown.
+    redact: Vec<String>,
 }
 
 /// How one request ended, before the cancel notice is written.
@@ -153,6 +157,7 @@ impl McpClient {
             timeouts,
             dead: false,
             writing: false,
+            redact: Vec::new(),
         }
     }
 
@@ -231,7 +236,7 @@ impl McpClient {
         match self.request("tools/call", params, limit, cancel).await {
             Ok(result) => Outcome {
                 is_error: result.get("isError") == Some(&Value::Bool(true)),
-                text: content_text(&result),
+                text: content_text(&result, &self.redact),
             },
             Err(error) => Outcome {
                 text: format!("mcp error: {}", error.reason()),
@@ -339,8 +344,13 @@ impl McpClient {
                 Ok(Frame::Error {
                     id: got, message, ..
                 }) if got == *id => {
+                    // Redacted before the cut, so a cut cannot leave the start of
+                    // a value; again after `clean`, which can join the pieces
+                    // of one.
+                    let message = redact_values(&message, &self.redact);
+                    let message = redact_values(&clean(&message), &self.redact);
                     return Err(ClientError::Remote(
-                        clean(&message).chars().take(MESSAGE_MAX).collect(),
+                        message.chars().take(MESSAGE_MAX).collect(),
                     ));
                 }
                 Ok(Frame::Request { id, method, .. }) => {
@@ -419,7 +429,7 @@ fn clean_value(value: &Value, depth: usize) -> Option<Value> {
 /// The text of a call result: its text blocks, one per line, and a marker for
 /// any other kind. Cleaned and capped at [`OUTPUT_CAP`] here as well; the untrusted
 /// wrapper is the host's.
-fn content_text(result: &Value) -> String {
+fn content_text(result: &Value, redact: &[String]) -> String {
     let blocks = result.get("content").and_then(Value::as_array);
     let text = blocks
         .into_iter()
@@ -439,7 +449,11 @@ fn content_text(result: &Value) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let mut text = clean(&text);
+    // The values this server was given are removed before the text is cleaned
+    // and cut (a cut must not leave the start of one), and again after
+    // `clean`, which can join the pieces of one.
+    let text = redact_values(&text, redact);
+    let mut text = redact_values(&clean(&text), redact);
     let mut end = text.len().min(OUTPUT_CAP);
     while !text.is_char_boundary(end) {
         end -= 1;
