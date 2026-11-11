@@ -566,6 +566,7 @@ impl Run {
         brief: Brief,
         origin: &Path,
     ) -> Result<WorkerId, Refusal> {
+        self.check_open()?;
         let brief = brief.validate(origin).map_err(Refusal::Brief)?;
         self.spawn_as(now, Task::Simple, &brief.prompt(), Some(brief), true)
     }
@@ -581,6 +582,15 @@ impl Run {
         self.spawn_as(now, task, prompt, None, false)
     }
 
+    /// A paused or ended run takes no worker.
+    fn check_open(&self) -> Result<(), Refusal> {
+        match self.state {
+            RunState::Halted { .. } => Err(Refusal::Paused),
+            RunState::Finished | RunState::Cancelled => Err(Refusal::Ended),
+            RunState::Open => Ok(()),
+        }
+    }
+
     fn spawn_as(
         &mut self,
         now: Instant,
@@ -589,11 +599,7 @@ impl Run {
         brief: Option<Brief>,
         gated: bool,
     ) -> Result<WorkerId, Refusal> {
-        match self.state {
-            RunState::Halted { .. } => return Err(Refusal::Paused),
-            RunState::Finished | RunState::Cancelled => return Err(Refusal::Ended),
-            RunState::Open => {}
-        }
+        self.check_open()?;
         let (spec, refusal) = self.resolve(task, prompt, brief);
         // A read-only goal is judged by the role, before the menu: turning
         // Write on would not help. A `simple` worker with no `outputs` is no

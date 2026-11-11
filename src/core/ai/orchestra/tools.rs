@@ -214,9 +214,6 @@ const MAX_EXTRA_TEXT: usize = 512;
 /// fields (D1, D2). Types and sizes are checked here; what is missing is
 /// named by the run, so the refusal reaches the pane too.
 fn spawn_simple(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
-    if object.contains_key("prompt") {
-        return Err(OrchError::ExtraArgument);
-    }
     let field = |key: &str| match object.get(key) {
         None => Ok(String::new()),
         Some(value) => value
@@ -267,6 +264,7 @@ fn spawn_simple(object: &Map<String, Value>) -> Result<OrchCall, OrchError> {
         out_of_scope: field("out_of_scope")?,
         extra,
         answers,
+        free_text: object.contains_key("prompt"),
     };
     let texts = [&brief.goal, &brief.done_when, &brief.out_of_scope];
     let paths = brief.inputs.iter().chain(brief.outputs());

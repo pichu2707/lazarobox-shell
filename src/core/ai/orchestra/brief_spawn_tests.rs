@@ -83,6 +83,34 @@ fn a_refused_brief_creates_no_worker_and_does_not_pause_the_run() {
     assert_eq!(run.status(id), Some(WorkerStatus::Running));
 }
 
+// Review fix: a paused or ended run says so before the brief is judged, and
+// free text for a `simple` is refused by name.
+#[test]
+fn a_paused_run_is_named_before_the_brief_and_free_text_is_refused() {
+    let mut run = run_with(FamilySet::ALL);
+    let now = Instant::now();
+    let free = Brief {
+        free_text: true,
+        ..brief(Some(&["src/b.rs"]))
+    };
+    assert_eq!(
+        spawn(&mut run, free.clone()),
+        Err(Refusal::Brief(BriefError::FreeText))
+    );
+    let id = spawn(&mut run, brief(Some(&["src/b.rs"]))).unwrap();
+    let failed = WorkerEvent::Failed {
+        class: ErrorClass::Other,
+        text: "boom".into(),
+    };
+    run.on_event(now, id, failed);
+    let mut bad = brief(None);
+    bad.goal.clear();
+    assert_eq!(spawn(&mut run, bad.clone()), Err(Refusal::Paused));
+    assert_eq!(spawn(&mut run, free), Err(Refusal::Paused));
+    run.cancel_run(now);
+    assert_eq!(spawn(&mut run, bad), Err(Refusal::Ended));
+}
+
 // 19.3: a path outside the project is refused by name, too.
 #[test]
 fn a_brief_with_a_bad_path_is_refused_by_name() {

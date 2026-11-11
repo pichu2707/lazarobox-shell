@@ -6,6 +6,7 @@ use std::path::{Component, Path};
 
 use crate::core::ai::jail::CREDENTIAL_DIRS;
 use crate::core::ai::sanitize::clean;
+use crate::core::ai::tools::content::is_hidden;
 use crate::core::ai::tools::paths::{SECRET_DIRS, is_excluded_name};
 
 /// What a `simple` spawn carries: the fields of the brief, as the
@@ -25,6 +26,9 @@ pub struct Brief {
     pub extra: Vec<(String, String)>,
     /// The worker whose clarification this brief answers (W8c).
     pub answers: Option<u32>,
+    /// The call carried a free-text `prompt`, which a `simple` spawn does not
+    /// take: refused by [`Self::validate`] with its own text.
+    pub free_text: bool,
 }
 
 /// Why a brief is refused. The text goes to the coordinator and the pane.
@@ -34,12 +38,17 @@ pub enum BriefError {
     Missing(String),
     /// A path outside the chat origin, or a secret one.
     BadPath(String),
+    /// A `simple` spawn with a free-text `prompt`.
+    FreeText,
 }
 
 impl BriefError {
     pub fn text(&self) -> String {
         match self {
             Self::Missing(names) => format!("brief refused: missing {names}"),
+            Self::FreeText => "simple takes a brief (goal, inputs, outputs, done_when, \
+                 out_of_scope), not prompt"
+                .to_owned(),
             Self::BadPath(path) => {
                 format!("brief refused: path outside the project or secret: {path}")
             }
@@ -50,6 +59,18 @@ impl BriefError {
 /// A path the brief may name: relative, or absolute below `origin`; no `..`,
 /// no `~`, and no secret component.
 fn path_ok(origin: &Path, path: &str) -> bool {
+    // The worker reads the path after `clean` and one entry per line: only a
+    // path that survives both unchanged is the one that was checked.
+    let plain = clean(path) == path && !path.chars().any(|c| c.is_control() || is_hidden(c));
+    // A dot lookalike is no dot to the checks below, and is one to a
+    // filesystem normalizer.
+    let dots = |part: &str| part.replace('\u{ff0e}', ".");
+    let lookalike = path
+        .split(['/', '\\'])
+        .any(|part| matches!(dots(part).as_str(), "." | ".."));
+    if !plain || path.contains('\u{ff0e}') && lookalike {
+        return false;
+    }
     let target = Path::new(path);
     let below = !target.is_absolute() || target.starts_with(origin);
     let names: Vec<String> = target
@@ -85,6 +106,9 @@ impl Brief {
     /// field is `inputs` plus `outputs`, and is there when one of them names
     /// a file or `outputs` is given empty (a brief that writes nothing).
     pub fn validate(self, origin: &Path) -> Result<Self, BriefError> {
+        if self.free_text {
+            return Err(BriefError::FreeText);
+        }
         let inputs = trimmed(&self.inputs);
         let outputs = self.outputs.as_deref().map(trimmed);
         // A blank entry is no file, but a list given empty is a choice.

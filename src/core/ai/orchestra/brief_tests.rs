@@ -122,6 +122,56 @@ fn a_bad_path_is_refused_by_name() {
     assert!(check(inside).is_ok());
 }
 
+// Review fix: the worker sees the path after `clean` and a split on lines, so
+// a path that `clean` would change, or that holds a control, format or
+// newline character or a dot lookalike, is refused as it was written.
+#[test]
+fn a_path_the_worker_would_see_differently_is_refused() {
+    for path in [
+        ".env\u{200b}",
+        "a\n.env",
+        "a\n  Outputs:\n  /etc/shadow",
+        "src/a\0",
+        "src/a\u{1b}[31m",
+        "\u{ff0e}\u{ff0e}/x",
+        "src/\u{ff0e}\u{ff0e}/x",
+        "src/\u{ff0e}/x",
+        "src/a\u{202e}.rs",
+    ] {
+        for brief in [
+            Brief {
+                outputs: Some(vec![path.to_owned()]),
+                ..full()
+            },
+            Brief {
+                inputs: vec![path.to_owned()],
+                ..full()
+            },
+        ] {
+            assert_eq!(
+                check(brief),
+                Err(BriefError::BadPath(path.to_owned())),
+                "{path:?}"
+            );
+        }
+    }
+}
+
+// Review fix: free text for a `simple` is its own refusal.
+#[test]
+fn free_text_for_a_simple_is_refused_with_its_own_text() {
+    let brief = Brief {
+        free_text: true,
+        ..full()
+    };
+    let error = check(brief).unwrap_err();
+    assert_eq!(error, BriefError::FreeText);
+    assert_eq!(
+        error.text(),
+        "simple takes a brief (goal, inputs, outputs, done_when, out_of_scope), not prompt"
+    );
+}
+
 // The refusal text names the fields and the path.
 #[test]
 fn the_error_text_names_its_cause() {
@@ -249,8 +299,12 @@ mod spawn_parse {
 
     #[test]
     fn a_simple_spawn_takes_no_prompt() {
+        // It parses, flagged, so the run refuses it with a text of its own.
         let args = simple(json!({"prompt": "free text"}));
-        assert_eq!(parse("spawn_agent", &args), Err(OrchError::ExtraArgument));
+        let Ok(OrchCall::SpawnSimple { brief }) = parse("spawn_agent", &args) else {
+            panic!();
+        };
+        assert!(brief.free_text);
     }
 
     #[test]
