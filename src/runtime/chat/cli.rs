@@ -79,6 +79,11 @@ pub const CANNOT_PREPARE_HOME: &str = "cannot prepare the private home of the CL
 
 /// The longest reason appended to [`CANNOT_PREPARE_HOME`].
 const REASON_CAP: usize = 160;
+/// Starts the error of an orchestrator turn that could not get its tools.
+const COORDINATOR_NO_TOOLS: &str = "the coordinator cannot get its tools";
+/// What to do about it.
+const COORDINATOR_FIX: &str = "; run lazarobox from a folder not writable by group or others, \
+     or assign another engine to orchestrate";
 
 pub const CANNOT_PREPARE: &str = "cannot prepare the private working directory";
 
@@ -1147,6 +1152,9 @@ struct Plan {
     cwd: Option<PathBuf>,
     /// The bit of `CliEnv::noticed` to set once `notice` is delivered.
     noticed_bit: u8,
+    /// Why the tools are off, when they are: an orchestrator turn ends with it
+    /// instead of running as text.
+    tools_why: Option<String>,
 }
 
 impl Plan {
@@ -1389,7 +1397,7 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
             let mut result = None;
             // Why the attempt with the tools was refused, to name it when the
             // turn goes on without them.
-            let mut tools_refusal = None;
+            let mut tools_refusal: Option<JailRefusal> = None;
             // With the tools first; if the jail refuses that layout (say the
             // shim program sits in a place it never grants), again without
             // them. The jail is never widened to fit the tools.
@@ -1418,6 +1426,10 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
                 }
                 match jailed(env, job, &full, &binary, &dirs, attempt.as_ref()) {
                     Ok((program, argv)) => {
+                        let why_off = match &tools_refusal {
+                            Some(why) => why.hint(home),
+                            None => "the tools could not be set up".to_owned(),
+                        };
                         let notice = tools_off(None)
                             .filter(|_| attempt.is_none())
                             .map(|generic| match &tools_refusal {
@@ -1438,6 +1450,7 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
                             vars: vars(attempt.as_ref()),
                             dirs,
                             notice: joined(notice, home_notice),
+                            tools_why: attempt.is_none().then_some(why_off),
                             wired: attempt.is_some(),
                             cwd: attempt.and_then(|w| w.cwd).or_else(|| home_cwd.clone()),
                             noticed_bit,
@@ -1476,6 +1489,7 @@ fn plan_for(env: &CliEnv, job: &Job, private: bool) -> Result<Plan, StreamEvent>
         wired: false,
         cwd: home_cwd,
         noticed_bit,
+        tools_why: Some(reason.clone()),
         notice: joined(
             tools_off(Some(format!(
                 "{} runs without the jail here: {reason}",
@@ -1735,6 +1749,13 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     };
     if !plan.wired {
         unwire(&job);
+        // A coordinator without its tools cannot orchestrate: asking the model
+        // anyway only burns tokens on "I have no spawn_agent tool".
+        if job.mcp.is_some() {
+            let why = plan.tools_why.take().unwrap_or_default();
+            let text = format!("{COORDINATOR_NO_TOOLS}: {why}{COORDINATOR_FIX}");
+            return send(tx, StreamEvent::Error(ChatError::Jail(text))).await;
+        }
     }
     if let Some(line) = plan.notice.take()
         && tx.send(StreamEvent::Notice(line)).await.is_ok()
