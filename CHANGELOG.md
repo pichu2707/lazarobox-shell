@@ -10,6 +10,19 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `/exec` turns Exec on for one chat, on the same path as `/write`: type it
+  in the composer and a dialog names Exec and the folder and says every
+  command still asks. Only a lowercase `y` grants it; `n` and Esc say `Exec
+  stays off`. The grant lives in that chat's memory, leaves the saved Exec
+  toggle and `config.toml` alone, and reaches the next message and, in an
+  orchestrating chat, the next `code` worker (a running worker keeps its
+  tools). It ends with a system line when the folder changes, tools turn
+  off, the saved Exec toggle changes or a conversation is resumed, and
+  ending it does not touch a `/write` grant. A model call, a worker, a
+  tool result or pasted text cannot open or answer the dialog.
+
 ## [1.17.0] - 2026-11-10
 
 ### Added
