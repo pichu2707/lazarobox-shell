@@ -149,6 +149,12 @@ const NO_TOOLS: &str = "You are a text assistant. You have no access to files, a
 /// tools by purpose, not by the name an engine gives them.
 const TOOLS: &str = include_str!("prompts/tools.md");
 
+/// What the coordinator's turn says about its tools instead of [`TOOLS`]:
+/// that block tells a model with no write tool to hand the user a command,
+/// which beat the delegation bullet of the coordinator prompt (it is the last
+/// one) and made claude answer a file change with a heredoc.
+const COORDINATOR_TOOLS: &str = include_str!("prompts/coordinator_tools.md");
+
 /// The sentence of [`TOOLS`] that says the model cannot change files.
 const NO_CHANGES: &str =
     "You cannot change files yourself; any change needs a command the user reviews and runs.";
@@ -186,6 +192,7 @@ pub fn with_tools(system: &str, families: FamilySet) -> String {
         .map(|(_, ability)| *ability)
         .collect();
     let block = match abilities.split_last() {
+        _ if families.contains(Family::Orchestra) => COORDINATOR_TOOLS.trim_end().to_owned(),
         Some((last, [])) => coding(last),
         Some((last, rest)) => coding(&format!("{} and {last}", rest.join(", "))),
         None => TOOLS.trim_end().to_owned(),

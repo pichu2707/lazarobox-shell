@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::ai::orchestra::Toolset;
 use crate::core::ai::orchestra::rdd::Lens;
 
 const CHAT_LIMITS: &str = "no access to files, a shell or the terminal";
@@ -922,5 +923,29 @@ fn the_orchestrate_prompts_delegate_file_changes_by_default() {
         ] {
             assert!(prompt.contains(rule), "{profile:?}: {rule}");
         }
+    }
+}
+
+// The coordinator must not be told it can only hand the user a command: that
+// last bullet beat the delegation bullet and made it answer a file change with
+// a heredoc instead of spawn_agent.
+#[test]
+fn the_coordinator_tools_block_sends_changes_to_workers_not_to_the_user() {
+    let families = Toolset::Orchestrator.families();
+    for profile in Profile::ALL {
+        let got = with_tools(builtin(profile, Task::Orchestrate), families);
+        assert!(!got.contains(NO_CHANGES), "{profile:?}");
+        assert!(!got.contains("You are a text assistant"), "{profile:?}");
+        assert!(
+            !got.contains("needs a command the user reviews and runs"),
+            "{profile:?}"
+        );
+        assert!(
+            !got.contains("run a command in the user's shell pane"),
+            "{profile:?}"
+        );
+        let block = got.rsplit("\n\n- ").next().unwrap();
+        assert!(block.contains("spawn_agent"), "{block}");
+        assert!(block.contains("Never answer a change"), "{block}");
     }
 }

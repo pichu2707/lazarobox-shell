@@ -10,6 +10,14 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- With ORCH on, the claude coordinator no longer answers a file change with a
+  shell command and the code. Its tools block told it "you cannot change files
+  yourself; any change needs a command the user reviews and runs", after the
+  delegation rule; it now says a worker started with `spawn_agent` makes every
+  change.
+
 ## [1.20.0] - 2026-11-11
 
 ### Added
