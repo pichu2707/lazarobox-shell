@@ -2,9 +2,10 @@
 //! chat, the way a chat start does ([`external::connect`], the same spawn and
 //! environment rules, `secrets.toml` values included), reads its tools,
 //! reports, and stops it. It is started only after the user's `y`, writes no
-//! file, and its report never holds a `secrets.toml` value: the lines are made
-//! from the server's name, counts and tool names, and the problems name a
-//! table or a key at most.
+//! file, and the `secrets.toml` problems name a table or a key at most. The
+//! lines of a failure carry text the server said (its stderr tail, an RPC
+//! error), which is redacted by shape only (`sanitize`, `redact_tokens`): a
+//! follow-up replaces the exact values of that server.
 
 use std::{
     ffi::OsString,
