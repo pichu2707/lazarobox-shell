@@ -6,7 +6,7 @@
 //! Applying goes through [`apply`]; this file holds no write API.
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{HashMap, HashSet, hash_map::Entry},
     path::Path,
 };
 
@@ -56,6 +56,9 @@ pub struct Stages {
     /// The worker label a sealed batch was headed with, by key and the
     /// generation it belongs to: an orphan review shows it again.
     labels: HashMap<StageKey, (u64, WorkerLabel)>,
+    /// The keys whose last closed batch was applied whole (W6: a worker's
+    /// command runs only then). A discard or a partial apply clears it.
+    applied: HashSet<StageKey>,
 }
 
 /// The ask label, worker and receipt line a worker's review is headed with.
@@ -212,6 +215,11 @@ impl Stages {
             batch.resolve(id, outcome)?;
             self.batches.remove(&id.key);
             self.labels.remove(&id.key);
+            if outcome == Outcome::Applied {
+                self.applied.insert(id.key);
+            } else {
+                self.applied.remove(&id.key);
+            }
         }
         Ok(result)
     }
@@ -221,7 +229,21 @@ impl Stages {
         self.current(id)?.discard();
         self.batches.remove(&id.key);
         self.labels.remove(&id.key);
+        self.applied.remove(&id.key);
         Ok(())
+    }
+
+    /// Whether the last batch `key` closed was applied, and none is open
+    /// since: what a worker's command needs (W6).
+    pub fn applied(&self, key: StageKey) -> bool {
+        self.applied.contains(&key) && !self.batches.contains_key(&key)
+    }
+
+    /// Marks `key`'s last batch applied without one, for tests of a worker
+    /// command that need no batch review first.
+    #[cfg(test)]
+    pub fn applied_for_test(&mut self, key: StageKey) {
+        self.applied.insert(key);
     }
 
     /// Drops whatever `key` holds. How many entries were lost; `None` when
@@ -238,6 +260,7 @@ impl Stages {
     pub fn discard_pane(&mut self, pane: PaneId) -> Option<usize> {
         let mut lost = 0;
         self.labels.retain(|key, _| key.pane() != pane);
+        self.applied.retain(|key| key.pane() != pane);
         self.batches.retain(|key, batch| {
             let ours = key.pane() == pane;
             if ours {

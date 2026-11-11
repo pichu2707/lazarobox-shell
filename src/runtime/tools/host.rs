@@ -916,9 +916,10 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
         slot: Some(slot),
     };
 
-    // A worker's command the user did not approve is recorded for the
-    // coordinator (W6); one that ran is recorded by `exec::run`.
-    let denied_command = match (&checked, &scope.read_scope) {
+    // A worker's command the user did not approve, whatever the answer, is
+    // recorded for the coordinator as denied (W6); one that ran is recorded
+    // by `exec::run`, which takes it from here.
+    let mut denied_command = match (&checked, &scope.read_scope) {
         (Ok(call @ Call::RunCommand { .. }), Some(worker)) => Some((worker, exec::shown(call))),
         _ => None,
     };
@@ -973,6 +974,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
                 // Only a run is ever given a report.
                 Answer::Ran(_) if !matches!(call, Call::RunInPane { .. }) => {
+                    record_denied(denied_command.take());
                     let (outcome, status, summary) = ended(
                         ToolStatus::Denied,
                         format!("denied: {NOT_COMMAND}"),
@@ -988,6 +990,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
                 // The frozen text the user read: it answers `read_pane` only.
                 Answer::Screen(text) => {
+                    record_denied(denied_command.take());
                     let (outcome, status, summary) = match &call {
                         Call::ReadPane { pane, .. } => screen_result(*pane, &text),
                         _ => ended(
@@ -1074,6 +1077,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 (Decision::Sent, Call::ListPanes) => list_panes(listed.take().unwrap_or_default()),
                 // Only after `y`: the sandbox starts here and nowhere else.
                 (Decision::Sent, call @ Call::RunCommand { .. }) => {
+                    denied_command = None;
                     exec::run(&host, &scope, &call, pinned.take()).await
                 }
                 // Only after `y` on a cloud engine, at once on a local one.
@@ -1134,16 +1138,22 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             }
         }
     };
-    if let (Some((worker, (program, command))), ToolStatus::Denied) = (denied_command, status) {
+    record_denied(denied_command);
+    owed.answer(status, &summary);
+    outcome
+}
+
+/// Records a worker's command that was asked and did not run (W6).
+fn record_denied(command: Option<(&WorkerScope, (String, String))>) {
+    if let Some((worker, (program, command))) = command {
+        let end = RanEnd::Denied;
         let ran = Ran {
             program,
             command,
-            end: RanEnd::Denied,
+            end,
         };
         (worker.handle).ran(worker.run, worker.worker, ran);
     }
-    owed.answer(status, &summary);
-    outcome
 }
 
 /// Whether a denied draft is the turn's decline: the user said no, or the

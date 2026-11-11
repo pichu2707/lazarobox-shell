@@ -57,6 +57,8 @@ pub(super) const NO_JAIL: &str = "commands need the Linux sandbox (Landlock ABI 
 /// Says how to go on, so a small model retries after proposing (#439).
 const PROPOSE_FIRST: &str = "staged changes are not proposed: propose them first with propose_batch, then call this tool again";
 const IN_REVIEW: &str = "a batch is waiting for the user's review";
+/// A worker's command before its own batch was applied (W6).
+const NOT_APPLIED: &str = "your changes are not applied: stage them and propose them first with propose_batch; a command runs only after the user applied your batch";
 /// Text the prompt could not show exactly as it will run.
 const UNSHOWABLE: &str = "command cannot be shown safely";
 const COULD_NOT: &str = "could not run";
@@ -162,10 +164,15 @@ pub(super) async fn plan(host: &ToolHost, scope: &TurnScope, call: &Call) -> Res
         return Err(NO_JAIL.into());
     }
     let (env, origin, args) = (host.scope_env(scope), scope.origin.clone(), args.clone());
+    let worker = scope.read_scope.is_some();
     let stages = host.stages.clone();
     let judged = tokio::task::spawn_blocking(move || {
         let found = inspect(&env, &origin, &args)?;
         staged(&stages, key)?;
+        // A worker's command runs only after its own batch was applied (W6).
+        if worker && !lock(&stages).applied(key) {
+            return Err(NOT_APPLIED.into());
+        }
         Ok::<_, Cow<'static, str>>(found)
     })
     .await

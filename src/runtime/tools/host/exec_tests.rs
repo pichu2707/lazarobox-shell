@@ -543,6 +543,8 @@ async fn a_worker_command_asks_with_its_key_and_label() {
     scope.approver = asks.clone();
     scope.families = exec_set();
     scope.stage_key = Some(key());
+    // A worker's command needs its batch applied first (W6).
+    super::files::lock(&w.host.stages).applied_for_test(key());
     scope.read_scope = Some(crate::runtime::tools::WorkerScope {
         handle: Arc::new(ThreeWorkers),
         run: RunId(1),
@@ -1466,6 +1468,8 @@ impl World {
         scope.approver = approver;
         scope.families = exec_set();
         scope.stage_key = Some(worker_key());
+        // Its batch was applied: a worker's command needs it (W6).
+        super::files::lock(&self.host.stages).applied_for_test(worker_key());
         scope.read_scope = Some(crate::runtime::tools::WorkerScope {
             handle,
             run: RunId(1),
@@ -1676,5 +1680,22 @@ async fn a_worker_with_a_batch_in_review_keeps_its_refusal_and_the_pane_is_told(
     assert!(
         told[0].contains("worker 2/3") && told[0].contains("review"),
         "{told:?}"
+    );
+}
+
+// Item 2 of the W6a correction: an ask that ends without the user's `y` and
+// with a status other than denied (a `Typed` answer, which only a pane run
+// takes) did not run the command: it is recorded as denied.
+#[tokio::test]
+async fn a_workers_command_answered_otherwise_than_yes_is_recorded_as_denied() {
+    let w = world();
+    let recorder = Arc::new(Recorder::default());
+    let (d, _rx) = w.worker_turn(Asks::new(Decision::Typed(2)), recorder.clone());
+    d.call(command("cargo", &["test"], None)).await;
+    let ran = recorder.ran.lock().unwrap().clone();
+    assert_eq!(
+        ran.iter().map(|(_, ran)| &ran.end).collect::<Vec<_>>(),
+        [&RanEnd::Denied],
+        "{ran:?}"
     );
 }

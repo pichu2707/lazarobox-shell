@@ -207,3 +207,71 @@ async fn a_workers_command_before_its_batch_is_proposed_is_refused_and_told() {
     let collected = handle.call(collect(1)).await.text;
     assert!(!collected.contains("commands run"), "{collected}");
 }
+
+/// Calls `cargo test` from the worker and returns its reply, failing if an
+/// ask opens instead: a refused command opens none.
+async fn refused_command(lab: &mut Lab, client: &mut Client, id: u32) -> String {
+    let test = tool_call(
+        id,
+        "run_command",
+        json!({"program": "cargo", "args": ["test"]}),
+    );
+    client
+        .1
+        .write_all(format!("{test}\n").as_bytes())
+        .await
+        .unwrap();
+    assert!(
+        timeout(Duration::from_secs(3), next_ask(lab))
+            .await
+            .is_err(),
+        "an ask opened"
+    );
+    reply_line(client).await
+}
+
+// Spec ("Worker commands [W6]": a command runs only after the worker's own
+// batch was approved and applied): a worker with no batch at all is refused
+// `propose them first` with no ask.
+#[tokio::test]
+async fn a_workers_command_with_no_batch_is_refused_without_an_ask() {
+    let mut lab = command_lab(Script::Held("x"));
+    let handle = lab.start_writing(&Waits::new(), TEN_MINUTES);
+    handle.call(spawn(Task::Code, "test")).await;
+    let mut client = worker_client(&lab.seen).await;
+    let reply = refused_command(&mut lab, &mut client, 3).await;
+    assert!(reply.contains("propose them first"), "{reply}");
+    assert!(!lab.app().join("ran.txt").exists());
+}
+
+// ... and one whose batch the user denied (discarded) is refused the same way.
+#[tokio::test]
+async fn a_workers_command_after_its_batch_was_denied_is_refused_without_an_ask() {
+    let mut lab = command_lab(Script::Held("x"));
+    let waits = Waits::new();
+    let (run, handle) = lab.start_writing_run(&waits, TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write a and test")).await;
+    let mut client = worker_client(&lab.seen).await;
+    let write = tool_call(
+        1,
+        "write_file",
+        json!({"path": "a.txt", "content": "one\n"}),
+    );
+    exchange(&mut client, write).await;
+    let propose = format!("{}\n", tool_call(2, "propose_batch", json!({})));
+    client.1.write_all(propose.as_bytes()).await.unwrap();
+    let (id, _) = next_ask(&mut lab).await;
+    let worker = SessionKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
+    );
+    assert!(waits.decide(worker, 7, id, Decision::Denied("no")));
+    reply_line(&mut client).await;
+    assert!(!lab.app().join("a.txt").exists(), "nothing was applied");
+    let reply = refused_command(&mut lab, &mut client, 3).await;
+    assert!(reply.contains("propose them first"), "{reply}");
+    assert!(!lab.app().join("ran.txt").exists());
+}
