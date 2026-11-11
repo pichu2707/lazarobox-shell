@@ -12,6 +12,15 @@ baseline.
 
 ### Added
 
+- The `Connectors` area can save a value into `secrets.toml` for you: `f` on an
+  entry opens its values, and Enter on one opens a masked field where you type
+  or paste it (confidential values always show as `••••••••`, never their
+  length or any character). Saving keeps your comments and every other line,
+  writes `secrets.toml` with mode 0600, keeps the previous file as
+  `secrets.toml.bak` until you delete it with `d`, and asks before it replaces
+  a value or when your declared command is not the catalog's. The value reaches
+  the server at the next chat start; it never goes to a model, a log or the
+  transcript.
 - The `Connectors` area lists a `Workspace` group: `google` (Gmail, Docs and
   Sheets through workspace-mcp 2.4.1) and `apps-script` (clasp 3.4.1). For
   `google`, lazarobox registers only 8 Gmail tools (search, read, attachment,

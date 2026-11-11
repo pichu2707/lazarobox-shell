@@ -1315,6 +1315,7 @@ impl MenuState {
 
     /// What the save of a secret field answered: the notice either way.
     pub fn secret_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
+        self.connectors.saved(reply.is_ok());
         self.backup_reply(reply)
     }
 
@@ -2970,7 +2971,13 @@ impl MenuState {
                 }
             }
             Some(SubView::Usage) => self.paste_limit(text),
-            Some(SubView::Connectors | SubView::Warning) | None => {}
+            Some(SubView::Connectors) => {
+                self.connectors.paste(text);
+                if let Some(notice) = self.connectors.take_notice() {
+                    self.notice = Some(notice.to_owned());
+                }
+            }
+            Some(SubView::Warning) | None => {}
         }
     }
 
@@ -3616,5 +3623,7 @@ mod descriptor_tests;
 #[cfg(test)]
 mod feedback_menu_tests;
 
+#[cfg(test)]
+mod connectors_fields_tests;
 #[cfg(test)]
 mod connectors_tests;

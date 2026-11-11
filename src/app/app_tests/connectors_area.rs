@@ -4,6 +4,7 @@
 //! without the user's `y`.
 
 use super::*;
+use crate::core::ai::mcp_secrets::Secrets;
 use crate::core::{
     ai::{
         mcp_catalog::{
@@ -206,7 +207,15 @@ fn a_resize_rewraps_an_open_prompt_without_a_key() {
     assert!(rows(&a).iter().any(|l| l.contains("npm i -g")));
 }
 
-// ---- S6a2: the replies of the save and of the backup deletion ---------------
+// ---- S6a2: the secret field through the app ---------------------------------
+
+const MATCHING: &str = "[[ai.mcp.servers]]\nname = \"clarity\"\ncommand = \"clarity-mcp-server\"\n";
+
+fn secret(text: &str) -> crate::core::ai::mcp_secrets::SecretText {
+    let mut s = crate::core::ai::mcp_secrets::SecretText::new();
+    s.push_str(text);
+    s
+}
 
 fn footer(a: &App) -> String {
     match a.menu().unwrap().footer() {
@@ -215,9 +224,59 @@ fn footer(a: &App) -> String {
     }
 }
 
+/// The Clarity field open over a chat that declared the catalog command.
+fn field_in_a_chat() -> App {
+    let ai = FileConfig::parse(MATCHING).unwrap().ai;
+    let mut a = super::run_pane::one_shell_and_a_chat("hello").with_ai(ai);
+    tap(&mut a, ctrl_space());
+    tap(&mut a, key('m'));
+    tap(&mut a, key('4'));
+    tap(&mut a, code(KeyCode::Enter));
+    tap(&mut a, code(KeyCode::Enter));
+    tap(&mut a, key('f'));
+    tap(&mut a, code(KeyCode::Enter));
+    a
+}
+
+// Spec: Save a new value (the command becomes the effect, once).
+#[test]
+fn a_confirmed_field_becomes_one_save_effect_with_the_value() {
+    let mut a = field_in_a_chat();
+    for c in "tok".chars() {
+        assert_eq!(tap(&mut a, key(c)), []);
+    }
+    assert_eq!(
+        tap(&mut a, code(KeyCode::Enter)),
+        [Effect::SaveSecret {
+            server: "clarity",
+            name: "CLARITY_API_TOKEN",
+            value: secret("tok")
+        }]
+    );
+}
+
+// Spec: Paste goes to the field only.
+#[test]
+fn a_paste_goes_to_the_open_field_and_not_to_the_chat() {
+    let mut a = field_in_a_chat();
+    assert_eq!(tap(&mut a, AppEvent::Paste("sk-123".to_owned())), []);
+    assert_eq!(super::run_pane::chat(&a, id2()).composer().text(), "");
+    let rows = rows(&a);
+    assert!(rows.iter().any(|r| r.trim() == "••••••••"), "{rows:?}");
+    assert_eq!(
+        tap(&mut a, code(KeyCode::Enter)),
+        [Effect::SaveSecret {
+            server: "clarity",
+            name: "CLARITY_API_TOKEN",
+            value: secret("sk-123")
+        }]
+    );
+    assert_eq!(super::run_pane::chat(&a, id2()).composer().text(), "");
+}
+
 #[test]
 fn the_reply_of_a_save_shows_its_notice_and_reads_the_files_again() {
-    let mut a = on_entry();
+    let mut a = field_in_a_chat();
     let said = "saved CLARITY_API_TOKEN".to_owned();
     assert_eq!(
         tap(&mut a, AppEvent::SecretSaved(Ok(said.clone()))),
@@ -245,5 +304,116 @@ fn a_reply_after_the_menu_closed_is_said_in_the_notice() {
     assert_eq!(
         a.notice.as_deref(),
         Some("secrets.toml.bak: there is no backup")
+    );
+}
+
+// Spec: the backup action is a command, then an effect, only after `y`.
+#[test]
+fn deleting_the_backup_is_an_effect_only_after_y() {
+    let mut a = on_entry();
+    let present = Presence::read(Ok(CLARITY.to_owned()), &Loaded::default()).with_backup(true);
+    tap(&mut a, AppEvent::McpPresence(present));
+    tap(&mut a, key('f'));
+    assert_eq!(tap(&mut a, key('d')), []);
+    assert_eq!(tap(&mut a, key('y')), [Effect::DeleteBackup]);
+    assert_eq!(
+        tap(
+            &mut a,
+            AppEvent::BackupDeleted(Ok("deleted secrets.toml.bak".to_owned()))
+        ),
+        [Effect::LoadPresence]
+    );
+}
+
+// Spec: The value appears nowhere else. Every surface the app has to show or
+// format what happened, from the paste to the reply.
+#[test]
+fn a_saved_confidential_value_reaches_no_surface_of_the_app() {
+    let value = "tok-7f3a9c1e2b4d6f80";
+    let mut a = field_in_a_chat();
+    let mut seen = vec![format!(
+        "{:?}",
+        tap(&mut a, AppEvent::Paste(value.to_owned()))
+    )];
+    seen.push(rows(&a).concat());
+    let effects = tap(&mut a, code(KeyCode::Enter));
+    seen.push(format!("{effects:?}"));
+    let reply = AppEvent::SecretSaved(Ok("saved CLARITY_API_TOKEN".to_owned()));
+    seen.push(format!("{reply:?} {:?}", tap(&mut a, reply.clone())));
+    let loaded = format!("[clarity]\nCLARITY_API_TOKEN = \"{value}\"\n");
+    let presence = Presence::read(Ok(MATCHING.to_owned()), &Secrets::parse(loaded.as_bytes()));
+    tap(&mut a, AppEvent::McpPresence(presence));
+    seen.extend([
+        rows(&a).concat(),
+        footer(&a),
+        format!("{:?}", a.menu().unwrap()),
+    ]);
+    seen.push(super::run_pane::chat(&a, id2()).composer().text());
+    seen.push(a.notice.clone().unwrap_or_default());
+    let all = seen.join("\n");
+    for at in 0..=value.len() - 4 {
+        assert!(
+            !all.contains(&value[at..at + 4]),
+            "{} leaked",
+            &value[at..at + 4]
+        );
+    }
+}
+
+// Spec (config-menu, Connectors row): a secret save is not a draft, and every
+// key goes to the open field.
+#[test]
+fn a_secret_field_is_not_a_draft_and_takes_every_key() {
+    let mut a = field_in_a_chat();
+    for c in "s4q".chars() {
+        assert_eq!(tap(&mut a, key(c)), []);
+    }
+    assert_eq!(
+        rows(&a).len(),
+        2,
+        "the field stays one screen: {:?}",
+        rows(&a)
+    );
+    tap(
+        &mut a,
+        AppEvent::SecretSaved(Ok("saved CLARITY_API_TOKEN".to_owned())),
+    );
+    assert!(a.menu().unwrap().edits(&Config::default()).is_empty());
+    let effects = [esc(), esc(), esc(), esc()]
+        .map(|e| tap(&mut a, e))
+        .concat();
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::SaveConfig(_) | Effect::SaveSecret { .. } | Effect::DeleteBackup
+        )),
+        "{effects:?}"
+    );
+}
+
+// Spec: every other action of the area writes nothing; only a confirmed field
+// or `y` on the backup prompt produces a write effect.
+#[test]
+fn nothing_but_a_confirmed_field_or_a_confirmed_backup_prompt_writes() {
+    let mut a = on_entry();
+    let mut effects = Vec::new();
+    for e in [
+        key('f'),
+        code(KeyCode::Enter),
+        key('t'),
+        key('o'),
+        key('k'),
+        esc(),
+        key('d'),
+        key('n'),
+        esc(),
+    ] {
+        effects.extend(tap(&mut a, e));
+    }
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::SaveSecret { .. } | Effect::DeleteBackup)),
+        "{effects:?}"
     );
 }

@@ -18,5 +18,5 @@ expression: "text(&draw(62, POPUP_H, &connectors_entry(0)))"
 │   [1] https://clarity.microsoft.com/                       │
 │ Paste into config.toml                                     │
 │                                                            │
-│ j/k scroll · i install · l login · p probe · c copy · Esc  │
+│ j/k scroll · i install · l login · p probe · f fill · Esc  │
 └────────────────────────────────────────────────────────────┘
