@@ -6,9 +6,13 @@
 #
 # Never touched: the main checkout, the worktree this runs from, a locked
 # worktree, the worktree of the base branch, a worktree with uncommitted
-# changes (untracked files included, whatever the git config), and a worktree
-# whose commits are not all in the base ref. Build folders of the kept checkouts are only
-# listed: removing one costs a rebuild and nothing else (`cargo clean`).
+# changes (untracked files included, whatever the git config), a worktree
+# whose commits are not all in the base ref, and a worktree with a running
+# process whose executable lives inside it (a release binary in target/). That
+# check reads /proc on Linux and `ps` on macOS; on other systems, or when
+# some process cannot be read, it prints a note saying so.
+# Build folders are only listed, never removed on their own: removing one
+# costs a rebuild and nothing else (`cargo clean`).
 #
 # Usage: scripts/clean-builds.sh [--apply] [--cap SIZE] [--base REF]
 #   --apply     remove instead of only listing
@@ -64,6 +68,45 @@ size_kib() {
   if [ -e "$1" ]; then du -sk "$1" 2>/dev/null | awk '{ print $1 }'; else echo 0; fi
 }
 
+# running_in <dir>: sets `running` to one running executable under <dir> and
+# succeeds, or fails when there is none. Not called in a subshell: it sets
+# proc_check=0 when running executables cannot be listed here, and
+# proc_unreadable=1 when some process could not be read, so the listing can
+# say the check is incomplete. Only an executable counts, not a shell whose
+# cwd is inside <dir>.
+proc_check=1
+proc_unreadable=0
+running=""
+running_in() {
+  local given="${1%/}" canon link exe pid
+  canon="$(cd "$1" 2> /dev/null && pwd -P)" || canon="$given"
+  running=""
+  if [ -r /proc/self/exe ]; then
+    for link in /proc/[0-9]*/exe; do
+      if ! exe="$(readlink "$link" 2> /dev/null)"; then
+        pid="${link%/exe}"
+        [ -e "$pid" ] && proc_unreadable=1
+        continue
+      fi
+      exe="${exe% (deleted)}"
+      case "$exe" in
+        "$canon"/* | "$given"/*) running="$exe"; return 0 ;;
+      esac
+    done
+    return 1
+  fi
+  # macOS: `comm` is the full path of the executable. Other systems report a
+  # basename, so it could never match: say the check is skipped instead.
+  if [ "$(uname -s)" = Darwin ] && exe="$(ps -axo comm= 2> /dev/null)"; then
+    running="$(printf '%s\n' "$exe" \
+      | awk -v a="$canon/" -v b="$given/" 'index($0, a) == 1 || index($0, b) == 1 { print; exit }')"
+    [ -n "$running" ]
+    return
+  fi
+  proc_check=0
+  return 1
+}
+
 cap_kib="$(to_kib "$cap")"
 git rev-parse --git-dir > /dev/null 2>&1 || { echo "clean-builds: not in a git repository" >&2; exit 2; }
 git rev-parse --verify --quiet "$base^{commit}" > /dev/null \
@@ -110,6 +153,9 @@ while IFS="$(printf '\t')" read -r path branch locked; do
   elif ! git merge-base --is-ancestor "$(git -C "$path" rev-parse HEAD)" "$base"; then
     state="unmerged"
     effect="commits not in $base: not removed"
+  elif running_in "$path"; then
+    state="running"
+    effect="running process: not removed ($running)"
   else
     state="merged"
     effect="its commits are in $base; ignored files (build output) go with it"
@@ -129,6 +175,12 @@ $worktrees
 EOF
 
 echo
+if [ "$proc_check" = 0 ]; then
+  echo "note: cannot list running processes here: a running binary is not detected"
+fi
+if [ "$proc_unreadable" = 1 ]; then
+  echo "note: some processes could not be read: a binary they run is not detected"
+fi
 echo "total $(human "$total"), cap $(human "$cap_kib")"
 if [ "$total" -le "$cap_kib" ]; then
   echo "under the cap: nothing to remove"
@@ -161,6 +213,7 @@ done <<EOF
 $(printf '%s' "$candidates" | sort -n)
 EOF
 
+echo "never removes a build folder on its own: it goes only with its merged worktree"
 if [ "$apply" = 0 ]; then
   echo "dry run: pass --apply to remove $removed worktree(s)"
 else
