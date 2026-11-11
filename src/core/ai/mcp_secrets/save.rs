@@ -15,6 +15,7 @@ use crate::core::ai::{mcp_catalog, sanitize::clean};
 pub enum Refusal {
     NotAValue { server: String, name: String },
     BadValue,
+    ValueTooLong,
     NoFolder,
     FolderSymlink,
     FolderOwner,
@@ -45,6 +46,12 @@ impl Refusal {
             }
             Self::BadValue => {
                 "secrets.toml: the value must be one line without control characters".to_owned()
+            }
+            Self::ValueTooLong => {
+                format!(
+                    "secrets.toml: the value is longer than {} KiB",
+                    MAX_VALUE / 1024
+                )
             }
             Self::NoFolder => "secrets.toml: no config folder".to_owned(),
             Self::FolderSymlink => {
@@ -90,6 +97,9 @@ impl Refusal {
     }
 }
 
+/// The longest value a save accepts, in bytes.
+pub const MAX_VALUE: usize = 8 * 1024;
+
 /// The line (from 1) of byte `at`, for a syntax problem: never the parser's
 /// own message, which can quote a value.
 pub fn line_of(bytes: &[u8], at: usize) -> usize {
@@ -103,6 +113,22 @@ pub fn line_of(bytes: &[u8], at: usize) -> usize {
 /// at the end of the file after one empty line. A file whose lines all end in
 /// CRLF gets CRLF on the lines added.
 pub fn edit(text: &str, server: &str, name: &str, value: &str) -> Result<String, Refusal> {
+    if value.len() > MAX_VALUE {
+        return Err(Refusal::ValueTooLong);
+    }
+    // A leading BOM is kept as it is, outside what is parsed and edited.
+    let (bom, body) = match text.strip_prefix('\u{feff}') {
+        Some(rest) => ("\u{feff}", rest),
+        None => ("", text),
+    };
+    let out = edit_body(body, server, name, value)?;
+    if (bom.len() + out.len()) as u64 > super::MAX_BYTES {
+        return Err(Refusal::TooLarge);
+    }
+    Ok(format!("{bom}{out}"))
+}
+
+fn edit_body(text: &str, server: &str, name: &str, value: &str) -> Result<String, Refusal> {
     let listed = mcp_catalog::entry(server).is_some_and(|e| e.env.iter().any(|v| v.name == name));
     if !listed {
         return Err(Refusal::NotAValue {

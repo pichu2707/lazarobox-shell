@@ -187,3 +187,40 @@ fn a_server_name_is_never_written_unless_it_is_an_entry() {
         "secrets.toml: nope.X is not a value of this connector"
     );
 }
+
+// Review: a value over the per-value cap, or one that makes the file too
+// large, is refused with a visible notice.
+#[test]
+fn an_over_long_value_or_a_result_over_64_kib_is_refused() {
+    let huge = "x".repeat(100_000);
+    assert_eq!(
+        refused("", "clarity", "CLARITY_API_TOKEN", &huge),
+        "secrets.toml: the value is longer than 8 KiB"
+    );
+    let at_cap = "x".repeat(8 * 1024);
+    assert!(edit("", "clarity", "CLARITY_API_TOKEN", &at_cap).is_ok());
+    let text = format!("# {}\n", "c".repeat(60 * 1024));
+    assert_eq!(
+        refused(&text, "clarity", "CLARITY_API_TOKEN", &at_cap),
+        "secrets.toml: larger than 64 KiB"
+    );
+}
+
+// Review: a leading BOM stays exactly where it is.
+#[test]
+fn a_leading_bom_is_preserved() {
+    let bom = "\u{feff}";
+    let before = format!("{bom}[clarity]\nCLARITY_API_TOKEN = \"a\"\n");
+    assert_eq!(
+        ok(&before, "clarity", "CLARITY_API_TOKEN", "b"),
+        before.replace("\"a\"", "\"b\"")
+    );
+    assert_eq!(
+        ok(&format!("{bom}[clarity]\n"), "gsc", "GSC_SKIP_OAUTH", "t"),
+        format!("{bom}[clarity]\n\n[gsc]\nGSC_SKIP_OAUTH = \"t\"\n")
+    );
+    assert_eq!(
+        ok(bom, "clarity", "CLARITY_API_TOKEN", "b"),
+        format!("{bom}[clarity]\nCLARITY_API_TOKEN = \"b\"\n")
+    );
+}
