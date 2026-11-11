@@ -118,32 +118,78 @@ fn lang_of(path: &str) -> Option<&'static Lang> {
     LANGS.iter().find(|l| l.exts.contains(&ext.as_str()))
 }
 
-/// Whether `path` is a test file by its name or a `tests` directory: no cap.
-/// Whole-name rules, so `attests.rs` and `latest.rs` are not tests.
+/// Whether `path` is a test file: no cap. `path` is relative to the project
+/// root. The name rules (`tests.*`, `*_test.*`, `*_tests.*`, `*.test.*`,
+/// `*.spec.*`, on the last suffix pair only) need no directory; a `tests`
+/// directory counts only inside a relative path, so the components above the
+/// project (an absolute path, or a leading `..`) are never read. Whole-name
+/// rules, so `attests.rs` and `latest.rs` are not tests.
 pub fn is_test(path: &str) -> bool {
-    let mut parts = path.rsplit(['/', '\\']);
+    let key = normalize(path);
+    let relative = !key.starts_with('/') && !key.starts_with("..");
+    let mut parts = key.rsplit('/');
     let name = parts.next().unwrap_or("");
-    name.starts_with("tests.")
-        || ["_test.", "_tests.", ".spec.", ".test."]
+    let stem = name.rsplit_once('.').map_or("", |(stem, _)| stem);
+    stem == "tests"
+        || ["_test", "_tests", ".test", ".spec"]
             .iter()
-            .any(|m| name.contains(m))
-        || parts.any(|dir| dir == "tests")
+            .any(|m| stem.ends_with(m))
+        || (relative && parts.any(|dir| dir == "tests"))
 }
 
-/// The added rows that are code, with a block comment tracked across them.
+/// One spelling of a path: `\` as `/`, no empty or `.` component, `..`
+/// resolved lexically (a leading one is kept).
+fn normalize(path: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let unified = path.replace('\\', "/");
+    for part in unified.split('/') {
+        match part {
+            "" | "." => {}
+            ".." if out.last().is_some_and(|l| *l != "..") => {
+                out.pop();
+            }
+            _ => out.push(part),
+        }
+    }
+    let joined = out.join("/");
+    if unified.starts_with('/') {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
+/// The added rows that are code. A block comment or docstring is tracked only
+/// inside a run of consecutive added rows, and only when its closer comes later
+/// in that run: an unclosed opener (a string, a closer on an unchanged row)
+/// leaves its row as code, so the counter never silences rows it cannot close.
 fn code_rows(lang: &Lang, diff: &Diff) -> usize {
-    let mut open: Option<&str> = None;
     let mut code = 0;
     for hunk in &diff.hunks {
-        for row in hunk.lines.iter().filter(|l| l.kind == Kind::Added) {
-            code += usize::from(is_code(lang, row.raw_text(), &mut open));
+        let mut run: Vec<&str> = Vec::new();
+        for line in &hunk.lines {
+            if line.kind == Kind::Added {
+                run.push(line.raw_text());
+            } else {
+                code += run_code(lang, &run);
+                run.clear();
+            }
         }
+        code += run_code(lang, &run);
     }
     code
 }
 
-/// Whether a row is code, given the block comment still open before it.
-fn is_code(lang: &Lang, row: &str, open: &mut Option<&'static str>) -> bool {
+fn run_code(lang: &Lang, run: &[&str]) -> usize {
+    let mut open: Option<&str> = None;
+    (0..run.len())
+        .filter(|&i| is_code(lang, run[i], &run[i + 1..], &mut open))
+        .count()
+}
+
+/// Whether a row is code, given the block still open before it and the rows
+/// of the run after it.
+fn is_code(lang: &Lang, row: &str, later: &[&str], open: &mut Option<&'static str>) -> bool {
     let mut rest = row.trim();
     loop {
         if let Some(close) = *open {
@@ -163,8 +209,12 @@ fn is_code(lang: &Lang, row: &str, open: &mut Option<&'static str>) -> bool {
             .chain(lang.triple.then_some(("'''", "'''")))
             .find(|(o, _)| rest.starts_with(o));
         if let Some((o, c)) = opener {
+            let after = &rest[o.len()..];
+            if !after.contains(c) && !later.iter().any(|r| r.contains(c)) {
+                return true;
+            }
             *open = Some(c);
-            rest = &rest[o.len()..];
+            rest = after;
             continue;
         }
         return !lang.line.iter().any(|m| rest.starts_with(m));
@@ -183,12 +233,12 @@ impl Written {
     /// Records an applied write to `path`.
     pub fn add(&mut self, path: &str, count: Count) {
         let sum = self.with(path, count);
-        self.files.insert(path.to_owned(), sum);
+        self.files.insert(normalize(path), sum);
     }
 
     /// What `path` holds so far.
     pub fn total(&self, path: &str) -> Count {
-        self.files.get(path).copied().unwrap_or(Count {
+        self.files.get(&normalize(path)).copied().unwrap_or(Count {
             lines: 0,
             every_line: false,
             test: is_test(path),
@@ -199,7 +249,7 @@ impl Written {
     pub fn with(&self, path: &str, count: Count) -> Count {
         let held = self.total(path);
         Count {
-            lines: held.lines + count.lines,
+            lines: held.lines.saturating_add(count.lines),
             every_line: held.every_line || count.every_line,
             test: count.test,
         }

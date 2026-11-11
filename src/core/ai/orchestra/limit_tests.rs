@@ -94,10 +94,89 @@ fn python_triple_quotes_count_only_when_a_line_starts_with_them() {
     let doc = "\"\"\"module doc\nmore\n\"\"\"\nx = 1\n";
     assert_eq!(count("a.py", None, doc).lines, 1);
     assert_eq!(count("a.py", None, "'''one row'''\nx = 1\n").lines, 1);
-    // An assignment of a string is code, and so is its body: the opening
-    // quotes do not start the line. The closing row does, so it is read as
-    // the start of a docstring (the rule is by line start, as pinned).
-    assert_eq!(count("a.py", None, "x = \"\"\"\nbody\n\"\"\"\n").lines, 2);
+    // An assignment of a string is code, and so is its body. The closing row
+    // starts with the quotes but nothing closes it later, so it is code too.
+    assert_eq!(count("a.py", None, "x = \"\"\"\nbody\n\"\"\"\n").lines, 3);
+}
+
+#[test]
+fn a_closing_triple_quote_does_not_silence_the_rest_of_the_file() {
+    let t = format!("x = \"\"\"\nbody\n\"\"\"\n{}", rows(500, "y ="));
+    assert!(count("a.py", None, &t).lines >= 502);
+}
+
+#[test]
+fn an_opener_inside_a_string_or_never_closed_does_not_silence_code() {
+    let raw = format!(
+        "let s = r#\"\n/* not a comment\n\"#;\n{}",
+        rows(500, "let y =")
+    );
+    assert!(count("a.rs", None, &raw).lines >= 501);
+    let open = format!("/* never closed\n{}", rows(500, "let y ="));
+    assert!(count("a.rs", None, &open).lines >= 500);
+    let doc = format!("\"\"\"never closed\n{}", rows(500, "y ="));
+    assert!(count("a.py", None, &doc).lines >= 500);
+}
+
+#[test]
+fn a_block_never_reaches_across_context_rows_or_hunks() {
+    let filler = rows(30, "keep");
+    let base = format!("fn a() {{}}\n*/\n{filler}end\n");
+    let new = format!(
+        "/* open\nfn a() {{}}\n*/\n{filler}end\n{}",
+        rows(500, "let y =")
+    );
+    let c = count("a.rs", Some(&base), &new);
+    assert!(c.lines >= 501, "{}", c.lines);
+}
+
+#[test]
+fn a_closed_block_still_hides_its_rows_inside_a_run() {
+    assert_eq!(count("a.rs", None, "/* a\nb\nc */\nlet x = 1;\n").lines, 1);
+}
+
+#[test]
+fn a_test_directory_is_read_from_a_project_relative_path_only() {
+    assert!(!count("/home/u/tests/app/src/big.rs", None, "x\n").test);
+    assert!(!count("../tests/x.rs", None, "x\n").test);
+    assert!(count("./tests/x.rs", None, "x\n").test);
+    assert!(count("src\\tests\\x.rs", None, "x\n").test);
+    // The file-name rules need no directory.
+    assert!(count("/home/u/app/run_tests.rs", None, "x\n").test);
+}
+
+#[test]
+fn only_the_final_suffix_pair_makes_a_spec_or_test_name() {
+    assert!(!count("src/my.test.config.rs", None, "x\n").test);
+    assert!(!count("src/a.spec.b.ts", None, "x\n").test);
+    assert!(count("src/a.test.ts", None, "x\n").test);
+    assert!(count("src/a.spec.ts", None, "x\n").test);
+}
+
+#[test]
+fn written_keys_are_one_file_however_the_path_is_spelled() {
+    let mut w = Written::default();
+    for p in [
+        "src/a.rs",
+        "./src/a.rs",
+        "src\\a.rs",
+        "src/x/../a.rs",
+        "src//a.rs",
+    ] {
+        w.add(p, count("src/a.rs", None, &rows(100, "x =")));
+    }
+    assert_eq!(w.total("src/a.rs").lines, 500);
+    assert_eq!(w.total("./src/a.rs").lines, 500);
+}
+
+#[test]
+fn a_sum_saturates() {
+    let mut w = Written::default();
+    let mut big = count("src/a.rs", None, "x\n");
+    big.lines = usize::MAX;
+    w.add("src/a.rs", big);
+    w.add("src/a.rs", big);
+    assert_eq!(w.total("src/a.rs").lines, usize::MAX);
 }
 
 #[test]
