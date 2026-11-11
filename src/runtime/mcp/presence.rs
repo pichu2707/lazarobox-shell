@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 
 use crate::{
-    app::AppEvent, core::ai::mcp_catalog::presence::Presence, runtime::mcp_secrets::load_for_start,
+    app::AppEvent,
+    core::ai::{mcp_catalog::presence::Presence, mcp_secrets::BACKUP},
+    runtime::mcp_secrets::load_for_start,
 };
 
 /// Answers each `Effect::LoadPresence` with one `AppEvent::McpPresence`.
@@ -45,8 +47,15 @@ impl Reader {
                     .unwrap_or_else(|_| Err(std::io::Error::other("read failed"))),
                 None => Err(std::io::ErrorKind::NotFound.into()),
             };
+            let backup = secrets
+                .as_deref()
+                .map(|path| path.with_file_name(BACKUP))
+                .is_some_and(|path| std::fs::symlink_metadata(path).is_ok());
             let loaded = load_for_start(secrets).await;
-            let presence = Presence::read(text, &loaded);
+            let home = std::env::var("HOME").ok();
+            let presence = Presence::read(text, &loaded)
+                .with_backup(backup)
+                .with_home(home);
             let _ = events.send(AppEvent::McpPresence(presence)).await;
         });
     }

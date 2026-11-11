@@ -325,6 +325,10 @@ pub enum AppEvent {
     McpProbe(u64, crate::core::ai::mcp_catalog::checks::Probed),
     /// What `Effect::LoadPresence` read.
     McpPresence(crate::core::ai::mcp_catalog::presence::Presence),
+    /// What became of `Effect::SaveSecret`: the notice, saved or refused.
+    SecretSaved(Result<String, String>),
+    /// What became of `Effect::DeleteBackup`.
+    BackupDeleted(Result<String, String>),
     /// What became of the `Effect::CopyLocal` numbered `seq`: `Err` carries
     /// the short reason.
     Clipboard {
@@ -392,6 +396,17 @@ pub enum Effect {
     /// The Connectors area opened: read `config.toml` and `secrets.toml`
     /// (read only); the runtime answers with one `AppEvent::McpPresence`.
     LoadPresence,
+    /// Save one value of `secrets.toml` (mcp-secrets, Menu save): sent only by
+    /// a confirmed secret field. The runtime answers with one
+    /// `AppEvent::SecretSaved`.
+    SaveSecret {
+        server: &'static str,
+        name: &'static str,
+        value: crate::core::ai::mcp_secrets::SecretText,
+    },
+    /// Delete `secrets.toml.bak` (the user's `y`); the answer is one
+    /// `AppEvent::BackupDeleted`.
+    DeleteBackup,
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
     /// Like `DetectEngines`, but the codex model listing is read again even
@@ -2287,6 +2302,8 @@ impl App {
                 }
                 Vec::new()
             }
+            AppEvent::SecretSaved(reply) => self.on_secret_reply(reply, true),
+            AppEvent::BackupDeleted(reply) => self.on_secret_reply(reply, false),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
@@ -2595,6 +2612,16 @@ impl App {
             MenuCommand::Probe(server) => self.start_mcp_probe(server),
             MenuCommand::CancelProbe => vec![Effect::CancelMcpProbe],
             MenuCommand::LoadPresence => vec![Effect::LoadPresence],
+            MenuCommand::SaveSecret {
+                server,
+                name,
+                value,
+            } => vec![Effect::SaveSecret {
+                server,
+                name,
+                value,
+            }],
+            MenuCommand::DeleteBackup => vec![Effect::DeleteBackup],
             MenuCommand::Connector(line) => self.start_connector(line),
             MenuCommand::None => Vec::new(),
         }
@@ -2622,6 +2649,23 @@ impl App {
 
     /// The browser did not open `url`: the link is copied instead and the
     /// footer says why; links are copied from now on.
+    /// The answer of a save or of the backup deletion: the menu says it and
+    /// reads the files again; with the menu closed the notice says it.
+    fn on_secret_reply(&mut self, reply: Result<String, String>, save: bool) -> Vec<Effect> {
+        let Some(menu) = self.menu.as_mut() else {
+            self.notice = Some(reply.unwrap_or_else(|notice| notice));
+            self.dirty = true;
+            return Vec::new();
+        };
+        let command = if save {
+            menu.secret_reply(reply)
+        } else {
+            menu.backup_reply(reply)
+        };
+        self.dirty = true;
+        self.on_menu_command(command)
+    }
+
     fn on_open_failed(&mut self, url: &str) -> Vec<Effect> {
         self.opener = false;
         let Some(menu) = self.menu.as_mut() else {

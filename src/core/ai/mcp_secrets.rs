@@ -32,6 +32,9 @@ use crate::core::config::config_path;
 /// The file name, in the folder of `config.toml`.
 pub const FILE: &str = "secrets.toml";
 
+/// The backup the menu save keeps of the file, one generation.
+pub const BACKUP: &str = "secrets.toml.bak";
+
 /// The largest file that is used; a larger one is not read at all.
 pub const MAX_BYTES: u64 = 64 * 1024;
 
@@ -280,7 +283,12 @@ fn shown(name: &str) -> String {
 }
 
 mod save;
+mod text;
 pub use save::{Refusal, edit, line_of};
+pub use text::SecretText;
+
+#[cfg(test)]
+mod text_tests;
 
 #[cfg(test)]
 mod tests;

@@ -701,6 +701,15 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
             ),
             hub_tx.clone(),
         ))
+        // The menu's secret field and backup deletion (S6a2): the only writer
+        // of `secrets.toml`, reachable from those two effects only.
+        .with_secrets(secrets_write::Writer::new(
+            crate::core::ai::mcp_secrets::secrets_path(
+                env::var_os("XDG_CONFIG_HOME"),
+                env::var_os("HOME"),
+            ),
+            hub_tx.clone(),
+        ))
         // The picker's Hugging Face screens: curl from the same PATH as the
         // update check, into the Hugging Face cache.
         .with_hub(hf::Hub::new(
@@ -1462,6 +1471,7 @@ struct Panes {
     /// The connector probe. `None` ignores its effects (unit tests).
     prober: Option<mcp::probe::Prober>,
     presence: Option<mcp::presence::Reader>,
+    secrets: Option<secrets_write::Writer>,
     /// The Ollama library requests and pull. `None` ignores the Ollama
     /// effects (unit tests).
     ollama: Option<ollama_lib::Ollama>,
@@ -1514,6 +1524,7 @@ impl Panes {
             hub: None,
             prober: None,
             presence: None,
+            secrets: None,
             ollama: None,
             deletes: None,
             installer: None,
@@ -1731,6 +1742,11 @@ impl Panes {
 
     fn with_prober(mut self, prober: mcp::probe::Prober) -> Self {
         self.prober = Some(prober);
+        self
+    }
+
+    fn with_secrets(mut self, writer: secrets_write::Writer) -> Self {
+        self.secrets = Some(writer);
         self
     }
 
@@ -2299,6 +2315,20 @@ impl Panes {
                 Effect::LoadPresence => {
                     if let Some(reader) = self.presence.as_ref() {
                         reader.load();
+                    }
+                }
+                Effect::SaveSecret {
+                    server,
+                    name,
+                    value,
+                } => {
+                    if let Some(writer) = self.secrets.as_ref() {
+                        writer.save(server, name, value);
+                    }
+                }
+                Effect::DeleteBackup => {
+                    if let Some(writer) = self.secrets.as_ref() {
+                        writer.delete_backup();
                     }
                 }
                 Effect::CancelMcpProbe => {
