@@ -126,6 +126,15 @@ pub enum Refusal {
     /// The brief of a `simple` worker is incomplete or names a bad path
     /// (W8b).
     Brief(BriefError),
+    /// The outputs of a `simple` brief overlap a live worker's: two workers
+    /// would write the same file (D10). `path` is the path as the new brief
+    /// wrote it.
+    Overlap {
+        worker: WorkerId,
+        path: String,
+        /// The live worker's output that covers or is covered by `path`.
+        held: String,
+    },
     /// `run paused`: a failure is unresolved.
     Paused,
     Ended,
@@ -182,6 +191,10 @@ pub struct NotHalted;
 /// file and whose reply holds tool calls written as text: ASCII and neutral,
 /// and true whatever the cause. It stands outside the worker's wrapper.
 const CALLS_AS_TEXT: &str = "lazarobox: this worker changed no file, and its reply holds tool calls written as text. Do not report its files as created.";
+
+/// What lazarobox says before the result of a worker whose brief held fields
+/// it does not know (W8b), outside the wrapper.
+pub const EXTRA_PREFIX: &str = "lazarobox: brief extra fields: ";
 
 /// What lazarobox says before the check of a handoff, outside the wrapper.
 const CHECK_PREFIX: &str = "lazarobox: handoff check: ";
@@ -598,6 +611,7 @@ impl Run {
     ) -> Result<WorkerId, Refusal> {
         self.check_open()?;
         let brief = brief.validate(origin).map_err(Refusal::Brief)?;
+        let brief = brief.relative_to(origin);
         self.spawn_as(now, Task::Simple, &brief.prompt(), Some(brief), true)
     }
 
@@ -653,6 +667,9 @@ impl Run {
         if writer && !spec.writes() {
             return Err(Refusal::WriteOff);
         }
+        if let Some((worker, path, held)) = self.overlap(spec.outputs().unwrap_or_default()) {
+            return Err(Refusal::Overlap { worker, path, held });
+        }
         self.slots.push(Slot {
             spec,
             status: WorkerStatus::Queued,
@@ -676,6 +693,24 @@ impl Run {
         self.enqueue(now, id, refusal, false);
         self.promote(now);
         Ok(id)
+    }
+
+    /// The first live (queued or running) worker whose brief outputs overlap
+    /// `outputs`, the path of `outputs` that does and the output it meets
+    /// (D10). A directory covers the files under it. An ended worker blocks
+    /// nothing. Paths are origin-relative (`spawn_simple` made them so). Names
+    /// compare ignoring ASCII case, as on macOS and Windows: two names that
+    /// differ only in case are refused on Linux too, which is accepted.
+    fn overlap(&self, outputs: &[String]) -> Option<(WorkerId, String, String)> {
+        let live = |s: &&Slot| matches!(s.status, WorkerStatus::Queued | WorkerStatus::Running);
+        let mut held = self.slots.iter().enumerate().filter(|(_, s)| live(s));
+        held.find_map(|(i, s)| {
+            let mine = s.spec.outputs().unwrap_or_default();
+            outputs.iter().find_map(|path| {
+                let met = mine.iter().find(|m| covers(m, path))?;
+                Some((WorkerId(i as u32 + 1), path.clone(), met.clone()))
+            })
+        })
     }
 
     /// A worker waits in the queue, at the back for a new one and at the
@@ -913,6 +948,10 @@ impl Run {
         };
         // lazarobox's own word, outside the worker's wrapper: the worker
         // cannot forge it, and the coordinator must not claim files exist.
+        let wrapped = match self.brief_extra(id) {
+            Some(names) => format!("{EXTRA_PREFIX}{names}\n\n{wrapped}"),
+            None => wrapped,
+        };
         let said = self.slot(id).is_some_and(Slot::said_calls_as_text);
         let wrapped = if said {
             format!("{CALLS_AS_TEXT}\n\n{wrapped}")
@@ -930,6 +969,13 @@ impl Run {
         } else {
             format!("{CHECK_PREFIX}{}\n\n{wrapped}", lines.join("; "))
         })
+    }
+
+    /// The names of the extra fields of worker `id`'s brief, `None` when it
+    /// had none (W8b).
+    pub fn brief_extra(&self, id: WorkerId) -> Option<String> {
+        let brief = self.slot(id)?.spec.brief.as_ref()?;
+        (!brief.extra.is_empty()).then(|| brief.extra_names())
     }
 
     /// The claim check of worker `id`'s stored handoff, against its ledger as
@@ -1025,6 +1071,12 @@ impl Run {
             status: slot.status,
             ledger: slot.writer_ledger().cloned(),
             prior: slot.handoff.as_ref().and_then(|h| h.audit.clone()),
+            extra: slot
+                .spec
+                .brief
+                .as_ref()
+                .map(Brief::extra_names)
+                .unwrap_or_default(),
         }
     }
 
@@ -1084,6 +1136,7 @@ impl Run {
             status: WorkerStatus::Done,
             ledger: None,
             prior: None,
+            extra: String::new(),
         };
         // A step closes even while the run is halted, its verdict forced to
         // `blocked`: the same rule as a worker's handoff (D17).
@@ -1311,6 +1364,9 @@ impl Run {
         let RunState::Halted { worker, .. } = self.state else {
             return Err(NotHalted);
         };
+        // A retry or relaunch only runs while the run is halted, and a halted
+        // run takes no new worker (`check_open`), so nothing can have taken
+        // this worker's outputs meanwhile: overlap is not re-checked.
         let reresolve = match choice {
             UserChoice::Cancel => return Ok(self.cancel_run(now)),
             UserChoice::Retry => false,
@@ -1497,6 +1553,24 @@ fn shown(usage: Usage, partial: bool) -> Usage {
         cost_micros: usage.cost_micros.filter(|_| !partial),
         ..usage
     }
+}
+
+/// Whether one of two output paths is the other or a directory above it,
+/// comparing components ignoring ASCII case.
+fn covers(a: &str, b: &str) -> bool {
+    let parts = |p: &str| -> Vec<String> {
+        let parts = p.split('/').filter(|c| !c.is_empty() && *c != ".");
+        parts.map(str::to_owned).collect()
+    };
+    let (a, b) = (parts(a), parts(b));
+    let under = |long: &[String], short: &[String]| {
+        long.len() >= short.len()
+            && long
+                .iter()
+                .zip(short)
+                .all(|(x, y)| x.eq_ignore_ascii_case(y))
+    };
+    under(&a, &b) || under(&b, &a)
 }
 
 /// Worker ids start at 1; id 0 maps to no slot.

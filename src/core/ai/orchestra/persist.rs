@@ -90,6 +90,9 @@ impl Item {
         if let Some(audit) = &handoff.audit {
             content.push_str(&format!("\ncheck: {}", audit.note_lines().join("; ")));
         }
+        if !handoff.extra.is_empty() {
+            content.push_str(&format!("\nbrief extra fields: {}", handoff.extra));
+        }
         Self {
             key,
             note: Note {

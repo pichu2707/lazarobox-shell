@@ -17,6 +17,11 @@ baseline.
   path outside the project creates no worker and says so in the pane and to
   the coordinator; its `outputs` decide whether the worker writes, and a
   `simple` that writes is refused on a read-only goal or with Write off.
+- A `simple` whose `outputs` overlap a queued or running worker's is refused,
+  naming that worker. A brief's extra fields are flagged as `brief extra
+  fields: <names>` in the spawn result, in `collect` and in the handoff. The
+  `orchestrate` prompts now tell the coordinator to delegate a change and to
+  give a `simple` worker a brief.
 - `Ctrl+Space x` opens the `/exec` dialog and `Ctrl+Space f` the `/write`
   dialog (`w` is the window group). A key never grants: only your `y` in the
   dialog does. A refusal shows the command's line, the composer draft is kept,

@@ -183,6 +183,30 @@ fn the_orchestrate_prompts_say_when_a_worker_may_run_a_command() {
     }
 }
 
+// Spec (agent-orchestrator, "The brief [W8]"; prompt-profiles, "Orchestrate
+// prompt holds the brief rules", decision K1): both `orchestrate` prompts tell
+// the coordinator to delegate a change instead of answering it in text, and to
+// give a `simple` worker a brief (goal, files as inputs and outputs, done when,
+// out of scope), not a `prompt`. Both stay within the 6 KiB cap above.
+#[test]
+fn the_orchestrate_prompts_teach_the_brief_of_a_simple_worker() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "Delegate a change to files; never answer it in text",
+            "a simple worker",
+            "a brief, not a prompt",
+            "goal, inputs",
+            "outputs (files it may write",
+            "done_when and out_of_scope",
+            "is refused",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+        assert!(prompt.len() <= 6144, "{profile:?}: {}", prompt.len());
+    }
+}
+
 // Spec (prompt-profiles): Reply in the user's language.
 #[test]
 fn every_prompt_asks_for_the_users_language() {

@@ -142,6 +142,20 @@ impl Brief {
         Ok(brief)
     }
 
+    /// The brief with every absolute path under `origin` written relative to
+    /// it, so one file has one name (the overlap check compares names). The
+    /// origin itself becomes `.`.
+    pub fn relative_to(mut self, origin: &Path) -> Self {
+        let relative = |path: &String| match Path::new(path).strip_prefix(origin) {
+            Ok(rest) if rest.as_os_str().is_empty() => ".".to_owned(),
+            Ok(rest) => rest.to_string_lossy().into_owned(),
+            Err(_) => path.clone(),
+        };
+        self.inputs = self.inputs.iter().map(relative).collect();
+        self.outputs = self.outputs.map(|o| o.iter().map(relative).collect());
+        self
+    }
+
     /// The files the worker may write; none for a read-only brief.
     pub fn outputs(&self) -> &[String] {
         self.outputs.as_deref().unwrap_or_default()

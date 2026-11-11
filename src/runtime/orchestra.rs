@@ -1241,6 +1241,9 @@ impl RunManager {
                         Refusal::ReadOnly => READ_ONLY.to_owned(),
                         Refusal::WriteOff => WRITE_OFF.to_owned(),
                         Refusal::Brief(error) => error.text(),
+                        Refusal::Overlap { worker, path, held } => {
+                            overlap_text(worker, &path, &held)
+                        }
                         Refusal::WorkerCap(cap) => {
                             format!("worker limit reached: max_workers is {cap}")
                         }
@@ -1266,7 +1269,10 @@ impl RunManager {
                 let shown = reason.unwrap_or_else(|| status.label().to_owned());
                 return self.refused(pane, live, task, shown, text);
             }
-            let text = format!("worker {}: {}", id.0, status.label());
+            let mut text = format!("worker {}: {}", id.0, status.label());
+            if let Some(names) = live.run.brief_extra(id) {
+                text.push_str(&format!("; brief extra fields: {names}"));
+            }
             Outcome {
                 text,
                 is_error: false,
@@ -1394,6 +1400,9 @@ impl RunManager {
                     let lines = handoff.audit.iter().flat_map(|audit| audit.lines());
                     for line in lines {
                         text.push_str(&format!("; {line}"));
+                    }
+                    if !handoff.extra.is_empty() {
+                        text.push_str(&format!("; brief extra fields: {}", handoff.extra));
                     }
                     self.announce_handoff(pane, run, handoff);
                     fine(text)
@@ -2298,6 +2307,21 @@ fn nonce_bytes() -> Option<[u8; 8]> {
         .and_then(|mut file| file.read_exact(&mut bytes))
         .ok()?;
     Some(bytes)
+}
+
+/// The refusal of a `simple` brief whose outputs overlap a live worker's.
+fn overlap_text(worker: WorkerId, path: &str, held: &str) -> String {
+    let which = if path == held {
+        format!("{path} is already its output")
+    } else if path.len() > held.len() {
+        format!("{path} is under its output {held}")
+    } else {
+        format!("{path} holds its output {held}")
+    };
+    format!(
+        "outputs overlap worker {}: {which}; wait for it or pick other files",
+        worker.0
+    )
 }
 
 /// A refusal's reason as the coordinator gets it: one line, sanitized, with

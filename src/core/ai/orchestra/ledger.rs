@@ -128,6 +128,10 @@ pub struct Handoff {
     /// The check of the claimed files against the worker's ledger (W4); only
     /// a worker's handoff holds one.
     pub audit: Option<Audit>,
+    /// The names of the extra fields of a `simple` worker's brief, comma
+    /// separated; empty when it had none (W8b). Names lazarobox validated,
+    /// not worker text.
+    pub extra: String,
 }
 
 impl Handoff {
@@ -161,6 +165,7 @@ impl Handoff {
             left: judgement.left,
             decisions: judgement.decisions,
             audit,
+            extra: facts.extra,
         }
     }
 
@@ -195,6 +200,8 @@ pub(super) struct Facts {
     pub ledger: Option<ChangeLedger>,
     /// The check of the worker's earlier handoff, whose claims stay.
     pub prior: Option<Audit>,
+    /// The extra fields of the worker's brief, by name.
+    pub extra: String,
 }
 
 /// Why a handoff was not stored.

@@ -463,6 +463,7 @@ fn failed_row(id: u32, done: &str) -> Row {
         status: WorkerStatus::Failed,
         ledger: None,
         prior: None,
+        extra: String::new(),
     };
     let note = Judgement {
         done: done.to_owned(),
@@ -508,6 +509,7 @@ fn an_old_failure_does_not_block_later_rows_from_collapsing() {
             status: WorkerStatus::Done,
             ledger: None,
             prior: None,
+            extra: String::new(),
         };
         let handoff = Handoff::of(facts, note(Verdict::OnCourse), false);
         rows.push(Row::new(

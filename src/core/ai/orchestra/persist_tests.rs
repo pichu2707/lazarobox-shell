@@ -25,6 +25,7 @@ fn handoff(worker: u32) -> Handoff {
         left: "none".to_owned(),
         decisions: "none".to_owned(),
         audit: None,
+        extra: String::new(),
     }
 }
 

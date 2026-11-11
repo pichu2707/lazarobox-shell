@@ -1003,6 +1003,7 @@ impl RunManager {
                     // Internal workers are outside the cap: never refused.
                     Refusal::WorkerCap(cap) => format!("max_workers is {cap}"),
                     Refusal::Brief(error) => error.text(),
+                    Refusal::Overlap { worker, path, held } => overlap_text(worker, &path, &held),
                     Refusal::Gate(_) => "a step gate refused an internal worker".to_owned(),
                 })?;
             if let Some(system) = system {
