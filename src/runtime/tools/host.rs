@@ -1177,7 +1177,7 @@ mod review;
 
 #[cfg(test)]
 mod exec_tests;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) use exec_tests::fake_toolchain;
 #[cfg(test)]
 mod external_tests;

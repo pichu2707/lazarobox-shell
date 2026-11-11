@@ -656,6 +656,7 @@ impl World {
 /// Makes `host` run commands as the tests here do (no Landlock): the fake
 /// helper, a jail probe that says yes, and `cargo` the script `cargo` under
 /// `base/cargo/bin`. For the run manager's tests of a worker's command.
+#[cfg(target_os = "linux")]
 pub(crate) fn fake_toolchain(host: &mut ToolHost, base: &Path, home: &Path, cargo: &str) {
     script(&base.join("helper"), HELPER);
     script(&base.join("cargo/bin/cargo"), cargo);
@@ -1619,11 +1620,13 @@ async fn a_workers_approved_command_is_recorded_with_its_exit_and_tail() {
 
 /// Holds a batch review open for ever and records every other ask, which it
 /// declines.
+#[cfg(target_os = "linux")]
 #[derive(Default)]
 struct HoldsTheBatch {
     asked: Mutex<Vec<ApprovalAsk>>,
 }
 
+#[cfg(target_os = "linux")]
 impl Approver for HoldsTheBatch {
     fn ask(&self, _: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer> {
         if matches!(ask, ApprovalAsk::Batch(_)) {
