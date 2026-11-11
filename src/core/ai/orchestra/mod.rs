@@ -2,6 +2,7 @@
 //! orchestration tool calls and the read scope. No IO beyond the path checks
 //! of `scope`; time comes in as explicit `Instant`s.
 
+pub mod brief;
 pub mod changes;
 pub mod claims;
 pub mod commands;
@@ -132,6 +133,10 @@ impl Toolset {
     }
 }
 
+#[cfg(test)]
+mod brief_spawn_tests;
+#[cfg(test)]
+mod brief_tests;
 #[cfg(test)]
 mod ceiling_tests;
 #[cfg(test)]

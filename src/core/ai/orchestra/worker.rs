@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use super::Toolset;
+use super::brief::Brief;
 use crate::core::ai::chat::engine::Usage;
 use crate::core::ai::config::Task;
 use crate::core::ai::tools::registry::{Family, FamilySet};
@@ -20,9 +21,17 @@ pub struct WorkerSpec {
     /// ceiling at spawn time (D17).
     pub families: FamilySet,
     pub deadline: Duration,
+    /// The brief a `simple` worker was started from (W8b); `None` for every
+    /// other worker. `prompt` is built from it.
+    pub brief: Option<Brief>,
 }
 
 impl WorkerSpec {
+    /// The files the worker may write, when it has a brief.
+    pub fn outputs(&self) -> Option<&[String]> {
+        self.brief.as_ref().map(Brief::outputs)
+    }
+
     /// Whether the worker may stage changes: what a worker kind is compared
     /// by, not its name (D25).
     pub fn writes(&self) -> bool {

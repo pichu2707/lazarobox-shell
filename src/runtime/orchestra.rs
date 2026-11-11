@@ -69,6 +69,7 @@ use crate::core::{
         jail,
         orchestra::{
             RunId, WorkerId, WorkerKey,
+            brief::Brief,
             changes::Change,
             commands::Ran,
             errors::classify,
@@ -1179,6 +1180,7 @@ impl RunManager {
     ) -> BoxFuture<'static, Outcome> {
         let now = match call {
             OrchCall::Spawn { task, prompt } => self.spawn(pane, run, task, &prompt),
+            OrchCall::SpawnSimple { brief } => self.spawn_simple(pane, run, brief),
             OrchCall::Wait { ids, timeout } => {
                 return self.clone().wait(pane, run, ids, timeout).boxed();
             }
@@ -1205,8 +1207,27 @@ impl RunManager {
     /// Creates a worker: it starts when a slot is free, or ends `refused`
     /// when its engine is unavailable, which halts the run.
     fn spawn(self: &Arc<Self>, pane: PaneId, run: RunId, task: Task, prompt: &str) -> Outcome {
+        self.spawn_with(pane, run, task, |live| live.run.spawn(now(), task, prompt))
+    }
+
+    /// A `simple` worker from its brief: a brief that is refused creates no
+    /// worker, and the coordinator and the pane hear the same text.
+    fn spawn_simple(self: &Arc<Self>, pane: PaneId, run: RunId, brief: Brief) -> Outcome {
+        self.spawn_with(pane, run, Task::Simple, |live| {
+            let origin = live.origin.clone();
+            live.run.spawn_simple(now(), brief, &origin)
+        })
+    }
+
+    fn spawn_with(
+        self: &Arc<Self>,
+        pane: PaneId,
+        run: RunId,
+        task: Task,
+        create: impl FnOnce(&mut Live) -> Result<WorkerId, Refusal>,
+    ) -> Outcome {
         let spawned = self.on_run(pane, run, |live| {
-            let id = match live.run.spawn(now(), task, prompt) {
+            let id = match create(live) {
                 Ok(id) => id,
                 // A gate has its own event: the pane hears the gate and the
                 // step, not a bare spawn refusal.
@@ -1219,6 +1240,7 @@ impl RunManager {
                         Refusal::Ended => ENDED.to_owned(),
                         Refusal::ReadOnly => READ_ONLY.to_owned(),
                         Refusal::WriteOff => WRITE_OFF.to_owned(),
+                        Refusal::Brief(error) => error.text(),
                         Refusal::WorkerCap(cap) => {
                             format!("worker limit reached: max_workers is {cap}")
                         }
