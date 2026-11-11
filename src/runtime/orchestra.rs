@@ -102,6 +102,13 @@ mod review;
 
 pub use review::Reviewed;
 
+#[cfg(test)]
+tokio::task_local! {
+    /// The dispatch of a server engine's worker turn, for the fake engine of
+    /// the tests: the adapters read their own, which is private to `chat`.
+    static TEST_DISPATCH: Arc<dyn Dispatch>;
+}
+
 /// Says what is staged after a correction, in a test.
 #[cfg(test)]
 type Restage = fn(&[Change]) -> Option<Vec<Change>>;
@@ -1873,13 +1880,12 @@ impl RunManager {
                         live.run.on_event(now(), key.worker, event);
                     }
                 }
-                None => {
-                    live.run.on_tick(now());
-                }
+                // Its own clock passed, and only its own: a sibling that
+                // waits for the user or its review has stopped its clock,
+                // which the wall time since it started cannot tell (D6).
+                None => live.run.time_out(now(), key.worker),
             }
             self.sync(pane, live);
-            // A worker timed out by a sibling's tick keeps its task until its
-            // own turn ends, so each worker is told about at its own finish.
             self.disclose(pane, live, key.worker);
         });
         self.settle(pane, key.run);
@@ -2013,6 +2019,27 @@ impl Orchestra for Bound {
         }
     }
 
+    fn cheap(&self, run: RunId, worker: WorkerId) -> bool {
+        let manager = self.manager.upgrade();
+        run == self.run
+            && manager.is_some_and(|manager| {
+                manager
+                    .on_run(self.pane, run, |live| live.run.cheap(worker))
+                    .unwrap_or(false)
+            })
+    }
+
+    fn pause(&self, run: RunId, worker: WorkerId) -> Option<pending::Waiting> {
+        // The route the worker's approver already counts its asks on: a CLI
+        // worker's tool call is served on the hub's task, where the turn's
+        // task-local count is not seen.
+        let manager = self.manager.upgrade().filter(|_| run == self.run)?;
+        let own = manager.on_run(self.pane, run, |live| {
+            live.routes.get(&worker).map(|route| route.own.clone())
+        });
+        own.flatten().map(|own| own.enter())
+    }
+
     fn corrects(&self, run: RunId, worker: WorkerId) -> bool {
         let manager = self.manager.upgrade();
         run == self.run
@@ -2084,7 +2111,12 @@ impl Turn {
         let (tx, rx) = mpsc::channel(TURN_CHANNEL);
         let (pending, dispatch) = session.map_or((None, None), |(p, d)| (Some(p), d));
         // The call sits inside the guarded future, as in a chat turn.
-        let adapter = Box::pin(async move { runner(request, tx).await });
+        let adapter: BoxFuture<'static, ()> = Box::pin(async move { runner(request, tx).await });
+        #[cfg(test)]
+        let adapter: BoxFuture<'static, ()> = match &dispatch {
+            Some(tools) => Box::pin(TEST_DISPATCH.scope(tools.clone(), adapter)),
+            None => adapter,
+        };
         let adapter = chat::in_session(adapter, pending, dispatch);
         // Its total limits pause too, at the three sites a chat's never do.
         let adapter = Box::pin(pending::worker_turn(adapter));

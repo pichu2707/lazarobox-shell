@@ -411,7 +411,7 @@ impl RunManager {
         let of = format!("review of worker {}", worker.0);
         let mut review = Review::new(assessment);
         let unanswered = match &answered {
-            Answered::Granted => None,
+            Answered::Granted | Answered::Mandatory => None,
             Answered::Declined => {
                 let _ = review.consent(Consent::Declined);
                 self.say(
@@ -441,7 +441,12 @@ impl RunManager {
             self.keep(pane, run, kept, &changes, &changes);
             return Ok(changes);
         }
-        let _ = review.consent(Consent::Granted);
+        let given = if answered == Answered::Mandatory {
+            Consent::Mandatory
+        } else {
+            Consent::Granted
+        };
+        let _ = review.consent(given);
         let mut guard = Guard {
             manager: self.clone(),
             pane,
@@ -482,6 +487,10 @@ impl RunManager {
         }
         review.note_cut(guard.cut_bytes);
         guard.release();
+        // The receipt says why a review that never concluded did not.
+        if let Some(Stop::Start(why) | Stop::Other(why)) = &stopped {
+            review.note_stop(why);
+        }
         let (outcome, line) = match stopped {
             Some(Stop::Start(why)) => (
                 None,
@@ -693,6 +702,15 @@ impl RunManager {
                 .start_review(pane, run, Role::Reader, worker, prompt.text, system)
                 .map_err(Stop::Start)?;
             guard.spawned.push(id);
+            // A reviewer whose engine cannot run is refused at once and
+            // halts the run; the review says so, never another engine (D21).
+            if let Some(why) = self.refused_at_start(pane, run, id) {
+                return Err(Stop::Start(format!(
+                    "lens {} (worker {}) was refused: {why}",
+                    lens.id(),
+                    id.0
+                )));
+            }
             lenses.push((lens, id));
         }
         let ids: Vec<_> = lenses.iter().map(|(_, id)| *id).collect();
@@ -963,6 +981,20 @@ impl RunManager {
             .staged_diff(batch_of(pane, run, proposer), &origin, allow)
             .await
             .unwrap_or_else(StagedDiff::unavailable)
+    }
+
+    /// Why review worker `id` was refused as it started, if it was.
+    fn refused_at_start(&self, pane: PaneId, run: RunId, id: WorkerId) -> Option<String> {
+        let why = self.on_run(pane, run, |live| {
+            let result = live.run.result(id)?;
+            (result.status == WorkerStatus::Refused).then(|| {
+                result
+                    .error
+                    .as_ref()
+                    .map_or_else(String::new, |(_, text)| text.clone())
+            })
+        });
+        why.flatten()
     }
 
     /// Starts one review worker as a worker of the run.

@@ -22,6 +22,13 @@ use crate::core::ai::tools::github::forwards_off_machine;
 use crate::core::ai::tools::label;
 use crate::core::ai::tools::registry::{Family, FamilySet};
 
+/// Whether a worker on `engine` and `model` is a cheap author (design D20):
+/// a local server that keeps the model on the machine. An Ollama `*-cloud`
+/// model is not, nor is a CLI engine, an unknown engine or an empty one.
+pub fn cheap(engine: &str, model: Option<&str>) -> bool {
+    locality(engine) == Some(Locality::Local) && !forwards_off_machine(engine, model)
+}
+
 /// What bounds a run: the workers that run at once, the workers it may spawn
 /// in all and its wall clock (`max_parallel`, `max_workers`,
 /// `run_timeout_mins`) and the orchestrator turns it may take, the first
@@ -395,11 +402,9 @@ impl Run {
     /// off the machine (an Ollama `*-cloud` model is not).
     pub fn shares_engine(&self, id: WorkerId) -> Option<WorkerId> {
         let local = |slot: &Slot| {
-            let spec = &slot.spec;
             slot.status == WorkerStatus::Running
                 && !slot.parked
-                && locality(&spec.engine) == Some(Locality::Local)
-                && !forwards_off_machine(&spec.engine, spec.model.as_deref())
+                && cheap(&slot.spec.engine, slot.spec.model.as_deref())
         };
         let mine = self.slot(id).filter(|slot| local(slot))?;
         let other = |(n, slot): &(usize, &Slot)| {
@@ -407,6 +412,14 @@ impl Run {
         };
         let found = self.slots.iter().enumerate().find(other)?;
         Some(WorkerId(found.0 as u32 + 1))
+    }
+
+    /// Whether worker `id` is a cheap author (design D20), by the engine and
+    /// model it was spawned with (or relaunched on), never the menu now: its
+    /// staged change is always reviewed, with no consent ask (D21).
+    pub fn cheap(&self, id: WorkerId) -> bool {
+        self.spec(id)
+            .is_some_and(|spec| cheap(&spec.engine, spec.model.as_deref()))
     }
 
     /// What worker `id` reported using so far; `None` when its engine
@@ -728,6 +741,16 @@ impl Run {
             self.end(now, *id, WorkerStatus::TimedOut, "", Some(error));
         }
         late
+    }
+
+    /// Worker `id`'s own deadline passed: its turn's clock, which stops while
+    /// it waits for the user or its review (D5, D6), is the judge, never the
+    /// wall time since it started. Ends it `timed_out` if it still runs.
+    pub fn time_out(&mut self, now: Instant, id: WorkerId) {
+        if self.status(id) == Some(WorkerStatus::Running) {
+            let error = (ErrorClass::Timeout, "deadline passed".to_owned());
+            self.end(now, id, WorkerStatus::TimedOut, "", Some(error));
+        }
     }
 
     /// The status of each id. While a failure is unresolved every id answers
