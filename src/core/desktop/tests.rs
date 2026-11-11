@@ -257,8 +257,11 @@ fn no_notice_says_tested_in_kitty() {
 }
 
 #[test]
-fn recorded_terminals_are_kitty_windows_terminal_and_zutty_each_with_a_folder() {
-    assert_eq!(RECORDED_TERMINALS, ["kitty", "windows-terminal", "zutty"]);
+fn recorded_terminals_are_kitty_wezterm_windows_terminal_and_zutty_each_with_a_folder() {
+    assert_eq!(
+        RECORDED_TERMINALS,
+        ["kitty", "wezterm", "windows-terminal", "zutty"]
+    );
     let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/terminals");
     for name in RECORDED_TERMINALS {
         assert!(docs.join(name).is_dir(), "missing docs/terminals/{name}/");

@@ -15,6 +15,10 @@ baseline.
 - Windows Terminal under WSL has a test record (`docs/terminals/windows-terminal/`)
   and counts as a recorded terminal. `Alt+Enter` is taken by Windows Terminal
   for fullscreen: use `Ctrl+J` for a newline in the chat, or unbind the key.
+- WezTerm (Windows build with its WSL domain) has a test record
+  (`docs/terminals/wezterm/`) and counts as a recorded terminal. As in Windows
+  Terminal, `Alt+Enter` is taken for fullscreen: use `Ctrl+J`, or disable the
+  default assignment in `wezterm.lua`.
 
 ### Changed
 
