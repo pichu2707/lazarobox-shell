@@ -10,12 +10,22 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Google Search Console joins the `Connectors` area (`gsc`), connected with a
+  service account: `GSC_CREDENTIALS_PATH` (a path, in `secrets.toml`) and
+  `GSC_SKIP_OAUTH = "true"`, no login step, and `GSC_ALLOW_DESTRUCTIVE` is
+  never declared. See "Conectar un servicio" in the README.
+
 ### Fixed
 
 - When an orchestrator run ends (`run_timeout_mins`, a stop or a cancel), the
   batch reviews and asks of its workers still on screen close with `review
   closed: the run ended; nothing was written`, and a late `y` no longer writes
   a batch the run had already denied.
+- A worker whose task row is unassigned (for example `simple`, which runs on
+  `general`) now says `(default)` on its row in the orchestra panel, like the
+  AI menu row does, instead of showing only `engine>model`.
 
 ## [1.18.0] - 2026-11-11
 
