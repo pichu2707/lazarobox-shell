@@ -2,7 +2,7 @@
 //! the list shows, the masked field, the confirmations, the backup action and
 //! the sweep that no confidential value is drawn or formatted anywhere.
 
-use super::ai_tests::press;
+use super::ai_tests::{ch, press};
 use super::connectors_tests::{declared, entry, presence, texts};
 use super::footer_tests::hint;
 use super::picker_tests::{key, send};
@@ -421,4 +421,66 @@ fn a_declared_server_of_another_name_does_not_change_the_fields() {
     let mut m = entry(vec![declared("fs", true)], 0);
     press(&mut m, 'f');
     assert!(texts(&m).contains(&format!("{TOKEN}: not set")));
+}
+
+/// A key as the hold tracker flags it: the same key again within its window.
+fn repeated(m: &mut MenuState, c: char) -> MenuCommand {
+    m.on_key(&ch(c), true, &mut Config::default())
+}
+
+// A doubled letter is typed text, not a held key.
+#[test]
+fn a_doubled_character_typed_into_a_field_is_kept() {
+    let mut m = clarity_field();
+    press(&mut m, 'a');
+    assert_eq!(repeated(&mut m, 'a'), MenuCommand::None);
+    assert_eq!(enter(&mut m), save("clarity", TOKEN, "aa"));
+}
+
+#[test]
+fn a_key_flagged_as_held_is_typed_every_time_in_a_field() {
+    let mut m = clarity_field();
+    press(&mut m, 'z');
+    repeated(&mut m, 'z');
+    repeated(&mut m, 'z');
+    assert_eq!(enter(&mut m), save("clarity", TOKEN, "zzz"));
+}
+
+// Outside a field a repeat still only moves, so a held `y` cannot confirm twice.
+#[test]
+fn a_repeated_y_confirms_nothing_and_a_repeated_enter_opens_no_field() {
+    let mut m = fields(0, CLARITY, OLD);
+    enter(&mut m);
+    type_in(&mut m, "new");
+    enter(&mut m);
+    assert!(texts(&m).contains(&"replace the saved CLARITY_API_TOKEN? (y/n)".to_owned()));
+    assert_eq!(repeated(&mut m, 'y'), MenuCommand::None);
+    assert!(texts(&m).contains(&"replace the saved CLARITY_API_TOKEN? (y/n)".to_owned()));
+    assert_eq!(press(&mut m, 'y'), save("clarity", TOKEN, "new"));
+    let enter_again = m.on_key(&key(KeyCode::Enter), true, &mut Config::default());
+    assert_eq!(enter_again, MenuCommand::None);
+    assert!(
+        !texts(&m)
+            .iter()
+            .any(|r| r.contains("CLARITY_API_TOKEN") && r.trim().starts_with("••"))
+    );
+}
+
+// The mask is drawn while the field is open, with the value in it.
+#[test]
+fn the_rows_drawn_while_the_field_is_open_hold_no_part_of_the_value() {
+    let value = "tok-7f3a9c1e2b4d6f80";
+    let mut m = clarity_field();
+    for c in value.chars() {
+        press(&mut m, c);
+    }
+    let all = format!("{}\n{}\n{m:?}", texts(&m).join("\n"), hint(&m));
+    for at in 0..=value.len() - 4 {
+        assert!(
+            !all.contains(&value[at..at + 4]),
+            "{} leaked",
+            &value[at..at + 4]
+        );
+    }
+    assert!(texts(&m).iter().any(|r| r.trim() == MASK));
 }

@@ -10,8 +10,6 @@ baseline.
 
 ## [Unreleased]
 
-## [1.20.0] - 2026-11-11
-
 ### Added
 
 - The `Connectors` area can save a value into `secrets.toml` for you: `f` on an
@@ -23,6 +21,11 @@ baseline.
   a value or when your declared command is not the catalog's. The value reaches
   the server at the next chat start; it never goes to a model, a log or the
   transcript.
+
+## [1.20.0] - 2026-11-11
+
+### Added
+
 - The `Connectors` area lists a `Workspace` group: `google` (Gmail, Docs and
   Sheets through workspace-mcp 2.4.1) and `apps-script` (clasp 3.4.1). For
   `google`, lazarobox registers only 8 Gmail tools (search, read, attachment,

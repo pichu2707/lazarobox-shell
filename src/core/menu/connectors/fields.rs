@@ -107,6 +107,10 @@ impl Connectors {
         }
     }
 
+    pub(in crate::core::menu) fn field_open(&self) -> bool {
+        self.field.is_some()
+    }
+
     /// The result of a save: the list asks the user to restart on success.
     pub(in crate::core::menu) fn saved(&mut self, ok: bool) {
         self.saved = ok;

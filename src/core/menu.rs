@@ -1347,13 +1347,14 @@ impl MenuState {
         matches!(self.selected_kind(), Some(ItemKind::Connectors))
     }
 
-    /// Keys in the Connectors area. A repeat only scrolls and moves.
+    /// Keys in the Connectors area. A repeat only scrolls and moves, except
+    /// in an open field: a doubled letter there is text.
     fn on_connectors_key(&mut self, key: &KeyEvent, repeat: bool, config: &Config) -> MenuCommand {
         let moves = matches!(
             key.code,
             KeyCode::Char('j' | 'k') | KeyCode::Up | KeyCode::Down
         );
-        if repeat && !moves {
+        if repeat && !moves && !self.connectors.field_open() {
             return MenuCommand::None;
         }
         let dirty = !self.edits(config).is_empty();
