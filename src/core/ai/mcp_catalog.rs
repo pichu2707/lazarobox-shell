@@ -153,19 +153,19 @@ pub fn entry(name: &str) -> Option<&'static Entry> {
 impl Entry {
     /// The names the user still has to fill. With ways, the first way the
     /// table completes decides (so an S5 service-account table is complete),
-    /// else the first (default) way names what is missing. Without ways, the
-    /// names the user types.
+    /// else the first (default) way names what is missing. Only names the user
+    /// types count: a preset is filled by the template.
     pub fn missing(&self, has: impl Fn(&str) -> bool) -> Vec<&'static str> {
-        let unset = |vars: &'static [Var], typed_only: bool| -> Vec<&'static str> {
+        let unset = |vars: &'static [Var]| -> Vec<&'static str> {
             vars.iter()
-                .filter(|v| v.secret && !(typed_only && v.preset.is_some()))
+                .filter(|v| v.secret && v.preset.is_none())
                 .filter(|v| !has(v.name))
                 .map(|v| v.name)
                 .collect()
         };
-        let mut per_way = self.ways.iter().map(|w| unset(w.vars, false));
+        let mut per_way = self.ways.iter().map(|w| unset(w.vars));
         match per_way.next() {
-            None => unset(self.env, true),
+            None => unset(self.env),
             Some(first) if first.is_empty() => first,
             Some(first) => per_way.find(Vec::is_empty).unwrap_or(first),
         }
@@ -210,7 +210,8 @@ pub fn admits(server: &McpServer, tool: &str) -> bool {
     let gmail = entry.gmail_allowlist
         && tool.to_ascii_lowercase().contains("gmail")
         && !GMAIL_ALLOWLIST.contains(&tool);
-    !(gmail || entry.hidden.contains(&tool))
+    let hidden = entry.hidden.iter().any(|h| h.eq_ignore_ascii_case(tool));
+    !(gmail || hidden)
 }
 
 /// A TOML basic string.

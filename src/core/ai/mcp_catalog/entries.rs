@@ -5,6 +5,15 @@ use super::{Class, Entry, Group, Link, Login, Var, Way};
 
 pub(super) static ENTRIES: &[Entry] = &[CLARITY, GA4, GSC, GOOGLE, APPS_SCRIPT];
 
+/// `GSC_SKIP_OAUTH = "true"`: no browser flow, ever (the server would start one
+/// inside an MCP call).
+const SKIP: Var = Var {
+    name: "GSC_SKIP_OAUTH",
+    shown: true,
+    preset: Some("true"),
+    ..Var::SECRET
+};
+
 const CLARITY: Entry = Entry {
     id: "clarity",
     title: "Clarity",
@@ -96,95 +105,42 @@ const GSC: Entry = Entry {
     args: &[],
     env: &[
         Var {
-            name: "GSC_OAUTH_CLIENT_SECRETS_FILE",
-            shown: true,
-            ..Var::SECRET
-        },
-        Var {
-            name: "GSC_CONFIG_DIR",
-            shown: true,
-            ..Var::SECRET
-        },
-        Var {
             name: "GSC_CREDENTIALS_PATH",
             shown: true,
             ..Var::SECRET
         },
-        Var {
-            name: "GSC_SKIP_OAUTH",
-            shown: true,
-            ..Var::SECRET
-        },
+        SKIP,
     ],
-    ways: &[
-        Way {
-            title: "OAuth",
-            vars: &[
-                Var {
-                    name: "GSC_OAUTH_CLIENT_SECRETS_FILE",
-                    shown: true,
-                    preset: Some(".config/lazarobox/google-oauth-client.json"),
-                    under_home: true,
-                    ..Var::SECRET
-                },
-                Var {
-                    name: "GSC_CONFIG_DIR",
-                    shown: true,
-                    preset: Some(".config/mcp-gsc"),
-                    under_home: true,
-                    ..Var::SECRET
-                },
-                Var {
-                    name: "GSC_SKIP_OAUTH",
-                    shown: true,
-                    preset: Some("false"),
-                    ..Var::SECRET
-                },
-            ],
-            login: None,
-        },
-        Way {
-            title: "Service account",
-            vars: &[
-                Var {
-                    name: "GSC_CREDENTIALS_PATH",
-                    shown: true,
-                    ..Var::SECRET
-                },
-                Var {
-                    name: "GSC_SKIP_OAUTH",
-                    shown: true,
-                    preset: Some("true"),
-                    ..Var::SECRET
-                },
-            ],
-            login: None,
-        },
-    ],
+    ways: &[Way {
+        title: "Service account",
+        vars: &[
+            Var {
+                name: "GSC_CREDENTIALS_PATH",
+                shown: true,
+                ..Var::SECRET
+            },
+            SKIP,
+        ],
+        login: None,
+    }],
     login: None,
-    link: Link::Login,
+    link: Link::None,
     hidden: &["reauthenticate"],
     gmail_allowlist: false,
     guide: &[
-        "Two ways. Use name = \"gsc\" in config.toml: the hidden tool and the link check apply to that name only.",
-        "OAuth (your own client, the default):",
-        "1. In your own Google Cloud project, enable the Google Search Console API and create an OAuth client of type Desktop app (the one of the GA4 guide works).",
-        "2. Add the OAuth client in Connectors (o) or save its JSON as ~/.config/lazarobox/google-oauth-client.json.",
-        "3. Fill the values (f), then use Link with Google: the browser opens once. The token is written by mcp-gsc with the default umask: chmod 600 ~/.config/mcp-gsc/token.json. Link before the first chat call; a call made before linking is refused at start, and if calls hang, link again (Esc cancels the call).",
-        "Service account:",
+        "Declare the server with name = \"gsc\": the hidden reauthenticate tool applies to that name only.",
         "1. In your own Google Cloud project, enable the Google Search Console API and create a service account.",
         "2. Create a JSON key for it and save it as ~/.config/lazarobox/gsc-service-account.json with mode 0600 (lazarobox refuses to read it).",
         "3. In Search Console, open Settings, Users and permissions, and add the service account e-mail as a user of the property (Restricted is enough for search analytics; if URL inspection is denied, use Full).",
-        "4. Put the path of the JSON file in secrets.toml under [gsc] as GSC_CREDENTIALS_PATH and set GSC_SKIP_OAUTH to \"true\". There is no login step.",
-        "The reauthenticate tool is hidden from chats: it deletes the token and starts a browser OAuth flow.",
+        "4. Put the path of the JSON file in secrets.toml under [gsc] as GSC_CREDENTIALS_PATH; GSC_SKIP_OAUTH is already \"true\". There is no login step.",
+        "Warning: the reauthenticate tool is useless with a service account (it deletes the token and starts a browser OAuth flow); lazarobox does not offer it to the model.",
     ],
     links: &[
-        "https://console.cloud.google.com/apis/credentials",
         "https://console.cloud.google.com/iam-admin/serviceaccounts",
         "https://search.google.com/search-console/users",
         "https://github.com/AminForou/mcp-gsc",
     ],
-    token_location: "~/.config/mcp-gsc/token.json (OAuth) or the service-account JSON key (GSC_CREDENTIALS_PATH)",
+    token_location: "the service-account JSON key (GSC_CREDENTIALS_PATH)",
     tools: &[
         ("get_capabilities", Class::Read),
         ("get_creator_info", Class::Read),
@@ -255,6 +211,7 @@ const GOOGLE: Entry = Entry {
     hidden: &["start_google_auth"],
     gmail_allowlist: true,
     guide: &[
+        "Declare the server with name = \"google\": the Gmail allowlist and the hidden tools are keyed by that name, and under another name every Gmail tool is registered.",
         "1. In your own Google Cloud project, enable the Gmail, Docs, Sheets and Drive APIs and create an OAuth client of type Desktop app.",
         "2. Put its id, its secret and your Google e-mail in secrets.toml under [google].",
         "3. Use Link with Google: the browser opens once and the server keeps the token.",

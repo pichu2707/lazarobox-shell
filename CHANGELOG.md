@@ -16,9 +16,9 @@ baseline.
   Sheets through workspace-mcp 2.4.1) and `apps-script` (clasp 3.4.1). For
   `google`, lazarobox registers only 8 Gmail tools (search, read, attachment,
   draft and labels) and never `send_gmail_message` nor `start_google_auth`, so
-  replies are drafts you send from Gmail. Search Console (`gsc`) now has two
-  ways, your own OAuth client or a service account, and `reauthenticate` is no
-  longer offered to the model; GA4 pins only its 10 read tools. Linking from
+  replies are drafts you send from Gmail. Search Console (`gsc`) is pinned to
+  mcp-search-console 0.4.2 and `reauthenticate` is no longer offered to the
+  model; GA4 pins only its 10 read tools. Linking from
   the menu comes in a later release.
 - Windows Terminal under WSL has a test record (`docs/terminals/windows-terminal/`)
   and counts as a recorded terminal. `Alt+Enter` is taken by Windows Terminal

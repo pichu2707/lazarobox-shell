@@ -246,21 +246,13 @@ fn gsc_uses_a_service_account_and_never_names_the_destructive_flag() {
     assert_eq!(e.command, "mcp-search-console");
     assert!(e.login.is_none());
     let server = parse_snippet(e);
-    assert_eq!(
-        server.env,
-        [
-            "GSC_OAUTH_CLIENT_SECRETS_FILE",
-            "GSC_CONFIG_DIR",
-            "GSC_CREDENTIALS_PATH",
-            "GSC_SKIP_OAUTH"
-        ]
-    );
+    assert_eq!(server.env, ["GSC_CREDENTIALS_PATH", "GSC_SKIP_OAUTH"]);
     let all = format!("{}{:?}", snippet(e), e);
     assert!(!all.contains("GSC_ALLOW_DESTRUCTIVE"), "{all}");
 }
 
 #[test]
-fn the_gsc_guide_walks_through_both_ways() {
+fn the_gsc_guide_walks_through_the_service_account() {
     let guide = entry("gsc").unwrap().guide.join("\n");
     for word in [
         "service account",
@@ -269,11 +261,7 @@ fn the_gsc_guide_walks_through_both_ways() {
         "0600",
         "gsc-service-account.json",
         "user of the property",
-        "OAuth client",
-        "Link",
-        "chmod 600",
         "name = \"gsc\"",
-        "umask",
     ] {
         assert!(guide.contains(word), "{word}: {guide}");
     }

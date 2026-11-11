@@ -173,7 +173,7 @@ fn a_declared_entry_without_its_secret_says_which_values_are_missing() {
 // Spec (mcp-connect, Entry list): ways; an S5 table completes the service
 // account way.
 #[test]
-fn gsc_is_judged_per_way_and_an_s5_table_is_complete() {
+fn gsc_is_declared_with_only_its_key_path() {
     const GSC: &str = "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"x\"\n";
     let state = |secrets: &str| {
         let mut m = area(Vec::new());
@@ -185,10 +185,14 @@ fn gsc_is_judged_per_way_and_an_s5_table_is_complete() {
     };
     assert_eq!(
         state(""),
-        "Search Console: values missing: GSC_OAUTH_CLIENT_SECRETS_FILE, GSC_CONFIG_DIR, GSC_SKIP_OAUTH"
+        "Search Console: values missing: GSC_CREDENTIALS_PATH"
     );
     let s5 = "[gsc]\nGSC_CREDENTIALS_PATH = \"/p.json\"\nGSC_SKIP_OAUTH = \"true\"\n";
     assert_eq!(state(s5), "Search Console: declared");
+    assert_eq!(
+        state("[gsc]\nGSC_CREDENTIALS_PATH = \"/p.json\"\n"),
+        "Search Console: declared"
+    );
     let google = presence(
         "[[ai.mcp.servers]]\nname = \"google\"\ncommand = \"x\"\n",
         "[google]\nUSER_GOOGLE_EMAIL = \"a@b.c\"\nWORKSPACE_MCP_DISABLE_LOCAL_FILES = \"true\"\n",

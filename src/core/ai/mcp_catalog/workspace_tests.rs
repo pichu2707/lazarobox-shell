@@ -14,6 +14,55 @@ fn declared(name: &str) -> McpServer {
     }
 }
 
+/// A two-way entry for the machinery S6b1 will use for `gsc`.
+fn two_ways() -> Entry {
+    const OAUTH: &[Var] = &[
+        Var {
+            name: "CLIENT_FILE",
+            preset: Some(".config/x/client.json"),
+            under_home: true,
+            ..Var::SECRET
+        },
+        Var {
+            name: "SKIP",
+            preset: Some("false"),
+            ..Var::SECRET
+        },
+        Var {
+            name: "TOKEN_DIR",
+            ..Var::SECRET
+        },
+    ];
+    const KEY: &[Var] = &[
+        Var {
+            name: "KEY_PATH",
+            ..Var::SECRET
+        },
+        Var {
+            name: "SKIP",
+            preset: Some("true"),
+            ..Var::SECRET
+        },
+    ];
+    const ENV: &[Var] = &[OAUTH[0], OAUTH[2], KEY[0], OAUTH[1]];
+    Entry {
+        env: ENV,
+        ways: &[
+            Way {
+                title: "OAuth",
+                vars: OAUTH,
+                login: None,
+            },
+            Way {
+                title: "Key",
+                vars: KEY,
+                login: None,
+            },
+        ],
+        ..entry("ga4").copied().unwrap()
+    }
+}
+
 fn all_vars() -> impl Iterator<Item = &'static Var> {
     entries()
         .iter()
@@ -32,9 +81,7 @@ fn a_secret_is_confidential_unless_it_opts_out_and_the_shown_set_is_listed() {
         [
             "GOOGLE_CLOUD_PROJECT",
             "GOOGLE_OAUTH_CLIENT_ID",
-            "GSC_CONFIG_DIR",
             "GSC_CREDENTIALS_PATH",
-            "GSC_OAUTH_CLIENT_SECRETS_FILE",
             "GSC_SKIP_OAUTH",
             "USER_GOOGLE_EMAIL",
             "WORKSPACE_MCP_DISABLE_LOCAL_FILES",
@@ -114,32 +161,39 @@ fn every_entry_env_is_the_union_of_its_ways_and_links_match() {
 // 6c.2 gsc ways
 
 #[test]
-fn gsc_has_an_oauth_way_first_and_a_service_account_way() {
-    let e = entry("gsc").unwrap();
-    assert_eq!(e.ways.len(), 2);
+fn ways_resolve_their_own_presets_with_an_absolute_path_and_no_tilde() {
+    let e = two_ways();
     assert_eq!(
         e.ways[0].values("/h"),
         [
-            (
-                "GSC_OAUTH_CLIENT_SECRETS_FILE",
-                "/h/.config/lazarobox/google-oauth-client.json".to_owned()
-            ),
-            ("GSC_CONFIG_DIR", "/h/.config/mcp-gsc".to_owned()),
-            ("GSC_SKIP_OAUTH", "false".to_owned()),
+            ("CLIENT_FILE", "/h/.config/x/client.json".to_owned()),
+            ("SKIP", "false".to_owned()),
+            ("TOKEN_DIR", String::new()),
         ]
     );
     assert_eq!(
         e.ways[1].values("/h"),
-        [
-            ("GSC_CREDENTIALS_PATH", String::new()),
-            ("GSC_SKIP_OAUTH", "true".to_owned()),
-        ]
+        [("KEY_PATH", String::new()), ("SKIP", "true".to_owned())]
     );
-    for way in e.ways {
-        for (name, value) in way.values("/h") {
-            assert!(!value.contains('~'), "{name}");
-        }
+    assert!(e.ways[0].values("~")[0].1.is_empty());
+}
+
+#[test]
+fn gsc_is_the_service_account_only_until_the_oauth_way_returns_with_its_link() {
+    let e = entry("gsc").unwrap();
+    // The OAuth way waits for S6b1: without the start refusal a chat call
+    // could run the server's browser flow and hang.
+    assert_eq!(e.ways.len(), 1);
+    assert_eq!(e.ways[0].title, "Service account");
+    assert_eq!(e.env.len(), 2);
+    let text = format!("{e:?}");
+    for word in ["OAUTH_CLIENT", "GSC_CONFIG_DIR", "Link", "\"false\""] {
+        assert!(!text.contains(word), "{word}");
     }
+    assert_eq!(
+        secrets_template(e).unwrap(),
+        "[gsc]\nGSC_CREDENTIALS_PATH = \"\"\nGSC_SKIP_OAUTH = \"true\"\n"
+    );
 }
 
 #[test]
@@ -151,23 +205,16 @@ fn gsc_hides_reauthenticate_and_names_no_destructive_flag() {
 }
 
 #[test]
-fn an_s5_table_completes_the_service_account_way() {
-    let e = entry("gsc").unwrap();
-    let s5 = |n: &str| ["GSC_CREDENTIALS_PATH", "GSC_SKIP_OAUTH"].contains(&n);
-    assert!(e.missing(s5).is_empty());
-    // Nothing set: the OAuth way, the default one, names what is missing.
-    assert_eq!(
-        e.missing(|_| false),
-        [
-            "GSC_OAUTH_CLIENT_SECRETS_FILE",
-            "GSC_CONFIG_DIR",
-            "GSC_SKIP_OAUTH"
-        ]
-    );
-    // A single-way entry judges the names the user types, never a preset.
+fn a_table_with_only_the_key_path_is_complete_as_on_main() {
+    let gsc = entry("gsc").unwrap();
+    assert!(gsc.missing(|n| n == "GSC_CREDENTIALS_PATH").is_empty());
+    assert_eq!(gsc.missing(|_| false), ["GSC_CREDENTIALS_PATH"]);
+    // With ways: the first complete way wins, else the first way names it.
+    let e = two_ways();
+    assert!(e.missing(|n| n == "KEY_PATH").is_empty());
+    assert_eq!(e.missing(|_| false), ["TOKEN_DIR"]);
     let ga4 = entry("ga4").unwrap();
     assert_eq!(ga4.missing(|_| false), ["GOOGLE_CLOUD_PROJECT"]);
-    assert!(ga4.missing(|n| n == "GOOGLE_CLOUD_PROJECT").is_empty());
     assert!(entry("apps-script").unwrap().missing(|_| false).is_empty());
 }
 
@@ -272,6 +319,7 @@ fn no_two_google_tools_collide_after_the_name_cut() {
 fn the_google_guide_states_the_risks_and_the_steps() {
     let guide = entry("google").unwrap().guide.join("\n");
     for word in [
+        "name = \"google\"",
         "Gmail, Docs, Sheets and Drive",
         "Desktop",
         "expire after 7 days",
@@ -315,6 +363,8 @@ fn hidden_tools_are_dropped_by_server_name_only() {
     assert!(!admits(&declared("gsc"), "reauthenticate"));
     assert!(admits(&declared("gsc"), "get_search_analytics"));
     assert!(admits(&declared("google"), "reauthenticate"));
+    assert!(!admits(&declared("google"), "Start_Google_Auth"));
+    assert!(!admits(&declared("gsc"), "REAUTHENTICATE"));
     for name in ["mail", "search", "Google"] {
         let s = declared(name);
         for tool in ["send_gmail_message", "start_google_auth", "reauthenticate"] {
