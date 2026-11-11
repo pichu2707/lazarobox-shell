@@ -35,12 +35,17 @@ The area MUST list the catalog entries grouped as `Analytics` (`clarity`, `ga4`,
 - THEN the `ga4` row reads `values missing: GOOGLE_CLOUD_PROJECT`
 
 ### Requirement: Entry screen [S4]
-The entry screen MUST show, in order: the guide steps and links of the catalog entry (with its warnings: the Clarity limits, the 7-day "Testing" note of C7, the drafts note of C9 and C12); the exact `[[ai.mcp.servers]]` entry to paste into `config.toml`; the `secrets.toml` table to fill, with each name and an empty value (no table when the entry has no secrets); the paths of `config.toml` and `secrets.toml`; and the actions available for that entry: install, log in (only when the entry has a login command), probe (only when the server is declared), open link, and copy (assumption: copying the snippet and the template to the clipboard makes pasting easy). The snippet and the template are built from the catalog and are valid TOML that parses back to the catalog's command, args and `env`. The screen is drawn inside the fixed popup body and scrolls when it is longer (assumption; see config-menu, Connectors row).
+The entry screen MUST show, in order: the guide steps and links of the catalog entry (with its warnings: the Clarity limits, the 7-day "Testing" note of C7, the drafts note of C9 and C12); the exact `[[ai.mcp.servers]]` entry to paste into `config.toml`; the `secrets.toml` table to fill, with each name and an empty value (no table when the entry has no secrets); the paths of `config.toml` and `secrets.toml`; and the actions available for that entry: install, log in (only when the entry has a login command), probe (only when the server is declared), open link, and copy (assumption: copying the snippet and the template to the clipboard makes pasting easy). The snippet and the template are built from the catalog and are valid TOML that parses back to the catalog's command, args and `env`. The screen is drawn inside the popup body, whose height is computed (`view_body()`, at least 13 rows today) and never changes, and scrolls when it is longer (assumption; see config-menu, Connectors row). When the area opens it MUST re-read `config.toml` from disk (`[[ai.mcp.servers]]` only) and use that copy for the entry states and the probe; when it differs from the list loaded at startup the area MUST say `restart lazarobox to use it in chats` (owner decision 2026-11-11; hot reload into chats is a later candidate slice).
 
 #### Scenario: Snippet parses back [auto]
 - GIVEN each catalog entry
 - WHEN its snippet is parsed by `Config::parse`
 - THEN one server with the entry's `name`, command, args and `env` exists and no notice is produced
+
+#### Scenario: Entry pasted after startup [auto]
+- GIVEN `config.toml` gains a `clarity` entry after lazarobox started
+- WHEN the area is opened
+- THEN `clarity` shows `declared`, the probe is offered, and the area says `restart lazarobox to use it in chats`
 
 #### Scenario: Probe only when declared [auto]
 - GIVEN `clarity` not declared
@@ -48,22 +53,23 @@ The entry screen MUST show, in order: the guide steps and links of the catalog e
 - THEN no probe action is offered and the screen says to paste the entry into `config.toml` first
 
 ### Requirement: Install and login run in a visible pane [S3]
-The install command and the login command of an entry MUST run only after the user answers `y` to a prompt that shows the full command, and MUST run in a new real lazarobox pane with a TTY, typed into its shell as visible text, so the user sees every line, any URL the command prints, and can answer its prompts. `n`, Esc or any other key MUST run nothing. Nothing MUST be installed or logged in hidden or inside a tool call: a login URL printed by a server inside an MCP call never reaches the user. The login MAY be run again at any time (the "Testing" refresh tokens of C7 expire after 7 days). Assumption [design-confirm]: when `BROWSER` is unset in the pane, it is set to the first opener found (see Browser opener), so tools that honour `BROWSER` open the right browser on WSL.
+The install command and the login command of an entry MUST run only after the user answers `y` to a prompt that shows the full command, and MUST run in a new real lazarobox pane with a TTY, typed into its shell as visible text, so the user sees every line, any URL the command prints, and can answer its prompts. `n`, Esc or any other key MUST run nothing. Nothing MUST be installed or logged in hidden or inside a tool call: a login URL printed by a server inside an MCP call never reaches the user. The login MAY be run again at any time (the "Testing" refresh tokens of C7 expire after 7 days). The typed command MUST be sent with Enter: after the `y` it runs on its own, with no second confirmation (owner decision 2026-11-11). lazarobox MUST NOT set `BROWSER` in the pane; Linux and macOS come first, the tools open the browser through the platform's default opener, and if no browser opens the link in the login output stays visible in the pane. WSL handling is deferred to a later item (owner decision 2026-11-11).
 
-#### Scenario: Nothing without y [auto]
+#### Scenario: Nothing without y [auto][S4]
 - GIVEN the `ga4` entry screen and a fake shell recorder
 - WHEN the login action is chosen and the user presses `n`
 - THEN no pane is created and nothing is typed
 
-#### Scenario: Visible command [auto]
+#### Scenario: Visible command [auto][S3 App side, S4 menu keys]
 - GIVEN the same screen
 - WHEN the login action is chosen and the user presses `y`
-- THEN a new pane exists and the text typed into it is the entry's full login command
+- THEN a new pane exists and the text typed into it is the entry's full login command followed by Enter, and no second prompt appears
 
-#### Scenario: Login on WSL [manual]
-- GIVEN WSL with `wslview` installed
+#### Scenario: Login output keeps the link [manual]
+- GIVEN Linux or macOS with a default browser
 - WHEN the `ga4` login runs in the pane
-- THEN the consent page opens in the Windows browser, or its URL is shown in the pane for the user to open
+- THEN the consent page opens through the platform's opener, and the link printed by the login stays visible in the pane if it does not
+- NOTE: WSL is deferred (owner decision 2026-11-11)
 
 ### Requirement: Browser opener [S3]
 Guide links MUST open through the existing opener (src/core/opener.rs, run by src/runtime/opener.rs, reached from the menu by `MenuCommand::Open`, src/app.rs:2536-2543): `open` on macOS; `wslview`, then `rundll32.exe url.dll,FileProtocolHandler`, then `xdg-open` on WSL; `xdg-open` elsewhere; and only a one-line `https://` link is handed to it. When no opener is found, or the opener fails (it exits with an error within 5 seconds of its start), the link MUST be copied and shown as text, and the footer says so, as for the Hugging Face row.

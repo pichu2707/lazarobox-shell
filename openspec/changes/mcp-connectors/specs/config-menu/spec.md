@@ -9,7 +9,7 @@ Traceability: C1, C2 (a menu wizard), C4 (the menu writes no `ai.mcp.*`), C6 (th
 ## ADDED Requirements
 
 ### Requirement: Connectors row
-The `Connectors` menu tab MUST hold one static row, `Connectors` (no key path), as its only row (see Menu tabs). Its value is the number of catalog entries that are declared and enabled in `config.toml` (`<N> declared`), or `none` when there are none (see mcp-connect, Entry list). Enter on the row opens the Connectors area (see mcp-connect); Esc there comes back to the row. The row is not a draft value: it writes no config edit, `s` saves only the other rows' drafts, and the row's value never changes on Esc of the menu. The area's screens MUST be drawn inside the fixed popup body and MUST NOT change the popup height (see Popup height is fixed); a screen longer than the body scrolls (assumption).
+The `Connectors` menu tab MUST hold one static row, `Connectors` (no key path), as its only row (see Menu tabs). Its value is the number of catalog entries that are declared and enabled in `config.toml` (`<N> declared`), or `none` when there are none (see mcp-connect, Entry list). Enter on the row opens the Connectors area (see mcp-connect); Esc there comes back to the row. The row is not a draft value: it writes no config edit, `s` saves only the other rows' drafts, and the row's value never changes on Esc of the menu. The area's screens MUST be drawn inside the popup body, whose height is computed (`view_body()`, at least 13 rows today; never hard-code a count), and MUST NOT change the popup height (see Popup height is fixed); a screen longer than the body scrolls (assumption).
 
 #### Scenario: The Connectors tab [auto, TestBackend + insta]
 - GIVEN the AI section attached and no declared catalog server

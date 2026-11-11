@@ -24,16 +24,19 @@ Order follows C8 (secrets and read-deny, then Clarity and GA4, then GSC, then Wo
 ## S3 Probe, install pane, login pane (C2, C7) — 230–330 lines
 
 - [ ] 3.1 RED/GREEN: probe with a fake server: success line, timeout after 20 s, server reaped within 3 s, `secrets.toml` values used, no value in the report (mcp-catalog, Probe).
-- [ ] 3.2 RED/GREEN: install and login: nothing without `y`, a new pane with the full command typed visibly (mcp-connect, Install and login run in a visible pane).
+- [ ] 3.2 RED/GREEN (App side only): a `MenuCommand::Connector` creates exactly one new shell pane and writes exactly the catalog line followed by Enter (D19), once the pane's first output arrives (fallback 2 s); the menu closes; no `WritePty` and no pane without the command. The menu-level `y`/`n` tests live in 4.4 (mcp-connect, Install and login run in a visible pane).
 - [ ] 3.3 RED/GREEN: guide links through `src/core/opener.rs` and the existing `MenuCommand::Open` (src/app.rs:2536-2543); no opener copies and shows the link (Browser opener).
-- [ ] 3.4 [design-confirm] `BROWSER` in the login pane when unset.
+- [x] 3.4 Resolved by D18 (owner, 2026-11-11): lazarobox never sets `BROWSER`; Linux and macOS use the platform opener of gcloud and clasp, and the link in the login output stays visible in the pane. No code; 3.2 also asserts the pane env is untouched. WSL handling is deferred (see Later items).
 
 ## S4 Connectors row and area; README for Clarity and GA4 (C1, C4, C6, C7) — 300–380 lines
 
+S4 may split the entry screen (the entry part of `connectors.rs`, tasks 4.3-4.4b) from the list (4.1-4.2) into its own PR when its production lines pass 400.
+
 - [ ] 4.1 RED/GREEN: `Connectors` row, the only row of the `Connectors` menu tab (menu.rs:772-778), `<N> declared` or `none`, opens the area, no config edit; the tab is now visible and reached by Tab and `4`, and the tests that need it hidden use a test table (config-menu, Connectors row, Sections and items are data, Menu tabs, Jump keys).
 - [ ] 4.2 RED/GREEN: entry list groups, order and states (`not declared`, `disabled`, `values missing: …`, `declared`, last probe) (mcp-connect, Entry list).
-- [ ] 4.3 RED/GREEN: entry screen: guide, snippet that parses back, secrets template, paths, actions; probe offered only when declared; values never drawn; a long screen scrolls inside the fixed 12-row body (Entry screen, The area writes no configuration).
-- [ ] 4.4 RED/GREEN: probe from the area: `y` prompt, footer, Esc stops it (Probe from the area).
+- [ ] 4.3 RED/GREEN: entry screen: guide, snippet that parses back, secrets template, paths, actions; probe offered only when declared; values never drawn; a long screen scrolls inside the popup body, whose height is computed by `view_body()` (menu.rs:863; at least 13 rows today) and never changes: do not hard-code a row count (Entry screen, The area writes no configuration).
+- [ ] 4.4 RED/GREEN: `y`/`n` prompts in the area: install and login create no pane and type nothing on `n`, Esc or any other key; on `y` the prompt's full command is what 3.2 writes, Enter included, with no second confirmation (D19); the prompt says unsaved menu changes are discarded when the draft is dirty (mcp-connect, Install and login run in a visible pane). Then the probe: `y` prompt, footer, Esc stops it (Probe from the area).
+- [ ] 4.4b RED/GREEN: config re-read (D20): opening the area reads `config.toml` from disk (`[[ai.mcp.servers]]` only); states and the probe use that copy; when it differs from the list loaded at startup the area shows `restart lazarobox to use it in chats`; no byte of either file is written (The area writes no configuration).
 - [ ] 4.5 Docs: README "Conectar un servicio" for Clarity and GA4 (guide, values, what is sent where, how to disconnect; claude/codex/gemini only on jailed turns, local engines always); CHANGELOG.
 - [ ] 4.6 [manual] Live: Clarity with a real token, GA4 with a real property.
 
@@ -59,3 +62,8 @@ Not specced. Blocked on open question 8 of the proposal (mechanism and the promp
 ## S8 (later, undecided) Gmail send with an explicit permission (C12)
 
 Not specced. Blocked on open question 9 of the proposal.
+
+## Later items (not in S2-S6)
+
+- L1 WSL login handling (deferred by D18, 2026-11-11): decide whether to set `BROWSER` (for example to `wslview`, only when unset) so gcloud opens the Windows browser; needs a manual check on WSL. Until then the link printed in the login pane is the fallback.
+- L2 Hot reload of `[[ai.mcp.servers]]` into running chats when the area closes (candidate follow-up of D20): larger change in the chat runtime.
