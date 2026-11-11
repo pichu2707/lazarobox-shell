@@ -12,17 +12,24 @@ fn resolve(profile: Profile, task_file: Override, general_file: Override) -> Res
     resolve_prompt(profile, Task::Chat, task_file, general_file)
 }
 
-// Spec (prompt-profiles): Prompt table integrity.
+// Spec (prompt-profiles): Prompt table integrity; "Orchestrate prompt size
+// [K1, W6]": each `orchestrate` prompt is at most 6 KiB (owner, 2026-11-10:
+// "si, sube el tope a 6 KiB"), every other built-in at most 4 KiB.
 #[test]
-fn the_table_has_twelve_distinct_non_empty_prompts_within_4_kib() {
+fn the_table_has_twelve_distinct_non_empty_prompts_within_their_caps() {
     let mut count = 0;
     for task in Task::ALL {
+        let cap = if task == Task::Orchestrate {
+            6144
+        } else {
+            4096
+        };
         for profile in Profile::ALL {
             let prompt = builtin(profile, task);
             assert!(!prompt.trim().is_empty(), "{profile:?} {task:?}");
             assert!(
-                prompt.len() <= 4096,
-                "{profile:?} {task:?}: {}",
+                prompt.len() <= cap,
+                "{profile:?} {task:?}: {} > {cap}",
                 prompt.len()
             );
             count += 1;
@@ -149,18 +156,27 @@ fn the_orchestrate_prompts_say_only_an_applied_file_was_written() {
     }
 }
 
-// Spec (agent-orchestrator, Missing dependency [S10, auto]): no worker is
-// offered `run_command` in this release, so the coordinator says it cannot
-// run tests, never claims they passed, and leaves running them to the user.
+// Spec (prompt-profiles, "Prompt from W6 [W6, auto]"; agent-orchestrator, "A
+// test is not claimed without a result"): the `orchestrate` prompt no longer
+// says no worker can run commands; it says when one can (Exec on, its batch
+// applied, the user approving the command) and that a test counts as run or
+// passed only when a collected command result shows it, otherwise it was not
+// run and the user is asked to run it.
 #[test]
-fn the_orchestrate_prompts_say_no_worker_can_run_commands_or_tests() {
+fn the_orchestrate_prompts_say_when_a_worker_may_run_a_command() {
     for profile in Profile::ALL {
         let prompt = builtin(profile, Task::Orchestrate);
+        assert!(
+            !prompt.contains("No worker can run commands"),
+            "{profile:?}"
+        );
         for rule in [
-            "No worker can run commands or tests",
-            "say so",
-            "run them themselves",
-            "never claim a test ran",
+            "A code worker can run a command only when Exec is on",
+            "only after its batch is applied",
+            "only after the user approves that command",
+            "only when a collected command result shows it",
+            "say it was not run",
+            "ask the user to run it",
         ] {
             assert!(prompt.contains(rule), "{profile:?}: {rule}");
         }
@@ -591,6 +607,8 @@ fn the_worker_prompt_requires_write_tools_and_propose_batch() {
             "call propose_batch again",
             "32 KiB",
             "create_dir",
+            // Task 16.6: a command runs only after the batch is applied.
+            "A command runs only after your batch is applied",
         ] {
             assert!(got.contains(needle), "{profile:?}: {needle}");
         }

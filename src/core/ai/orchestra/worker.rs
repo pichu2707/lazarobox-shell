@@ -28,6 +28,13 @@ impl WorkerSpec {
     pub fn writes(&self) -> bool {
         self.families.contains(Family::Write)
     }
+
+    /// Whether the worker's tool session needs a batch key: it stages
+    /// (Write), or runs commands (Exec), whose refusal and output sink are
+    /// keyed by its batch (D19).
+    pub fn keys_a_batch(&self) -> bool {
+        self.writes() || self.families.contains(Family::Exec)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

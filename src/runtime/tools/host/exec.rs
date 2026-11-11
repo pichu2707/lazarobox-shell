@@ -28,6 +28,7 @@ use crate::{
             approval_rows::clip,
         },
         jail::JailSupport,
+        orchestra::commands::{Ran, RanEnd},
         sanitize::clean,
         toolchain::{Layout, Refusal, Vars, env::scrub, toolchain_spec},
         tools::{
@@ -56,6 +57,8 @@ pub(super) const NO_JAIL: &str = "commands need the Linux sandbox (Landlock ABI 
 /// Says how to go on, so a small model retries after proposing (#439).
 const PROPOSE_FIRST: &str = "staged changes are not proposed: propose them first with propose_batch, then call this tool again";
 const IN_REVIEW: &str = "a batch is waiting for the user's review";
+/// A worker's command before its own batch was applied (W6).
+const NOT_APPLIED: &str = "your changes are not applied: stage them and propose them first with propose_batch; a command runs only after the user applied your batch";
 /// Text the prompt could not show exactly as it will run.
 const UNSHOWABLE: &str = "command cannot be shown safely";
 const COULD_NOT: &str = "could not run";
@@ -161,10 +164,15 @@ pub(super) async fn plan(host: &ToolHost, scope: &TurnScope, call: &Call) -> Res
         return Err(NO_JAIL.into());
     }
     let (env, origin, args) = (host.scope_env(scope), scope.origin.clone(), args.clone());
+    let worker = scope.read_scope.is_some();
     let stages = host.stages.clone();
     let judged = tokio::task::spawn_blocking(move || {
         let found = inspect(&env, &origin, &args)?;
         staged(&stages, key)?;
+        // A worker's command runs only after its own batch was applied (W6).
+        if worker && !lock(&stages).applied(key) {
+            return Err(NOT_APPLIED.into());
+        }
         Ok::<_, Cow<'static, str>>(found)
     })
     .await
@@ -438,7 +446,35 @@ pub(super) async fn run(
     call: &Call,
     asked: Option<Pin>,
 ) -> (Outcome, ToolStatus, String) {
-    let fail = |why: &str| ended(ToolStatus::Error, why.to_owned(), why);
+    let (done, end) = attempt(host, scope, call, asked).await;
+    // A worker's command reaches the coordinator through `collect` (W6).
+    if let Some(worker) = &scope.read_scope {
+        let end = end.unwrap_or_else(|| RanEnd::Error(done.2.clone()));
+        let (program, command) = shown(call);
+        let ran = Ran {
+            program,
+            command,
+            end,
+        };
+        (worker.handle).ran(worker.run, worker.worker, ran);
+    }
+    done
+}
+
+/// The program of a command and its whole line, for a worker's record.
+pub(super) fn shown(call: &Call) -> (String, String) {
+    let program = call.command().map(|(program, ..)| program.to_owned());
+    (program.unwrap_or_default(), call.argument().into_owned())
+}
+
+/// [`run`], with how the command ended when it ran.
+async fn attempt(
+    host: &ToolHost,
+    scope: &TurnScope,
+    call: &Call,
+    asked: Option<Pin>,
+) -> ((Outcome, ToolStatus, String), Option<RanEnd>) {
+    let fail = |why: &str| (ended(ToolStatus::Error, why.to_owned(), why), None);
     // Without a nonce the output cannot be wrapped, so nothing may start.
     let Some(nonce) = new_nonce() else {
         return fail(COULD_NOT);
@@ -460,11 +496,9 @@ pub(super) async fn run(
     done.unwrap_or_else(fail)
 }
 
-async fn go(
-    host: &ToolHost,
-    plan: Plan,
-    nonce: &str,
-) -> Result<(Outcome, ToolStatus, String), &'static str> {
+type Done = ((Outcome, ToolStatus, String), Option<RanEnd>);
+
+async fn go(host: &ToolHost, plan: Plan, nonce: &str) -> Result<Done, &'static str> {
     let Some(helper) = host.exec.helper.clone() else {
         return Err(NO_SANDBOX);
     };
@@ -489,14 +523,14 @@ async fn go(
     // dropped hands its changes over through the sink.
     let ran = match run_jailed(job, &*read).await {
         Ok(ran) => ran,
-        Err(_) => return Ok(failed(COULD_NOT, unreported.drain(), nonce)),
+        Err(_) => return Ok((failed(COULD_NOT, unreported.drain(), nonce), None)),
     };
     let mut changes = ran.changes;
     changes.extend(unreported.drain());
     // Only the helper's own status channel says the jail was not applied: the
     // program's output (and its exit 125) can be forged by the program.
     if ran.not_enforced.is_some() {
-        return Ok(failed(NOT_ENFORCED, changes, nonce));
+        return Ok((failed(NOT_ENFORCED, changes, nonce), None));
     }
     let capture = &ran.done.capture;
     let outcome = RunOutcome::new(argv_text, ran.done.ended, capture, ran.done.duration);
@@ -508,7 +542,11 @@ async fn go(
     if !ran.leftovers.is_empty() {
         text.push_str("\nsome private temporary files could not be removed");
     }
-    Ok(ended(ToolStatus::Ok, text, &summary))
+    let end = RanEnd::Ended {
+        facts: outcome.facts(),
+        tail: outcome.digest,
+    };
+    Ok((ended(ToolStatus::Ok, text, &summary), Some(end)))
 }
 
 /// An error result that still says what the run changed.

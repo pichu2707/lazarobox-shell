@@ -2290,6 +2290,22 @@ fn worker_exec(worker: u32) -> ApprovalAsk {
     }
 }
 
+// Spec (agent-orchestrator, "Command asks with the worker label [W6]"): no
+// approval mode answers a worker's command ask, `run` included: the user does.
+#[test]
+fn no_approval_mode_answers_a_workers_command_ask() {
+    use crate::core::ai::{chat::approval::answers_itself, config::ApprovalMode};
+    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        for blocked in [false, true] {
+            assert_eq!(
+                answers_itself(&worker_exec(2), mode, blocked),
+                None,
+                "{mode:?} {blocked}"
+            );
+        }
+    }
+}
+
 // GUARD (D19): a chat's own command ask is drawn exactly as before.
 #[test]
 fn a_chat_command_ask_has_no_worker_line() {
