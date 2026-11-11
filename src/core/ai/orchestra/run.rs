@@ -668,6 +668,22 @@ impl Run {
         total.filter(|(_, count)| count.over()).collect()
     }
 
+    /// The staged `paths` that worker `id`'s brief does not list among its
+    /// outputs (W9b, C). Only a `simple` worker has a brief to leave.
+    pub fn outside_brief(&self, id: WorkerId, paths: &[String]) -> Vec<String> {
+        let Some(slot) = self.slot(id).filter(|s| s.spec.task == Task::Simple) else {
+            return Vec::new();
+        };
+        let listed = slot.spec.outputs().unwrap_or_default();
+        let outside = paths.iter().filter(|p| !listed.iter().any(|o| covers(o, p)));
+        outside.cloned().collect()
+    }
+
+    /// Whether worker `id` ended its attempt by choosing to split.
+    pub fn split_chosen(&self, id: WorkerId) -> bool {
+        matches!(self.closing(id), Some(Closing::Split(_)))
+    }
+
     /// Worker `id` chose to split its brief (W9b): `files` are the files over
     /// the limit, cleaned to one line each and capped like a clarification
     /// question. It ends the worker's writes and opens no clarification.

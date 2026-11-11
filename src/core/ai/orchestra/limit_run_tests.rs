@@ -82,6 +82,53 @@ fn a_split_is_recorded_once_and_ends_the_workers_writes() {
     assert!(!run.split(id, &files), "the first closing stands");
 }
 
+// 22.7: a retry drops the split of the failed attempt, and what its brief
+// already applied is still counted: lines on the disk do not vanish.
+#[test]
+fn a_retry_drops_the_split_and_keeps_the_applied_lines() {
+    use super::run::{UserChoice, WorkerEvent};
+    use super::worker::ErrorClass;
+    let mut run = run();
+    let id = simple(&mut run, &["src/a.rs"]);
+    assert!(run.over_limit(id, &[counted("src/a.rs", 300)]).is_empty());
+    run.applied(id, &["src/a.rs".to_owned()]);
+    assert!(run.split(id, &["src/a.rs".to_owned()]));
+    let failed = WorkerEvent::Failed {
+        class: ErrorClass::Other,
+        text: "boom".into(),
+    };
+    run.on_event(Instant::now(), id, failed);
+    run.decide(Instant::now(), UserChoice::Retry).unwrap();
+    assert!(!run.split_chosen(id));
+    let over = run.over_limit(id, &[counted("src/a.rs", 101)]);
+    assert_eq!(listed(over), [("src/a.rs".to_owned(), 401)]);
+}
+
+// 22.5 (C): the staged files the brief does not list, for a `simple` only;
+// an output may be a folder; another kind has no brief to leave.
+#[test]
+fn staged_files_the_brief_does_not_list_are_outside_it() {
+    let mut run = run();
+    let id = simple(&mut run, &["src/a.rs", "docs"]);
+    let staged = ["src/a.rs", "docs/x.md", "src/b.rs", "Cargo.toml"].map(str::to_owned);
+    assert_eq!(run.outside_brief(id, &staged), ["src/b.rs", "Cargo.toml"]);
+    let code = run.spawn(Instant::now(), Task::Code, "p").unwrap();
+    assert!(run.outside_brief(code, &staged).is_empty());
+}
+
+// 22.7: only a split closing is a split; a clarification is not.
+#[test]
+fn only_a_split_closing_is_split_chosen() {
+    let mut run = run();
+    let id = simple(&mut run, &["src/a.rs"]);
+    assert!(!run.split_chosen(id));
+    assert!(run.split(id, &["src/a.rs".to_owned()]));
+    assert!(run.split_chosen(id));
+    let other = simple(&mut run, &["src/z.rs"]);
+    assert!(run.clarify(other, "what?"));
+    assert!(!run.split_chosen(other));
+}
+
 #[test]
 fn the_coordinator_is_told_of_the_split() {
     let mut run = run();

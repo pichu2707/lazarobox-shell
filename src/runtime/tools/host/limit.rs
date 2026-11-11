@@ -40,12 +40,15 @@ pub(super) async fn before_batch(host: &ToolHost, scope: &TurnScope) -> Limited 
     let (stages, env) = (host.stages.clone(), host.env(&scope.origin));
     let taken = tokio::task::spawn_blocking(move || files::staged_counts(&stages, key, &env));
     let counts = taken.await.unwrap_or_default();
+    // The staged files the brief does not list ride in the same ask (C).
+    let paths = counts.iter().map(|(path, _)| path.clone()).collect();
+    let outside = worker.handle.outside_brief(worker.run, worker.worker, paths);
     let over = worker.handle.over_limit(worker.run, worker.worker, counts);
-    if over.is_empty() {
+    if over.is_empty() && outside.is_empty() {
         return Limited::Go;
     }
     let label = worker.ask_label();
-    let ask = limit_ask(worker.key(), &label, &over, &[]);
+    let ask = limit_ask(worker.key(), &label, &over, &outside);
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The wait is not the worker's own work: its deadline stops (PR15).
     let _paused = worker.handle.pause(worker.run, worker.worker);
@@ -59,7 +62,11 @@ pub(super) async fn before_batch(host: &ToolHost, scope: &TurnScope) -> Limited 
     let announce = StreamEvent::ToolCall {
         id,
         name: ROW.to_owned(),
-        summary: clip("write past the line limit in a file?"),
+        summary: clip(if over.is_empty() {
+            "write a file outside the brief?"
+        } else {
+            "write past the line limit in a file?"
+        }),
         approval: Some(Box::new(ask)),
     };
     if scope.events.send(announce).await.is_err() {
@@ -77,10 +84,16 @@ pub(super) async fn before_batch(host: &ToolHost, scope: &TurnScope) -> Limited 
             Limited::Go
         }
         Answer::Decided(Decision::Denied(USER_DECLINED)) => {
-            let files: Vec<String> = over.into_iter().map(|(path, _)| path).collect();
             let lost = files::lock(&host.stages).discard_key(key).unwrap_or(0);
-            worker.handle.split(worker.run, worker.worker, files);
-            let said = format!("split chosen: {lost} staged files discarded");
+            // Only a file over the limit is a split; a decline of files
+            // outside the brief is neither a split nor a round (K2).
+            let said = if over.is_empty() {
+                format!("writes outside the brief declined: {lost} staged files discarded")
+            } else {
+                let files: Vec<String> = over.into_iter().map(|(path, _)| path).collect();
+                worker.handle.split(worker.run, worker.worker, files);
+                format!("split chosen: {lost} staged files discarded")
+            };
             let line = format!("worker {label}: {said}");
             let _ = scope.events.send(StreamEvent::Notice(line)).await;
             owed.answer(ToolStatus::Denied, &clip(&said));

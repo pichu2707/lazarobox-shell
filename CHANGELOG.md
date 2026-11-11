@@ -42,6 +42,13 @@ baseline.
   briefs; a split is not a clarification round. No approval mode and no
   timer answers it, and the worker's clock stops while it waits. Test
   files have no cap; an unknown language counts every line and says so.
+- The same ask names the files a `simple` worker staged that its brief does
+  not list (`outside the brief: ...`), inside the run's scope; a secret path
+  or one outside the chat's folder is still refused at staging, never asked.
+  When the ask lists only such files, `n` or Esc decline: the batch is
+  discarded (`writes outside the brief declined: N staged files discarded`),
+  and that is neither a split nor a clarification round. After a split the
+  worker's row says `split, staged batch discarded`.
 - `/exec` turns Exec on for one chat, on the same path as `/write`: type it
   in the composer and a dialog names Exec and the folder and says every
   command still asks. Only a lowercase `y` grants it; `n` and Esc say `Exec
@@ -84,6 +91,8 @@ baseline.
 
 ### Fixed
 
+- A write refused after a split said the worker had asked for a clearer brief;
+  it now says the worker chose to split.
 - A worker whose clock was stopped (waiting for you or for its review) was
   ended `timed_out` when another worker of the run timed out, by the wall
   time since it started. Each worker is now timed out by its own clock only.

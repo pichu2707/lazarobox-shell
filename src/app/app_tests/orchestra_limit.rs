@@ -62,6 +62,79 @@ fn the_prompt_shows_each_file_its_lines_the_limit_and_the_outside_files() {
     assert!(prompt.keys.contains("n or Esc split"), "{prompt:?}");
 }
 
+// K2: an ask that lists only files outside the brief says `decline`, not
+// `split`: there is nothing to split.
+#[test]
+fn an_outside_only_prompt_says_decline_not_split() {
+    let (mut a, turn) = live();
+    let ask = ApprovalAsk::Limit {
+        worker: WorkerKey::for_test(1, 1),
+        label: "simple x>y".to_owned(),
+        over: Vec::new(),
+        outside: vec!["src/b.rs".to_owned()],
+    };
+    announce(&mut a, turn, 1, ask);
+    let prompt = a.approval_prompt(id2()).unwrap();
+    assert!(prompt.target.contains("outside the brief"), "{prompt:?}");
+    assert!(prompt.command.contains("src/b.rs"), "{prompt:?}");
+    assert!(prompt.keys.contains("y keep"), "{prompt:?}");
+    assert!(prompt.keys.contains("n or Esc decline"), "{prompt:?}");
+    let notice = prompt.notice.clone().unwrap_or_default();
+    assert!(!notice.contains("400"), "{prompt:?}");
+    assert!(notice.contains("discard"), "{prompt:?}");
+}
+
+// 22.7 (stale state): a pending limit ask keeps the folder from changing (and
+// so a resume that restores one), so no ask outlives the project it was about.
+#[test]
+fn an_open_limit_ask_blocks_a_folder_change() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, limit(1, "simple x>y"));
+    assert_eq!(a.folder_busy(id2()), Some("an approval is pending"));
+}
+
+// 22.7: the ORCH toggle neither answers nor strands an open limit ask.
+#[test]
+fn the_orch_toggle_leaves_an_open_limit_ask_alone() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, limit(1, "simple x>y"));
+    let effects = a.update(super::chat_live::ctrl('o'));
+    assert!(
+        effects
+            .iter()
+            .all(|e| !matches!(e, Effect::ToolDecision { .. })),
+        "{effects:?}"
+    );
+    assert!(pending(&a).is_some(), "the ask is still the user's to answer");
+}
+
+// 22.7: the run cancel denies an open limit ask: no split is recorded (a
+// cancel is `Denied(cancelled)`, never the user's `n`), and none is left open.
+#[test]
+fn the_run_cancel_denies_an_open_limit_ask_and_leaves_none() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, limit(1, "simple x>y"));
+    let effects = a.update(super::chat_live::ctrl('c'));
+    assert_eq!(
+        effects,
+        vec![
+            worker_decision(turn, 1, Decision::Denied("cancelled")),
+            Effect::ChatCancel(id2())
+        ]
+    );
+    assert_eq!(pending(&a), None);
+}
+
+// 22.7: a worker that ends (cancelled) withdraws its open limit ask.
+#[test]
+fn a_cancelled_worker_withdraws_its_limit_ask() {
+    use crate::core::ai::orchestra::worker::WorkerStatus;
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, limit(2, "simple x>y"));
+    super::tool_approval::worker_over(&mut a, 2, WorkerStatus::Cancelled);
+    assert_eq!(pending(&a), None);
+}
+
 // K2: `y` keeps, `n` and Esc split; the answers are addressed to the worker.
 #[test]
 fn y_keeps_and_n_or_esc_split_to_the_workers_session() {

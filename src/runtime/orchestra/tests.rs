@@ -888,6 +888,7 @@ async fn a_review_worker_runs_on_the_review_assignment_and_ends_done() {
             partial: false,
             overridden: false,
             clarifying: None,
+            split: false,
         })
     };
     assert_eq!(lab.next().await, row(WorkerStatus::Running));
