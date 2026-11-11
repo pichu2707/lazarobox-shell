@@ -362,7 +362,11 @@ fn worker_read_of(worker: u32, path: &str) -> ApprovalAsk {
     }
 }
 
-pub(super) fn worker_over(a: &mut App, worker: u32, status: crate::core::ai::orchestra::worker::WorkerStatus) {
+pub(super) fn worker_over(
+    a: &mut App,
+    worker: u32,
+    status: crate::core::ai::orchestra::worker::WorkerStatus,
+) {
     use crate::core::ai::{
         config::Task,
         orchestra::{

@@ -105,7 +105,10 @@ fn the_orch_toggle_leaves_an_open_limit_ask_alone() {
             .all(|e| !matches!(e, Effect::ToolDecision { .. })),
         "{effects:?}"
     );
-    assert!(pending(&a).is_some(), "the ask is still the user's to answer");
+    assert!(
+        pending(&a).is_some(),
+        "the ask is still the user's to answer"
+    );
 }
 
 // 22.7: the run cancel denies an open limit ask: no split is recorded (a

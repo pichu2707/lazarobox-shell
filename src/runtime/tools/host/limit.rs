@@ -48,7 +48,9 @@ pub(super) async fn check(host: &ToolHost, scope: &TurnScope, asked: &[String]) 
     };
     // The staged files the brief does not list ride in the same ask (C).
     let paths = counts.iter().map(|(path, _)| path.clone()).collect();
-    let outside = worker.handle.outside_brief(worker.run, worker.worker, paths);
+    let outside = worker
+        .handle
+        .outside_brief(worker.run, worker.worker, paths);
     let Some(listed) = worker.handle.over_limit(worker.run, worker.worker, counts) else {
         return Limited::Stop(NO_COUNT.to_owned());
     };

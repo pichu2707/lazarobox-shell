@@ -11,9 +11,9 @@ use crate::core::ai::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
             FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, ISSUE_DRAFT_KEYS, LIMIT_KEYS, LimitFile,
-            MULTI_LINE, NO_CWD, NON_UTF8, OUTSIDE_KEYS, Origin, PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED,
-            RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS, drive_grant_prompt, exec_notice,
-            grant_prompt, run_sent_line, tool_grant_prompt,
+            MULTI_LINE, NO_CWD, NON_UTF8, OUTSIDE_KEYS, Origin, PANES_KEYS, Press, READ_KEYS,
+            RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS, drive_grant_prompt,
+            exec_notice, grant_prompt, run_sent_line, tool_grant_prompt,
         },
         approval_rows::fits,
         engine::{CallId, Decision},

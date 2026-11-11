@@ -675,7 +675,9 @@ impl Run {
             return Vec::new();
         };
         let listed = slot.spec.outputs().unwrap_or_default();
-        let outside = paths.iter().filter(|p| !listed.iter().any(|o| covers(o, p)));
+        let outside = paths
+            .iter()
+            .filter(|p| !listed.iter().any(|o| covers(o, p)));
         outside.cloned().collect()
     }
 
