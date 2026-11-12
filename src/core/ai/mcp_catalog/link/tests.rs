@@ -9,16 +9,20 @@ fn url(redirect: &str) -> String {
 }
 
 fn ok(text: &str) -> bool {
-    sign_in_url(text, ID).is_some()
+    sign_in_url(text, ID).is_ok()
+}
+
+fn refused(text: &str) -> Refused {
+    sign_in_url(text, ID).unwrap_err()
 }
 
 // Spec mcp-connect, google link succeeds: a bare link line.
 #[test]
 fn a_bare_link_on_a_local_port_is_accepted() {
     let link = url("http://localhost:8000/oauth2callback");
-    assert_eq!(sign_in_url(&format!("{link}\n"), ID), Some(link.as_str()));
+    assert_eq!(sign_in_url(&format!("{link}\n"), ID), Ok(link.as_str()));
     let loopback = url("http://127.0.0.1:8004");
-    assert_eq!(sign_in_url(&loopback, ID), Some(loopback.as_str()));
+    assert_eq!(sign_in_url(&loopback, ID), Ok(loopback.as_str()));
 }
 
 // 6b2.4: workspace-mcp 2.4.1 prints `   Authorization URL: <link>` with the
@@ -29,7 +33,7 @@ fn the_real_answer_of_workspace_mcp_is_accepted() {
     let text = format!(
         "**ACTION REQUIRED: Google Authentication Needed for Google Workspace for 'me@x.org'**\n\n1. Open this URL in your browser:\n   Authorization URL: {link}\n2. After successful authorization, **retry their original command**.\n"
     );
-    assert_eq!(sign_in_url(&text, ID), Some(link.as_str()));
+    assert_eq!(sign_in_url(&text, ID), Ok(link.as_str()));
 }
 
 // Spec mcp-connect, Links that are refused.
@@ -189,4 +193,92 @@ fn an_e_mail_that_is_not_plain_is_refused() {
             "{email}"
         );
     }
+}
+
+// S6b2 review: each refusal has its own notice and none echoes the link.
+#[test]
+fn each_refusal_is_told_apart() {
+    let l = url("http://localhost:8000/");
+    assert_eq!(refused("no link here"), Refused::NoLink);
+    assert_eq!(
+        refused(&l.replace("accounts.google.com", "evil.example")),
+        Refused::Shape
+    );
+    assert_eq!(
+        refused(&l.replace("/o/oauth2/auth", "/signin")),
+        Refused::Shape
+    );
+    assert_eq!(refused(&format!("{l}\u{e9}")), Refused::Shape);
+    assert_eq!(refused(&l.replace(ID, "other")), Refused::ClientId);
+    assert_eq!(refused(&url("http://localhost:9000/")), Refused::Redirect);
+    assert_eq!(
+        refused(&url("http%3A%2F%2Flocalhost%3A80%ZZ")),
+        Refused::Redirect
+    );
+    assert_eq!(refused(&format!("{l}&client_id=other")), Refused::Duplicate);
+    assert_eq!(
+        refused(&format!("{l}&redirect_uri=http://localhost:8001")),
+        Refused::Duplicate
+    );
+    let notices: Vec<&str> = [
+        Refused::NoLink,
+        Refused::Shape,
+        Refused::ClientId,
+        Refused::Redirect,
+        Refused::Duplicate,
+    ]
+    .iter()
+    .map(|r| r.notice())
+    .collect();
+    for (i, a) in notices.iter().enumerate() {
+        assert!(a.starts_with("link failed: "), "{a}");
+        assert!(!a.contains("http"), "{a}");
+        assert!(notices[i + 1..].iter().all(|b| a != b), "{a}");
+    }
+    assert_eq!(Refused::NoLink.notice(), NO_LINK);
+}
+
+// A key written with an escape is the same key.
+#[test]
+fn an_escaped_key_name_counts_as_a_repeat() {
+    let l = url("http://localhost:8000/");
+    assert_eq!(
+        refused(&format!("{l}&client%5Fid=other")),
+        Refused::Duplicate
+    );
+    assert_eq!(
+        refused(&format!("{l}&redirect%5Furi=http://localhost:8001")),
+        Refused::Duplicate
+    );
+}
+
+// S6b2 review: the credentials folder is not configurable.
+const NOT_SUPPORTED: &str = "WORKSPACE_MCP_CREDENTIALS_DIR / GOOGLE_MCP_CREDENTIALS_DIR are not supported; remove them from the entry";
+
+#[test]
+fn an_entry_that_names_a_credentials_folder_is_refused() {
+    assert_eq!(CREDENTIALS_DIR, NOT_SUPPORTED);
+    for name in [
+        "WORKSPACE_MCP_CREDENTIALS_DIR",
+        "GOOGLE_MCP_CREDENTIALS_DIR",
+    ] {
+        let mut env = NAMES.to_vec();
+        env.push(name);
+        let s = server(&env);
+        assert_eq!(start_refusal(&s), Some(NOT_SUPPORTED), "{name}");
+        // The link refuses too, before any prompt.
+        assert_eq!(
+            planned(&env, &NAMES, "me@x.org"),
+            Err(NOT_SUPPORTED.to_owned()),
+            "{name}"
+        );
+    }
+    assert_eq!(start_refusal(&server(&NAMES)), None);
+}
+
+#[test]
+fn only_google_is_checked() {
+    let mut s = server(&["WORKSPACE_MCP_CREDENTIALS_DIR"]);
+    s.name = "other".to_owned();
+    assert_eq!(start_refusal(&s), None);
 }

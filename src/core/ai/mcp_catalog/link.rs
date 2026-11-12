@@ -22,32 +22,74 @@ pub struct Ask {
     pub email: String,
 }
 
+/// Why a link was not accepted: one notice each, none echoing the link.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Refused {
+    /// No line of the answer is a link.
+    NoLink,
+    /// Not a Google sign-in link: host, path, characters or length.
+    Shape,
+    ClientId,
+    Redirect,
+    /// A parameter that must be single is repeated.
+    Duplicate,
+}
+
+impl Refused {
+    pub fn notice(self) -> &'static str {
+        match self {
+            Refused::NoLink => NO_LINK,
+            Refused::Shape => {
+                "link failed: the answer holds a link that is not a Google sign-in link"
+            }
+            Refused::ClientId => "link failed: the sign-in link is for another client id",
+            Refused::Redirect => {
+                "link failed: the sign-in link does not return to a local port 8000-8004"
+            }
+            Refused::Duplicate => "link failed: the sign-in link repeats a parameter",
+        }
+    }
+}
+
 /// The first line of `text` that is a single link, when it is a sign-in link
 /// of this client on a local callback port. workspace-mcp 2.4.1 prints the
 /// link after `Authorization URL:` (checked in S6b2), so that label may come
 /// first.
-pub fn sign_in_url<'a>(text: &'a str, client_id: &str) -> Option<&'a str> {
-    let link = text.lines().find_map(|line| {
-        let line = line.trim();
-        let line = line
-            .strip_prefix("Authorization URL:")
-            .map_or(line, str::trim);
-        line.starts_with("http").then_some(line)
-    })?;
+pub fn sign_in_url<'a>(text: &'a str, client_id: &str) -> Result<&'a str, Refused> {
+    let link = text
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            let line = line
+                .strip_prefix("Authorization URL:")
+                .map_or(line, str::trim);
+            line.starts_with("http").then_some(line)
+        })
+        .ok_or(Refused::NoLink)?;
     let ascii = link.bytes().all(|b| (0x21..=0x7E).contains(&b));
-    let rest = link.strip_prefix("https://accounts.google.com/o/oauth2/")?;
-    let query = rest.split_once('?')?.1;
-    let one = |key: &str| {
+    let rest = link.strip_prefix("https://accounts.google.com/o/oauth2/");
+    let (true, Some(rest), true) = (ascii, rest, link.len() <= 2048) else {
+        return Err(Refused::Shape);
+    };
+    let query = rest.split_once('?').ok_or(Refused::Shape)?.1;
+    // Keys and values are percent-decoded: `client%5Fid` is `client_id`.
+    let one = |key: &str, bad: Refused| {
         let mut found = query.split('&').filter_map(|pair| {
             let (name, value) = pair.split_once('=')?;
-            (name == key).then(|| decoded(value))
+            (decoded(name).as_deref() == Some(key)).then(|| decoded(value))
         });
-        let value = found.next()?;
-        found.next().is_none().then_some(value).flatten()
+        let value = found.next().ok_or(Refused::Shape)?;
+        match found.next() {
+            None => value.ok_or(bad),
+            Some(_) => Err(Refused::Duplicate),
+        }
     };
-    let local = one("redirect_uri").is_some_and(|uri| local_port(&uri));
-    (ascii && link.len() <= 2048 && one("client_id").as_deref() == Some(client_id) && local)
-        .then_some(link)
+    let id = one("client_id", Refused::ClientId)?;
+    let uri = one("redirect_uri", Refused::Redirect)?;
+    if id != client_id {
+        return Err(Refused::ClientId);
+    }
+    local_port(&uri).then_some(link).ok_or(Refused::Redirect)
 }
 
 /// `value` with its `%XX` escapes resolved; `None` for a broken escape.
@@ -100,6 +142,21 @@ pub fn credentials_names(email: &str) -> Vec<String> {
     names
 }
 
+pub const CREDENTIALS_DIR: &str = "WORKSPACE_MCP_CREDENTIALS_DIR / GOOGLE_MCP_CREDENTIALS_DIR are not supported; remove them from the entry";
+
+/// Why a start of the declared `google` is refused: its `env` names a folder
+/// for the credentials, so the server would keep its tokens outside the
+/// folder the tools refuse to read, and the link would look for them in the
+/// default one.
+pub fn start_refusal(server: &McpServer) -> Option<&'static str> {
+    let names = [
+        "WORKSPACE_MCP_CREDENTIALS_DIR",
+        "GOOGLE_MCP_CREDENTIALS_DIR",
+    ];
+    let named = server.env.iter().any(|e| names.contains(&e.as_str()));
+    (server.name == "google" && named).then_some(CREDENTIALS_DIR)
+}
+
 /// The values of a declared `google`, or the notice of what is missing: the
 /// entry must pass the three names, and each must hold a value (`has`) the
 /// link can use (`shown` gives the two that are not confidential).
@@ -113,6 +170,9 @@ pub fn plan(
         "GOOGLE_OAUTH_CLIENT_SECRET",
         "USER_GOOGLE_EMAIL",
     ];
+    if let Some(why) = start_refusal(server) {
+        return Err(why.to_owned());
+    }
     if let Some(name) = NAMES.iter().find(|n| !server.env.iter().any(|e| e == *n)) {
         return Err(format!(
             "the declared google entry does not pass {name}; paste the current entry"

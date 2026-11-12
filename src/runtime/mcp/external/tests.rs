@@ -402,3 +402,48 @@ async fn a_token_folder_outside_the_denied_ones_is_not_spawned() {
     );
     assert!(lab.env_of("gsc").is_empty());
 }
+
+// S6b2 review: a credentials folder in the entry would put the tokens outside
+// the folder the tools refuse to read, so a start is refused, as for gsc.
+#[tokio::test]
+async fn google_naming_a_credentials_folder_is_not_spawned_and_says_so() {
+    let lab = lab();
+    for name in [
+        "WORKSPACE_MCP_CREDENTIALS_DIR",
+        "GOOGLE_MCP_CREDENTIALS_DIR",
+    ] {
+        let server = lab.recorder("google", &["USER_GOOGLE_EMAIL", name]);
+        let set = ExternalSet::start_with(
+            &[&server],
+            &lab.home,
+            host_env,
+            &Secrets::default(),
+            timeouts(LONG),
+        )
+        .await;
+        set.shutdown().await;
+        assert_eq!(
+            set.notices(),
+            [
+                "mcp: google unavailable: WORKSPACE_MCP_CREDENTIALS_DIR / GOOGLE_MCP_CREDENTIALS_DIR are not supported; remove them from the entry"
+            ],
+            "{name}"
+        );
+        assert!(
+            lab.env_of("google").is_empty(),
+            "{name}: the server was spawned"
+        );
+    }
+    // Another name is not covered, as for the other google checks.
+    let other = lab.recorder("search", &["WORKSPACE_MCP_CREDENTIALS_DIR"]);
+    let set = ExternalSet::start_with(
+        &[&other],
+        &lab.home,
+        host_env,
+        &Secrets::default(),
+        timeouts(LONG),
+    )
+    .await;
+    set.shutdown().await;
+    assert!(set.notices().is_empty());
+}
