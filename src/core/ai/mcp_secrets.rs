@@ -282,10 +282,17 @@ fn shown(name: &str) -> String {
     }
 }
 
+mod client;
 mod save;
 mod text;
+pub use client::{
+    BAD_ID, BAD_SECRET, CLIENT_BACKUP, CLIENT_FILE, client_json, valid_id, valid_secret,
+};
 pub use save::{Refusal, edit, line_of};
 pub use text::SecretText;
+
+#[cfg(test)]
+mod client_tests;
 
 #[cfg(test)]
 mod text_tests;

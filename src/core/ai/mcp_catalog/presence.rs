@@ -25,6 +25,8 @@ pub struct Presence {
     shown: HashMap<(String, String), String>,
     /// `secrets.toml.bak` exists.
     backup: bool,
+    /// `google-oauth-client.json` exists.
+    client: bool,
     /// The home folder, for the presets that live under it.
     home: Option<String>,
     /// What made `secrets.toml` unused or partly unused: one line each, naming
@@ -87,6 +89,7 @@ impl Presence {
             set,
             shown,
             backup: false,
+            client: false,
             home: None,
             problems: loaded.problems.clone(),
         }
@@ -104,6 +107,16 @@ impl Presence {
 
     pub fn backup(&self) -> bool {
         self.backup
+    }
+
+    pub fn with_client_file(mut self, yes: bool) -> Self {
+        self.client = yes;
+        self
+    }
+
+    /// `google-oauth-client.json` exists.
+    pub fn client_file(&self) -> bool {
+        self.client
     }
 
     pub fn home(&self) -> &str {

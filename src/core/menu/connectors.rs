@@ -8,7 +8,7 @@ use std::{borrow::Cow, collections::HashMap, path::PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use self::fields::{Field, HINT_FIELDS, Pending};
+use self::fields::{ClientPending, Field, HINT_FIELDS, Pending};
 use super::{MenuCommand, Row, VIEW_BODY};
 use crate::core::ai::{
     config::McpServer,
@@ -16,7 +16,7 @@ use crate::core::ai::{
         self, Entry, Group, checks::Probed, checks::Verdict, presence::Presence, secrets_template,
         snippet,
     },
-    mcp_secrets::{BACKUP, FILE as SECRETS_FILE},
+    mcp_secrets::{BACKUP, CLIENT_FILE, FILE as SECRETS_FILE},
     sanitize::clean,
 };
 
@@ -62,6 +62,8 @@ enum Prompt {
     Command(Pending),
     /// A value is already saved under that name.
     Replace(Pending),
+    /// The client file exists: replace it?
+    Client(ClientPending),
     /// `d`: delete `secrets.toml.bak`.
     DeleteBackup,
 }
@@ -183,6 +185,7 @@ fn prompt_rows(prompt: &Prompt, room: usize) -> Option<Vec<Row>> {
         Prompt::Replace(pending) => {
             vec![title(format!("replace the saved {}? (y/n)", pending.name))]
         }
+        Prompt::Client(_) => vec![title(format!("replace {CLIENT_FILE}? (y/n)"))],
         Prompt::DeleteBackup => vec![title(format!(
             "delete {BACKUP}? It holds your previous values (y/n)"
         ))],
@@ -471,12 +474,13 @@ impl Connectors {
                 }
                 (true, Prompt::Command(pending)) => self.after_command(pending, room),
                 (true, Prompt::Replace(pending)) => pending.into_command(),
+                (true, Prompt::Client(pending)) => pending.into_command(),
                 (true, Prompt::DeleteBackup) => MenuCommand::DeleteBackup,
                 (false, Prompt::Command(_)) => {
                     self.notice = Some("not saved");
                     MenuCommand::None
                 }
-                (false, Prompt::Replace(_)) => {
+                (false, Prompt::Replace(_) | Prompt::Client(_)) => {
                     self.notice = Some("not replaced");
                     MenuCommand::None
                 }

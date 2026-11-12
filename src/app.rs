@@ -404,6 +404,13 @@ pub enum Effect {
         name: &'static str,
         value: crate::core::ai::mcp_secrets::SecretText,
     },
+    /// Write the OAuth client file (mcp-secrets, OAuth client file): sent only
+    /// by a confirmed client form. The answer is one `AppEvent::SecretSaved`.
+    SaveClient {
+        id: String,
+        secret: crate::core::ai::mcp_secrets::SecretText,
+        replace: bool,
+    },
     /// Delete `secrets.toml.bak` (the user's `y`); the answer is one
     /// `AppEvent::BackupDeleted`.
     DeleteBackup,
@@ -2620,6 +2627,15 @@ impl App {
                 server,
                 name,
                 value,
+            }],
+            MenuCommand::SaveClient {
+                id,
+                secret,
+                replace,
+            } => vec![Effect::SaveClient {
+                id,
+                secret,
+                replace,
             }],
             MenuCommand::DeleteBackup => vec![Effect::DeleteBackup],
             MenuCommand::Connector(line) => self.start_connector(line),

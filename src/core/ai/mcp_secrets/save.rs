@@ -35,6 +35,9 @@ pub enum Refusal {
     TempExists,
     BackupUnsafe,
     NoBackup,
+    BadClientId,
+    BadClientSecret,
+    Exists,
     Io(ErrorKind),
 }
 
@@ -93,9 +96,19 @@ impl Refusal {
                 "secrets.toml.bak is not a regular file of yours; left as it is".to_owned()
             }
             Self::NoBackup => "secrets.toml.bak: there is no backup".to_owned(),
+            Self::BadClientId => super::BAD_ID.to_owned(),
+            Self::BadClientSecret => super::BAD_SECRET.to_owned(),
+            Self::Exists => "secrets.toml exists; open the form again to replace it".to_owned(),
             Self::Io(kind) => format!("secrets.toml: not saved ({kind})"),
         };
         clean(&text)
+    }
+}
+
+impl Refusal {
+    /// The notice for a save of `file` instead of `secrets.toml`.
+    pub fn notice_of(&self, file: &str) -> String {
+        self.notice().replace(super::FILE, file)
     }
 }
 

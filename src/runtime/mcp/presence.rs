@@ -8,7 +8,10 @@ use tokio::sync::mpsc;
 
 use crate::{
     app::AppEvent,
-    core::ai::{mcp_catalog::presence::Presence, mcp_secrets::BACKUP},
+    core::ai::{
+        mcp_catalog::presence::Presence,
+        mcp_secrets::{BACKUP, CLIENT_FILE},
+    },
     runtime::mcp_secrets::load_for_start,
 };
 
@@ -47,14 +50,18 @@ impl Reader {
                     .unwrap_or_else(|_| Err(std::io::Error::other("read failed"))),
                 None => Err(std::io::ErrorKind::NotFound.into()),
             };
-            let backup = secrets
-                .as_deref()
-                .map(|path| path.with_file_name(BACKUP))
-                .is_some_and(|path| std::fs::symlink_metadata(path).is_ok());
+            let exists = |name: &str| {
+                secrets
+                    .as_deref()
+                    .map(|path| path.with_file_name(name))
+                    .is_some_and(|path| std::fs::symlink_metadata(path).is_ok())
+            };
+            let (backup, client) = (exists(BACKUP), exists(CLIENT_FILE));
             let loaded = load_for_start(secrets).await;
             let home = std::env::var("HOME").ok();
             let presence = Presence::read(text, &loaded)
                 .with_backup(backup)
+                .with_client_file(client)
                 .with_home(home);
             let _ = events.send(AppEvent::McpPresence(presence)).await;
         });

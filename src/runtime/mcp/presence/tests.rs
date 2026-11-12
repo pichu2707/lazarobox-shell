@@ -74,3 +74,13 @@ async fn the_backup_and_the_home_are_read_for_the_fields() {
     assert!(presence.backup());
     assert_eq!(presence.home(), std::env::var("HOME").unwrap_or_default());
 }
+
+#[tokio::test]
+async fn the_client_file_is_noticed_when_it_exists() {
+    let (dir, config, secrets) = files(0o600);
+    let presence = asked(config.clone(), secrets.clone()).await;
+    assert!(!presence.client_file());
+    std::fs::write(dir.path().join("google-oauth-client.json"), "{}").unwrap();
+    let presence = asked(config, secrets).await;
+    assert!(presence.client_file());
+}

@@ -23,7 +23,26 @@ use tokio::sync::mpsc;
 
 use crate::{
     app::AppEvent,
-    core::ai::mcp_secrets::{BACKUP, FILE, MAX_BYTES, Refusal, SecretText, edit, line_of},
+    core::ai::mcp_secrets::{
+        BACKUP, CLIENT_BACKUP, CLIENT_FILE, FILE, MAX_BYTES, Refusal, SecretText, client_json,
+        edit, line_of,
+    },
+};
+
+/// The file a write replaces and the backup it keeps.
+#[derive(Clone, Copy)]
+struct Target {
+    file: &'static str,
+    backup: &'static str,
+}
+
+const SECRETS: Target = Target {
+    file: FILE,
+    backup: BACKUP,
+};
+const CLIENT: Target = Target {
+    file: CLIENT_FILE,
+    backup: CLIENT_BACKUP,
 };
 
 /// What a save did.
@@ -31,13 +50,17 @@ use crate::{
 pub struct Saved {
     pub name: String,
     pub backed_up: bool,
+    /// The OAuth client file, not `secrets.toml`.
+    pub client: bool,
 }
 
 impl Saved {
     /// The success notice.
     pub fn notice(&self) -> String {
         let name = &self.name;
-        if self.backed_up {
+        if self.backed_up && self.client {
+            format!("saved {name}; the previous file stays in {CLIENT_BACKUP} (0600)")
+        } else if self.backed_up {
             format!("saved {name}; the previous values stay in {BACKUP} (0600) until you delete it")
         } else {
             format!("saved {name}")
@@ -280,6 +303,26 @@ impl Writer {
         });
     }
 
+    /// Writes the OAuth client file; the answer is the same event as a save.
+    pub fn save_client(&self, id: String, secret: SecretText, replace: bool) {
+        let (secrets, events) = (self.secrets.clone(), self.events.clone());
+        let turn = Arc::clone(&self.turn);
+        tokio::spawn(async move {
+            let done = tokio::task::spawn_blocking(move || {
+                let _turn = turn.lock().unwrap_or_else(PoisonError::into_inner);
+                let fs = &RealFs;
+                save_client_with(fs, secrets.as_deref(), &id, secret.expose(), replace)
+            })
+            .await;
+            let reply = match done {
+                Ok(Ok(saved)) => Ok(saved.notice()),
+                Ok(Err(refusal)) => Err(refusal.notice_of(CLIENT_FILE)),
+                Err(_) => Err(format!("{CLIENT_FILE}: not saved (the task failed)")),
+            };
+            let _ = events.send(AppEvent::SecretSaved(reply)).await;
+        });
+    }
+
     pub fn delete_backup(&self) {
         let (secrets, events) = (self.secrets.clone(), self.events.clone());
         tokio::spawn(async move {
@@ -319,42 +362,75 @@ pub fn save_with(
 ) -> Result<Saved, Refusal> {
     // Refuses a name the entry does not list, or a bad value, before any I/O.
     edit("", server, name, value)?;
+    let backed_up = replace_with(fs, secrets, SECRETS, |current| {
+        let text = match current {
+            Some(bytes) => std::str::from_utf8(bytes)
+                .map_err(|e| Refusal::NotToml(line_of(bytes, e.valid_up_to())))?,
+            None => "",
+        };
+        edit(text, server, name, value)
+    })?;
+    Ok(Saved {
+        name: name.to_owned(),
+        backed_up,
+        client: false,
+    })
+}
+
+/// Writes the OAuth client file next to `secrets`, by the same steps as a
+/// save. An existing file is replaced only when `replace` (the user's `y`).
+pub fn save_client_with(
+    fs: &impl SaveFs,
+    secrets: Option<&Path>,
+    id: &str,
+    secret: &str,
+    replace: bool,
+) -> Result<Saved, Refusal> {
+    let json = client_json(id, secret)?;
+    let backed_up = replace_with(fs, secrets, CLIENT, |current| match current {
+        Some(_) if !replace => Err(Refusal::Exists),
+        _ => Ok(json),
+    })?;
+    Ok(Saved {
+        name: CLIENT_FILE.to_owned(),
+        backed_up,
+        client: true,
+    })
+}
+
+/// Replaces `target` in the folder of `secrets` with what `build` makes from
+/// the bytes it holds (`None`: it does not exist): folder judged, file read
+/// and judged on its handle, temp file, backup, swap. `true` when a backup was
+/// made.
+fn replace_with(
+    fs: &impl SaveFs,
+    secrets: Option<&Path>,
+    target: Target,
+    build: impl FnOnce(Option<&[u8]>) -> Result<String, Refusal>,
+) -> Result<bool, Refusal> {
     let dir = open_folder(fs, secrets)?;
     let folder = secrets.and_then(Path::parent).unwrap_or(Path::new(""));
-    let current = read_current(fs, &dir, &folder.join(FILE))?;
-    let text = match &current {
-        Some((bytes, _)) => std::str::from_utf8(bytes)
-            .map_err(|e| Refusal::NotToml(line_of(bytes, e.valid_up_to())))?,
-        None => "",
-    };
-    let new = edit(text, server, name, value)?;
+    let current = read_current(fs, &dir, &folder.join(target.file), target)?;
+    let new = build(current.as_ref().map(|(bytes, _)| bytes.as_slice()))?;
     // Defense in depth: `edit` already refuses a result over the cap.
     if new.len() as u64 > MAX_BYTES {
         return Err(Refusal::TooLarge);
     }
     let before = current.as_ref().map(|(_, stat)| stat);
     if current.is_some() {
-        match fs.stat_at(&dir, BACKUP) {
+        match fs.stat_at(&dir, target.backup) {
             Ok(stat) if !stat.regular => return Err(Refusal::BackupUnsafe),
             Err(e) if e.kind() != ErrorKind::NotFound => return Err(Refusal::Io(e.kind())),
             _ => {}
         }
     }
-    let temp = write_temp(fs, &dir, new.as_bytes())?;
-    let done = swap(
-        fs,
-        &dir,
-        &temp,
-        before,
-        current.as_ref().map(|(b, _)| b.as_slice()),
-    );
+    let temp = write_temp(fs, &dir, target, new.as_bytes())?;
+    let old = current.as_ref().map(|(bytes, _)| bytes.as_slice());
+    let done = swap(fs, &dir, target, &temp, before, old);
     if done.is_err() {
         let _ = fs.unlink(&dir, &temp);
     }
-    done.map(|()| Saved {
-        name: name.to_owned(),
-        backed_up: current.is_some(),
-    })
+    done.map(|()| current.is_some())
 }
 
 /// The config folder, opened and judged on the handle.
@@ -384,8 +460,9 @@ fn read_current(
     fs: &impl SaveFs,
     dir: &OwnedFd,
     path: &Path,
+    target: Target,
 ) -> Result<Option<(Vec<u8>, Stat)>, Refusal> {
-    let fd = match fs.open_read(dir, FILE) {
+    let fd = match fs.open_read(dir, target.file) {
         Ok(fd) => fd,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
         Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(Refusal::FileSymlink),
@@ -423,9 +500,19 @@ fn read_current(
 /// A new file of mode 0600 in the folder under a random name, written and
 /// synced: `O_EXCL`, so a name that exists (a planted link too) is never
 /// opened or removed, and another is tried, three times.
-fn write_temp(fs: &impl SaveFs, dir: &OwnedFd, bytes: &[u8]) -> Result<String, Refusal> {
+fn write_temp(
+    fs: &impl SaveFs,
+    dir: &OwnedFd,
+    target: Target,
+    bytes: &[u8],
+) -> Result<String, Refusal> {
     for _ in 0..3 {
-        let name = format!(".{FILE}.{}.{:016x}.tmp", std::process::id(), fs.random());
+        let name = format!(
+            ".{}.{}.{:016x}.tmp",
+            target.file,
+            std::process::id(),
+            fs.random()
+        );
         match fs.create_excl(dir, &name) {
             Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(Refusal::Io(e.kind())),
@@ -445,8 +532,13 @@ fn write_temp(fs: &impl SaveFs, dir: &OwnedFd, bytes: &[u8]) -> Result<String, R
 }
 
 /// Whether the name still is the file that was read (`None`: still missing).
-fn unchanged(fs: &impl SaveFs, dir: &OwnedFd, before: Option<&Stat>) -> Result<(), Refusal> {
-    match (fs.stat_at(dir, FILE), before) {
+fn unchanged(
+    fs: &impl SaveFs,
+    dir: &OwnedFd,
+    file: &str,
+    before: Option<&Stat>,
+) -> Result<(), Refusal> {
+    match (fs.stat_at(dir, file), before) {
         (Ok(now), Some(before)) if now.same(before) => Ok(()),
         (Err(e), None) if e.kind() == ErrorKind::NotFound => Ok(()),
         _ => Err(Refusal::Changed),
@@ -457,21 +549,22 @@ fn unchanged(fs: &impl SaveFs, dir: &OwnedFd, before: Option<&Stat>) -> Result<(
 fn swap(
     fs: &impl SaveFs,
     dir: &OwnedFd,
+    target: Target,
     temp: &str,
     before: Option<&Stat>,
     old: Option<&[u8]>,
 ) -> Result<(), Refusal> {
     let io = |e: io::Error| Refusal::Io(e.kind());
-    unchanged(fs, dir, before)?;
+    unchanged(fs, dir, target.file, before)?;
     if let Some(old) = old {
-        let backup = write_temp(fs, dir, old)?;
-        if let Err(e) = fs.rename(dir, &backup, BACKUP) {
+        let backup = write_temp(fs, dir, target, old)?;
+        if let Err(e) = fs.rename(dir, &backup, target.backup) {
             let _ = fs.unlink(dir, &backup);
             return Err(io(e));
         }
-        unchanged(fs, dir, before)?;
+        unchanged(fs, dir, target.file, before)?;
     }
-    fs.rename(dir, temp, FILE).map_err(io)?;
+    fs.rename(dir, temp, target.file).map_err(io)?;
     // The file is in place: a folder that cannot be synced changes nothing.
     let _ = fs.fsync(dir);
     Ok(())

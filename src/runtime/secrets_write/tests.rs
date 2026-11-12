@@ -786,3 +786,173 @@ async fn saves_sent_together_all_succeed_instead_of_racing_into_changed_on_disk(
         assert!(reply.is_ok(), "{reply:?}");
     }
 }
+
+// ---- OAuth client file (S6a3) ----
+
+const ID: &str = "123-abc.apps.googleusercontent.com";
+const OLD_CLIENT: &str = "{\"web\": {\"client_id\": \"kept-in-the-backup\"}}";
+
+impl Lab {
+    fn client(&self) -> PathBuf {
+        self.dir.join("google-oauth-client.json")
+    }
+
+    fn client_bak(&self) -> PathBuf {
+        self.dir.join("google-oauth-client.json.bak")
+    }
+
+    fn write_client(&self, text: &str, mode: u32) {
+        fs::write(self.client(), text).unwrap();
+        fs::set_permissions(self.client(), fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    fn save_client(&self, replace: bool) -> Result<Saved, Refusal> {
+        save_client_with(
+            &TestFs::default(),
+            Some(&self.path()),
+            ID,
+            "GOCSPX-s3cr3t",
+            replace,
+        )
+    }
+}
+
+// Spec OAuth client file: Client file written.
+#[test]
+fn a_missing_client_file_is_written_0600_in_the_desktop_shape_without_a_backup() {
+    let lab = lab();
+    let saved = lab.save_client(false).unwrap();
+    assert_eq!(saved.notice(), "saved google-oauth-client.json");
+    let json: serde_json::Value = serde_json::from_slice(&fs::read(lab.client()).unwrap()).unwrap();
+    assert_eq!(json["installed"]["client_id"], ID);
+    assert_eq!(json["installed"]["client_secret"], "GOCSPX-s3cr3t");
+    assert_eq!(json["installed"]["redirect_uris"][0], "http://localhost");
+    assert_eq!(lab.mode(&lab.client()), 0o600);
+    assert_eq!(lab.names(), ["google-oauth-client.json"]);
+}
+
+// Spec OAuth client file: replaced only after the confirmation; backup.
+#[test]
+fn an_existing_client_file_is_replaced_only_when_confirmed_and_its_bytes_go_to_the_backup() {
+    let lab = lab();
+    lab.write_client(OLD_CLIENT, 0o600);
+    let refused = lab.save_client(false).unwrap_err();
+    assert_eq!(refused, Refusal::Exists);
+    assert_eq!(
+        refused.notice_of(CLIENT_FILE),
+        "google-oauth-client.json exists; open the form again to replace it"
+    );
+    assert_eq!(fs::read_to_string(lab.client()).unwrap(), OLD_CLIENT);
+    assert_eq!(lab.names(), ["google-oauth-client.json"]);
+    let saved = lab.save_client(true).unwrap();
+    assert!(
+        saved
+            .notice()
+            .contains("google-oauth-client.json.bak (0600)")
+    );
+    assert_eq!(fs::read_to_string(lab.client_bak()).unwrap(), OLD_CLIENT);
+    assert_eq!(lab.mode(&lab.client_bak()), 0o600);
+    assert_eq!(lab.mode(&lab.client()), 0o600);
+    assert!(
+        fs::read_to_string(lab.client())
+            .unwrap()
+            .contains("GOCSPX-s3cr3t")
+    );
+}
+
+// Spec OAuth client file: a file that does not parse is still replaced after
+// the confirmation, and its bytes go to the backup.
+#[test]
+fn a_client_file_that_is_not_json_is_replaced_after_confirmation_and_kept_in_the_backup() {
+    let lab = lab();
+    lab.write_client("not json at all", 0o600);
+    lab.save_client(true).unwrap();
+    assert_eq!(
+        fs::read_to_string(lab.client_bak()).unwrap(),
+        "not json at all"
+    );
+}
+
+// Spec OAuth client file: the same refusals, with the file name.
+#[test]
+fn the_client_file_gets_the_refusals_of_secrets_toml_with_its_own_name() {
+    let lab = lab();
+    lab.write_client(OLD_CLIENT, 0o644);
+    let notice = lab.save_client(true).unwrap_err().notice_of(CLIENT_FILE);
+    assert_eq!(
+        notice,
+        format!(
+            "google-oauth-client.json: mode must be 0600 (chmod 600 {})",
+            lab.client().display()
+        )
+    );
+    assert_eq!(fs::read_to_string(lab.client()).unwrap(), OLD_CLIENT);
+    assert_eq!(lab.names(), ["google-oauth-client.json"]);
+    fs::remove_file(lab.client()).unwrap();
+    let target = lab.root.path().join("elsewhere.json");
+    fs::write(&target, OLD_CLIENT).unwrap();
+    symlink(&target, lab.client()).unwrap();
+    let err = lab.save_client(true).unwrap_err();
+    assert_eq!(
+        err.notice_of(CLIENT_FILE),
+        "google-oauth-client.json is a symlink; edit it by hand"
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), OLD_CLIENT);
+}
+
+#[test]
+fn a_bad_id_or_secret_writes_nothing_and_secrets_toml_is_never_touched() {
+    let lab = lab();
+    lab.write(OLD, 0o600);
+    let fs_ = TestFs::default();
+    let bad = save_client_with(&fs_, Some(&lab.path()), "abc", "s", true);
+    assert_eq!(bad.unwrap_err(), Refusal::BadClientId);
+    assert!(fs_.calls.borrow().is_empty());
+    lab.save_client(false).unwrap();
+    lab.assert_names_and_toml(OLD);
+}
+
+impl Lab {
+    fn assert_names_and_toml(&self, bytes: &str) {
+        assert_eq!(fs::read_to_string(self.path()).unwrap(), bytes);
+        assert_eq!(self.mode(&self.path()), 0o600);
+        assert_eq!(self.names(), ["google-oauth-client.json", "secrets.toml"]);
+    }
+}
+
+#[tokio::test]
+async fn the_writer_saves_the_client_and_answers_with_a_notice_that_holds_no_value() {
+    let lab = lab();
+    let (tx, mut rx) = mpsc::channel(4);
+    Writer::new(Some(lab.path()), tx).save_client(ID.to_owned(), secret("GOCSPX-s3cr3t"), false);
+    let event = answer(&mut rx).await;
+    assert_eq!(
+        event,
+        AppEvent::SecretSaved(Ok("saved google-oauth-client.json".to_owned()))
+    );
+    let (tx, mut rx) = mpsc::channel(4);
+    Writer::new(Some(lab.path()), tx).save_client(ID.to_owned(), secret("x"), false);
+    let AppEvent::SecretSaved(Err(notice)) = answer(&mut rx).await else {
+        panic!("a refusal")
+    };
+    assert!(
+        notice.starts_with("google-oauth-client.json exists"),
+        "{notice}"
+    );
+    assert!(!notice.contains("secrets.toml"));
+}
+
+// Review: a client file with other hard links is refused and left alone.
+#[test]
+fn a_client_file_with_other_hard_links_is_refused() {
+    let lab = lab();
+    lab.write_client(OLD_CLIENT, 0o600);
+    fs::hard_link(lab.client(), lab.root.path().join("other")).unwrap();
+    let err = lab.save_client(true).unwrap_err();
+    assert_eq!(
+        err.notice_of(CLIENT_FILE),
+        "google-oauth-client.json has other hard links; edit it by hand"
+    );
+    assert_eq!(fs::read_to_string(lab.client()).unwrap(), OLD_CLIENT);
+    assert_eq!(lab.names(), ["google-oauth-client.json"]);
+}

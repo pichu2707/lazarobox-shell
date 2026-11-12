@@ -5,7 +5,9 @@
 
 use super::*;
 use crate::core::ai::mcp_catalog::Var;
-use crate::core::ai::mcp_secrets::{BACKUP, SecretText};
+use crate::core::ai::mcp_secrets::{
+    BACKUP, BAD_ID, BAD_SECRET, CLIENT_FILE, SecretText, valid_id, valid_secret,
+};
 
 /// What a confidential field draws once it holds text, whatever the length.
 const MASK: &str = "••••••••";
@@ -14,6 +16,7 @@ const MAX_FIELD: usize = 4096;
 const BAD: &str = "the value must be one line without control characters";
 const LONG: &str = "the value is longer than 4096 bytes";
 const EMPTY: &str = "empty value not saved; edit secrets.toml by hand to remove a value";
+const EMPTY_CLIENT: &str = "nothing typed; Esc cancels";
 const NO_VALUES: &str = "this entry has no values to fill";
 const NO_HOME: &str = "HOME is not an absolute path; edit secrets.toml by hand";
 const NO_BACKUP: &str = "secrets.toml.bak: there is no backup";
@@ -41,11 +44,43 @@ impl Pending {
     }
 }
 
-/// The field that is open: the index of its row, and what was typed.
+/// A client file write waiting for the user's `y` (or ready to go).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct ClientPending {
+    id: String,
+    secret: SecretText,
+    replace: bool,
+}
+
+impl ClientPending {
+    pub(super) fn into_command(self) -> MenuCommand {
+        MenuCommand::SaveClient {
+            id: self.id,
+            secret: self.secret,
+            replace: self.replace,
+        }
+    }
+}
+
+/// What a field asks for: a value of the entry (the index of its row), or
+/// a step of the OAuth client form (the secret step holds the id typed).
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Slot {
+    Var(usize),
+    ClientId,
+    ClientSecret(String),
+}
+
+/// The field that is open, and what was typed.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct Field {
-    var: usize,
+    slot: Slot,
     text: SecretText,
+}
+
+/// The entries whose login reads the OAuth client file.
+fn takes_client(entry: &Entry) -> bool {
+    matches!(entry.id, "ga4" | "gsc")
 }
 
 fn secret(text: &str) -> SecretText {
@@ -118,19 +153,24 @@ impl Connectors {
 
     pub(super) fn field_hint(&self, at: usize) -> Option<String> {
         let field = self.field.as_ref()?;
-        let var = vars(&mcp_catalog::entries()[at])[field.var];
-        Some(format!(
-            "type or paste {}; Enter saves · Esc cancels",
-            var.name
-        ))
+        let (what, enter) = match &field.slot {
+            Slot::Var(i) => (vars(&mcp_catalog::entries()[at])[*i].name, "saves"),
+            Slot::ClientId => ("client id", "continues"),
+            Slot::ClientSecret(_) => ("client secret", "saves"),
+        };
+        Some(format!("type or paste {what}; Enter {enter} · Esc cancels"))
     }
 
     pub(super) fn field_rows(&self, at: usize, cursor: usize, room: usize) -> Vec<Row> {
         let entry = &mcp_catalog::entries()[at];
         let list = vars(entry);
         if let Some(field) = &self.field {
-            let var = list[field.var];
-            let shown = if var.confidential() {
+            let (name, confidential) = match &field.slot {
+                Slot::Var(i) => (list[*i].name, list[*i].confidential()),
+                Slot::ClientId => ("client id", false),
+                Slot::ClientSecret(_) => ("client secret", true),
+            };
+            let shown = if confidential {
                 if field.text.is_empty() { "" } else { MASK }.to_owned()
             } else {
                 let text = clean(field.text.expose());
@@ -138,7 +178,7 @@ impl Connectors {
                 text.chars().skip(skip).collect()
             };
             return vec![
-                title(format!("{} · {}", entry.title, var.name)),
+                title(format!("{} · {name}", entry.title)),
                 text(format!("  {shown}")),
             ];
         }
@@ -154,6 +194,9 @@ impl Connectors {
                 selected: i == cursor,
                 enabled: true,
             });
+        }
+        if takes_client(entry) {
+            rows.push(text(format!("o OAuth client file ({CLIENT_FILE})")));
         }
         if self.presence.as_ref().is_some_and(Presence::backup) {
             rows.push(text(format!("d delete {BACKUP}")));
@@ -207,6 +250,12 @@ impl Connectors {
                 self.screen = Some(Screen::Fields { at, cursor });
             }
             KeyCode::Esc => self.screen = Some(Screen::Entry { at, scroll: 0 }),
+            KeyCode::Char('o') if takes_client(entry) => {
+                self.field = Some(Field {
+                    slot: Slot::ClientId,
+                    text: SecretText::new(),
+                });
+            }
             KeyCode::Char('d') => match self.presence.as_ref().is_some_and(Presence::backup) {
                 true => self.ask(Prompt::DeleteBackup, room),
                 false => self.notice = Some(NO_BACKUP),
@@ -216,7 +265,7 @@ impl Connectors {
                 match var.preset {
                     None => {
                         self.field = Some(Field {
-                            var: cursor,
+                            slot: Slot::Var(cursor),
                             text: SecretText::new(),
                         });
                     }
@@ -240,15 +289,18 @@ impl Connectors {
         let Some(field) = self.field.as_mut() else {
             return MenuCommand::None;
         };
-        let var = vars(entry)[field.var];
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         match key.code {
             KeyCode::Esc => self.field = None,
-            KeyCode::Enter if field.text.is_empty() => self.notice = Some(EMPTY),
+            KeyCode::Enter if field.text.is_empty() => {
+                let var = matches!(field.slot, Slot::Var(_));
+                self.notice = Some(if var { EMPTY } else { EMPTY_CLIENT });
+            }
             KeyCode::Enter => {
-                let text = std::mem::take(&mut field.text);
-                self.field = None;
-                return self.submit(entry, var, text, room);
+                let Some(Field { slot, text }) = self.field.take() else {
+                    return MenuCommand::None;
+                };
+                return self.enter_field(entry, slot, text, room);
             }
             KeyCode::Backspace if plain => field.text.pop(),
             KeyCode::Char(c) if plain => match accepts(&field.text, c.encode_utf8(&mut [0; 4])) {
@@ -256,6 +308,52 @@ impl Connectors {
                 Err(notice) => self.notice = Some(notice),
             },
             _ => self.notice = Some("no such key here"),
+        }
+        MenuCommand::None
+    }
+
+    /// Enter on a typed field: the save of a value, the next step of the
+    /// client form, or its write (asked first over an existing file). A text
+    /// that is refused stays in the field.
+    fn enter_field(
+        &mut self,
+        entry: &Entry,
+        slot: Slot,
+        text: SecretText,
+        room: usize,
+    ) -> MenuCommand {
+        let refuse = |this: &mut Self, slot, text, notice| {
+            this.field = Some(Field { slot, text });
+            this.notice = Some(notice);
+            MenuCommand::None
+        };
+        match slot {
+            Slot::Var(i) => return self.submit(entry, vars(entry)[i], text, room),
+            Slot::ClientId if !valid_id(text.expose()) => {
+                return refuse(self, Slot::ClientId, text, BAD_ID);
+            }
+            Slot::ClientId => {
+                let slot = Slot::ClientSecret(text.expose().to_owned());
+                self.field = Some(Field {
+                    slot,
+                    text: SecretText::new(),
+                });
+            }
+            Slot::ClientSecret(id) if !valid_secret(text.expose()) => {
+                return refuse(self, Slot::ClientSecret(id), text, BAD_SECRET);
+            }
+            Slot::ClientSecret(id) => {
+                let replace = self.presence.as_ref().is_some_and(Presence::client_file);
+                let pending = ClientPending {
+                    id,
+                    secret: text,
+                    replace,
+                };
+                if !replace {
+                    return pending.into_command();
+                }
+                self.ask(Prompt::Client(pending), room);
+            }
         }
         MenuCommand::None
     }

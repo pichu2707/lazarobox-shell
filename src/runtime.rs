@@ -2326,6 +2326,15 @@ impl Panes {
                         writer.save(server, name, value);
                     }
                 }
+                Effect::SaveClient {
+                    id,
+                    secret,
+                    replace,
+                } => {
+                    if let Some(writer) = self.secrets.as_ref() {
+                        writer.save_client(id, secret, replace);
+                    }
+                }
                 Effect::DeleteBackup => {
                     if let Some(writer) = self.secrets.as_ref() {
                         writer.delete_backup();

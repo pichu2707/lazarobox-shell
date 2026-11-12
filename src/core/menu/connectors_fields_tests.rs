@@ -484,3 +484,209 @@ fn the_rows_drawn_while_the_field_is_open_hold_no_part_of_the_value() {
     }
     assert!(texts(&m).iter().any(|r| r.trim() == MASK));
 }
+
+// ---- S6a3: the OAuth client form (`o`) ----
+
+const CID: &str = "123-abc.apps.googleusercontent.com";
+const CSECRET: &str = "GOCSPX-9!7?/x-hidden";
+
+fn client(id: &str, text: &str, replace: bool) -> MenuCommand {
+    MenuCommand::SaveClient {
+        id: id.to_owned(),
+        secret: secret(text),
+        replace,
+    }
+}
+
+/// The client form of entry `at` open on its id step.
+fn client_form(at: usize, file: bool) -> MenuState {
+    let mut m = entry(Vec::new(), at);
+    m.presence_reply(presence("", "").with_client_file(file));
+    assert_eq!(press(&mut m, 'f'), MenuCommand::None);
+    assert_eq!(press(&mut m, 'o'), MenuCommand::None);
+    m
+}
+
+/// The form typed through to the confirmation of the secret.
+fn client_typed(at: usize, file: bool) -> (MenuState, MenuCommand) {
+    let mut m = client_form(at, file);
+    type_in(&mut m, CID);
+    assert_eq!(enter(&mut m), MenuCommand::None);
+    type_in(&mut m, CSECRET);
+    let sent = enter(&mut m);
+    (m, sent)
+}
+
+// Spec: `o` on ga4 and gsc only.
+#[test]
+fn o_is_offered_on_ga4_and_gsc_and_nowhere_else() {
+    for at in [1, 2] {
+        let m = fields(at, "", "");
+        assert!(texts(&m).concat().contains("o OAuth client file"), "{at}");
+        assert_eq!(
+            hint(&client_form(at, false)),
+            "type or paste client id; Enter continues · Esc cancels"
+        );
+    }
+    for at in [0, 3] {
+        let mut m = fields(at, "", "");
+        assert!(!texts(&m).concat().contains("OAuth client"), "{at}");
+        assert_eq!(press(&mut m, 'o'), MenuCommand::None);
+        assert_eq!(hint(&m), "no such key here");
+    }
+}
+
+// Spec: Client file written (the form sends it); id shown, secret masked.
+#[test]
+fn the_id_is_shown_and_the_secret_is_masked_and_enter_sends_the_client() {
+    let mut m = client_form(1, false);
+    type_in(&mut m, CID);
+    assert!(texts(&m).contains(&format!("  {CID}")), "{:?}", texts(&m));
+    assert_eq!(enter(&mut m), MenuCommand::None);
+    assert_eq!(
+        hint(&m),
+        "type or paste client secret; Enter saves · Esc cancels"
+    );
+    type_in(&mut m, CSECRET);
+    let rows = texts(&m);
+    assert!(rows.iter().any(|r| r.trim() == MASK), "{rows:?}");
+    let all = rows.concat() + &hint(&m);
+    assert!(!all.contains("9!7?") && !all.contains(CID), "{all}");
+    assert_eq!(enter(&mut m), client(CID, CSECRET, false));
+}
+
+// Spec: Existing client file asks first.
+#[test]
+fn an_existing_client_file_asks_before_it_is_replaced() {
+    let (mut m, sent) = client_typed(1, true);
+    assert_eq!(sent, MenuCommand::None);
+    assert!(texts(&m).contains(&"replace google-oauth-client.json? (y/n)".to_owned()));
+    assert_eq!(press(&mut m, 'y'), client(CID, CSECRET, true));
+    for answer in ['n', 'x'] {
+        let (mut m, _) = client_typed(1, true);
+        assert_eq!(press(&mut m, answer), MenuCommand::None);
+    }
+    let (mut m, _) = client_typed(1, true);
+    press(&mut m, 'n');
+    assert_eq!(hint(&m), "not replaced");
+}
+
+// Spec: Bad client id.
+#[test]
+fn a_bad_id_sends_nothing_says_why_and_keeps_the_field_open() {
+    let mut m = client_form(1, false);
+    type_in(&mut m, "abc");
+    assert_eq!(enter(&mut m), MenuCommand::None);
+    assert!(
+        hint(&m).contains(".apps.googleusercontent.com"),
+        "{}",
+        hint(&m)
+    );
+    assert!(texts(&m).contains(&"  abc".to_owned()));
+    type_in(&mut m, " ");
+    assert!(m.connectors.field_open());
+}
+
+#[test]
+fn a_bad_or_empty_secret_sends_nothing_and_says_why() {
+    let mut m = client_form(2, false);
+    type_in(&mut m, CID);
+    enter(&mut m);
+    assert_eq!(enter(&mut m), MenuCommand::None);
+    assert_eq!(hint(&m), "nothing typed; Esc cancels");
+    type_in(&mut m, "a b");
+    assert_eq!(enter(&mut m), MenuCommand::None);
+    assert!(
+        hint(&m).starts_with("the client secret must be"),
+        "{}",
+        hint(&m)
+    );
+    assert!(m.connectors.field_open());
+}
+
+#[test]
+fn esc_closes_the_client_form_and_drops_the_text() {
+    let mut m = client_form(1, false);
+    type_in(&mut m, CID);
+    send(&mut m, key(KeyCode::Esc));
+    assert!(!m.connectors.field_open());
+    assert!(!format!("{m:?}").contains("123-abc"));
+}
+
+// Spec: the secret appears nowhere else.
+#[test]
+fn the_client_secret_appears_in_no_row_notice_hint_or_debug_output() {
+    let (mut m, sent) = client_typed(1, true);
+    let mut seen = vec![
+        format!("{sent:?}"),
+        format!("{m:?}"),
+        texts(&m).concat(),
+        hint(&m),
+    ];
+    let command = press(&mut m, 'y');
+    seen.extend([format!("{command:?}"), format!("{m:?}"), texts(&m).concat()]);
+    m.secret_reply(Ok("saved google-oauth-client.json".to_owned()));
+    seen.extend([format!("{m:?}"), texts(&m).concat(), hint(&m)]);
+    let all = seen.join("\n");
+    let parts: Vec<&str> = (0..=CSECRET.len() - 4)
+        .map(|i| &CSECRET[i..i + 4])
+        .collect();
+    for part in parts {
+        assert!(!all.contains(part), "{part} leaked in {all}");
+    }
+}
+
+// Spec: no other path to the client write.
+#[test]
+fn only_the_client_form_builds_a_client_save_and_only_the_writer_runs_it() {
+    assert_eq!(
+        files_with("MenuCommand::SaveClient"),
+        ["app.rs", "core/menu/connectors/fields.rs"]
+    );
+    assert_eq!(files_with("Effect::SaveClient"), ["app.rs", "runtime.rs"]);
+    assert_eq!(
+        files_with("save_client_with("),
+        ["runtime/secrets_write.rs"]
+    );
+}
+
+// Review: a file that appeared after the presence was read refuses with
+// `Exists`; the area reads the files again so the next `o` asks to replace.
+#[test]
+fn an_exists_refusal_reads_the_files_again_and_the_next_form_asks_to_replace() {
+    let (mut m, sent) = client_typed(1, false);
+    assert_eq!(sent, client(CID, CSECRET, false));
+    let refusal = "google-oauth-client.json exists; open the form again to replace it";
+    assert_eq!(
+        m.secret_reply(Err(refusal.to_owned())),
+        MenuCommand::LoadPresence
+    );
+    m.presence_reply(presence("", "").with_client_file(true));
+    press(&mut m, 'o');
+    type_in(&mut m, CID);
+    enter(&mut m);
+    type_in(&mut m, CSECRET);
+    assert_eq!(enter(&mut m), MenuCommand::None);
+    assert!(texts(&m).contains(&"replace google-oauth-client.json? (y/n)".to_owned()));
+    assert_eq!(press(&mut m, 'y'), client(CID, CSECRET, true));
+    // Another refusal does not read anything again.
+    assert_eq!(
+        m.secret_reply(Err("secrets.toml: not saved".to_owned())),
+        MenuCommand::None
+    );
+}
+
+// Review: the restart hint is for `secrets.toml` values, not the client file.
+#[test]
+fn a_client_file_save_does_not_say_to_restart_the_chat() {
+    let (mut m, _) = client_typed(1, false);
+    m.secret_reply(Ok("saved google-oauth-client.json".to_owned()));
+    assert!(
+        !texts(&m).concat().contains("restart the chat"),
+        "{:?}",
+        texts(&m)
+    );
+    let mut m = fields(0, CLARITY, "");
+    m.secret_reply(Ok("saved CLARITY_API_TOKEN".to_owned()));
+    assert!(texts(&m).concat().contains("restart the chat"));
+}

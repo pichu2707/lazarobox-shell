@@ -94,8 +94,8 @@ Build order: S6a1, S6a2, S6a3, S6c, S6b1, S6b2, S6d.
 
 ## S6a3 OAuth client file (Q11, orchestrator, pending owner confirmation) — 110–170 lines
 
-- [ ] 6a3.1 RED/GREEN: OAuth client file: Desktop JSON via `serde_json`, id ends in `.apps.googleusercontent.com`, printable ASCII, whole-file write with the same rules, backup, overwrite only after confirmation (mcp-secrets, OAuth client file: every scenario).
-- [ ] 6a3.2 RED/GREEN: client form `o` on `ga4` and `gsc`: id shown, secret masked at a fixed width, overwrite confirmation, notices (mcp-secrets, Existing client file asks first, Bad client id).
+- [x] 6a3.1 RED/GREEN: OAuth client file: Desktop JSON via `serde_json`, id ends in `.apps.googleusercontent.com`, printable ASCII, whole-file write with the same rules, backup, overwrite only after confirmation (mcp-secrets, OAuth client file: every scenario).
+- [x] 6a3.2 RED/GREEN: client form `o` on `ga4` and `gsc`: id shown, secret masked at a fixed width, overwrite confirmation, notices (mcp-secrets, Existing client file asks first, Bad client id).
 
 ## S6c Workspace entries, filters and catalog fixes (C9, C10, C12) — 220–300 lines
 
