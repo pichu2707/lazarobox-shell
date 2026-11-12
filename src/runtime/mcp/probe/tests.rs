@@ -266,7 +266,7 @@ async fn a_secrets_problem_is_in_the_report_without_a_value() {
 #[tokio::test]
 async fn a_gsc_probe_without_a_token_is_refused_with_a_notice_and_no_spawn() {
     let lab = lab();
-    let dir = lab.home.join("mcp-gsc");
+    let dir = lab.home.join(".config/mcp-gsc");
     let file = secrets_file(
         &lab,
         &format!(

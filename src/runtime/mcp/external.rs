@@ -72,7 +72,10 @@ pub(crate) async fn connect(
     timeouts: Timeouts,
 ) -> Result<(McpClient, Listed), String> {
     let text = |name: &str| lookup(name).map(|v| v.to_string_lossy().into_owned());
-    if let Some(why) = gsc::start_refusal(server, &text, |token| token.metadata().is_ok()) {
+    if let Some(why) = gsc::start_refusal(server, home, &text, |token| {
+        // A `stat`: an empty file is not a link.
+        token.metadata().is_ok_and(|m| m.len() > 0)
+    }) {
         return Err(why.to_owned());
     }
     let mut client =

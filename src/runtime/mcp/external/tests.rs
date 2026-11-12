@@ -318,7 +318,7 @@ async fn gsc_start(lab: &super::fake::Lab, name: &str, file: &Secrets) -> Extern
 #[tokio::test]
 async fn gsc_with_oauth_values_and_no_token_is_not_spawned_and_says_so_once() {
     let lab = lab();
-    let dir = lab.home.join("mcp-gsc");
+    let dir = lab.home.join(".config/mcp-gsc");
     let set = gsc_start(&lab, "gsc", &gsc_values(dir.to_str().unwrap())).await;
     assert_eq!(
         set.notices(),
@@ -330,7 +330,7 @@ async fn gsc_with_oauth_values_and_no_token_is_not_spawned_and_says_so_once() {
 #[tokio::test]
 async fn gsc_with_a_token_starts_normally() {
     let lab = lab();
-    let dir = lab.home.join("mcp-gsc");
+    let dir = lab.home.join(".config/mcp-gsc");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("token.json"), "{}").unwrap();
     let set = gsc_start(&lab, "gsc", &gsc_values(dir.to_str().unwrap())).await;
@@ -369,4 +369,36 @@ async fn the_service_account_way_and_another_name_start_without_a_token() {
     let set = gsc_start(&lab, "search", &other).await;
     assert!(set.notices().is_empty(), "{:?}", set.notices());
     assert!(!lab.env_of("search").is_empty());
+}
+
+// W4: an empty token file is not a link (the server would run its flow).
+#[tokio::test]
+async fn an_empty_token_file_counts_as_not_linked() {
+    let lab = lab();
+    let dir = lab.home.join(".config/mcp-gsc");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("token.json"), "").unwrap();
+    let set = gsc_start(&lab, "gsc", &gsc_values(dir.to_str().unwrap())).await;
+    assert_eq!(
+        set.notices(),
+        ["mcp: gsc unavailable: not linked; open Connectors and use Link with Google"]
+    );
+    assert!(lab.env_of("gsc").is_empty(), "the server was spawned");
+}
+
+// W2: a token folder the tools could read is not started.
+#[tokio::test]
+async fn a_token_folder_outside_the_denied_ones_is_not_spawned() {
+    let lab = lab();
+    let dir = lab.home.join("projects/tokens");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("token.json"), "{}").unwrap();
+    let set = gsc_start(&lab, "gsc", &gsc_values(dir.to_str().unwrap())).await;
+    assert_eq!(
+        set.notices(),
+        [
+            "mcp: gsc unavailable: GSC_CONFIG_DIR must be under ~/.config/mcp-gsc; fix it in Connectors (f)"
+        ]
+    );
+    assert!(lab.env_of("gsc").is_empty());
 }
