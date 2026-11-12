@@ -161,6 +161,13 @@ impl McpClient {
         }
     }
 
+    /// Stops removing this server's values from what its calls return. For a
+    /// caller that reads a sign-in link holding the client id and redacts
+    /// whatever it shows by itself.
+    pub fn keep_results_whole(&mut self) {
+        self.redact.clear();
+    }
+
     /// `initialize` with the pinned revision, then `notifications/initialized`.
     pub async fn handshake(&mut self) -> Result<(), ClientError> {
         let params = json!({
