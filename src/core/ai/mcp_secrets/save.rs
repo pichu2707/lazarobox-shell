@@ -28,6 +28,8 @@ pub enum Refusal {
     FileOwner,
     HardLinked,
     FileMode(PathBuf),
+    /// A file that may keep its mode (`config.toml`) is writable by others.
+    FileWritable(PathBuf),
     ReadOnly(PathBuf),
     TooLarge,
     Unreadable,
@@ -81,6 +83,10 @@ impl Refusal {
             Self::FileOwner => "secrets.toml is not owned by you; edit it by hand".to_owned(),
             Self::HardLinked => "secrets.toml has other hard links; edit it by hand".to_owned(),
             Self::FileMode(path) => super::mode_problem(path),
+            Self::FileWritable(path) => format!(
+                "secrets.toml is writable by group or others; run chmod go-w {}",
+                path.display()
+            ),
             Self::ReadOnly(path) => format!(
                 "secrets.toml is read-only (mode 0400); chmod 600 {} to save from the menu",
                 path.display()
@@ -153,6 +159,16 @@ pub fn edit(text: &str, server: &str, name: &str, value: &str) -> Result<String,
         return Err(Refusal::TooLarge);
     }
     Ok(format!("{bom}{out}"))
+}
+
+/// `text` with each (server, name, value) of `values` set in turn, by the
+/// rules of [`edit`]: the first refusal refuses them all.
+pub fn edit_all(text: &str, values: &[(&str, &str, &str)]) -> Result<String, Refusal> {
+    values
+        .iter()
+        .try_fold(text.to_owned(), |text, (server, name, value)| {
+            edit(&text, server, name, value)
+        })
 }
 
 fn edit_body(text: &str, server: &str, name: &str, value: &str) -> Result<String, Refusal> {

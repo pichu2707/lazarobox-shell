@@ -21,28 +21,42 @@ use std::{
 
 use tokio::sync::mpsc;
 
+use super::config_append::connect_with;
 use crate::{
     app::AppEvent,
-    core::ai::mcp_secrets::{
-        BACKUP, CLIENT_BACKUP, CLIENT_FILE, FILE, MAX_BYTES, Refusal, SecretText, client_json,
-        edit, line_of,
+    core::{
+        ai::mcp_secrets::{
+            BACKUP, CLIENT_BACKUP, CLIENT_FILE, FILE, MAX_BYTES, Refusal, SecretText, client_json,
+            edit, edit_all, line_of,
+        },
+        config_append::{Connect, Connected},
     },
 };
 
-/// The file a write replaces and the backup it keeps.
+/// The file a write replaces, the backup it keeps, its size bound and its
+/// mode rule.
 #[derive(Clone, Copy)]
-struct Target {
-    file: &'static str,
-    backup: &'static str,
+pub(super) struct Target {
+    pub(super) file: &'static str,
+    pub(super) backup: &'static str,
+    pub(super) max: u64,
+    /// `false`: the file must be 0600 and stays 0600. `true`: any mode
+    /// without group or world write is kept (`config.toml`); a new file is
+    /// 0600.
+    pub(super) keep_mode: bool,
 }
 
 const SECRETS: Target = Target {
     file: FILE,
     backup: BACKUP,
+    max: MAX_BYTES,
+    keep_mode: false,
 };
 const CLIENT: Target = Target {
     file: CLIENT_FILE,
     backup: CLIENT_BACKUP,
+    max: MAX_BYTES,
+    keep_mode: false,
 };
 
 /// What a save did.
@@ -121,6 +135,11 @@ pub trait SaveFs {
     fn create_excl(&self, dir: &OwnedFd, name: &str) -> io::Result<OwnedFd>;
     /// `fchmod` to 0600, whatever the umask.
     fn private(&self, fd: &OwnedFd) -> io::Result<()>;
+    /// `fchmod` to `mode`, for a file that keeps its mode.
+    fn set_mode(&self, fd: &OwnedFd, mode: u32) -> io::Result<()> {
+        // SAFETY: `fd` is open.
+        ok(unsafe { libc::fchmod(fd.as_raw_fd(), mode as libc::mode_t) })
+    }
     fn write_all(&self, fd: &OwnedFd, bytes: &[u8]) -> io::Result<()>;
     fn fsync(&self, fd: &OwnedFd) -> io::Result<()>;
     fn rename(&self, dir: &OwnedFd, from: &str, to: &str) -> io::Result<()>;
@@ -323,6 +342,27 @@ impl Writer {
         });
     }
 
+    /// Connect Google's write (`Effect::ConnectGoogle`): the values, then the
+    /// entries appended to `config.toml` next to `secrets.toml`; the answer
+    /// is one `AppEvent::GoogleConnected`.
+    pub fn connect(&self, write: Box<Connect>) {
+        let (secrets, events) = (self.secrets.clone(), self.events.clone());
+        let turn = Arc::clone(&self.turn);
+        tokio::spawn(async move {
+            let done = tokio::task::spawn_blocking(move || {
+                let _turn = turn.lock().unwrap_or_else(PoisonError::into_inner);
+                connect_with(&RealFs, secrets.as_deref(), &write)
+            })
+            .await;
+            let reply = done.unwrap_or_else(|_| {
+                Connected::Refused(
+                    "connect: the task failed; check secrets.toml and config.toml".to_owned(),
+                )
+            });
+            let _ = events.send(AppEvent::GoogleConnected(reply)).await;
+        });
+    }
+
     pub fn delete_backup(&self) {
         let (secrets, events) = (self.secrets.clone(), self.events.clone());
         tokio::spawn(async move {
@@ -377,6 +417,34 @@ pub fn save_with(
     })
 }
 
+/// Saves every (server, name, value) of `values` in one write and one backup
+/// generation, by the rules of a save of one: the first refusal writes
+/// nothing.
+pub fn save_all_with(
+    fs: &impl SaveFs,
+    secrets: Option<&Path>,
+    values: &[(&str, &str, &str)],
+) -> Result<Saved, Refusal> {
+    edit_all("", values)?;
+    let backed_up = replace_with(fs, secrets, SECRETS, |current| {
+        let text = match current {
+            Some(bytes) => std::str::from_utf8(bytes)
+                .map_err(|e| Refusal::NotToml(line_of(bytes, e.valid_up_to())))?,
+            None => "",
+        };
+        edit_all(text, values)
+    })?;
+    let name = match values {
+        [(_, name, _)] => (*name).to_owned(),
+        _ => format!("{} values", values.len()),
+    };
+    Ok(Saved {
+        name,
+        backed_up,
+        client: false,
+    })
+}
+
 /// Writes the OAuth client file next to `secrets`, by the same steps as a
 /// save. An existing file is replaced only when `replace` (the user's `y`).
 pub fn save_client_with(
@@ -398,39 +466,45 @@ pub fn save_client_with(
     })
 }
 
-/// Replaces `target` in the folder of `secrets` with what `build` makes from
-/// the bytes it holds (`None`: it does not exist): folder judged, file read
-/// and judged on its handle, temp file, backup, swap. `true` when a backup was
-/// made.
-fn replace_with(
+/// Replaces `target` in the folder of `secrets` (any file of that folder)
+/// with what `build` makes from the bytes it holds (`None`: it does not
+/// exist): folder judged, file read and judged on its handle, temp file,
+/// backup, swap. `true` when a backup was made.
+pub(super) fn replace_with<E: From<Refusal>>(
     fs: &impl SaveFs,
     secrets: Option<&Path>,
     target: Target,
-    build: impl FnOnce(Option<&[u8]>) -> Result<String, Refusal>,
-) -> Result<bool, Refusal> {
+    build: impl FnOnce(Option<&[u8]>) -> Result<String, E>,
+) -> Result<bool, E> {
     let dir = open_folder(fs, secrets)?;
     let folder = secrets.and_then(Path::parent).unwrap_or(Path::new(""));
     let current = read_current(fs, &dir, &folder.join(target.file), target)?;
     let new = build(current.as_ref().map(|(bytes, _)| bytes.as_slice()))?;
     // Defense in depth: `edit` already refuses a result over the cap.
-    if new.len() as u64 > MAX_BYTES {
-        return Err(Refusal::TooLarge);
+    if new.len() as u64 > target.max {
+        return Err(Refusal::TooLarge.into());
     }
     let before = current.as_ref().map(|(_, stat)| stat);
     if current.is_some() {
         match fs.stat_at(&dir, target.backup) {
-            Ok(stat) if !stat.regular => return Err(Refusal::BackupUnsafe),
-            Err(e) if e.kind() != ErrorKind::NotFound => return Err(Refusal::Io(e.kind())),
+            Ok(stat) if !stat.regular => return Err(Refusal::BackupUnsafe.into()),
+            Err(e) if e.kind() != ErrorKind::NotFound => {
+                return Err(Refusal::Io(e.kind()).into());
+            }
             _ => {}
         }
     }
-    let temp = write_temp(fs, &dir, target, new.as_bytes())?;
+    let mode = match before {
+        Some(stat) if target.keep_mode => stat.mode & 0o777,
+        _ => 0o600,
+    };
+    let temp = write_temp(fs, &dir, target, new.as_bytes(), mode)?;
     let old = current.as_ref().map(|(bytes, _)| bytes.as_slice());
     let done = swap(fs, &dir, target, &temp, before, old);
     if done.is_err() {
         let _ = fs.unlink(&dir, &temp);
     }
-    done.map(|()| current.is_some())
+    done.map(|()| current.is_some()).map_err(E::from)
 }
 
 /// The config folder, opened and judged on the handle.
@@ -478,33 +552,44 @@ fn read_current(
     if stat.nlink > 1 {
         return Err(Refusal::HardLinked);
     }
-    // Only the owner's read and write: 0400 is read-only, anything else loose.
-    if stat.mode & 0o200 == 0 && stat.mode & 0o7077 == 0 {
-        return Err(Refusal::ReadOnly(path.to_path_buf()));
+    if target.keep_mode {
+        if stat.mode & 0o022 != 0 {
+            return Err(Refusal::FileWritable(path.to_path_buf()));
+        }
+        if stat.mode & 0o200 == 0 {
+            return Err(Refusal::ReadOnly(path.to_path_buf()));
+        }
+    } else {
+        // Only the owner's read and write: 0400 is read-only, anything else loose.
+        if stat.mode & 0o200 == 0 && stat.mode & 0o7077 == 0 {
+            return Err(Refusal::ReadOnly(path.to_path_buf()));
+        }
+        if stat.mode != 0o600 {
+            return Err(Refusal::FileMode(path.to_path_buf()));
+        }
     }
-    if stat.mode != 0o600 {
-        return Err(Refusal::FileMode(path.to_path_buf()));
-    }
-    if stat.len > MAX_BYTES {
+    if stat.len > target.max {
         return Err(Refusal::TooLarge);
     }
     let bytes = fs
-        .read(&fd, MAX_BYTES + 1)
+        .read(&fd, target.max + 1)
         .map_err(|_| Refusal::Unreadable)?;
-    if bytes.len() as u64 > MAX_BYTES {
+    if bytes.len() as u64 > target.max {
         return Err(Refusal::TooLarge);
     }
     Ok(Some((bytes, stat)))
 }
 
-/// A new file of mode 0600 in the folder under a random name, written and
-/// synced: `O_EXCL`, so a name that exists (a planted link too) is never
-/// opened or removed, and another is tried, three times.
+/// A new file of mode `mode` (0600 for every file but a kept `config.toml`)
+/// in the folder under a random name, written and synced: `O_EXCL`, so a name
+/// that exists (a planted link too) is never opened or removed, and another
+/// is tried, three times.
 fn write_temp(
     fs: &impl SaveFs,
     dir: &OwnedFd,
     target: Target,
     bytes: &[u8],
+    mode: u32,
 ) -> Result<String, Refusal> {
     for _ in 0..3 {
         let name = format!(
@@ -517,7 +602,12 @@ fn write_temp(
             Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(Refusal::Io(e.kind())),
             Ok(fd) => {
-                let written = (fs.private(&fd))
+                let chmod = if mode == 0o600 {
+                    fs.private(&fd)
+                } else {
+                    fs.set_mode(&fd, mode)
+                };
+                let written = chmod
                     .and_then(|()| fs.write_all(&fd, bytes))
                     .and_then(|()| fs.fsync(&fd));
                 if let Err(e) = written {
@@ -557,7 +647,7 @@ fn swap(
     let io = |e: io::Error| Refusal::Io(e.kind());
     unchanged(fs, dir, target.file, before)?;
     if let Some(old) = old {
-        let backup = write_temp(fs, dir, target, old)?;
+        let backup = write_temp(fs, dir, target, old, 0o600)?;
         if let Err(e) = fs.rename(dir, &backup, target.backup) {
             let _ = fs.unlink(dir, &backup);
             return Err(io(e));

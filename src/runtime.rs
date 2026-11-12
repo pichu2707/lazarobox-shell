@@ -27,6 +27,7 @@ pub mod bounded_read;
 pub mod chat;
 pub mod chat_store;
 pub mod clipboard;
+pub mod config_append;
 mod config_write;
 pub mod desktop;
 pub mod engram;
@@ -2361,6 +2362,11 @@ impl Panes {
                 Effect::DeleteBackup => {
                     if let Some(writer) = self.secrets.as_ref() {
                         writer.delete_backup();
+                    }
+                }
+                Effect::ConnectGoogle(write) => {
+                    if let Some(writer) = self.secrets.as_ref() {
+                        writer.connect(write);
                     }
                 }
                 Effect::CancelMcpProbe => {

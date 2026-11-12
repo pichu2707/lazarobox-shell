@@ -329,6 +329,9 @@ pub enum AppEvent {
     SecretSaved(Result<String, String>),
     /// What became of `Effect::DeleteBackup`.
     BackupDeleted(Result<String, String>),
+    /// What became of `Effect::ConnectGoogle`: its one-line notice, which
+    /// never holds a value.
+    GoogleConnected(crate::core::config_append::Connected),
     /// The link session of `google` moved on: the link to open, or its end.
     McpLink(crate::core::ai::mcp_catalog::link::Step),
     /// The answer to `Effect::LinkGsc`: the login line to confirm, or the
@@ -419,6 +422,10 @@ pub enum Effect {
     /// Delete `secrets.toml.bak` (the user's `y`); the answer is one
     /// `AppEvent::BackupDeleted`.
     DeleteBackup,
+    /// Connect Google's write after the user's `y` (openspec change
+    /// `google-connect`): the values in `secrets.toml`, then the entries
+    /// appended to `config.toml`. The answer is one `AppEvent::GoogleConnected`.
+    ConnectGoogle(Box<crate::core::config_append::Connect>),
     /// Check the client file and `uv` for Link with Google on `gsc` and build
     /// its login line (nothing is started); the answer is one
     /// `AppEvent::GscLine`.
@@ -2326,6 +2333,11 @@ impl App {
             }
             AppEvent::SecretSaved(reply) => self.on_secret_reply(reply, true),
             AppEvent::BackupDeleted(reply) => self.on_secret_reply(reply, false),
+            AppEvent::GoogleConnected(done) => {
+                self.notice = Some(done.notice().to_owned());
+                self.dirty = true;
+                Vec::new()
+            }
             AppEvent::McpLink(step) => self.on_mcp_link(step),
             AppEvent::GscLine(reply) => self.on_gsc_line(reply),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),

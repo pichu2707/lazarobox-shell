@@ -224,3 +224,28 @@ fn a_leading_bom_is_preserved() {
         format!("{bom}[clarity]\nCLARITY_API_TOKEN = \"b\"\n")
     );
 }
+
+// Connect Google (S4): several values in one edit, each by the rules of one.
+#[test]
+fn several_values_are_set_in_one_edit_by_the_rules_of_one() {
+    let values = [
+        ("clarity", "CLARITY_API_TOKEN", "b"),
+        ("google", "GOOGLE_OAUTH_CLIENT_ID", "id"),
+        ("google", "USER_GOOGLE_EMAIL", "ana@example.com"),
+    ];
+    let out = edit_all(FILE, &values).unwrap();
+    let mut one = FILE.to_owned();
+    for (server, name, value) in values {
+        one = ok(&one, server, name, value);
+    }
+    assert_eq!(out, one);
+    // One refused value refuses them all, by the same refusal.
+    let bad = [
+        ("clarity", "CLARITY_API_TOKEN", "b"),
+        ("google", "NOT_LISTED", "x"),
+    ];
+    assert_eq!(
+        edit_all(FILE, &bad).unwrap_err(),
+        edit(FILE, "google", "NOT_LISTED", "x").unwrap_err()
+    );
+}

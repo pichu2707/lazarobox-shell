@@ -289,7 +289,7 @@ pub use client::{
     BAD_ID, BAD_SECRET, CLIENT_BACKUP, CLIENT_FILE, CLIENT_MAX, Client, client_json, read_client,
     valid_id, valid_secret,
 };
-pub use save::{Refusal, edit, line_of};
+pub use save::{Refusal, edit, edit_all, line_of};
 pub use text::SecretText;
 
 #[cfg(test)]
