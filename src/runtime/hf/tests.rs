@@ -898,12 +898,12 @@ async fn a_google_client_reply_without_a_length_is_still_capped() {
         out
     }));
     let curl = Curl::google_client(path).local(&base);
-    // Either curl stops at the cap or the read does: never more than the cap
-    // reaches the caller.
-    match curl.fetch("/lazarobox/google-client.json", CLIENT).await {
-        Err(_) => {}
-        Ok((_, body)) => assert!(body.len() <= CLIENT.cap, "{}", body.len()),
-    }
+    // curl stops at the cap (exit 63): the reply fails, never a cut body.
+    let answer = curl.fetch("/lazarobox/google-client.json", CLIENT).await;
+    assert_eq!(
+        answer,
+        Err("javilazaro.es request failed: reply too long".to_owned())
+    );
 }
 
 #[tokio::test]

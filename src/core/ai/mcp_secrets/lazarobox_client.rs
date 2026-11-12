@@ -4,7 +4,7 @@
 //! project. Pure: the fetch and the cache are `runtime::google_client`. A
 //! notice never holds the secret or the body that was fetched.
 
-use super::{CLIENT_MAX, Client, read_client, valid_id};
+use super::{CLIENT_MAX, Client, client::ID_SUFFIX, read_client, valid_id};
 
 /// The Google Cloud project number every id of the lazarobox client starts
 /// with. `None` until the owner supplies it: the route is then off.
@@ -63,14 +63,14 @@ pub fn pinned(id: &str, pin: Option<&str>) -> bool {
     valid_id(id)
         && id
             .strip_prefix(pin)
-            .is_some_and(|rest| rest.starts_with('-'))
+            .is_some_and(|rest| rest.starts_with('-') && rest.len() > 1 + ID_SUFFIX.len())
 }
 
 /// The client of an answer, or why it is refused. Checked in order: the pin
 /// is set, the status is 200 (a redirect is a failure), the size, the shape
 /// of a Desktop client file, the project.
 pub fn accept(status: u16, body: &str, pin: Option<&str>) -> Result<Client, Why> {
-    if pin.is_none() {
+    if pin.is_none_or(str::is_empty) {
         return Err(Why::NotConfigured);
     }
     match status {

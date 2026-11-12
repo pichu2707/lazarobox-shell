@@ -249,3 +249,58 @@ async fn a_cache_that_cannot_be_written_fails_with_the_save_notice() {
     );
     assert!(!text.contains(SECRET));
 }
+
+fn no_length(body: &[u8]) -> Vec<u8> {
+    let mut out = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+    out.extend_from_slice(body);
+    out
+}
+
+// Review: an oversize answer is reported as oversize, with a length or
+// without one, and a valid client padded past the cap is never accepted.
+#[tokio::test]
+async fn an_oversize_answer_says_larger_than_16_kib_and_is_never_accepted() {
+    need_curl!();
+    let padded = format!("{}{}", client_body(ID), " ".repeat(20 * 1024));
+    let answers: Vec<(&str, Vec<u8>)> = vec![
+        ("length", reply("200 OK", &vec![b' '; 20 * 1024])),
+        ("no length", no_length(&vec![b' '; 20 * 1024])),
+        ("padded with length", reply("200 OK", padded.as_bytes())),
+        ("padded no length", no_length(padded.as_bytes())),
+    ];
+    for (name, answer) in answers {
+        let (base, _) = serve(Box::new(move |_| answer.clone()));
+        let curl = Curl::google_client(path()).local(&base);
+        let lab = lab();
+        let (kind, text) = notice(lab.refresh(&curl, Some(PIN)).await);
+        assert_eq!(kind, "failed", "{name}");
+        assert_eq!(
+            text,
+            "lazarobox client refused (larger than 16 KiB); nothing saved; u uses your own client",
+            "{name}"
+        );
+        assert_eq!(lab.names(), Vec::<String>::new(), "{name}");
+        lab.put_cache(ID, 0o600);
+        let (kind, text) = notice(lab.refresh(&curl, Some(PIN)).await);
+        assert_eq!(kind, "stale", "{name}");
+        assert_eq!(
+            text,
+            "lazarobox client not refreshed (larger than 16 KiB); linking with the saved copy",
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_empty_pin_is_no_pin() {
+    let lab = lab();
+    let (base, seen) = serve(Box::new(|_| ok("{}")));
+    let curl = Curl::google_client(path()).local(&base);
+    let (kind, text) = notice(lab.refresh(&curl, Some("")).await);
+    assert_eq!(kind, "failed");
+    assert!(
+        text.starts_with("lazarobox client not configured"),
+        "{text}"
+    );
+    assert!(seen.lock().unwrap().is_empty());
+}

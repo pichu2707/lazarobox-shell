@@ -43,6 +43,9 @@ const API_TIMEOUT_SECS: u64 = 15;
 /// Most bytes of an API reply kept; a longer one fails.
 pub(crate) const REPLY_CAP: usize = 4 * 1024 * 1024;
 
+/// What a reply over its cap fails with.
+pub const REPLY_TOO_LONG: &str = "reply too long";
+
 /// Most bytes of curl's error output read.
 const ERROR_CAP: u64 = 4 * 1024;
 
@@ -343,12 +346,16 @@ impl Curl {
         let too_long = out.len() as u64 >= limit;
         let error = error_line(&mut child).await;
         let status = finish(&mut child, &mut guard, !read || too_long).await;
+        // curl 63 (`--max-filesize`): the reply was over the cap, whatever
+        // curl still printed (an empty or a cut body, then the status).
+        let too_long =
+            too_long || (!fetch.cut && status.as_ref().is_ok_and(|s| s.code() == Some(63)));
         if too_long && fetch.cut {
             out.truncate(fetch.cap);
             return Ok((200, String::from_utf8_lossy(&out).into_owned()));
         }
         if too_long {
-            return Err(self.failed("reply too long"));
+            return Err(self.failed(REPLY_TOO_LONG));
         }
         let text = String::from_utf8(out).map_err(|_| self.unreadable())?;
         let (body, code) = text.rsplit_once('\n').unwrap_or(("", &text));

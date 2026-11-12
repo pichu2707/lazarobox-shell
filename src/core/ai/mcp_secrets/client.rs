@@ -12,7 +12,7 @@ pub const CLIENT_FILE: &str = "google-oauth-client.json";
 pub const CLIENT_BACKUP: &str = "google-oauth-client.json.bak";
 
 /// What every client id of a Desktop client ends in.
-const ID_SUFFIX: &str = ".apps.googleusercontent.com";
+pub(super) const ID_SUFFIX: &str = ".apps.googleusercontent.com";
 
 /// What the notice says of an id that is refused.
 pub const BAD_ID: &str =

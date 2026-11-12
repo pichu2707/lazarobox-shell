@@ -19,7 +19,7 @@ Mode: Strict TDD (`cargo test`). Delivery: 3 chained PRs, `stacked-to-main`. Bra
 ## Deviations
 
 - `read_client_with` keeps its signature and delegates to `read_client_file(fs, secrets, file)`, instead of changing its signature (task 1.7 wording). Existing tests pass unchanged.
-- A no-`Content-Length` reply over the cap is cut by curl at 16 KiB, so it reaches `accept` as a truncated body and is reported as `not a Desktop client file`, not `larger than 16 KiB`. It is still refused and never read beyond the cap.
+- RESOLVED after review: a reply over the cap (with or without `Content-Length`) made curl exit 63 and still print a status. `Curl::fetch` now fails with `reply too long` on exit 63 (non-cut fetches only), and `refresh` maps it to `Why::TooLarge` (`larger than 16 KiB`). A valid client padded past the cap is refused. `pinned` also needs a non-empty id part after `<pin>-`, and `Some("")` is no pin in `accept` and `refresh`.
 - A fetch that succeeds but whose cache write is refused returns `Failed` with the `not saved` notice (no fallback: the cache is the thing that is broken).
 - When the fetch fails and the saved copy fails the file checks, the `Failed` notice is the failure notice plus `; the saved copy is not used: <cache problem>`.
 - CHANGELOG untouched: PR1 is not user-visible; the entry is task 2.10.

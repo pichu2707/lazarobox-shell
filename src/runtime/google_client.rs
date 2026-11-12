@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use super::{
-    hf::{CLIENT, Curl},
+    hf::{CLIENT, Curl, REPLY_TOO_LONG},
     secrets_write::{RealFs, google::read_cache, save_cache_with},
 };
 use crate::core::ai::mcp_secrets::{
@@ -29,11 +29,12 @@ pub enum Refresh {
 /// request is made. When the fetch or its check fails, a cache that passes
 /// the pin and the file checks is used and left as it is.
 pub async fn refresh(curl: &Curl, pin: Option<&str>, secrets: Option<&Path>) -> Refresh {
-    if pin.is_none() {
+    if pin.is_none_or(str::is_empty) {
         return Refresh::Failed(failure_notice(&Why::NotConfigured));
     }
     let answer = match curl.fetch(URL_PATH, CLIENT).await {
         Ok((status, body)) => accept(status, &body, pin),
+        Err(line) if line.ends_with(REPLY_TOO_LONG) => Err(Why::TooLarge),
         Err(line) => Err(Why::Curl(line)),
     };
     let secrets = secrets.map(Path::to_path_buf);

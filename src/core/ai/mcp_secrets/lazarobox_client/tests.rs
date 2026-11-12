@@ -36,6 +36,20 @@ fn an_id_that_is_not_a_client_id_is_refused_even_with_the_pin() {
 }
 
 #[test]
+fn an_id_with_nothing_between_the_pin_and_the_suffix_is_refused() {
+    assert!(!pinned(
+        "123456789012-.apps.googleusercontent.com",
+        Some(PIN)
+    ));
+}
+
+#[test]
+fn an_empty_pin_is_not_configured() {
+    let ok = body(ID, "s");
+    assert_eq!(accept(200, &ok, Some("")).unwrap_err(), Why::NotConfigured);
+}
+
+#[test]
 fn without_a_pin_nothing_is_accepted() {
     assert!(!pinned(ID, None));
     assert!(!pinned(ID, Some("")));
