@@ -10,6 +10,16 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- A chat or probe of the `gsc` server (Search Console) that uses OAuth is now
+  refused, with a visible notice, when it has no token yet (an empty token
+  file counts as none), when `GSC_CONFIG_DIR` is not an absolute path, or when
+  that folder is outside `~/.config/mcp-gsc`, which the tools already refuse to
+  read. Without this, the first call would wait for a browser login that
+  cannot open. The tools no longer read `~/Library/Application Support/mcp-gsc`
+  on macOS.
+
 ### Added
 
 - In the `Connectors` area, `o` in the values of `ga4` or `gsc` opens a form for

@@ -261,3 +261,34 @@ async fn a_secrets_problem_is_in_the_report_without_a_value() {
     );
     assert_reaped(&lab, "clarity");
 }
+
+// Spec mcp-catalog, Chat start without a token: the probe is refused too.
+#[tokio::test]
+async fn a_gsc_probe_without_a_token_is_refused_with_a_notice_and_no_spawn() {
+    let lab = lab();
+    let dir = lab.home.join(".config/mcp-gsc");
+    let file = secrets_file(
+        &lab,
+        &format!(
+            "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/c.json\"\nGSC_CONFIG_DIR = \"{}\"\nGSC_SKIP_OAUTH = \"false\"\n",
+            dir.display()
+        ),
+        0o600,
+    );
+    let mut server = lab.recorder(
+        "gsc",
+        &[
+            "GSC_OAUTH_CLIENT_SECRETS_FILE",
+            "GSC_CONFIG_DIR",
+            "GSC_SKIP_OAUTH",
+        ],
+    );
+    server.name = "gsc".to_owned();
+    let report = run(&lab, &server, Some(&file)).await;
+    assert_eq!(report.verdict, Verdict::Failed);
+    assert_eq!(
+        report.lines,
+        ["mcp: gsc unavailable: not linked; open Connectors and use Link with Google"]
+    );
+    assert!(lab.env_of("gsc").is_empty(), "the server was spawned");
+}

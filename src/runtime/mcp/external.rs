@@ -30,7 +30,7 @@ use super::{
 };
 use crate::core::ai::{
     config::McpServer,
-    mcp_catalog::admits,
+    mcp_catalog::{admits, gsc},
     mcp_secrets::{Secrets, redact_list, redact_values},
     sanitize::clean,
     tools::servers::{Qualified, qualify},
@@ -61,7 +61,9 @@ pub struct ExternalSet {
     unavailable: Vec<String>,
 }
 
-/// Starts one server and reads its tools, or says why it cannot.
+/// Starts one server and reads its tools, or says why it cannot. A `gsc` whose
+/// values select the OAuth way is refused first when it has no folder or no
+/// token (`stat` only): its server would run a browser flow inside a call.
 pub(crate) async fn connect(
     server: &McpServer,
     home: &Path,
@@ -69,6 +71,13 @@ pub(crate) async fn connect(
     redact: &[String],
     timeouts: Timeouts,
 ) -> Result<(McpClient, Listed), String> {
+    let text = |name: &str| lookup(name).map(|v| v.to_string_lossy().into_owned());
+    if let Some(why) = gsc::start_refusal(server, home, &text, |token| {
+        // A `stat`: an empty file is not a link.
+        token.metadata().is_ok_and(|m| m.len() > 0)
+    }) {
+        return Err(why.to_owned());
+    }
     let mut client =
         McpClient::start_redacting(server, home, lookup, timeouts, redact.to_vec()).await?;
     match client.list_tools_with(|tool| admits(server, tool)).await {
