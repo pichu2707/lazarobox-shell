@@ -57,3 +57,12 @@ Branch `feat/gsc-client-link` from origin/main (after PR1, #737). Not pushed; re
 - The `f` row cell shows `lazarobox client` / `your own client` / `not set`; the target text (`Enter writes the lazarobox client`, `Enter switches to your own client`, or the not-configured notice) is a `client file:` line under the values, because the cell cannot hold both at 62 columns.
 - Hint line on Connect Google with a pin: `j/k · s/w tick · e e-mail · o own · u route · n plan · Esc` (the usual one is 58 columns already).
 - Test for 2.2 is a source check plus the empty-PATH proof, not an effect-level run of every UI path.
+
+## PR2 review fixes (applied)
+
+- W1: `failure_notice` (Link) now names the real path: `to use your own client: f on the gsc entry, Enter on its client row, then g` (and `or use your own client: ...` for not fetched). Screen variants: `NOT_CONFIGURED_SCREEN` (`...; this screen uses your own client`, also the `u` text and the `plan_with` no-pin refusal) and `NeedsOwnClient` (`...; with Workspace ticked your own client is used`). Snapshot `..._lazarobox_route_without_a_pin.snap` updated intentionally.
+- W2: a Search Console value already held in `secrets.toml` wins: `route()` follows it, the screen shows `route: ...` plus `kept from secrets.toml: <lazarobox client|your own client>; f on the entry changes it`, and `u` says the same.
+- W3: `nothing_but_link_reaches_the_fetch` walks `src/**/*.rs` (excluding `google_client` and `mcp/link` with their tests); verified it fails with a dummy caller.
+- W4: tests for `u` and Enter on a declared gsc, and `answer` with no pin on the cache path (empty PATH, no curl).
+- Suggestions: stale comment fixed, README "Solo cuando...", `o` selects the own route only when the client form saves (set in `enter_field`, so a cancelled form changes nothing). `HINT_ROUTE` left without `scroll` (does not fit 58 columns).
+- Known limit: the menu footer is one clipped line, so the long Link notices show their first ~58 columns on a 62-column popup; the full text is still in the notice.
