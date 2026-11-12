@@ -1,8 +1,12 @@
-//! The Connectors area of the menu (mcp-connect): the catalog entries with
-//! their state, and the screen of one entry (guide, snippet, template, files,
-//! actions). It writes no configuration and draws no confidential value; the
-//! one write to `secrets.toml` is a confirmed secret field (`fields`), and
-//! nothing runs until the user's `y` on a prompt that shows what will run.
+//! The Connectors area of the menu (mcp-connect): the Connect Google row and
+//! the catalog entries with their state, and the screen of one entry (guide,
+//! snippet, template, files, actions). It draws no confidential value, and
+//! nothing runs or is written until the user's `y` on a prompt or a plan that
+//! shows it. The writes are a confirmed secret field (`fields`) and Connect
+//! Google (`connect`): the values it lists in `secrets.toml`, and the catalog
+//! entries of the services not declared appended at the end of `config.toml`
+//! (with `config.toml.bak`). No entry the user declared is ever changed or
+//! removed.
 
 use std::{borrow::Cow, collections::HashMap, path::PathBuf};
 
@@ -25,6 +29,7 @@ use crate::core::ai::{
     sanitize::clean,
 };
 
+mod connect;
 mod fields;
 
 /// The narrowest text column a prompt is shown in.
@@ -54,16 +59,21 @@ enum Screen {
         at: usize,
         cursor: usize,
     },
+    /// Connect Google, its content from `scroll`.
+    Google {
+        scroll: usize,
+    },
 }
 
 /// What waits for the user's `y`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum Prompt {
-    /// A catalog line typed in a new tab (install or login).
+    /// A catalog line typed in a new tab (install or login); Connect
+    /// Google's install joins the lines of its servers.
     Run {
         what: &'static str,
-        id: &'static str,
-        line: &'static str,
+        id: Cow<'static, str>,
+        line: Cow<'static, str>,
         discards: bool,
     },
     Probe(Box<McpServer>),
@@ -109,6 +119,8 @@ pub(super) struct Connectors {
     saved: bool,
     /// The link checks are running (the flag: the draft has unsaved changes).
     linking: Option<bool>,
+    /// The Connect Google screen.
+    google: connect::Google,
 }
 
 /// What a link step asks of the menu.
@@ -385,6 +397,7 @@ impl Connectors {
             (Some(prompt), _) => prompt_rows(prompt, room).unwrap_or_else(|| vec![text(WIDEN)]),
             (None, Some(Screen::Entry { at, scroll })) => self.entry_rows(at, scroll, room),
             (None, Some(Screen::Fields { at, cursor })) => self.field_rows(at, cursor, room),
+            (None, Some(Screen::Google { scroll })) => self.google_rows(scroll, room),
             (None, Some(Screen::List(cursor))) => self.list_rows(cursor, room),
             (None, None) => Vec::new(),
         };
@@ -406,7 +419,12 @@ impl Connectors {
     }
 
     fn list_rows(&self, cursor: usize, room: usize) -> Vec<Row> {
-        let mut rows = Vec::new();
+        let mut rows = vec![Row::Item {
+            label: connect::LABEL,
+            value: Some(Cow::Borrowed(self.google_state())),
+            selected: cursor == 0,
+            enabled: true,
+        }];
         let mut group = None;
         for (at, entry) in mcp_catalog::entries().iter().enumerate() {
             if group != Some(entry.group) {
@@ -419,7 +437,7 @@ impl Connectors {
             rows.push(Row::Item {
                 label: entry.title,
                 value: Some(Cow::Owned(self.state(entry))),
-                selected: at == cursor,
+                selected: at + 1 == cursor,
                 enabled: true,
             });
         }
@@ -538,6 +556,9 @@ impl Connectors {
         {
             return Cow::Owned(hint);
         }
+        if let (None, Some(Screen::Google { .. })) = (&self.prompt, self.screen) {
+            return self.google_hint();
+        }
         Cow::Borrowed(match (&self.prompt, self.screen) {
             (Some(_), _) => HINT_PROMPT,
             (None, Some(Screen::Entry { at, .. }))
@@ -574,7 +595,7 @@ impl Connectors {
                 return MenuCommand::None;
             }
             return match (plain_y, prompt) {
-                (true, Prompt::Run { line, .. }) => MenuCommand::Connector(line.to_owned()),
+                (true, Prompt::Run { line, .. }) => MenuCommand::Connector(line.into_owned()),
                 (true, Prompt::Link { line, .. }) => MenuCommand::Connector(line),
                 (true, Prompt::Probe(server)) => {
                     self.probing = Some(server.name.clone());
@@ -607,6 +628,11 @@ impl Connectors {
         {
             return self.field_key(key, at, room);
         }
+        if let Some(Screen::Google { .. }) = self.screen
+            && self.field_open()
+        {
+            return self.google_field_key(key, room);
+        }
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         let (Some(screen), true) = (self.screen, plain) else {
             self.notice = Some("no such key here");
@@ -619,16 +645,22 @@ impl Connectors {
             Screen::List(cursor) => self.list_key(key.code, cursor),
             Screen::Entry { at, scroll } => self.entry_key(key.code, (at, scroll), dirty, room),
             Screen::Fields { at, cursor } => self.fields_key(key.code, (at, cursor), room),
+            Screen::Google { scroll } => self.google_key(key.code, scroll, dirty, room),
         }
     }
 
+    /// The list: the Connect Google row (0), then the catalog entries.
     fn list_key(&mut self, code: KeyCode, cursor: usize) -> MenuCommand {
-        let len = mcp_catalog::entries().len();
+        let len = mcp_catalog::entries().len() + 1;
         self.screen = Some(match code {
             KeyCode::Char('j') | KeyCode::Down => Screen::List((cursor + 1) % len),
             KeyCode::Char('k') | KeyCode::Up => Screen::List((cursor + len - 1) % len),
+            KeyCode::Enter if cursor == 0 => {
+                self.open_google();
+                return MenuCommand::None;
+            }
             KeyCode::Enter => Screen::Entry {
-                at: cursor,
+                at: cursor - 1,
                 scroll: 0,
             },
             KeyCode::Esc => {
@@ -653,8 +685,8 @@ impl Connectors {
         let entry = &mcp_catalog::entries()[at];
         let run = |what, line| Prompt::Run {
             what,
-            id: entry.id,
-            line,
+            id: Cow::Borrowed(entry.id),
+            line: Cow::Borrowed(line),
             discards: dirty,
         };
         let moved = |scroll| Screen::Entry { at, scroll };
@@ -669,7 +701,7 @@ impl Connectors {
             KeyCode::Char('k') | KeyCode::Up => self.screen = Some(moved(scroll.saturating_sub(1))),
             KeyCode::Esc => {
                 self.linking = None;
-                self.screen = Some(Screen::List(at));
+                self.screen = Some(Screen::List(at + 1));
             }
             KeyCode::Char('g') if entry.id == "gsc" => return self.link_gsc(entry, dirty),
             KeyCode::Char('g') if entry.link == Link::GoogleAuth => self.link_google(entry, room),
@@ -804,7 +836,11 @@ impl Connectors {
             Ok(line) => line,
             Err(notice) => return Some(Some(notice)),
         };
-        let here = matches!(self.screen, Some(Screen::Entry { at, .. }) if mcp_catalog::entries()[at].id == "gsc");
+        let here = match self.screen {
+            Some(Screen::Entry { at, .. }) => mcp_catalog::entries()[at].id == "gsc",
+            Some(Screen::Google { .. }) => true,
+            _ => false,
+        };
         if here && self.prompt.is_none() {
             self.ask(Prompt::Link { line, discards }, room);
         }

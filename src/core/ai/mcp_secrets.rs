@@ -2,8 +2,9 @@
 //! `mcp-secrets`, decision C6).
 //!
 //! The file sits next to `config.toml` and the user edits it: lazarobox never
-//! creates, writes or chmods it, except by the menu save of one value (see
-//! [`edit`] and `runtime::secrets_write`). Each top-level table is named after a server
+//! creates, writes or chmods it, except by the menu save of one value and
+//! Connect Google's save of the values its plan lists, after the user's `y`
+//! (see [`edit`], [`edit_all`] and `runtime::secrets_write`). Each top-level table is named after a server
 //! and holds that server's variables. A value reaches only the server whose
 //! name is its table, and only for a name its `[[ai.mcp.servers]]` entry lists
 //! in `env` ([`Secrets::lookup_for`]); the spawn code still drops `HOME`, the

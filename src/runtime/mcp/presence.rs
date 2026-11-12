@@ -1,6 +1,7 @@
 //! What the Connectors area reads when it opens (D20): `config.toml` and
-//! which values `secrets.toml` holds. Read only, off the UI thread, and the
-//! answer carries names, never a value ([`Presence`]).
+//! which values `secrets.toml` holds, then the id of the OAuth client file
+//! for Connect Google. Read only, off the UI thread, and the answers carry
+//! names and that id, never a secret value ([`Presence`]).
 
 use std::path::PathBuf;
 
@@ -12,10 +13,11 @@ use crate::{
         mcp_catalog::presence::Presence,
         mcp_secrets::{BACKUP, CLIENT_FILE},
     },
-    runtime::mcp_secrets::load_for_start,
+    runtime::{mcp_secrets::load_for_start, secrets_write::google::client_id},
 };
 
-/// Answers each `Effect::LoadPresence` with one `AppEvent::McpPresence`.
+/// Answers each `Effect::LoadPresence` with one `AppEvent::McpPresence`,
+/// then one `AppEvent::GoogleClient`.
 pub struct Reader {
     config: Option<PathBuf>,
     secrets: Option<PathBuf>,
@@ -57,6 +59,7 @@ impl Reader {
                     .is_some_and(|path| std::fs::symlink_metadata(path).is_ok())
             };
             let (backup, client) = (exists(BACKUP), exists(CLIENT_FILE));
+            let folder = secrets.clone();
             let loaded = load_for_start(secrets).await;
             let home = std::env::var("HOME").ok();
             let presence = Presence::read(text, &loaded)
@@ -68,6 +71,12 @@ impl Reader {
                 .with_token(|token| std::fs::metadata(token).is_ok_and(|m| m.len() > 0))
                 .with_credentials(|file| std::fs::metadata(file).is_ok_and(|m| m.len() > 0));
             let _ = events.send(AppEvent::McpPresence(presence)).await;
+            // The Connect Google screen's `client:` line: the id, read with
+            // the writer's checks; the secret goes no further than this task.
+            let id = tokio::task::spawn_blocking(move || client_id(folder.as_deref()))
+                .await
+                .unwrap_or_else(|_| Err(format!("{CLIENT_FILE}: could not be read")));
+            let _ = events.send(AppEvent::GoogleClient(id)).await;
         });
     }
 }

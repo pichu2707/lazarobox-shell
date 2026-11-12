@@ -127,3 +127,43 @@ async fn the_gsc_token_is_noticed_by_stat_and_never_opened() {
     let presence = asked(config, secrets).await;
     assert_eq!(presence.linked(), Some(false));
 }
+
+// Connect Google (S5.4): after the presence, the client id for the screen's
+// `client:` line, read with the writer's checks; never the secret.
+#[tokio::test]
+async fn the_client_id_follows_the_presence_and_never_the_secret() {
+    let (dir, config, secrets) = files(0o600);
+    let id = "123-abc.apps.googleusercontent.com";
+    let client = dir.path().join(CLIENT_FILE);
+    let json = crate::core::ai::mcp_secrets::client_json(id, "GOCSPX-abc").unwrap();
+    std::fs::write(&client, json).unwrap();
+    std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let read = |config: PathBuf, secrets: PathBuf| async move {
+        let (tx, mut rx) = mpsc::channel(4);
+        Reader::new(Some(config), Some(secrets), tx).load();
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+            events.push(event.unwrap().unwrap());
+        }
+        events
+    };
+    let events = read(config.clone(), secrets.clone()).await;
+    assert!(matches!(events[0], AppEvent::McpPresence(_)));
+    match &events[1] {
+        AppEvent::GoogleClient(Ok(Some(read))) => assert_eq!(read, id),
+        other => panic!("{other:?}"),
+    }
+    assert!(!format!("{events:?}").contains("GOCSPX"));
+    std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let events = read(config.clone(), secrets.clone()).await;
+    match &events[1] {
+        AppEvent::GoogleClient(Err(notice)) => {
+            assert!(notice.starts_with("google-oauth-client.json: mode must be 0600"));
+        }
+        other => panic!("{other:?}"),
+    }
+    std::fs::remove_file(&client).unwrap();
+    let events = read(config, secrets).await;
+    assert!(matches!(events[1], AppEvent::GoogleClient(Ok(None))));
+}

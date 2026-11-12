@@ -2369,6 +2369,11 @@ impl Panes {
                         writer.connect(write);
                     }
                 }
+                Effect::PlanGoogle(ask) => {
+                    if let Some(writer) = self.secrets.as_ref() {
+                        writer.plan(ask);
+                    }
+                }
                 Effect::CancelMcpProbe => {
                     if let Some(prober) = self.prober.as_mut() {
                         prober.cancel();

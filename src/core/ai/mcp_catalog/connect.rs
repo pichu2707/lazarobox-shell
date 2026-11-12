@@ -7,11 +7,66 @@
 //! that already holds something in `secrets.toml` is kept. Every value comes
 //! from the catalog (a preset), the client file or the e-mail the user typed.
 
-use super::{Entry, entry, link, snippet};
-use crate::core::ai::{config::McpServer, mcp_secrets::Client, mcp_secrets::SecretText};
+use super::{Entry, TUTORIAL, entry, link, snippet};
+use crate::core::{
+    ai::{
+        config::McpServer,
+        mcp_secrets::{Client, SecretText, edit_all, line_of},
+    },
+    config_append::{AppendRefusal, Connect, appended},
+};
 
 /// The services Connect Google sets up, in the order it appends them.
 pub const SERVICES: [&str; 2] = ["gsc", "google"];
+
+/// The one-time Google Cloud setup the Connect Google screen lists: one step
+/// per line, each with the page that `1`-`9` opens (or copies).
+pub const CHECKLIST: [(&str, &str); 9] = [
+    (
+        "Create a Google Cloud project",
+        "https://console.cloud.google.com/projectcreate",
+    ),
+    (
+        "Enable the Search Console API",
+        "https://console.cloud.google.com/apis/library/searchconsole.googleapis.com",
+    ),
+    (
+        "Enable the Gmail API",
+        "https://console.cloud.google.com/apis/library/gmail.googleapis.com",
+    ),
+    (
+        "Enable the Google Docs API",
+        "https://console.cloud.google.com/apis/library/docs.googleapis.com",
+    ),
+    (
+        "Enable the Google Sheets API",
+        "https://console.cloud.google.com/apis/library/sheets.googleapis.com",
+    ),
+    (
+        "Enable the Google Drive API",
+        "https://console.cloud.google.com/apis/library/drive.googleapis.com",
+    ),
+    (
+        "Audience: add your Google account as a test user (else Google answers \
+         Error 403: access_denied), then publish the app so tokens do not expire \
+         after 7 days",
+        "https://console.cloud.google.com/auth/audience",
+    ),
+    (
+        "Credentials: create an OAuth client ID of type Desktop app, then save its \
+         id and secret here with o",
+        "https://console.cloud.google.com/apis/credentials",
+    ),
+    ("The step-by-step guide (in Spanish)", TUTORIAL),
+];
+
+/// What the Connect Google screen asks the runtime to plan: the services
+/// ticked and the e-mail typed. Nothing in it is a secret.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ask {
+    pub chosen: Vec<&'static str>,
+    pub email: String,
+}
 
 /// What the plan is built from.
 pub struct Input<'a> {
@@ -168,5 +223,77 @@ fn source(entry: &Entry, var: &super::Var, input: &Input) -> Result<String, Refu
     }
 }
 
+/// A plan as the screen shows it, checked against the files it will be
+/// written to, with the write that `y` sends. Its `{:?}` never shows a value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preview {
+    pub write: Connect,
+    /// The (table, name) values left as they are.
+    pub kept: Vec<(&'static str, &'static str)>,
+    /// The pinned install lines of the appended entries.
+    pub installs: Vec<&'static str>,
+    /// The chosen services already declared, left alone.
+    pub declared: Vec<&'static str>,
+    /// Why `config.toml` cannot take the entries: `y` then saves the values
+    /// only, and the entries are pasted by hand.
+    pub blocked: Option<String>,
+}
+
+/// The plan of `input`, with a dry run of both writes: the values set in the
+/// `secrets.toml` text `secrets` (a refusal refuses the plan, since nothing
+/// would be written), and the entries appended to the `config.toml` bytes
+/// `config` (`None`: no file; a refusal is [`Preview::blocked`]). So most
+/// refusals show before anything is written; the write checks again.
+pub fn preview(input: &Input, config: Option<&[u8]>, secrets: &str) -> Result<Preview, String> {
+    let plan = plan(input).map_err(|refused| refused.notice())?;
+    let values: Vec<(&str, &str, &str)> = plan
+        .set
+        .iter()
+        .map(|s| (s.table, s.name, s.value.expose()))
+        .collect();
+    if !values.is_empty() {
+        edit_all(secrets, &values).map_err(|refusal| format!("connect: {}", refusal.notice()))?;
+    }
+    let names: Vec<&str> = plan.append.iter().map(|e| e.id).collect();
+    if values.is_empty() && names.is_empty() {
+        return Err(format!(
+            "connect: {} {} already declared; nothing to write",
+            plan.declared.join(", "),
+            if plan.declared.len() == 1 {
+                "is"
+            } else {
+                "are"
+            }
+        ));
+    }
+    let blocked = if names.is_empty() {
+        None
+    } else {
+        let text = match config {
+            None => Ok(""),
+            Some(bytes) => std::str::from_utf8(bytes)
+                .map_err(|e| AppendRefusal::NotToml(line_of(bytes, e.valid_up_to()))),
+        };
+        text.and_then(|text| appended(text, &plan.snippets(), &names))
+            .err()
+            .map(|refusal| refusal.notice())
+    };
+    let (kept, installs, declared) = (
+        plan.kept.clone(),
+        plan.installs.clone(),
+        plan.declared.clone(),
+    );
+    Ok(Preview {
+        write: Connect::new(plan, config),
+        kept,
+        installs,
+        declared,
+        blocked,
+    })
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod preview_tests;

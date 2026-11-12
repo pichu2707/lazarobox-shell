@@ -3,9 +3,10 @@
 //! backup. It works on open handles, not paths: the config folder is opened
 //! `O_DIRECTORY | O_NOFOLLOW` and judged by `fstat`, the file and the
 //! temporary file are opened relative to it, and the swap is a `renameat` on
-//! it. Called only from the Connectors area's confirmed secret field (S6a2):
-//! no model, tool, MCP call or config value can reach it. All I/O goes through
-//! [`SaveFs`] so a test can make a step fail.
+//! it. Called only from the Connectors area's confirmed secret field (S6a2)
+//! and from Connect Google's `y` on its plan (and its read-only plan,
+//! [`google`]): no model, tool, MCP call or config value can reach it. All I/O
+//! goes through [`SaveFs`] so a test can make a step fail.
 
 use std::{
     ffi::CString,
@@ -25,6 +26,7 @@ use super::config_append::connect_with;
 use crate::{
     app::AppEvent,
     core::{
+        ai::mcp_catalog::connect::Ask,
         ai::mcp_secrets::{
             BACKUP, CLIENT_BACKUP, CLIENT_FILE, FILE, MAX_BYTES, Refusal, SecretText, client_json,
             edit, edit_all, line_of,
@@ -363,6 +365,26 @@ impl Writer {
         });
     }
 
+    /// Connect Google's plan (`Effect::PlanGoogle`): the files read with the
+    /// writer's checks, in the writer's turn; the answer is one
+    /// `AppEvent::GooglePlan`. Nothing is written.
+    pub fn plan(&self, ask: Ask) {
+        let (secrets, events) = (self.secrets.clone(), self.events.clone());
+        let turn = Arc::clone(&self.turn);
+        tokio::spawn(async move {
+            let done = tokio::task::spawn_blocking(move || {
+                let _turn = turn.lock().unwrap_or_else(PoisonError::into_inner);
+                let home = std::env::var("HOME").ok();
+                google::plan_with(&RealFs, secrets.as_deref(), home.as_deref(), &ask)
+            })
+            .await;
+            let reply = done
+                .unwrap_or_else(|_| Err("connect: the plan failed; try again".to_owned()))
+                .map(Box::new);
+            let _ = events.send(AppEvent::GooglePlan(reply)).await;
+        });
+    }
+
     pub fn delete_backup(&self) {
         let (secrets, events) = (self.secrets.clone(), self.events.clone());
         tokio::spawn(async move {
@@ -669,6 +691,8 @@ pub fn delete_with(fs: &impl SaveFs, secrets: Option<&Path>) -> Result<(), Refus
         Ok(_) => fs.unlink(&dir, BACKUP).map_err(|e| Refusal::Io(e.kind())),
     }
 }
+
+pub mod google;
 
 #[cfg(test)]
 mod tests;

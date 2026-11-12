@@ -10,7 +10,7 @@ use crate::core::ai::mcp_secrets::{
 };
 
 /// What a confidential field draws once it holds text, whatever the length.
-const MASK: &str = "••••••••";
+pub(super) const MASK: &str = "••••••••";
 /// The longest value a field takes.
 const MAX_FIELD: usize = 4096;
 const BAD: &str = "the value must be one line without control characters";
@@ -168,8 +168,18 @@ impl Connectors {
         }
     }
 
+    /// A field takes the keys: a value, the client form, or Connect
+    /// Google's e-mail.
     pub(in crate::core::menu) fn field_open(&self) -> bool {
-        self.field.is_some()
+        self.field.is_some() || self.google.editing()
+    }
+
+    /// `o`: the first step of the OAuth client form.
+    pub(super) fn open_client_form(&mut self) {
+        self.field = Some(Field {
+            slot: Slot::ClientId,
+            text: SecretText::new(),
+        });
     }
 
     /// The result of a save: the list asks the user to restart on success.
@@ -195,23 +205,8 @@ impl Connectors {
     pub(super) fn field_rows(&self, at: usize, cursor: usize, room: usize) -> Vec<Row> {
         let entry = &mcp_catalog::entries()[at];
         let list = self.vars_at(at);
-        if let Some(field) = &self.field {
-            let (name, confidential) = match &field.slot {
-                Slot::Var(i) => (list[*i].name, list[*i].confidential()),
-                Slot::ClientId => ("client id", false),
-                Slot::ClientSecret(_) => ("client secret", true),
-            };
-            let shown = if confidential {
-                if field.text.is_empty() { "" } else { MASK }.to_owned()
-            } else {
-                let text = clean(field.text.expose());
-                let skip = text.chars().count().saturating_sub(room.saturating_sub(2));
-                text.chars().skip(skip).collect()
-            };
-            return vec![
-                title(format!("{} · {name}", entry.title)),
-                text(format!("  {shown}")),
-            ];
+        if let Some(rows) = self.open_field_rows(entry.title, &list, room) {
+            return rows;
         }
         let mut rows = vec![title(format!("{} · values", entry.title))];
         if let Some(command) = self.differing_command(entry) {
@@ -236,6 +231,32 @@ impl Connectors {
             rows.push(text("restart the chat or probe again to use it"));
         }
         rows
+    }
+
+    /// The rows of the open field under `heading`: its name, and its text
+    /// (masked when confidential, else its last columns). `list` names the
+    /// values of a value field.
+    pub(super) fn open_field_rows(
+        &self,
+        heading: &str,
+        list: &[&'static Var],
+        room: usize,
+    ) -> Option<Vec<Row>> {
+        let field = self.field.as_ref()?;
+        let (name, confidential) = match &field.slot {
+            Slot::Var(i) => (list[*i].name, list[*i].confidential()),
+            Slot::ClientId => ("client id", false),
+            Slot::ClientSecret(_) => ("client secret", true),
+        };
+        let shown = if confidential {
+            if field.text.is_empty() { "" } else { MASK }.to_owned()
+        } else {
+            tail(&clean(field.text.expose()), room)
+        };
+        Some(vec![
+            title(format!("{heading} · {name}")),
+            text(format!("  {shown}")),
+        ])
     }
 
     /// `set` for a confidential value; the value for the others.
@@ -282,12 +303,7 @@ impl Connectors {
             }
             KeyCode::Esc => self.screen = Some(Screen::Entry { at, scroll: 0 }),
             KeyCode::Char('w') => self.choose_way(entry),
-            KeyCode::Char('o') if takes_client(entry) => {
-                self.field = Some(Field {
-                    slot: Slot::ClientId,
-                    text: SecretText::new(),
-                });
-            }
+            KeyCode::Char('o') if takes_client(entry) => self.open_client_form(),
             KeyCode::Char('d') => match self.presence.as_ref().is_some_and(Presence::backup) {
                 true => self.ask(Prompt::DeleteBackup, room),
                 false => self.notice = Some(NO_BACKUP),
@@ -394,6 +410,10 @@ impl Connectors {
     }
 
     pub(in crate::core::menu) fn paste(&mut self, pasted: &str) {
+        if self.google.editing() {
+            self.google_paste(pasted);
+            return;
+        }
         let Some(field) = self.field.as_mut() else {
             return;
         };
@@ -402,6 +422,12 @@ impl Connectors {
             Err(notice) => self.notice = Some(notice),
         }
     }
+}
+
+/// The last columns of `text` that fit in a field row of `room`.
+pub(super) fn tail(text: &str, room: usize) -> String {
+    let skip = text.chars().count().saturating_sub(room.saturating_sub(2));
+    text.chars().skip(skip).collect()
 }
 
 /// Whether `more` may follow `text` in a field: one line, no control

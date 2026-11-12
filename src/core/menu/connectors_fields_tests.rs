@@ -434,6 +434,24 @@ fn only_the_secrets_writer_runs_the_connect_google_write() {
         ["runtime/config_append.rs", "runtime/secrets_write.rs"]
     );
     assert_eq!(files_with("append_with("), ["runtime/config_append.rs"]);
+    // Only the Connect Google screen builds the write, after `y` on its plan,
+    // and only it asks for the plan; only the secrets writer reads for it.
+    assert_eq!(
+        files_with("MenuCommand::ConnectGoogle"),
+        ["app.rs", "core/menu/connectors/connect.rs"]
+    );
+    assert_eq!(
+        files_with("MenuCommand::PlanGoogle"),
+        ["app.rs", "core/menu/connectors/connect.rs"]
+    );
+    assert_eq!(
+        files_with("Effect::PlanGoogle"),
+        ["app.rs", "runtime.rs", "runtime/secrets_write.rs"]
+    );
+    assert_eq!(
+        files_with("google::plan_with("),
+        ["runtime/secrets_write.rs"]
+    );
     assert_eq!(
         files_with("save_all_with("),
         ["runtime/config_append.rs", "runtime/secrets_write.rs"]

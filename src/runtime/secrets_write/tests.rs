@@ -85,7 +85,7 @@ impl Lab {
 /// uid is another one, the temporary names are fixed, and a hook runs before
 /// the first `stat_at`.
 #[derive(Default)]
-struct TestFs {
+pub(super) struct TestFs {
     fail: Option<(&'static str, usize)>,
     uid: Option<u32>,
     file_owner: Option<u32>,
@@ -99,6 +99,14 @@ struct TestFs {
 }
 
 impl TestFs {
+    /// Every regular file seems owned by `uid`.
+    pub(super) fn owned_by(uid: u32) -> Self {
+        Self {
+            file_owner: Some(uid),
+            ..Self::default()
+        }
+    }
+
     fn failing(op: &'static str, nth: usize) -> Self {
         Self {
             fail: Some((op, nth)),
