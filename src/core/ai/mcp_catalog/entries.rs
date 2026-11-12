@@ -64,7 +64,7 @@ const CLARITY: Entry = Entry {
         "2. Generate a new API token with project admin rights and copy it.",
         "3. Put it in secrets.toml under [clarity] as CLARITY_API_TOKEN.",
         "Limits of the Clarity API: 10 requests per project per day, the last 1 to 3 days only, at most 1,000 rows per answer.",
-        "Step by step, in Spanish: docs/conectores.md in the repository (last link below).",
+        "Guía en español: docs/conectores.md (último enlace).",
     ],
     links: &["https://clarity.microsoft.com/", TUTORIAL],
     token_location: "secrets.toml, [clarity] CLARITY_API_TOKEN",
@@ -102,7 +102,7 @@ const GA4: Entry = Entry {
         "3. Save the file as ~/.config/lazarobox/google-oauth-client.json (lazarobox refuses to read it).",
         "4. Put your project id in secrets.toml under [ga4] as GOOGLE_CLOUD_PROJECT, then use Log in.",
         "Warning: a client left in \"Testing\" gets refresh tokens that expire after 7 days. Publish the consent screen to avoid logging in every week.",
-        "Step by step, in Spanish: docs/conectores.md in the repository (last link below).",
+        "Guía en español: docs/conectores.md (último enlace).",
     ],
     links: &[
         "https://console.cloud.google.com/apis/credentials",
@@ -162,7 +162,7 @@ const GSC: Entry = Entry {
         "3. In Search Console, open Settings, Users and permissions, and add the service account e-mail as a user of the property (Restricted is enough for search analytics; if URL inspection is denied, use Full).",
         "4. Choose this way (w), then put the path of the JSON file in secrets.toml under [gsc] as GSC_CREDENTIALS_PATH and set GSC_SKIP_OAUTH to \"true\". There is no login step.",
         "The reauthenticate tool is hidden from chats: it deletes the token and starts a browser OAuth flow.",
-        "Step by step, in Spanish: docs/conectores.md in the repository (last link below).",
+        "Guía en español: docs/conectores.md (último enlace).",
     ],
     links: &[
         "https://console.cloud.google.com/apis/credentials",
@@ -253,7 +253,7 @@ const GOOGLE: Entry = Entry {
         "The Docs and Sheets permissions include drive.readonly, so the server can read your whole Drive.",
         "get_gmail_attachment_content saves attachments to local disk (~/.workspace-mcp/attachments) outside lazarobox's write checks: every call asks y.",
         "WORKSPACE_MCP_DISABLE_LOCAL_FILES is \"true\": draft_gmail_message cannot attach local files by path (checked on 2.4.1; the other tools keep working). Set it to \"false\" to allow it.",
-        "Step by step, in Spanish: docs/conectores.md in the repository (last link below).",
+        "Guía en español: docs/conectores.md (último enlace).",
     ],
     links: &[
         "https://console.cloud.google.com/apis/credentials",
@@ -330,7 +330,7 @@ const APPS_SCRIPT: Entry = Entry {
         "Version 3.4.0 or later is required (it fixed the project-directory path validation).",
         "push_files uploads code from a directory on disk, and pushed code runs with the script's scopes.",
         "pull_files and clone_project write local files and may overwrite them.",
-        "Step by step, in Spanish: docs/conectores.md in the repository (last link below).",
+        "Guía en español: docs/conectores.md (último enlace).",
     ],
     links: &[
         "https://script.google.com/home/usersettings",

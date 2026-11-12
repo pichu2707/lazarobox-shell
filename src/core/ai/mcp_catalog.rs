@@ -144,11 +144,11 @@ pub struct Entry {
     pub tools: &'static [(&'static str, Class)],
 }
 
-/// The catalog, in the order of C8.
 /// The step-by-step tutorial every guide ends with (S6d); it is in Spanish.
 pub const TUTORIAL: &str =
     "https://github.com/pichu2707/lazarobox-shell/blob/main/docs/conectores.md";
 
+/// The catalog, in the order of C8.
 pub fn entries() -> &'static [Entry] {
     entries::ENTRIES
 }

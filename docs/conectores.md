@@ -8,7 +8,7 @@ Todo lo que ves aquí sale del código de la versión actual. Los textos entre c
 
 1. Abre el menú con `Ctrl+Espacio` `m`, pulsa `4` (pestaña **Connectors**) y entra en el servicio con Enter.
 2. Pulsa `i` para instalar el servidor (te enseña el comando y espera una `y`).
-3. Pega en `config.toml` la entrada que muestra la pantalla (`c` la copia).
+3. Pega en `config.toml` (`~/.config/lazarobox/config.toml`) la entrada que muestra la pantalla (`c` la copia).
 4. Rellena los valores con `f` (y `o` para el cliente OAuth de GA4 y GSC).
 5. Inicia sesión: `l` (GA4 y Apps Script) o `g` (GSC con OAuth y Google Workspace).
 6. Comprueba con `p` que el servidor arranca (`mcp: started <nombre> (N tools)`).
@@ -17,16 +17,16 @@ Todo lo que ves aquí sale del código de la versión actual. Los textos entre c
 ## Índice
 
 - [Antes de empezar](#antes-de-empezar)
-- [Las teclas del área Connectors](#las-teclas-del-área-connectors)
 - [Dónde se guarda cada cosa](#dónde-se-guarda-cada-cosa)
-- [Crear tu propio cliente OAuth de Google](#crear-tu-propio-cliente-oauth-de-google)
 - [Clarity](#clarity)
+- [Crear tu propio cliente OAuth de Google](#crear-tu-propio-cliente-oauth-de-google)
 - [Google Analytics 4](#google-analytics-4)
 - [Search Console](#search-console)
 - [Google Workspace: Gmail, Docs y Hojas](#google-workspace-gmail-docs-y-hojas)
 - [Apps Script](#apps-script)
 - [Riesgos de un vistazo](#riesgos-de-un-vistazo)
 - [Cómo desconectar un servicio](#cómo-desconectar-un-servicio)
+- [Apéndice: las teclas del área Connectors](#apéndice-las-teclas-del-área-connectors) (con el estado de cada servicio y cómo se rellena un valor)
 - [Solución de problemas](#solución-de-problemas)
 
 ## Antes de empezar
@@ -35,58 +35,16 @@ Todo lo que ves aquí sale del código de la versión actual. Los textos entre c
 |---|---|
 | Un chat con **Tools** activado | Los servidores solo arrancan cuando un turno con herramientas los necesita. |
 | `npm` (Clarity, Apps Script), `pipx` (GA4) o `uv` (GSC, Workspace) | El comando de instalación de cada entrada. |
+| `gcloud` (GA4) | El inicio de sesión de GA4 lo ejecuta `gcloud`. |
 | Un proyecto propio en Google Cloud (GA4, GSC, Workspace) | Tú creas el cliente OAuth; lazarobox no usa uno compartido. |
 | Un terminal con navegador accesible | El inicio de sesión de Google abre una vez el navegador. Si no se abre, el enlace sigue visible en pantalla. |
+
+Dónde conseguir las herramientas: `uv` en <https://docs.astral.sh/uv/>, `pipx` en <https://pipx.pypa.io/>, Node.js y `npm` en <https://nodejs.org/> y `gcloud` en <https://cloud.google.com/sdk/docs/install>.
 
 Dos reglas que valen para todos los servicios:
 
 - **La entrada de `config.toml` la pegas tú.** lazarobox no escribe `config.toml` ni la sección `ai.mcp.*`. Pega la entrada, guarda el archivo y reinicia lazarobox para que los chats en marcha la carguen (el área lo recuerda con `restart lazarobox to use it in chats`).
-- **Cada servidor corre como tú.** Un servidor MCP tuyo se ejecuta con tu usuario, en tu `$HOME`, y puede leer tus archivos, incluido `secrets.toml`. Declara solo servidores en los que confíes y mantén los pinneados que el catálogo instala (por ejemplo `workspace-mcp==2.4.1`).
-
-## Las teclas del área Connectors
-
-El área tiene tres pantallas: la lista de servicios, la pantalla de un servicio y la lista de valores (`f`).
-
-| Pantalla | Tecla | Qué hace |
-|---|---|---|
-| Lista | `j` `k`, Enter, Esc | Moverte, abrir un servicio, volver. |
-| Servicio | `j` `k` | Desplazar la guía si no cabe. |
-| Servicio | `i` | Instalar: muestra el comando y espera `y`. |
-| Servicio | `l` | Iniciar sesión (solo GA4 y Apps Script). |
-| Servicio | `g` | **Link with Google** (solo GSC con OAuth y Google Workspace). |
-| Servicio | `p` | Probar: arranca el servidor, pide su lista de herramientas y lo detiene. |
-| Servicio | `f` | Abrir la lista de valores para rellenarlos. |
-| Servicio | `w` | Elegir la vía (solo GSC: OAuth o cuenta de servicio). También funciona dentro de `f`. |
-| Servicio | `c` | Copiar la entrada de `config.toml`. |
-| Servicio | `t` | Copiar la tabla de `secrets.toml` (vacía). |
-| Servicio | `1` a `9` | Abrir un enlace de la guía (o copiarlo si no hay navegador). El último enlace es esta guía. |
-| Valores (`f`) | `j` `k`, Enter | Moverte y editar el valor de la fila. |
-| Valores (`f`) | `o` | Formulario del archivo de cliente OAuth (solo GA4 y GSC). |
-| Valores (`f`) | `w` | Cambiar de vía (GSC). |
-| Valores (`f`) | `d` | Borrar la copia `secrets.toml.bak` (solo si existe). |
-| Todas | Esc | Volver un nivel o cancelar. |
-
-Dos detalles de las confirmaciones: solo una `y` suelta confirma (`Ctrl+y` o `Alt+y` no) y cualquier otra tecla cancela (`cancelled`). Si el terminal es tan estrecho que el comando no cabe entero, lazarobox no lo ofrece y avisa con `widen the terminal to read the command`: lo que ves es siempre lo que se ejecuta.
-
-### El estado de cada servicio en la lista
-
-| Estado | Significado |
-|---|---|
-| `not declared` | No hay un servidor con ese `name` en `config.toml`. |
-| `disabled` | La entrada tiene `enabled = false`. |
-| `values missing: <NOMBRES>` | Falta algún valor en `secrets.toml`. |
-| `declared` | Declarado y con sus valores. |
-| `declared · linked` / `declared · not linked` | Solo GSC con OAuth y Google Workspace: si existe su archivo de token (se comprueba con `stat`, nunca se abre). |
-| `· probe: started`, `failed` o `stopped` | Resultado de la última prueba de esta sesión. |
-
-### Cómo se rellena un valor (`f`)
-
-- Una fila con valor confidencial muestra solo `set` o `not set`; al escribirlo se ve una máscara fija de ocho puntos (`••••••••`), sin revelar la longitud. Los valores que no son confidenciales (por ejemplo `GOOGLE_CLOUD_PROJECT` o `USER_GOOGLE_EMAIL`) se muestran enteros.
-- Una fila con valor sugerido muestra `not set · Enter writes <valor>`: Enter lo guarda sin teclear nada.
-- Enter en una fila sin valor sugerido abre el campo: escribe o pega y confirma con Enter; Esc descarta el texto. El valor debe ser una sola línea, sin caracteres de control y de hasta 4096 bytes.
-- Si ya hay un valor guardado, antes de reemplazarlo pregunta `replace the saved <NOMBRE>? (y/n)`. Si el comando declarado en `config.toml` no es el del catálogo, pregunta antes `save <NOMBRE> for a server that runs <comando>? (y/n)`.
-- Enter sobre un campo vacío no guarda nada (`empty value not saved; edit secrets.toml by hand to remove a value`): para quitar un valor, edita `secrets.toml` a mano.
-- Si guardas, el pie dice `saved <NOMBRE>` y, cuando había un archivo previo, `saved <NOMBRE>; the previous values stay in secrets.toml.bak (0600) until you delete it`. La fila `restart the chat or probe again to use it` te recuerda que el cambio vale en el siguiente arranque del servidor, no antes.
+- **Cada servidor corre como tú.** Un servidor MCP tuyo se ejecuta con tu usuario, en tu `$HOME`, y puede leer tus archivos, incluido `secrets.toml`. Declara solo servidores en los que confíes y mantén las versiones fijadas que el catálogo instala (por ejemplo `workspace-mcp==2.4.1`).
 
 ## Dónde se guarda cada cosa
 
@@ -104,34 +62,7 @@ Qué hace lazarobox con esos archivos y qué no:
 - Nunca guarda, lee ni copia un token de Google. Para saber si una cuenta está enlazada solo comprueba, con `stat`, si existe el archivo del token o si cambió.
 - El guardado se niega a escribir (y lo dice en el pie) si la carpeta de configuración es un enlace simbólico, no es tuya o es escribible por el grupo o por otros, y si `secrets.toml` es un enlace simbólico, no es tuyo, tiene permisos más abiertos, es de solo lectura, tiene otros enlaces duros o no es TOML válido. En todos esos casos puedes seguir editándolo a mano.
 - La lectura (el arranque de un servidor) se niega a usar un `secrets.toml` que no tenga modo `0600`, que no sea un archivo normal o que pase de 64 KiB, y en ese caso el servidor arranca solo con tu entorno.
-- Las herramientas de lectura del chat rechazan `~/.config/lazarobox` entero, las carpetas de tokens de los conectores (`~/.config/gcloud`, `~/.config/mcp-gsc`, `~/Library/Application Support/mcp-gsc` en macOS, `~/.google_workspace_mcp`, `~/.clasprc.json`) y `~/.config/gh`. El modelo no lee tus valores ni tus tokens por esa vía. Un servidor MCP sí los puede leer, porque corre como tú.
-
-## Crear tu propio cliente OAuth de Google
-
-GA4, GSC (vía OAuth) y Google Workspace usan **tu** cliente OAuth, como harías con un n8n autoalojado: ningún cliente compartido pasa por tu cuenta. Se crea una vez y sirve para todos.
-
-1. En la [consola de Google Cloud](https://console.cloud.google.com/), crea o elige un proyecto tuyo.
-2. En *APIs y servicios → Biblioteca*, activa las APIs que vayas a usar: *Google Analytics Admin API* y *Google Analytics Data API* (GA4), *Search Console API* (GSC), *Gmail API*, *Google Docs API*, *Google Sheets API* y *Google Drive API* (Workspace).
-3. En *APIs y servicios → Pantalla de consentimiento de OAuth*, configura la pantalla (tipo *Externo* si usas una cuenta personal) y añade tu correo como usuario de prueba.
-4. En *APIs y servicios → Credenciales → Crear credenciales → ID de cliente de OAuth*, elige el tipo **Aplicación de escritorio** (*Desktop app*). Descarga el JSON o copia el id y el secreto.
-5. **Publica la pantalla de consentimiento** cuando termines. Un cliente que sigue en estado *Testing* recibe tokens de refresco que caducan a los 7 días, y tendrías que volver a iniciar sesión cada semana.
-
-Qué haces con el cliente según el servicio:
-
-| Servicio | Dónde va el cliente |
-|---|---|
-| GA4 y GSC (OAuth) | Formulario `o` (id y secreto), que escribe `~/.config/lazarobox/google-oauth-client.json`; o guarda tú el JSON descargado con ese nombre. |
-| Google Workspace | `f`: `GOOGLE_OAUTH_CLIENT_ID` (visible) y `GOOGLE_OAUTH_CLIENT_SECRET` (enmascarado) en `secrets.toml`, tabla `[google]`. |
-
-### El formulario `o` (archivo de cliente)
-
-Se abre desde la lista de valores (`f`) de GA4 o de GSC.
-
-1. Pulsa `o`. Escribe el **id del cliente** (debe terminar en `.apps.googleusercontent.com`, solo caracteres ASCII imprimibles) y Enter.
-2. Escribe el **secreto del cliente** (una línea, sin espacios, enmascarado) y Enter.
-3. Si el archivo ya existe, pregunta `replace google-oauth-client.json? (y/n)` antes de reemplazarlo; la versión anterior se queda en `google-oauth-client.json.bak`.
-
-Avisos que puedes ver: `the client id must end in .apps.googleusercontent.com and use printable ASCII`, `the client secret must be one line of printable ASCII, without spaces`, `nothing typed; Esc cancels` y `google-oauth-client.json exists; open the form again to replace it`.
+- Las herramientas de lectura del chat rechazan `~/.config/lazarobox` entero, las carpetas de tokens de los conectores (`~/.config/gcloud`, `~/.config/mcp-gsc`, `~/Library/Application Support/mcp-gsc` (macOS también acepta esa carpeta para `GSC_CONFIG_DIR`), `~/.google_workspace_mcp`, `~/.clasprc.json`) y `~/.config/gh`. El modelo no lee tus valores ni tus tokens por esa vía. Un servidor MCP sí los puede leer, porque corre como tú. Esta lista es de mejor esfuerzo y solo cubre las rutas predeterminadas: si usas un `$XDG_CONFIG_HOME` propio, esa carpeta no queda protegida.
 
 ## Clarity
 
@@ -155,9 +86,38 @@ Avisos que puedes ver: `the client id must end in .apps.googleusercontent.com an
 4. Pulsa `f`, Enter sobre `CLARITY_API_TOKEN`, pega el token y confirma. Queda en `secrets.toml`, tabla `[clarity]`.
 5. Pulsa `p` y confirma con `y`: debes ver `mcp: started clarity (3 tools)`.
 
+## Crear tu propio cliente OAuth de Google
+
+GA4, GSC (vía OAuth) y Google Workspace usan **tu** cliente OAuth, como harías con un n8n autoalojado: ningún cliente compartido pasa por tu cuenta. Se crea una vez y sirve para todos.
+
+1. En la [consola de Google Cloud](https://console.cloud.google.com/), crea o elige un proyecto tuyo.
+2. En *APIs y servicios → Biblioteca*, activa las APIs que vayas a usar: *Google Analytics Admin API* y *Google Analytics Data API* (GA4), *Search Console API* (GSC), *Gmail API*, *Google Docs API*, *Google Sheets API* y *Google Drive API* (Workspace).
+3. En *APIs y servicios → Pantalla de consentimiento de OAuth* (el nombre del menú puede variar: *Google Auth Platform*), configura la pantalla (tipo *Externo* si usas una cuenta personal) y añade tu correo como usuario de prueba.
+4. En *APIs y servicios → Credenciales → Crear credenciales → ID de cliente de OAuth*, elige el tipo **Aplicación de escritorio** (*Desktop app*). Descarga el JSON o copia el id y el secreto.
+5. Después de añadir los usuarios de prueba, **publica la pantalla de consentimiento**. Un cliente que sigue en estado *Testing* recibe tokens de refresco que caducan a los 7 días, y tendrías que volver a iniciar sesión cada semana.
+
+Al iniciar sesión verás un aviso de aplicación no verificada: *Avanzado → Ir a … (no seguro)*; es tu propio cliente.
+
+Qué haces con el cliente según el servicio:
+
+| Servicio | Dónde va el cliente |
+|---|---|
+| GA4 y GSC (OAuth) | Formulario `o` (id y secreto), que escribe `~/.config/lazarobox/google-oauth-client.json`; o guarda tú el JSON descargado con ese nombre. |
+| Google Workspace | `f`: `GOOGLE_OAUTH_CLIENT_ID` (visible) y `GOOGLE_OAUTH_CLIENT_SECRET` (enmascarado) en `secrets.toml`, tabla `[google]`. |
+
+### El formulario `o` (archivo de cliente)
+
+Se abre desde la lista de valores (`f`) de GA4 o de GSC.
+
+1. Pulsa `o`. Escribe el **id del cliente** (debe terminar en `.apps.googleusercontent.com`, solo caracteres ASCII imprimibles) y Enter.
+2. Escribe el **secreto del cliente** (una línea, sin espacios, enmascarado) y Enter.
+3. Si el archivo ya existe, pregunta `replace google-oauth-client.json? (y/n)` antes de reemplazarlo; la versión anterior se queda en `google-oauth-client.json.bak`.
+
+Avisos que puedes ver: `the client id must end in .apps.googleusercontent.com and use printable ASCII`, `the client secret must be one line of printable ASCII, without spaces`, `nothing typed; Esc cancels` y `google-oauth-client.json exists; open the form again to replace it`.
+
 ## Google Analytics 4
 
-**Qué da.** Diez herramientas de solo lectura de la Admin API y la Data API (resúmenes de cuenta, detalle de propiedad, informes, informes en tiempo real, embudos, eventos clave…). El inicio de sesión pide el permiso `analytics.readonly`; no puede modificar tu cuenta de GA4.
+**Qué da.** Diez herramientas de solo lectura de la Admin API y la Data API (resúmenes de cuenta, detalle de propiedad, informes, informes en tiempo real, embudos, eventos clave…). Las herramientas del servidor solo leen GA4, pero el inicio de sesión también pide el permiso `cloud-platform` (acceso amplio a las APIs de Google Cloud de tu cuenta) y las credenciales quedan en `~/.config/gcloud`, legibles por cualquier programa con tu usuario.
 
 **Qué cuesta.** Necesitas un cliente OAuth propio ([cómo crearlo](#crear-tu-propio-cliente-oauth-de-google)) y un proyecto de Google Cloud con las dos APIs activas. Las credenciales las guarda `gcloud` en `~/.config/gcloud` (las credenciales predeterminadas de la aplicación).
 
@@ -232,7 +192,7 @@ env = ["GSC_OAUTH_CLIENT_SECRETS_FILE", "GSC_CONFIG_DIR", "GSC_CREDENTIALS_PATH"
 - **El token de Gmail podría enviar correo a nivel de API.** El servidor guarda un token con el permiso `gmail.compose`, que permite enviar. lazarobox no registra ninguna herramienta de envío, pero el token puede hacerlo si otro programa lo usa. Es el riesgo residual aceptado.
 - **Tokens en texto plano.** `workspace-mcp` guarda sus tokens como JSON legible en `~/.google_workspace_mcp/credentials`. lazarobox se niega a leer esa carpeta, pero otros programas con tu usuario sí pueden.
 - **Los permisos de Docs y Hojas incluyen `drive.readonly`**: el servidor puede leer todo tu Drive, no solo los documentos que menciones.
-- **Archivos locales.** `get_gmail_attachment_content` guarda adjuntos en `~/.workspace-mcp/attachments`, fuera de las comprobaciones de escritura de lazarobox: cada llamada pide tu `y`. `WORKSPACE_MCP_DISABLE_LOCAL_FILES` viene en `"true"` y hace que `draft_gmail_message` no pueda adjuntar archivos locales por ruta (comprobado en la versión 2.4.1; el resto de herramientas siguen funcionando). Ponla en `"false"` si quieres permitirlo.
+- **Archivos locales.** `get_gmail_attachment_content` guarda adjuntos en `~/.workspace-mcp/attachments`, fuera de las comprobaciones de escritura de lazarobox: cada llamada pide tu `y`. Ojo: `~/.workspace-mcp/attachments` **no** está protegida contra lectura, así que las herramientas de lectura del chat pueden leer los adjuntos guardados ahí. `WORKSPACE_MCP_DISABLE_LOCAL_FILES` viene en `"true"` y hace que `draft_gmail_message` no pueda adjuntar archivos locales por ruta (comprobado en la versión 2.4.1; el resto de herramientas siguen funcionando). Ponla en `"false"` si quieres permitirlo.
 - **`name = "google"` es obligatorio.** La lista de Gmail y las herramientas ocultas se aplican por el nombre `google`. Con otro nombre se registran todas las herramientas de Gmail, incluida la de envío.
 - No declares `WORKSPACE_MCP_CREDENTIALS_DIR` ni `GOOGLE_MCP_CREDENTIALS_DIR`: el arranque se rechaza (`WORKSPACE_MCP_CREDENTIALS_DIR / GOOGLE_MCP_CREDENTIALS_DIR are not supported; remove them from the entry`), porque el servidor guardaría sus tokens fuera de la carpeta que las herramientas de lectura protegen.
 
@@ -254,6 +214,8 @@ env = ["GSC_OAUTH_CLIENT_SECRETS_FILE", "GSC_CONFIG_DIR", "GSC_CREDENTIALS_PATH"
 5. Vuelve a la pantalla del servicio y pulsa `g`. Te pregunta `start workspace-mcp and ask Google to link <tu correo>? (y/n)` y muestra el comando que arranca, sin shell. Con `y`, lazarobox arranca el servidor como lo haría un chat, le pide su enlace de inicio de sesión y abre ese enlace en el navegador (o lo copia y lo muestra: `Open this link if the browser did not:`). Mientras tanto el pie dice `starting workspace-mcp… · Esc cancels` y luego `waiting for Google… · Esc cancels`.
 6. Inicia sesión en Google y acepta los permisos. El servidor recibe la respuesta en un puerto local (8000 a 8004) y guarda el token; la fila pasa a `declared · linked` y el pie dice `linked google`. El servidor se detiene siempre al terminar.
 7. Pulsa `p`: `mcp: started google (41 tools)` (el número cambia si una versión nueva del servidor publica otras herramientas).
+
+Si el servidor abre además su propia pestaña, usa cualquiera de las dos; solo una completa el inicio de sesión. Mientras espera, Link abre una escucha local en los puertos 8000 a 8004.
 
 lazarobox solo acepta un enlace de `accounts.google.com` que lleve **tu** id de cliente y vuelva a un puerto local 8000 a 8004; cualquier otro se rechaza con un aviso, sin abrirlo.
 
@@ -284,7 +246,7 @@ lazarobox solo acepta un enlace de `accounts.google.com` que lleve **tu** id de 
 | Servicio | Lo que debes saber |
 |---|---|
 | Clarity | Solo lectura. Token de administrador del proyecto en `secrets.toml`. 10 peticiones al día. |
-| GA4 | Solo lectura (`analytics.readonly`). Las credenciales las guarda `gcloud` y las puede leer cualquier programa con tu usuario. |
+| GA4 | Herramientas de solo lectura, pero el token incluye `cloud-platform` (acceso amplio a Google Cloud). Las credenciales las guarda `gcloud` y las puede leer cualquier programa con tu usuario. |
 | GSC | Con `name = "gsc"`. Las herramientas de escritura (sitemaps) piden `y`; añadir y borrar propiedades está desactivado. Un token caducado puede colgar una llamada hasta Esc: enlaza de nuevo. |
 | Google Workspace | Con `name = "google"`. Lista de 8 herramientas de Gmail, solo borradores. `gmail.compose` puede enviar a nivel de API. `drive.readonly` lee todo el Drive. Tokens en texto plano. |
 | Apps Script | Cuatro herramientas de escritura. `push_files` ejecuta código con los permisos del script. |
@@ -308,6 +270,51 @@ Para borrar también lo que guardaste:
 | GSC (cuenta de servicio) | Quita el correo de la cuenta de servicio en *Usuarios y permisos* de la propiedad, y borra la clave en *IAM y administración → Cuentas de servicio → Claves* y el archivo `gsc-service-account.json`. |
 | Google Workspace | La carpeta `~/.google_workspace_mcp/credentials` y, si guardaste adjuntos, `~/.workspace-mcp/attachments`. |
 | Apps Script | `~/.clasprc.json` (o `clasp logout`). |
+
+## Apéndice: las teclas del área Connectors
+
+El área tiene tres pantallas: la lista de servicios, la pantalla de un servicio y la lista de valores (`f`).
+
+| Pantalla | Tecla | Qué hace |
+|---|---|---|
+| Lista | `j` `k`, Enter, Esc | Moverte, abrir un servicio, volver. |
+| Servicio | `j` `k` | Desplazar la guía si no cabe. |
+| Servicio | `i` | Instalar: muestra el comando y espera `y`. |
+| Servicio | `l` | Iniciar sesión (solo GA4 y Apps Script). |
+| Servicio | `g` | **Link with Google** (solo GSC con OAuth y Google Workspace). |
+| Servicio | `p` | Probar: arranca el servidor, pide su lista de herramientas y lo detiene. |
+| Servicio | `f` | Abrir la lista de valores para rellenarlos. |
+| Servicio | `w` | Elegir la vía (solo GSC: OAuth o cuenta de servicio). También funciona dentro de `f`. |
+| Servicio | `c` | Copiar la entrada de `config.toml`. |
+| Servicio | `t` | Copiar la tabla de `secrets.toml` (vacía). |
+| Servicio | `1` a `9` | Abrir un enlace de la guía (o copiarlo si no hay navegador). El último enlace es esta guía. |
+| Valores (`f`) | `j` `k`, Enter | Moverte y editar el valor de la fila. |
+| Valores (`f`) | `o` | Formulario del archivo de cliente OAuth (solo GA4 y GSC). |
+| Valores (`f`) | `w` | Cambiar de vía (GSC). |
+| Valores (`f`) | `d` | Borrar la copia `secrets.toml.bak` (solo si existe). |
+| Todas | Esc | Volver un nivel o cancelar. |
+
+Dos detalles de las confirmaciones: solo una `y` suelta confirma (`Ctrl+y` o `Alt+y` no) y cualquier otra tecla cancela (`cancelled`). Si el terminal es tan estrecho que el comando no cabe entero, lazarobox no lo ofrece y avisa con `widen the terminal to read the command`: lo que ves es siempre lo que se ejecuta.
+
+### El estado de cada servicio en la lista
+
+| Estado | Significado |
+|---|---|
+| `not declared` | No hay un servidor con ese `name` en `config.toml`. |
+| `disabled` | La entrada tiene `enabled = false`. |
+| `values missing: <NOMBRES>` | Falta algún valor en `secrets.toml`. |
+| `declared` | Declarado y con sus valores. |
+| `declared · linked` / `declared · not linked` | Solo GSC con OAuth y Google Workspace: si existe su archivo de token (se comprueba con `stat`, nunca se abre). |
+| `· probe: started`, `failed` o `stopped` | Resultado de la última prueba de esta sesión. |
+
+### Cómo se rellena un valor (`f`)
+
+- Una fila con valor confidencial muestra solo `set` o `not set`; al escribirlo se ve una máscara fija de ocho puntos (`••••••••`), sin revelar la longitud. Los valores que no son confidenciales (por ejemplo `GOOGLE_CLOUD_PROJECT` o `USER_GOOGLE_EMAIL`) se muestran enteros.
+- Una fila con valor sugerido muestra `not set · Enter writes <valor>`: Enter lo guarda sin teclear nada.
+- Enter en una fila sin valor sugerido abre el campo: escribe o pega y confirma con Enter; Esc descarta el texto. El valor debe ser una sola línea, sin caracteres de control y de hasta 4096 bytes.
+- Si ya hay un valor guardado, antes de reemplazarlo pregunta `replace the saved <NOMBRE>? (y/n)`. Si el comando declarado en `config.toml` no es el del catálogo, pregunta antes `save <NOMBRE> for a server that runs <comando>? (y/n)`.
+- Enter sobre un campo vacío no guarda nada (`empty value not saved; edit secrets.toml by hand to remove a value`): para quitar un valor, edita `secrets.toml` a mano.
+- Si guardas, el pie dice `saved <NOMBRE>` y, cuando había un archivo previo, `saved <NOMBRE>; the previous values stay in secrets.toml.bak (0600) until you delete it`. La fila `restart the chat or probe again to use it` te recuerda que el cambio vale en el siguiente arranque del servidor, no antes.
 
 ## Solución de problemas
 
@@ -378,7 +385,7 @@ Los textos son los que ves en el pie del menú o en el chat. Ninguno contiene un
 | `USER_GOOGLE_EMAIL is not a plain e-mail address; fix it in Connectors (f)` | Debe ser una dirección sin espacios ni caracteres raros. |
 | `WORKSPACE_MCP_CREDENTIALS_DIR / GOOGLE_MCP_CREDENTIALS_DIR are not supported; remove them from the entry` | Quita esas dos variables de `env`. |
 | `link failed: no sign-in link in the answer` | El servidor no devolvió un enlace; mira si añade un motivo (`link failed: <motivo>`). |
-| `link failed: the answer holds a link that is not a Google sign-in link` / `…is for another client id` / `…does not return to a local port 8000-8004` / `…repeats a parameter` | lazarobox rechazó el enlace por seguridad y no lo abrió. Revisa `GOOGLE_OAUTH_CLIENT_ID`. |
+| `link failed: the answer holds a link that is not a Google sign-in link`, `link failed: the sign-in link is for another client id`, `link failed: the sign-in link does not return to a local port 8000-8004` o `link failed: the sign-in link repeats a parameter` | lazarobox rechazó el enlace por seguridad y no lo abrió. Revisa `GOOGLE_OAUTH_CLIENT_ID`. |
 | `link failed: start_google_auth did not answer in 30 s` | El servidor no respondió; prueba `p` y revisa la instalación. |
 | `link failed: the server stopped` | El servidor terminó antes de recibir tu respuesta. |
 | `link cancelled` | Pulsaste Esc. |
