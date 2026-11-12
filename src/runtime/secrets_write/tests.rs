@@ -941,3 +941,18 @@ async fn the_writer_saves_the_client_and_answers_with_a_notice_that_holds_no_val
     );
     assert!(!notice.contains("secrets.toml"));
 }
+
+// Review: a client file with other hard links is refused and left alone.
+#[test]
+fn a_client_file_with_other_hard_links_is_refused() {
+    let lab = lab();
+    lab.write_client(OLD_CLIENT, 0o600);
+    fs::hard_link(lab.client(), lab.root.path().join("other")).unwrap();
+    let err = lab.save_client(true).unwrap_err();
+    assert_eq!(
+        err.notice_of(CLIENT_FILE),
+        "google-oauth-client.json has other hard links; edit it by hand"
+    );
+    assert_eq!(fs::read_to_string(lab.client()).unwrap(), OLD_CLIENT);
+    assert_eq!(lab.names(), ["google-oauth-client.json"]);
+}

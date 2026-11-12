@@ -21,7 +21,7 @@ use super::{
         hf::{AccountAsk, AccountReply, Answer, Ask, Job, TokenFacts},
         marks::ToolMark,
         mcp_catalog::{checks::Probed, presence::Presence},
-        mcp_secrets::SecretText,
+        mcp_secrets::{CLIENT_FILE, Refusal, SecretText},
         menu::AiMenu,
         ollama_lib::{self, Pull},
         picker::{
@@ -1323,8 +1323,20 @@ impl MenuState {
 
     /// What the save of a secret field answered: the notice either way.
     pub fn secret_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
-        self.connectors.saved(reply.is_ok());
-        self.backup_reply(reply)
+        let client = |notice: &String| notice.contains(CLIENT_FILE);
+        self.connectors
+            .saved(reply.as_ref().is_ok_and(|n| !client(n)));
+        // A file that appeared since the area read the disk: read again, so
+        // the next form asks to replace it.
+        let stale = reply
+            .as_ref()
+            .is_err_and(|n| *n == Refusal::Exists.notice_of(CLIENT_FILE));
+        let command = self.backup_reply(reply);
+        if stale {
+            MenuCommand::LoadPresence
+        } else {
+            command
+        }
     }
 
     /// What the deletion of the backup answered: the files are read again

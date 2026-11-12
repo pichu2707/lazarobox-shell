@@ -649,3 +649,44 @@ fn only_the_client_form_builds_a_client_save_and_only_the_writer_runs_it() {
         ["runtime/secrets_write.rs"]
     );
 }
+
+// Review: a file that appeared after the presence was read refuses with
+// `Exists`; the area reads the files again so the next `o` asks to replace.
+#[test]
+fn an_exists_refusal_reads_the_files_again_and_the_next_form_asks_to_replace() {
+    let (mut m, sent) = client_typed(1, false);
+    assert_eq!(sent, client(CID, CSECRET, false));
+    let refusal = "google-oauth-client.json exists; open the form again to replace it";
+    assert_eq!(
+        m.secret_reply(Err(refusal.to_owned())),
+        MenuCommand::LoadPresence
+    );
+    m.presence_reply(presence("", "").with_client_file(true));
+    press(&mut m, 'o');
+    type_in(&mut m, CID);
+    enter(&mut m);
+    type_in(&mut m, CSECRET);
+    assert_eq!(enter(&mut m), MenuCommand::None);
+    assert!(texts(&m).contains(&"replace google-oauth-client.json? (y/n)".to_owned()));
+    assert_eq!(press(&mut m, 'y'), client(CID, CSECRET, true));
+    // Another refusal does not read anything again.
+    assert_eq!(
+        m.secret_reply(Err("secrets.toml: not saved".to_owned())),
+        MenuCommand::None
+    );
+}
+
+// Review: the restart hint is for `secrets.toml` values, not the client file.
+#[test]
+fn a_client_file_save_does_not_say_to_restart_the_chat() {
+    let (mut m, _) = client_typed(1, false);
+    m.secret_reply(Ok("saved google-oauth-client.json".to_owned()));
+    assert!(
+        !texts(&m).concat().contains("restart the chat"),
+        "{:?}",
+        texts(&m)
+    );
+    let mut m = fields(0, CLARITY, "");
+    m.secret_reply(Ok("saved CLARITY_API_TOKEN".to_owned()));
+    assert!(texts(&m).concat().contains("restart the chat"));
+}
