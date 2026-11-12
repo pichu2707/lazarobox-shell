@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-11-12
+
 ### Added
 
 - `docs/conectores.md`: a step-by-step guide (in Spanish) to connect Clarity, GA4,
@@ -2796,7 +2798,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.22.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.23.0...HEAD
+[1.23.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.22.0...v1.23.0
 [1.22.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.21.0...v1.22.0
 [1.21.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.19.0...v1.20.0
