@@ -10,6 +10,39 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **Connect Google** in the `Connectors` area (the first row): one screen that
+  sets up Search Console and Google Workspace (Gmail read and drafts, Docs,
+  Sheets) with your own Desktop OAuth client. It lists the one-time Google Cloud
+  steps with a link each (`1` to `9`: project, the five APIs, test user and
+  publishing, the Desktop client), two services ticked by default (`s`, `w`; one
+  already declared shows `already declared` and is left alone), the client
+  (`client: <id>`, or `missing — press o` to open the client form) and your
+  Google e-mail (`e`). `n` reads `google-oauth-client.json`, `config.toml` and
+  `secrets.toml` as they are, with the checks of the secrets writer, and shows
+  the plan without writing anything: the entries to append, the values to set
+  (the client secret masked), the values kept, the install lines, and most
+  refusals. `y` writes it. Then `i` installs both pinned servers in one new tab
+  after its prompt, and `g` links Search Console, then Google Workspace, through
+  their existing flows. `c` copies the entries to paste by hand when they could
+  not be added. `google-oauth-client.json` is now read back (the form's file or
+  the one Google downloads), only when it is a regular file of yours with no
+  group or other access; its secret is never shown.
+
+### Changed
+
+- The menu may now write `config.toml`, in one case only: after `y` on the plan
+  of Connect Google, it appends the catalog entries of `gsc` and `google` that
+  are not declared at the end of the file. The old file is kept as
+  `config.toml.bak`; the bytes before the entries never change; no entry is
+  ever changed or removed. The append is refused, with a notice and nothing
+  written, when `config.toml` is a symlink, not yours, hard-linked, writable by
+  group or others, changed since the plan was shown, or would not parse with
+  the same servers plus the new ones (an inline `ai.mcp.servers = [...]` list).
+  The values of the plan are saved in `secrets.toml` in one write, with one
+  `secrets.toml.bak`.
+
 ### Fixed
 
 - Link with Google for Search Console (`g` on `gsc`) now opens the browser on WSL. The

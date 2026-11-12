@@ -1832,3 +1832,40 @@ The Models tab MUST show a `simple` row after `orchestrate`. Enter on it MUST op
 - GIVEN `simple` assigned and `Set all tasks` applied
 - WHEN the draft is read
 - THEN `simple` is unchanged
+
+### Requirement: Connect Google [google-connect]
+The Connectors area MUST list a `Connect Google` row first, before the catalog groups, with the value `Search Console + Gmail, Docs, Sheets` (`both declared` once `gsc` and `google` are both declared); the cursor starts on it, and Enter opens its screen. The screen MUST show, under a fixed title and scrolling with `j`/`k` within the fixed body: the two services as checkboxes, `[x] Search Console` and `[x] Google Workspace: Gmail read + drafts, Docs, Sheets`, both ticked at first and toggled with `s` and `w`, a declared one (in any form) drawn `[-] <service>: already declared` and never ticked; the line `client: <id>` when `google-oauth-client.json` reads back (see mcp-secrets, OAuth client file read back), `client: missing — press o` when there is none, or the refusal; the e-mail line for `USER_GOOGLE_EMAIL`, edited with `e` in a one-line field (Enter keeps a plain address, Esc cancels), needed only for Workspace ticked and not declared, and `kept in secrets.toml (<e-mail>)` when the file holds one; once a service is declared, `Next steps` with `i install: <lines joined by &&>`, `g link: <service> linked|not linked` and `restart lazarobox to use it in chats`; and the one-time Google Cloud checklist, one step per line, `1`-`9` opening its page (or copying it without a browser): the project, the Search Console, Gmail, Docs, Sheets and Drive APIs, the audience page (add the account as a test user, else `Error 403: access_denied`; publish the app so tokens do not expire after 7 days), the credentials page (a Desktop OAuth client) and the guide. `o` MUST open the existing client form from this screen. No value of the client secret is ever drawn.
+
+`n` or Enter MUST ask the runtime for the plan, with the services ticked and not declared and the e-mail typed, unless the menu already knows what is missing (`choose Search Console, Google Workspace or both`, `both services are declared: g links them`, `no client yet: press o to save your client id and secret`, `type your Google e-mail first (e)`). The runtime MUST read the client, `config.toml` and `secrets.toml` as they are then, with the checks of the secrets writer, and answer the plan of mcp-catalog's Connect Google planner checked by a dry run of both writes, or the one line that says why there is none (the footer notice). The plan screen MUST list the entries to append, `config.toml gets these entries at its end; the old file is kept as config.toml.bak` (or `config.toml is created with these entries`), the values to set (a confidential one as `••••••••`), the values kept, the services left alone and the install lines. When the dry run of the append is refused, the screen MUST say why and that `y saves the values only`. Nothing is written before `y` on the plan; `y` MUST send the write once, and its answer MUST be the footer notice; a refusal of the entries MUST offer the paste fallback (`c` copies the entries of the ticked services not declared). `i` MUST ask, with the existing run prompt, to type the install lines of the declared services in one new tab. `g` MUST start the link of the first declared service that is not linked, Search Console first, through the existing flow of its entry. Esc MUST close the open field, then the plan, then the screen. A plan that answers after Esc is dropped; a write that answers after the screen or the menu closed is still said.
+
+#### Scenario: The row comes first [google-connect, auto]
+- GIVEN the Connectors area with nothing declared
+- WHEN it opens
+- THEN the first row is `Connect Google` with `Search Console + Gmail, Docs, Sheets` and is selected
+
+#### Scenario: Nothing is written before y [google-connect, auto]
+- GIVEN the Connect Google screen with the client read and an e-mail typed
+- WHEN `n` is pressed and the plan arrives, then any key but `y`
+- THEN the only command was the plan request and no write was sent
+
+#### Scenario: y writes the plan shown [google-connect, auto]
+- GIVEN the plan shown
+- WHEN `y` is pressed twice
+- THEN one write is sent, equal to the plan's, and the hint is `writing…`
+
+#### Scenario: A declared service is left alone [google-connect, auto]
+- GIVEN `gsc` declared
+- WHEN the screen is shown and `s` is pressed
+- THEN it reads `[-] Search Console: already declared`, stays so, and the plan asks for `google` only
+
+#### Scenario: Install and link [google-connect, auto]
+- GIVEN `gsc` and `google` declared with their values, neither linked
+- WHEN `i` then `y` are pressed
+- THEN the line typed in one new tab is `uv tool install mcp-search-console==0.4.2 && uv tool install workspace-mcp==2.4.1`
+- WHEN `g` is pressed
+- THEN the Search Console link checks start, and with Search Console linked `g` asks to link Google Workspace
+
+#### Scenario: The screen and its plan keep the popup size [google-connect, auto, TestBackend + insta]
+- GIVEN the Connect Google screen and its plan, at the top and scrolled to the end
+- WHEN they are rendered at 62 columns
+- THEN the popup has the same height as every other Connectors view and the client secret is not drawn

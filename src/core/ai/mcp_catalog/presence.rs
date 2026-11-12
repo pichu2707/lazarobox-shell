@@ -13,6 +13,7 @@ use super::{entries, gsc, link};
 use crate::core::{
     ai::{config::McpServer, mcp_secrets::Loaded},
     config::Config,
+    config_append::declared_names,
 };
 
 /// The disk copy of the declared servers and the names that have a value.
@@ -20,6 +21,9 @@ use crate::core::{
 pub struct Presence {
     /// `None` when `config.toml` could not be read or parsed.
     pub servers: Option<Vec<McpServer>>,
+    /// The name of every `[[ai.mcp.servers]]` entry of the raw TOML, valid or
+    /// not: `servers` skips an invalid one, which is still declared.
+    pub names: Vec<String>,
     set: HashSet<(String, String)>,
     /// The values the entries opt out of confidentiality (`Var.shown`): ids,
     /// paths, an e-mail. A confidential value is never kept here.
@@ -55,12 +59,17 @@ impl Presence {
     /// nothing) and the parsed `secrets.toml`. Only the secret names of the
     /// catalog are looked up.
     pub fn read(config: io::Result<String>, loaded: &Loaded) -> Self {
-        let servers = match config {
-            Ok(text) => Config::parse(&text)
-                .ok()
-                .map(|parsed| parsed.ai.mcp_servers().to_vec()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Some(Vec::new()),
-            Err(_) => None,
+        let (servers, names) = match config {
+            Ok(text) => (
+                Config::parse(&text)
+                    .ok()
+                    .map(|parsed| parsed.ai.mcp_servers().to_vec()),
+                text.parse::<toml::Table>()
+                    .map(|raw| declared_names(&raw).map(str::to_owned).collect())
+                    .unwrap_or_default(),
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (Some(Vec::new()), Vec::new()),
+            Err(_) => (None, Vec::new()),
         };
         let set = entries()
             .iter()
@@ -91,6 +100,7 @@ impl Presence {
             .collect();
         Self {
             servers,
+            names,
             set,
             shown,
             backup: false,
@@ -137,6 +147,13 @@ impl Presence {
             self.google = Some(names.iter().any(|name| exists(&dir.join(name))));
         }
         self
+    }
+
+    /// Whether `config.toml` declares `name`, in any form: a parsed server,
+    /// or an entry of that name the parsed list skipped as invalid.
+    pub fn declares(&self, name: &str) -> bool {
+        self.servers.iter().flatten().any(|s| s.name == name)
+            || self.names.iter().any(|declared| declared == name)
     }
 
     /// `Some(linked)` when `google` is declared with an account.

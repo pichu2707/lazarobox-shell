@@ -6,6 +6,17 @@ Todo lo que ves aquí sale del código de la versión actual. Los textos entre c
 
 ## Ruta rápida
 
+Para **Search Console** y **Google Workspace** (Gmail, Docs y Hojas), con **Connect Google**:
+
+1. Abre el menú con `Ctrl+Espacio` `m`, pulsa `4` (pestaña **Connectors**), Enter, y Enter otra vez sobre la primera fila, **Connect Google**.
+2. La primera vez, sigue la lista de Google Cloud de la pantalla (`1` a `9` abren cada página) y guarda tu cliente con `o`.
+3. Escribe tu correo de Google con `e` (solo si marcaste Google Workspace).
+4. Pulsa `n`: ves el plan, sin que se escriba nada. Pulsa `y` para escribirlo.
+5. Pulsa `i` para instalar los dos servidores y `g` para enlazar Search Console y luego `g` otra vez para Google Workspace.
+6. Reinicia lazarobox, abre un chat con **Tools** activado y pide algo. Cada llamada a una herramienta de estos servidores espera tu `y`.
+
+Los detalles, en [Conectar Google en un paso](#conectar-google-en-un-paso). Para **Clarity**, **GA4** y **Apps Script** (o si prefieres hacerlo a mano), la ruta de siempre:
+
 1. Abre el menú con `Ctrl+Espacio` `m`, pulsa `4` (pestaña **Connectors**) y entra en el servicio con Enter.
 2. Pulsa `i` para instalar el servidor (te enseña el comando y espera una `y`).
 3. Pega en `config.toml` (`~/.config/lazarobox/config.toml`) la entrada que muestra la pantalla (`c` la copia).
@@ -18,6 +29,7 @@ Todo lo que ves aquí sale del código de la versión actual. Los textos entre c
 
 - [Antes de empezar](#antes-de-empezar)
 - [Dónde se guarda cada cosa](#dónde-se-guarda-cada-cosa)
+- [Conectar Google en un paso](#conectar-google-en-un-paso)
 - [Clarity](#clarity)
 - [Crear tu propio cliente OAuth de Google](#crear-tu-propio-cliente-oauth-de-google)
 - [Google Analytics 4](#google-analytics-4)
@@ -43,26 +55,88 @@ Dónde conseguir las herramientas: `uv` en <https://docs.astral.sh/uv/>, `pipx` 
 
 Dos reglas que valen para todos los servicios:
 
-- **La entrada de `config.toml` la pegas tú.** lazarobox no escribe `config.toml` ni la sección `ai.mcp.*`. Pega la entrada, guarda el archivo y reinicia lazarobox para que los chats en marcha la carguen (el área lo recuerda con `restart lazarobox to use it in chats`).
+- **La entrada de `config.toml` la pegas tú, salvo con Connect Google.** lazarobox no escribe `config.toml` ni la sección `ai.mcp.*`, con una sola excepción: **Connect Google**, tras tu `y` sobre su plan, añade al final del archivo las entradas del catálogo de Search Console y Google Workspace que aún no declaraste, y guarda el archivo anterior como `config.toml.bak`; nunca cambia ni borra una entrada que ya exista. En los demás casos, pega la entrada, guarda el archivo y reinicia lazarobox para que los chats en marcha la carguen (el área lo recuerda con `restart lazarobox to use it in chats`).
 - **Cada servidor corre como tú.** Un servidor MCP tuyo se ejecuta con tu usuario, en tu `$HOME`, y puede leer tus archivos, incluido `secrets.toml`. Declara solo servidores en los que confíes y mantén las versiones fijadas que el catálogo instala (por ejemplo `workspace-mcp==2.4.1`).
 
 ## Dónde se guarda cada cosa
 
 | Qué | Dónde | Quién lo escribe |
 |---|---|---|
-| Entrada del servidor (`[[ai.mcp.servers]]`) | `~/.config/lazarobox/config.toml` | Tú, a mano. |
-| Valores (tokens, ids, rutas) | `~/.config/lazarobox/secrets.toml` (o `$XDG_CONFIG_HOME/lazarobox/secrets.toml`), permisos `0600` | Tú a mano, o el guardado del menú (`f`). |
+| Entrada del servidor (`[[ai.mcp.servers]]`) | `~/.config/lazarobox/config.toml` | Tú, a mano. Connect Google añade al final las entradas de `gsc` y `google` que no estén declaradas, tras tu `y`. |
+| Copia de `config.toml` | `config.toml.bak`, junto al archivo | Connect Google, antes de añadir las entradas. Es tu archivo tal como estaba; bórrala cuando quieras. |
+| Valores (tokens, ids, rutas) | `~/.config/lazarobox/secrets.toml` (o `$XDG_CONFIG_HOME/lazarobox/secrets.toml`), permisos `0600` | Tú a mano, el guardado del menú (`f`) o Connect Google (los valores de su plan, de una vez). |
 | Copia del archivo anterior | `secrets.toml.bak`, `0600`, junto al archivo | El guardado del menú, antes de reemplazar el archivo. Se queda hasta que la borres con `d`. |
 | Cliente OAuth de escritorio | `~/.config/lazarobox/google-oauth-client.json`, `0600`; la copia anterior en `google-oauth-client.json.bak` | El formulario `o` (GA4 y GSC). |
 | Tokens de Google | Los guarda cada servidor, **nunca lazarobox**: `~/.config/gcloud` (GA4), `~/.config/mcp-gsc/token.json` (GSC con OAuth), `~/.google_workspace_mcp/credentials` (Workspace, JSON en texto plano) y `~/.clasprc.json` (Apps Script) | El servidor o la herramienta de login. |
 
 Qué hace lazarobox con esos archivos y qué no:
 
-- El menú escribe **solo** un valor de `secrets.toml` por guardado (y el archivo de cliente OAuth y el borrado de `.bak`). No escribe `config.toml` ni `ai.mcp.*`, y ningún valor suyo se escribe en `config.toml`.
+- El menú escribe **solo** un valor de `secrets.toml` por guardado (y el archivo de cliente OAuth y el borrado de `.bak`), salvo Connect Google, que guarda de una vez los valores que su plan enumera. El único cambio en `config.toml` es el de Connect Google: añade entradas al final, con `config.toml.bak`; nunca cambia ni borra una entrada de `ai.mcp.*`, y ningún valor de `secrets.toml` se escribe en `config.toml`.
 - Nunca guarda, lee ni copia un token de Google. Para saber si una cuenta está enlazada solo comprueba, con `stat`, si existe el archivo del token o si cambió.
 - El guardado se niega a escribir (y lo dice en el pie) si la carpeta de configuración es un enlace simbólico, no es tuya o es escribible por el grupo o por otros, y si `secrets.toml` es un enlace simbólico, no es tuyo, tiene permisos más abiertos, es de solo lectura, tiene otros enlaces duros o no es TOML válido. En todos esos casos puedes seguir editándolo a mano.
 - La lectura (el arranque de un servidor) se niega a usar un `secrets.toml` que no tenga modo `0600`, que no sea un archivo normal o que pase de 64 KiB, y en ese caso el servidor arranca solo con tu entorno.
 - Las herramientas de lectura del chat rechazan `~/.config/lazarobox` entero, las carpetas de tokens de los conectores (`~/.config/gcloud`, `~/.config/mcp-gsc`, `~/Library/Application Support/mcp-gsc` (macOS también acepta esa carpeta para `GSC_CONFIG_DIR`), `~/.google_workspace_mcp`, `~/.clasprc.json`) y `~/.config/gh`. El modelo no lee tus valores ni tus tokens por esa vía. Un servidor MCP sí los puede leer, porque corre como tú. Esta lista es de mejor esfuerzo y solo cubre las rutas predeterminadas: si usas un `$XDG_CONFIG_HOME` propio, esa carpeta no queda protegida.
+
+## Conectar Google en un paso
+
+**Connect Google** conecta **Search Console** y **Google Workspace** (Gmail: leer y crear borradores; Docs; Hojas de cálculo) de una vez, con **tu propio cliente OAuth de escritorio**: lo creas una vez en Google Cloud y lazarobox lo reutiliza para los dos servicios. lazarobox escribe por ti la entrada de `config.toml` y los valores de `secrets.toml`, siempre después de enseñarte el plan y de tu `y`.
+
+Es la primera fila del área **Connectors**. Su pantalla tiene cuatro partes, y `j`/`k` la desplazan si no cabe.
+
+### 1. Google Cloud, una sola vez
+
+Cada paso tiene un enlace; `1` a `9` lo abren en el navegador (o lo copian si no hay navegador):
+
+| Tecla | Paso | Página |
+|---|---|---|
+| `1` | Crear un proyecto de Google Cloud | <https://console.cloud.google.com/projectcreate> |
+| `2` | Activar la *Search Console API* | <https://console.cloud.google.com/apis/library/searchconsole.googleapis.com> |
+| `3` | Activar la *Gmail API* | <https://console.cloud.google.com/apis/library/gmail.googleapis.com> |
+| `4` | Activar la *Google Docs API* | <https://console.cloud.google.com/apis/library/docs.googleapis.com> |
+| `5` | Activar la *Google Sheets API* | <https://console.cloud.google.com/apis/library/sheets.googleapis.com> |
+| `6` | Activar la *Google Drive API* | <https://console.cloud.google.com/apis/library/drive.googleapis.com> |
+| `7` | *Audience*: añade tu cuenta de Google como **usuario de prueba** y después **publica la app** | <https://console.cloud.google.com/auth/audience> |
+| `8` | *Credentials*: crea un **ID de cliente de OAuth** de tipo **Desktop app** | <https://console.cloud.google.com/apis/credentials> |
+| `9` | Esta guía | |
+
+Dos avisos del paso 7: sin tu cuenta como usuario de prueba, Google responde `Error 403: access_denied` al enlazar; y mientras la app siga en *Testing*, los tokens caducan a los 7 días, por eso conviene publicarla. Al enlazar verás un aviso de aplicación no verificada: *Avanzado → Ir a … (no seguro)*; es tu propio cliente.
+
+### 2. Servicios, cliente y correo
+
+- **Servicios.** `s` marca o desmarca Search Console y `w` Google Workspace; los dos empiezan marcados. Un servicio que ya está en `config.toml` (con cualquier forma, también con `enabled = false`) sale como `already declared` y no se toca.
+- **Cliente.** La línea dice `client: <id>` si `~/.config/lazarobox/google-oauth-client.json` se puede leer, o `client: missing — press o`. `o` abre el formulario del cliente (id y secreto; ver [El formulario `o`](#el-formulario-o-archivo-de-cliente)). También vale el JSON que descarga Google, guardado con ese nombre y `chmod 600`: lazarobox lo lee con las mismas comprobaciones que el guardado (tuyo, archivo normal, sin enlaces, sin permisos para el grupo ni para otros, hasta 16 KiB) y nunca muestra el secreto.
+- **Correo.** `e` abre el campo `USER_GOOGLE_EMAIL` (Enter lo guarda en la pantalla, Esc cancela). Solo hace falta para Google Workspace; si `secrets.toml` ya tiene uno, se conserva.
+
+### 3. El plan y la escritura
+
+`n` (o Enter) lee tus archivos tal como están en ese momento (el cliente, `config.toml` y `secrets.toml`, con las comprobaciones del guardado) y muestra el plan **sin escribir nada**:
+
+- `Append to config.toml`: las entradas que se añadirán, y la frase `config.toml gets these entries at its end; the old file is kept as config.toml.bak`.
+- `Set in secrets.toml`: cada valor que se guardará. Los que no son confidenciales se ven (rutas, el id del cliente, tu correo); el secreto del cliente sale como `••••••••`.
+- `Kept in secrets.toml`: los valores que ya tienen algo y se conservan.
+- `Already declared, left alone`: los servicios marcados que ya estaban declarados.
+- `Install after the write (i)`: las líneas de instalación fijadas.
+
+Qué se escribe con `y`:
+
+| Archivo | Qué | Copia |
+|---|---|---|
+| `secrets.toml` | `[gsc]`: `GSC_OAUTH_CLIENT_SECRETS_FILE`, `GSC_CONFIG_DIR` y `GSC_SKIP_OAUTH = "false"`. `[google]`: `GOOGLE_OAUTH_CLIENT_ID` y `GOOGLE_OAUTH_CLIENT_SECRET` (copiados de tu cliente), `USER_GOOGLE_EMAIL` y `WORKSPACE_MCP_DISABLE_LOCAL_FILES = "true"`. | `secrets.toml.bak` |
+| `config.toml` | Al final, la entrada del catálogo de cada servicio no declarado (`name = "gsc"` y `name = "google"`). Lo que ya había no cambia ni un byte. | `config.toml.bak` |
+
+El secreto del cliente queda así en dos archivos `0600` (`google-oauth-client.json` y `secrets.toml`), que las herramientas de lectura del chat no pueden abrir.
+
+Antes de añadir las entradas, lazarobox comprueba que `config.toml` sigue igual que cuando viste el plan, que es un archivo normal tuyo (no un enlace simbólico ni con otros enlaces duros, y sin permiso de escritura para el grupo ni para otros) y que, con las entradas al final, se sigue leyendo con los mismos servidores más los nuevos. Si algo falla, no lo toca y te lo dice; una lista en línea `ai.mcp.servers = [...]` es el caso típico, porque una entrada `[[ai.mcp.servers]]` no puede seguirla. Muchas de estas negativas se ven ya en el plan: entonces `y` guarda solo los valores, y `c` copia las entradas para que las pegues tú al final de `config.toml`.
+
+### 4. Instalar, enlazar y reiniciar
+
+Cuando un servicio está declarado, la pantalla muestra `Next steps`:
+
+- `i` instala los servidores fijados (`uv tool install mcp-search-console==0.4.2 && uv tool install workspace-mcp==2.4.1`) en una pestaña nueva, después de enseñarte la línea y de tu `y`. El menú se cierra para que veas la pestaña; vuelve a abrirlo cuando termine.
+- `g` enlaza el siguiente servicio sin enlazar: primero Search Console (la misma línea de enlace de su pantalla, en una pestaña nueva) y después Google Workspace (el enlace de `workspace-mcp`, dentro del menú). Son dos consentimientos de Google: cada servidor guarda su propio token. La línea `g link: …` dice cuál está `linked`.
+- Los chats cargan los servidores al arrancar: reinicia lazarobox (`restart lazarobox to use it in chats`). El enlace funciona antes de reiniciar.
+
+Esc vuelve un nivel: cierra el campo abierto, luego el plan y luego la pantalla.
 
 ## Clarity
 
@@ -103,7 +177,7 @@ Qué haces con el cliente según el servicio:
 | Servicio | Dónde va el cliente |
 |---|---|
 | GA4 y GSC (OAuth) | Formulario `o` (id y secreto), que escribe `~/.config/lazarobox/google-oauth-client.json`; o guarda tú el JSON descargado con ese nombre. |
-| Google Workspace | `f`: `GOOGLE_OAUTH_CLIENT_ID` (visible) y `GOOGLE_OAUTH_CLIENT_SECRET` (enmascarado) en `secrets.toml`, tabla `[google]`. |
+| Google Workspace | `f`: `GOOGLE_OAUTH_CLIENT_ID` (visible) y `GOOGLE_OAUTH_CLIENT_SECRET` (enmascarado) en `secrets.toml`, tabla `[google]`. Con [Connect Google](#conectar-google-en-un-paso) se copian del archivo de cliente, sin teclearlos otra vez. |
 
 ### El formulario `o` (archivo de cliente)
 
@@ -273,11 +347,21 @@ Para borrar también lo que guardaste:
 
 ## Apéndice: las teclas del área Connectors
 
-El área tiene tres pantallas: la lista de servicios, la pantalla de un servicio y la lista de valores (`f`).
+El área tiene cuatro pantallas: la lista de servicios (con la fila **Connect Google** arriba), la pantalla de Connect Google, la pantalla de un servicio y la lista de valores (`f`).
 
 | Pantalla | Tecla | Qué hace |
 |---|---|---|
-| Lista | `j` `k`, Enter, Esc | Moverte, abrir un servicio, volver. |
+| Lista | `j` `k`, Enter, Esc | Moverte, abrir Connect Google o un servicio, volver. |
+| Connect Google | `j` `k` | Desplazar la pantalla si no cabe. |
+| Connect Google | `s`, `w` | Marcar o desmarcar Search Console y Google Workspace. |
+| Connect Google | `e` | Escribir tu correo de Google (`USER_GOOGLE_EMAIL`). |
+| Connect Google | `o` | Formulario del archivo de cliente OAuth. |
+| Connect Google | `n` o Enter | Ver el plan (no escribe nada). |
+| Connect Google | `y` | Sobre el plan: escribirlo. |
+| Connect Google | `c` | Copiar las entradas de los servicios marcados y no declarados. |
+| Connect Google | `i` | Instalar los servidores declarados en una pestaña: muestra la línea y espera `y`. |
+| Connect Google | `g` | Enlazar el siguiente servicio sin enlazar (Search Console primero). |
+| Connect Google | `1` a `9` | Abrir un paso de la lista de Google Cloud (o copiarlo si no hay navegador). |
 | Servicio | `j` `k` | Desplazar la guía si no cabe. |
 | Servicio | `i` | Instalar: muestra el comando y espera `y`. |
 | Servicio | `l` | Iniciar sesión (solo GA4 y Apps Script). |
@@ -390,6 +474,25 @@ Los textos son los que ves en el pie del menú o en el chat. Ninguno contiene un
 | `link failed: the server stopped` | El servidor terminó antes de recibir tu respuesta. |
 | `link cancelled` | Pulsaste Esc. |
 | `link timed out after 5 min` | No completaste el navegador a tiempo. Pulsa `g` de nuevo. |
+
+### Connect Google
+
+| Aviso | Causa y arreglo |
+|---|---|
+| `no client yet: press o to save your client id and secret` / `connect: no google-oauth-client.json yet; press o to save your client` | Falta el archivo de cliente: `o` lo crea. |
+| `google-oauth-client.json: mode must be 0600 (chmod 600 <ruta>)` | El archivo tiene permisos abiertos (típico al copiar el JSON descargado): `chmod 600` sobre esa ruta. |
+| `google-oauth-client.json is not a Desktop OAuth client; save it again (o)` | El JSON no tiene `installed.client_id` e `installed.client_secret` (por ejemplo, un cliente de tipo *Web*). Crea uno *Desktop app*. |
+| `choose Search Console, Google Workspace or both` | No hay ningún servicio marcado (`s`, `w`). |
+| `both services are declared: g links them` | Ya están en `config.toml`; queda enlazar. |
+| `type your Google e-mail first (e)` / `type your Google e-mail address (name@domain, no spaces)` | Falta el correo o no es una dirección válida. |
+| `config.toml: the entries would not parse after it (an inline ai.mcp.servers list?)` | Tu `config.toml` declara los servidores en una lista en línea. `y` guarda solo los valores; pega las entradas (`c`) a mano, o pasa tus servidores a bloques `[[ai.mcp.servers]]`. |
+| `config.toml is a symlink; edit it by hand` / `config.toml is writable by group or others; run chmod go-w <ruta>` / `config.toml is read-only; chmod u+w <ruta> to write it from the menu` | El archivo no se puede escribir con seguridad. Arréglalo o pega las entradas a mano. |
+| `connect: <valores>, but gsc, google were not added: <motivo>; paste the entries by hand` (con una sola entrada, `gsc was not added`) | Los valores se guardaron, las entradas no: `c` las copia. |
+| `connect: nothing was written: <motivo>` | No se escribió nada; el motivo dice por qué. Si es `config.toml changed on disk`, otro programa lo cambió después del plan: pulsa `n` otra vez. |
+| `nothing to install yet: n plans the entries first` / `nothing to link yet: n plans the entries first` | Aún no hay servicios declarados. |
+| `every declared service is linked; restart lazarobox to use it in chats` | Todo enlazado: reinicia. |
+| `Error 403: access_denied` (en el navegador) | Tu cuenta no está como usuario de prueba de la app. Añádela en *Audience* (paso `7`) y vuelve a pulsar `g`. |
+| `localhost` con `ERR_CONNECTION_TIMED_OUT` (en el navegador), después de un intento fallido | La pestaña de Google apunta al servidor local de un intento anterior, que ya no escucha. No reutilices esa pestaña: pulsa `g` otra vez y usa el enlace nuevo. |
 
 ### Prueba (`p`)
 

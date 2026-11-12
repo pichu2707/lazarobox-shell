@@ -1,10 +1,14 @@
 //! A curated catalog of existing MCP servers (`mcp-catalog`, C2: lazarobox
 //! reimplements none of them). Pure static data, no IO. A server is a catalog
 //! entry only when the user declared it under the entry's id in
-//! `[[ai.mcp.servers]]`; the catalog never adds, removes or rewrites a declared
-//! server, and it never writes `config.toml` (C4). Its only write to
-//! `secrets.toml` is the menu save of one value (C6 amended), which lives in
-//! `runtime::secrets_write`; nothing here writes `ai.mcp.*`.
+//! `[[ai.mcp.servers]]`; the catalog never removes or rewrites a declared
+//! server. The one exception to C4 is Connect Google ([`connect`], openspec
+//! change `google-connect`): after the user's `y` on its plan, the catalog
+//! entries of `gsc` and `google` that are not declared are appended at the
+//! end of `config.toml`, the old file kept as `config.toml.bak`. The writes,
+//! that append and the menu saves of `secrets.toml` (C6 amended), live in
+//! `runtime::secrets_write` and `runtime::config_append`; nothing here
+//! writes a file.
 //!
 //! The read/write class of a tool is recorded here and read by nobody in
 //! approval: every call to a connector tool still needs the user's `y` (C11).
@@ -12,6 +16,7 @@
 use crate::core::ai::config::McpServer;
 
 pub mod checks;
+pub mod connect;
 mod entries;
 pub mod gsc;
 pub mod link;

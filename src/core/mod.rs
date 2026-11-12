@@ -5,6 +5,7 @@ pub mod build_jobs;
 pub mod cli;
 pub mod clipboard;
 pub mod config;
+pub mod config_append;
 pub mod config_edit;
 pub mod copy;
 pub mod desktop;

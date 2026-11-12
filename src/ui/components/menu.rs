@@ -1999,11 +1999,12 @@ mod tests {
         menu
     }
 
-    /// The area open, on the entry of `at` list rows below the first.
+    /// The area open, on the catalog entry `at` (the Connect Google row
+    /// comes first, so the cursor moves `at + 1` rows).
     fn connectors_entry(at: usize) -> MenuState {
         let mut menu = connectors_tab();
         press(&mut menu, &[KeyCode::Enter]);
-        for _ in 0..at {
+        for _ in 0..=at {
             press(&mut menu, &[KeyCode::Char('j')]);
         }
         press(&mut menu, &[KeyCode::Enter]);
@@ -2022,6 +2023,93 @@ mod tests {
         let mut menu = connectors_tab();
         press(&mut menu, &[KeyCode::Enter]);
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
+    /// The Connect Google screen (its row is the first), the client read.
+    fn connect_google() -> MenuState {
+        let mut menu = connectors_tab();
+        press(&mut menu, &[KeyCode::Enter, KeyCode::Enter]);
+        menu.google_client(Ok(Some("123-abc.apps.googleusercontent.com".to_owned())));
+        menu
+    }
+
+    /// Its plan for both services, as the runtime answers it.
+    fn connect_google_plan() -> MenuState {
+        use crate::core::{
+            ai::{
+                mcp_catalog::{connect::Preview, entry, snippet},
+                mcp_secrets::SecretText,
+            },
+            config_append::Connect,
+        };
+        let mut menu = connect_google();
+        press(&mut menu, &[KeyCode::Char('e')]);
+        menu.on_paste("ana@example.com");
+        press(&mut menu, &[KeyCode::Enter, KeyCode::Char('n')]);
+        let value = |text: &str| {
+            let mut value = SecretText::new();
+            value.push_str(text);
+            value
+        };
+        let set = [
+            (
+                "gsc",
+                "GSC_OAUTH_CLIENT_SECRETS_FILE",
+                "/home/ana/.config/lazarobox/google-oauth-client.json",
+            ),
+            ("gsc", "GSC_CONFIG_DIR", "/home/ana/.config/mcp-gsc"),
+            ("gsc", "GSC_SKIP_OAUTH", "false"),
+            (
+                "google",
+                "GOOGLE_OAUTH_CLIENT_ID",
+                "123-abc.apps.googleusercontent.com",
+            ),
+            ("google", "GOOGLE_OAUTH_CLIENT_SECRET", "GOCSPX-never-drawn"),
+            ("google", "USER_GOOGLE_EMAIL", "ana@example.com"),
+            ("google", "WORKSPACE_MCP_DISABLE_LOCAL_FILES", "true"),
+        ];
+        let ids = ["gsc", "google"];
+        let snippets: Vec<String> = ids.iter().map(|id| snippet(entry(id).unwrap())).collect();
+        menu.google_plan(Ok(Box::new(Preview {
+            write: Connect {
+                set: set.iter().map(|(t, n, v)| (*t, *n, value(v))).collect(),
+                snippets: snippets.join("\n"),
+                names: ids.to_vec(),
+                expected: Some([0; 32]),
+            },
+            kept: Vec::new(),
+            installs: ids.iter().map(|id| entry(id).unwrap().install).collect(),
+            declared: Vec::new(),
+            blocked: None,
+        })));
+        menu
+    }
+
+    // Spec (google-connect S5): the services, the client, the e-mail, the
+    // checklist; then the same screen scrolled to its end.
+    #[test]
+    fn snapshot_the_connect_google_screen() {
+        let mut menu = connect_google();
+        let top = text(&draw(62, POPUP_H, &menu));
+        for _ in 0..40 {
+            press(&mut menu, &[KeyCode::Char('j')]);
+        }
+        let end = text(&draw(62, POPUP_H, &menu));
+        insta::assert_snapshot!(format!("{top}\n{end}"));
+    }
+
+    // Spec (google-connect S5.6): the plan before `y`, top and end; the
+    // client secret is masked.
+    #[test]
+    fn snapshot_the_connect_google_plan() {
+        let mut menu = connect_google_plan();
+        let top = text(&draw(62, POPUP_H, &menu));
+        for _ in 0..40 {
+            press(&mut menu, &[KeyCode::Char('j')]);
+        }
+        let end = text(&draw(62, POPUP_H, &menu));
+        assert!(!format!("{top}{end}").contains("GOCSPX"));
+        insta::assert_snapshot!(format!("{top}\n{end}"));
     }
 
     // Spec (mcp-connect, Entry screen): guide, snippet, files, actions.
@@ -2084,6 +2172,8 @@ mod tests {
             list,
             connectors_entry(0),
             connectors_entry(1),
+            connect_google(),
+            connect_google_plan(),
         ];
         let heights: Vec<u16> = views.iter().map(height).collect();
         assert!(heights.iter().all(|h| *h == heights[0]), "{heights:?}");
@@ -2095,7 +2185,13 @@ mod tests {
 
     #[test]
     fn the_connectors_views_draw_at_every_size_without_panic() {
-        for menu in [connectors_tab(), connectors_entry(0), connectors_entry(1)] {
+        for menu in [
+            connectors_tab(),
+            connectors_entry(0),
+            connectors_entry(1),
+            connect_google(),
+            connect_google_plan(),
+        ] {
             for (w, h) in [(0, 0), (1, 1), (24, 7), (40, 12), (62, POPUP_H), (200, 80)] {
                 draw(w, h, &menu);
             }

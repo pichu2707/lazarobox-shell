@@ -126,6 +126,7 @@ fn the_list_groups_the_entries_and_marks_them_not_declared() {
     assert_eq!(
         texts(&m),
         [
+            "Connect Google: Search Console + Gmail, Docs, Sheets",
             "Analytics",
             "Clarity: not declared",
             "GA4: not declared",
@@ -141,7 +142,7 @@ fn the_list_groups_the_entries_and_marks_them_not_declared() {
 fn a_disabled_entry_says_so_and_an_enabled_one_is_declared() {
     let m = area(vec![declared("clarity", false), declared("ga4", true)]);
     assert_eq!(
-        texts(&m)[1..],
+        texts(&m)[2..],
         [
             "Clarity: disabled",
             "GA4: declared",
@@ -162,7 +163,7 @@ fn a_declared_entry_without_its_secret_says_which_values_are_missing() {
         "[clarity]\nCLARITY_API_TOKEN = \"sk-123\"\n",
     ));
     assert_eq!(
-        texts(&m)[1..3],
+        texts(&m)[2..4],
         [
             "Clarity: declared",
             "GA4: values missing: GOOGLE_CLOUD_PROJECT"
@@ -210,12 +211,12 @@ fn gsc_is_declared_with_only_its_key_path() {
 fn an_empty_value_counts_as_missing_and_no_value_is_drawn() {
     let mut m = area(Vec::new());
     m.presence_reply(presence(CLARITY, "[clarity]\nCLARITY_API_TOKEN = \"\"\n"));
-    assert_eq!(texts(&m)[1], "Clarity: values missing: CLARITY_API_TOKEN");
+    assert_eq!(texts(&m)[2], "Clarity: values missing: CLARITY_API_TOKEN");
     m.presence_reply(presence(
         CLARITY,
         "[clarity]\nCLARITY_API_TOKEN = \"sk-123\"\n",
     ));
-    assert_eq!(texts(&m)[1], "Clarity: declared");
+    assert_eq!(texts(&m)[2], "Clarity: declared");
     assert!(!format!("{m:?}").contains("sk-123"));
     assert!(!texts(&m).concat().contains("sk-123"));
 }
@@ -233,7 +234,7 @@ fn a_probed_entry_shows_the_last_result() {
         menu(None, None, None).with_connectors(vec![declared("clarity", true)], vec![probed], None);
     press(&mut m, '4');
     send(&mut m, key(KeyCode::Enter));
-    assert_eq!(texts(&m)[1], "Clarity: declared · probe: started");
+    assert_eq!(texts(&m)[2], "Clarity: declared · probe: started");
 }
 
 fn selected_label(m: &MenuState) -> Option<&'static str> {
@@ -252,6 +253,8 @@ fn selected_label(m: &MenuState) -> Option<&'static str> {
 #[test]
 fn j_and_k_move_the_cursor_and_enter_opens_an_entry() {
     let mut m = area(Vec::new());
+    assert_eq!(selected_label(&m), Some("Connect Google"), "the first row");
+    press(&mut m, 'j');
     assert_eq!(selected_label(&m), Some("Clarity"));
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), Some("GA4"));
@@ -262,11 +265,11 @@ fn j_and_k_move_the_cursor_and_enter_opens_an_entry() {
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), Some("Apps Script"));
     press(&mut m, 'j');
-    assert_eq!(selected_label(&m), Some("Clarity"), "wraps");
-    press(&mut m, 'k');
-    press(&mut m, 'k');
-    press(&mut m, 'k');
-    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), Some("Connect Google"), "wraps");
+    press(&mut m, 'j');
+    for _ in 0..5 {
+        press(&mut m, 'k');
+    }
     send(&mut m, key(KeyCode::Enter));
     assert!(texts(&m)[0].starts_with("GA4"));
     send(&mut m, key(KeyCode::Esc));
@@ -281,7 +284,7 @@ fn a_config_that_cannot_be_read_keeps_the_startup_list_and_says_so() {
         Err(io::Error::from(io::ErrorKind::PermissionDenied)),
         &Secrets::parse(b"[clarity]\nCLARITY_API_TOKEN = \"t\"\n"),
     ));
-    assert_eq!(texts(&m)[1], "Clarity: declared");
+    assert_eq!(texts(&m)[2], "Clarity: declared");
     assert!(
         texts(&m)
             .iter()
@@ -291,10 +294,11 @@ fn a_config_that_cannot_be_read_keeps_the_startup_list_and_says_so() {
 
 // ---- 4.3 the entry screen ---------------------------------------------------
 
-/// The area on the entry `at` (0 clarity, 1 ga4), `servers` declared.
+/// The area on the entry `at` (0 clarity, 1 ga4), `servers` declared. The
+/// Connect Google row comes first, so the cursor moves `at + 1` rows.
 pub(super) fn entry(servers: Vec<McpServer>, at: usize) -> MenuState {
     let mut m = area(servers);
-    for _ in 0..at {
+    for _ in 0..=at {
         press(&mut m, 'j');
     }
     send(&mut m, key(KeyCode::Enter));
@@ -322,6 +326,7 @@ fn the_entry_screen_shows_the_snippet_the_template_and_the_files() {
     let mut m = menu(None, None, None).with_connectors(Vec::new(), Vec::new(), Some(path));
     press(&mut m, '4');
     send(&mut m, key(KeyCode::Enter));
+    press(&mut m, 'j');
     press(&mut m, 'j');
     send(&mut m, key(KeyCode::Enter));
     let all = whole(&mut m).join("\n");
@@ -508,6 +513,7 @@ fn a_dirty_draft_is_named_in_the_prompt_and_a_clean_one_is_not() {
     assert!(!m.edits(&config).is_empty());
     m.goto("Connectors");
     step(&mut m, &mut config, KeyCode::Enter);
+    step(&mut m, &mut config, KeyCode::Char('j'));
     step(&mut m, &mut config, KeyCode::Enter);
     step(&mut m, &mut config, KeyCode::Char('i'));
     assert!(
@@ -689,8 +695,9 @@ fn a_disk_copy_that_differs_asks_for_a_restart_and_one_that_matches_does_not() {
 
     let mut m = area(Vec::new());
     m.presence_reply(presence(CLARITY, ""));
-    assert_eq!(texts(&m)[1], "Clarity: values missing: CLARITY_API_TOKEN");
+    assert_eq!(texts(&m)[2], "Clarity: values missing: CLARITY_API_TOKEN");
     assert!(texts(&m).contains(&"restart lazarobox to use it in chats".to_owned()));
+    press(&mut m, 'j');
     send(&mut m, key(KeyCode::Enter));
     assert!(whole(&mut m).contains(&"restart lazarobox to use it in chats".to_owned()));
 }
@@ -700,7 +707,8 @@ fn a_disk_copy_that_differs_asks_for_a_restart_and_one_that_matches_does_not() {
 fn an_entry_pasted_after_startup_is_declared_and_can_be_probed() {
     let mut m = area(Vec::new());
     m.presence_reply(presence(CLARITY, "[clarity]\nCLARITY_API_TOKEN = \"t\"\n"));
-    assert_eq!(texts(&m)[1], "Clarity: declared");
+    assert_eq!(texts(&m)[2], "Clarity: declared");
+    press(&mut m, 'j');
     send(&mut m, key(KeyCode::Enter));
     press(&mut m, 'p');
     assert_eq!(texts(&m)[0], "probe clarity? (y/n)");
@@ -713,7 +721,7 @@ fn opening_the_area_again_asks_the_disk_again() {
     send(&mut m, key(KeyCode::Esc));
     assert_eq!(send(&mut m, key(KeyCode::Enter)), MenuCommand::LoadPresence);
     assert_eq!(
-        texts(&m)[1],
+        texts(&m)[2],
         "Clarity: not declared",
         "the old copy is dropped"
     );
@@ -747,7 +755,7 @@ fn a_secrets_file_that_is_not_used_is_named_next_to_the_missing_values() {
     let mut m = area(Vec::new());
     let loaded = Loaded::problem(mode_problem(std::path::Path::new("/h/secrets.toml")));
     m.presence_reply(Presence::read(Ok(CLARITY.to_owned()), &loaded));
-    assert_eq!(texts(&m)[1], "Clarity: values missing: CLARITY_API_TOKEN");
+    assert_eq!(texts(&m)[2], "Clarity: values missing: CLARITY_API_TOKEN");
     let all = texts(&m).join(" ");
     assert!(all.contains("secrets.toml: mode must be 0600"), "{all}");
     assert!(all.contains("chmod 600 /h/secrets.toml"), "{all}");

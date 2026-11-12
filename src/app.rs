@@ -329,6 +329,15 @@ pub enum AppEvent {
     SecretSaved(Result<String, String>),
     /// What became of `Effect::DeleteBackup`.
     BackupDeleted(Result<String, String>),
+    /// What became of `Effect::ConnectGoogle`: its one-line notice, which
+    /// never holds a value.
+    GoogleConnected(crate::core::config_append::Connected),
+    /// The Connect Google plan of `Effect::PlanGoogle`, or why there is none.
+    GooglePlan(Result<Box<crate::core::ai::mcp_catalog::connect::Preview>, String>),
+    /// What `Effect::LoadPresence` read of the OAuth client file, for the
+    /// Connect Google screen: its id (never the secret), `None` when there
+    /// is no file, or why it is refused.
+    GoogleClient(Result<Option<String>, String>),
     /// The link session of `google` moved on: the link to open, or its end.
     McpLink(crate::core::ai::mcp_catalog::link::Step),
     /// The answer to `Effect::LinkGsc`: the login line to confirm, or the
@@ -419,6 +428,14 @@ pub enum Effect {
     /// Delete `secrets.toml.bak` (the user's `y`); the answer is one
     /// `AppEvent::BackupDeleted`.
     DeleteBackup,
+    /// Connect Google's write after the user's `y` (openspec change
+    /// `google-connect`): the values in `secrets.toml`, then the entries
+    /// appended to `config.toml`. The answer is one `AppEvent::GoogleConnected`.
+    ConnectGoogle(Box<crate::core::config_append::Connect>),
+    /// Read the client file, `config.toml` and `secrets.toml` with the
+    /// writer's checks and plan Connect Google (nothing is written); the
+    /// answer is one `AppEvent::GooglePlan`.
+    PlanGoogle(crate::core::ai::mcp_catalog::connect::Ask),
     /// Check the client file and `uv` for Link with Google on `gsc` and build
     /// its login line (nothing is started); the answer is one
     /// `AppEvent::GscLine`.
@@ -2326,6 +2343,34 @@ impl App {
             }
             AppEvent::SecretSaved(reply) => self.on_secret_reply(reply, true),
             AppEvent::BackupDeleted(reply) => self.on_secret_reply(reply, false),
+            AppEvent::GoogleConnected(done) => {
+                self.dirty = true;
+                match self.menu.as_mut() {
+                    Some(menu) => {
+                        let command = menu.google_connected(done);
+                        self.on_menu_command(command)
+                    }
+                    None => {
+                        self.notice = Some(done.notice().to_owned());
+                        Vec::new()
+                    }
+                }
+            }
+            // With the menu closed nobody waits for a plan or a client line.
+            AppEvent::GooglePlan(reply) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.google_plan(reply);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            AppEvent::GoogleClient(reply) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.google_client(reply);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
             AppEvent::McpLink(step) => self.on_mcp_link(step),
             AppEvent::GscLine(reply) => self.on_gsc_line(reply),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
@@ -2658,6 +2703,8 @@ impl App {
             MenuCommand::LinkGsc(plan) => vec![Effect::LinkGsc(plan)],
             MenuCommand::LinkGoogle { server, ask } => vec![Effect::LinkGoogle { server, ask }],
             MenuCommand::Connector(line) => self.start_connector(line),
+            MenuCommand::PlanGoogle(ask) => vec![Effect::PlanGoogle(ask)],
+            MenuCommand::ConnectGoogle(write) => vec![Effect::ConnectGoogle(write)],
             MenuCommand::None => Vec::new(),
         }
     }

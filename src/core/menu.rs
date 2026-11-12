@@ -285,7 +285,8 @@ pub enum ItemKind {
     /// [`Choice`] and is written as a TOML integer, `auto` as a string.
     Jobs,
     /// The `Connectors` row of the Connectors tab: Enter opens the area.
-    /// It never writes a config edit.
+    /// It never writes a config edit; Connect Google's append to
+    /// `config.toml` is its own write, after `y` on its plan.
     Connectors,
 }
 
@@ -1090,6 +1091,14 @@ pub enum MenuCommand {
         server: Box<crate::core::ai::config::McpServer>,
         ask: crate::core::ai::mcp_catalog::link::Ask,
     },
+    /// `n` on the Connect Google screen: read the client, `config.toml` and
+    /// `secrets.toml` as they are now and plan the write (nothing is
+    /// written); the answer comes back through [`MenuState::google_plan`].
+    PlanGoogle(crate::core::ai::mcp_catalog::connect::Ask),
+    /// `y` on the plan Connect Google showed: write it (openspec change
+    /// `google-connect`). The answer comes back through
+    /// [`MenuState::google_connected`].
+    ConnectGoogle(Box<crate::core::config_append::Connect>),
     /// Send this Feedback request with `gh` (find similar issues, create,
     /// or comment); the answer comes back through
     /// [`MenuState::feedback_reply`].
@@ -1369,6 +1378,36 @@ impl MenuState {
             self.notice = notice;
         }
         MenuCommand::None
+    }
+
+    /// What the runtime read of the OAuth client file for Connect Google:
+    /// its id, `None` when there is no file, or why it is refused.
+    pub fn google_client(&mut self, reply: Result<Option<String>, String>) {
+        self.connectors.google_client(reply);
+    }
+
+    /// The plan Connect Google asked for, or why there is none: the screen
+    /// shows it, a refusal is the footer notice.
+    pub fn google_plan(
+        &mut self,
+        reply: Result<Box<crate::core::ai::mcp_catalog::connect::Preview>, String>,
+    ) {
+        self.connectors.google_plan(reply);
+        if let Some(notice) = self.connectors.take_notice() {
+            self.notice = Some(notice.into_owned());
+        }
+    }
+
+    /// What became of Connect Google's write: its notice, and the files read
+    /// again when something was written.
+    pub fn google_connected(&mut self, done: crate::core::config_append::Connected) -> MenuCommand {
+        let reload = self.connectors.google_connected(&done);
+        self.notice = Some(done.notice().to_owned());
+        if reload {
+            MenuCommand::LoadPresence
+        } else {
+            MenuCommand::None
+        }
     }
 
     /// This menu started a link session that has not ended.
@@ -3678,6 +3717,8 @@ mod descriptor_tests;
 #[cfg(test)]
 mod feedback_menu_tests;
 
+#[cfg(test)]
+mod connectors_connect_tests;
 #[cfg(test)]
 mod connectors_fields_tests;
 #[cfg(test)]

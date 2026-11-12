@@ -70,9 +70,10 @@ fn in_area() -> App {
     a
 }
 
-/// The same, on the Clarity entry screen.
+/// The same, on the Clarity entry screen (below the Connect Google row).
 fn on_entry() -> App {
     let mut a = in_area();
+    tap(&mut a, key('j'));
     tap(&mut a, code(KeyCode::Enter));
     a
 }
@@ -97,7 +98,7 @@ fn the_load_presence_command_becomes_its_effect() {
 
 #[test]
 fn the_menu_opens_with_the_startup_servers() {
-    assert_eq!(rows(&in_area())[1], "Clarity: declared");
+    assert_eq!(rows(&in_area())[2], "Clarity: declared");
 }
 
 #[test]
@@ -105,7 +106,7 @@ fn a_pasted_entry_asks_for_a_restart_on_the_list_and_the_entry() {
     let mut a = in_area();
     let none = Presence::read(Ok(String::new()), &Loaded::default());
     tap(&mut a, AppEvent::McpPresence(none));
-    assert_eq!(rows(&a)[1], "Clarity: not declared");
+    assert_eq!(rows(&a)[2], "Clarity: not declared");
     assert!(rows(&a).contains(&"restart lazarobox to use it in chats".to_owned()));
 }
 
@@ -233,6 +234,7 @@ fn field_in_a_chat() -> App {
     tap(&mut a, key('m'));
     tap(&mut a, key('4'));
     tap(&mut a, code(KeyCode::Enter));
+    tap(&mut a, key('j'));
     tap(&mut a, code(KeyCode::Enter));
     tap(&mut a, key('f'));
     tap(&mut a, code(KeyCode::Enter));
@@ -430,6 +432,7 @@ fn client_form_in_a_chat() -> App {
         key('4'),
         code(KeyCode::Enter),
         key('j'),
+        key('j'),
         code(KeyCode::Enter),
         key('f'),
         key('o'),
@@ -486,7 +489,7 @@ fn on_gsc() -> App {
             Presence::read(Ok(GSC_CONFIG.to_owned()), &loaded).with_home(Some("/h".to_owned())),
         ),
     );
-    for e in [key('j'), key('j'), code(KeyCode::Enter)] {
+    for e in [key('j'), key('j'), key('j'), code(KeyCode::Enter)] {
         tap(&mut a, e);
     }
     a
@@ -559,7 +562,7 @@ fn on_google(opener: bool) -> App {
             Presence::read(Ok(GOOGLE_CONFIG.to_owned()), &loaded).with_home(Some("/h".to_owned())),
         ),
     );
-    for e in [key('j'), key('j'), key('j'), code(KeyCode::Enter)] {
+    for e in [key('j'), key('j'), key('j'), key('j'), code(KeyCode::Enter)] {
         tap(&mut a, e);
     }
     a
@@ -679,4 +682,129 @@ fn a_step_for_a_menu_that_did_not_start_the_session_stops_it_and_is_said() {
         []
     );
     assert_eq!(a.notice.as_deref(), Some(why));
+}
+
+// ---- Connect Google (openspec change `google-connect`, S5) ----------------------
+
+const CLIENT_ID: &str = "123-abc.apps.googleusercontent.com";
+
+/// The Connect Google screen open, the client read.
+fn on_connect_google() -> App {
+    let mut a = in_area();
+    assert_eq!(tap(&mut a, code(KeyCode::Enter)), [], "the first row");
+    let client = AppEvent::GoogleClient(Ok(Some(CLIENT_ID.to_owned())));
+    assert_eq!(tap(&mut a, client), []);
+    a
+}
+
+/// The runtime's plan for Search Console alone.
+fn gsc_preview() -> crate::core::ai::mcp_catalog::connect::Preview {
+    use crate::core::{ai::mcp_catalog::snippet, config_append::Connect};
+    crate::core::ai::mcp_catalog::connect::Preview {
+        write: Connect {
+            set: vec![("gsc", "GSC_SKIP_OAUTH", secret("false"))],
+            snippets: snippet(entry("gsc").unwrap()),
+            names: vec!["gsc"],
+            expected: None,
+        },
+        kept: Vec::new(),
+        installs: vec![entry("gsc").unwrap().install],
+        declared: Vec::new(),
+        blocked: None,
+    }
+}
+
+// Spec S5.6-S5.7: `n` asks for the plan, `y` on it writes, each one effect.
+#[test]
+fn connect_google_plans_on_n_and_writes_only_on_y_after_the_plan() {
+    use crate::core::{ai::mcp_catalog::connect::Ask, config_append::Connected};
+    let mut a = on_connect_google();
+    assert_eq!(tap(&mut a, key('y')), [], "no plan yet");
+    assert_eq!(tap(&mut a, key('w')), [], "Workspace unticked");
+    assert_eq!(
+        tap(&mut a, key('n')),
+        [Effect::PlanGoogle(Ask {
+            chosen: vec!["gsc"],
+            email: String::new()
+        })]
+    );
+    let plan = AppEvent::GooglePlan(Ok(Box::new(gsc_preview())));
+    assert_eq!(tap(&mut a, plan), []);
+    assert_eq!(rows(&a)[0], "Connect Google · plan");
+    for c in ['n', 'x', 'i', 'g'] {
+        assert_eq!(tap(&mut a, key(c)), [], "{c}");
+    }
+    assert_eq!(
+        tap(&mut a, key('y')),
+        [Effect::ConnectGoogle(Box::new(gsc_preview().write))]
+    );
+    assert_eq!(tap(&mut a, key('y')), [], "once");
+    let done = Connected::Done("connect: added gsc to config.toml".to_owned());
+    assert_eq!(
+        tap(&mut a, AppEvent::GoogleConnected(done)),
+        [Effect::LoadPresence]
+    );
+    assert_eq!(footer(&a), "connect: added gsc to config.toml");
+}
+
+#[test]
+fn a_refused_plan_and_a_refused_write_are_footer_notices() {
+    use crate::core::config_append::Connected;
+    let mut a = on_connect_google();
+    tap(&mut a, key('w'));
+    tap(&mut a, key('n'));
+    let why = "config.toml is a symlink; edit it by hand".to_owned();
+    assert_eq!(tap(&mut a, AppEvent::GooglePlan(Err(why.clone()))), []);
+    assert_eq!(footer(&a), why);
+    tap(&mut a, key('n'));
+    tap(&mut a, AppEvent::GooglePlan(Ok(Box::new(gsc_preview()))));
+    tap(&mut a, key('y'));
+    let refused =
+        Connected::Refused("connect: nothing was written: x; paste the entries by hand".to_owned());
+    assert_eq!(tap(&mut a, AppEvent::GoogleConnected(refused.clone())), []);
+    assert_eq!(footer(&a), refused.notice());
+}
+
+// The answers after the menu closed: the write is still said (as before
+// the screen existed), a plan or a client read is dropped.
+#[test]
+fn connect_google_answers_after_the_menu_closed() {
+    use crate::core::config_append::Connected;
+    let mut a = launched(80, 25);
+    let done = Connected::ValuesOnly("connect: saved 3 values in secrets.toml, but x".to_owned());
+    assert_eq!(tap(&mut a, AppEvent::GoogleConnected(done)), []);
+    assert_eq!(
+        a.notice.as_deref(),
+        Some("connect: saved 3 values in secrets.toml, but x")
+    );
+    a.notice = None;
+    let plan = AppEvent::GooglePlan(Ok(Box::new(gsc_preview())));
+    assert_eq!(tap(&mut a, plan), []);
+    assert_eq!(tap(&mut a, AppEvent::GoogleClient(Ok(None))), []);
+    assert_eq!(a.notice, None);
+}
+
+// Spec S5.8: `i` types both install lines in one new tab, after `y`.
+#[test]
+fn connect_google_installs_both_servers_in_one_tab_after_y() {
+    use crate::core::ai::mcp_catalog::snippet;
+    let mut a = on_connect_google();
+    let config = format!(
+        "{}\n{}",
+        snippet(entry("gsc").unwrap()),
+        snippet(entry("google").unwrap())
+    );
+    let presence = Presence::read(Ok(config), &Loaded::default());
+    tap(&mut a, AppEvent::McpPresence(presence));
+    let asked = tap(&mut a, key('i'));
+    assert_eq!((spawned(&asked), writes(&asked)), (None, vec![]));
+    let run = tap(&mut a, key('y'));
+    let id = spawned(&run).expect("one new pane");
+    let typed = tap(&mut a, AppEvent::Pty(id, PtyEvent::Output(b"$ ".to_vec())));
+    let line = format!(
+        "{} && {}",
+        entry("gsc").unwrap().install,
+        entry("google").unwrap().install
+    );
+    assert_eq!(writes(&typed), [(id, format!("{line}\r").into_bytes())]);
 }

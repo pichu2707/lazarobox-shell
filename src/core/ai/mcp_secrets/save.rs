@@ -13,7 +13,10 @@ use crate::core::ai::{mcp_catalog, sanitize::clean};
 /// Why a save (or a backup deletion) was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    NotAValue { server: String, name: String },
+    NotAValue {
+        server: String,
+        name: String,
+    },
     BadValue,
     ValueTooLong,
     NoFolder,
@@ -25,18 +28,25 @@ pub enum Refusal {
     FileOwner,
     HardLinked,
     FileMode(PathBuf),
+    /// A file that may keep its mode (`config.toml`) is writable by others.
+    FileWritable(PathBuf),
     ReadOnly(PathBuf),
     TooLarge,
     Unreadable,
     NotToml(usize),
     NotPlainTable(String),
-    NotString { server: String, name: String },
+    NotString {
+        server: String,
+        name: String,
+    },
     Changed,
     TempExists,
     BackupUnsafe,
     NoBackup,
     BadClientId,
     BadClientSecret,
+    /// `google-oauth-client.json` is not a Desktop client file.
+    BadClientFile,
     Exists,
     Io(ErrorKind),
 }
@@ -73,6 +83,10 @@ impl Refusal {
             Self::FileOwner => "secrets.toml is not owned by you; edit it by hand".to_owned(),
             Self::HardLinked => "secrets.toml has other hard links; edit it by hand".to_owned(),
             Self::FileMode(path) => super::mode_problem(path),
+            Self::FileWritable(path) => format!(
+                "secrets.toml is writable by group or others; run chmod go-w {}",
+                path.display()
+            ),
             Self::ReadOnly(path) => format!(
                 "secrets.toml is read-only (mode 0400); chmod 600 {} to save from the menu",
                 path.display()
@@ -98,6 +112,10 @@ impl Refusal {
             Self::NoBackup => "secrets.toml.bak: there is no backup".to_owned(),
             Self::BadClientId => super::BAD_ID.to_owned(),
             Self::BadClientSecret => super::BAD_SECRET.to_owned(),
+            Self::BadClientFile => format!(
+                "{} is not a Desktop OAuth client; save it again (o)",
+                super::CLIENT_FILE
+            ),
             Self::Exists => "secrets.toml exists; open the form again to replace it".to_owned(),
             Self::Io(kind) => format!("secrets.toml: not saved ({kind})"),
         };
@@ -141,6 +159,16 @@ pub fn edit(text: &str, server: &str, name: &str, value: &str) -> Result<String,
         return Err(Refusal::TooLarge);
     }
     Ok(format!("{bom}{out}"))
+}
+
+/// `text` with each (server, name, value) of `values` set in turn, by the
+/// rules of [`edit`]: the first refusal refuses them all.
+pub fn edit_all(text: &str, values: &[(&str, &str, &str)]) -> Result<String, Refusal> {
+    values
+        .iter()
+        .try_fold(text.to_owned(), |text, (server, name, value)| {
+            edit(&text, server, name, value)
+        })
 }
 
 fn edit_body(text: &str, server: &str, name: &str, value: &str) -> Result<String, Refusal> {

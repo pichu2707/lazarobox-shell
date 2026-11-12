@@ -416,6 +416,48 @@ fn only_the_secret_field_builds_a_save_and_only_the_writer_runs_it() {
     assert_eq!(files_with("Writer::new("), ["runtime.rs"]);
 }
 
+// Connect Google (S4): the append to `config.toml` and the save of several
+// values run only from the secrets writer, for `Effect::ConnectGoogle`.
+#[test]
+fn only_the_secrets_writer_runs_the_connect_google_write() {
+    assert_eq!(
+        files_with("Effect::ConnectGoogle"),
+        [
+            "app.rs",
+            "runtime.rs",
+            "runtime/config_append.rs",
+            "runtime/secrets_write.rs"
+        ]
+    );
+    assert_eq!(
+        files_with("connect_with("),
+        ["runtime/config_append.rs", "runtime/secrets_write.rs"]
+    );
+    assert_eq!(files_with("append_with("), ["runtime/config_append.rs"]);
+    // Only the Connect Google screen builds the write, after `y` on its plan,
+    // and only it asks for the plan; only the secrets writer reads for it.
+    assert_eq!(
+        files_with("MenuCommand::ConnectGoogle"),
+        ["app.rs", "core/menu/connectors/connect.rs"]
+    );
+    assert_eq!(
+        files_with("MenuCommand::PlanGoogle"),
+        ["app.rs", "core/menu/connectors/connect.rs"]
+    );
+    assert_eq!(
+        files_with("Effect::PlanGoogle"),
+        ["app.rs", "runtime.rs", "runtime/secrets_write.rs"]
+    );
+    assert_eq!(
+        files_with("google::plan_with("),
+        ["runtime/secrets_write.rs"]
+    );
+    assert_eq!(
+        files_with("save_all_with("),
+        ["runtime/config_append.rs", "runtime/secrets_write.rs"]
+    );
+}
+
 #[test]
 fn a_declared_server_of_another_name_does_not_change_the_fields() {
     let mut m = entry(vec![declared("fs", true)], 0);

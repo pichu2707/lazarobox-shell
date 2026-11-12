@@ -1,0 +1,40 @@
+---
+source: src/ui/components/menu.rs
+expression: "format!(\"{top}\\n{end}\")"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
+│ Connect Google · plan                                      │
+│ Append to config.toml                                      │
+│   gsc (Search Console)                                     │
+│   google (Google Workspace)                                │
+│ config.toml gets these entries at its end; the old file is │
+│ kept as config.toml.bak                                    │
+│ Set in secrets.toml                                        │
+│   [gsc] GSC_OAUTH_CLIENT_SECRETS_FILE =                    │
+│   /home/ana/.config/lazarobox/google-oauth-client.json     │
+│   [gsc] GSC_CONFIG_DIR = /home/ana/.config/mcp-gsc         │
+│   [gsc] GSC_SKIP_OAUTH = false                             │
+│   [google] GOOGLE_OAUTH_CLIENT_ID =                        │
+│   123-abc.apps.googleusercontent.com                       │
+│                                                            │
+│ j/k scroll · y write · c copy the entries · Esc back       │
+└────────────────────────────────────────────────────────────┘
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
+│ Connect Google · plan                                      │
+│   /home/ana/.config/lazarobox/google-oauth-client.json     │
+│   [gsc] GSC_CONFIG_DIR = /home/ana/.config/mcp-gsc         │
+│   [gsc] GSC_SKIP_OAUTH = false                             │
+│   [google] GOOGLE_OAUTH_CLIENT_ID =                        │
+│   123-abc.apps.googleusercontent.com                       │
+│   [google] GOOGLE_OAUTH_CLIENT_SECRET = ••••••••           │
+│   [google] USER_GOOGLE_EMAIL = ana@example.com             │
+│   [google] WORKSPACE_MCP_DISABLE_LOCAL_FILES = true        │
+│ Install after the write (i)                                │
+│   uv tool install mcp-search-console==0.4.2                │
+│   uv tool install workspace-mcp==2.4.1                     │
+│ y writes · c copies the entries · Esc back                 │
+│                                                            │
+│ j/k scroll · y write · c copy the entries · Esc back       │
+└────────────────────────────────────────────────────────────┘
