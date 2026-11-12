@@ -10,8 +10,6 @@ baseline.
 
 ## [Unreleased]
 
-## [1.23.0] - 2026-11-12
-
 ### Added
 
 - `docs/conectores.md`: a step-by-step guide (in Spanish) to connect Clarity, GA4,
@@ -19,6 +17,11 @@ baseline.
   connector guide in the area now ends with a link to it, and the README points to
   it and describes the `secrets.toml` menu save, the `.bak` copy and the OAuth
   client file.
+
+## [1.23.0] - 2026-11-12
+
+### Added
+
 - `g` on the `google` entry (Gmail, Docs, Sheets) in the `Connectors` area links
   your Google account. After you answer `y` to `start workspace-mcp and ask
   Google to link <your e-mail>?`, lazarobox starts the declared server as a
