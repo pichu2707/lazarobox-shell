@@ -10,6 +10,14 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- Link with Google for Search Console (`g` on `gsc`) now opens the browser on WSL. The
+  OAuth flow opened it through Python's `webbrowser`, which picks `xdg-open` there and
+  fails silently when WSL has no Linux browser, so the link waited with nothing open.
+  The login line now passes the program lazarobox opens links with as `BROWSER`
+  (`wslview` or `rundll32.exe` on WSL).
+
 ## [1.24.0] - 2026-11-12
 
 ### Added

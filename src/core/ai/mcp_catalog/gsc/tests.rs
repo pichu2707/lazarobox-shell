@@ -244,31 +244,31 @@ fn the_line_is_exactly_the_spec_text() {
         "/h/.config/lazarobox/google-oauth-client.json",
     );
     assert_eq!(
-        login_line("/h/.local/share/uv/tools", &plan).unwrap(),
+        login_line("/h/.local/share/uv/tools", &plan, None).unwrap(),
         "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u GSC_ALLOW_DESTRUCTIVE -u GSC_SKIP_OAUTH GSC_CONFIG_DIR='/h/.config/mcp-gsc' GSC_OAUTH_CLIENT_SECRETS_FILE='/h/.config/lazarobox/google-oauth-client.json' '/h/.local/share/uv/tools/mcp-search-console/bin/python' -I -c 'import os; os.umask(0o077); import gsc_server as g; g.get_gsc_service_oauth(); print(\"Search Console linked\")'"
     );
 }
 
 #[test]
 fn a_quote_is_escaped_and_a_control_character_or_substitution_refused() {
-    let line = login_line("/t", &plan_of("/d", "/it's here/c.json")).unwrap();
+    let line = login_line("/t", &plan_of("/d", "/it's here/c.json"), None).unwrap();
     assert!(
         line.contains("GSC_OAUTH_CLIENT_SECRETS_FILE='/it'\\''s here/c.json'"),
         "{line}"
     );
     for bad in ["/a\nb", "/a\u{1b}b", "/a\tb", "/a$(x)", "/a\u{7f}"] {
         assert_eq!(
-            login_line("/t", &plan_of("/d", bad)),
+            login_line("/t", &plan_of("/d", bad), None),
             Err(BAD_PATH),
             "{bad:?}"
         );
         assert_eq!(
-            login_line("/t", &plan_of(bad, "/f")),
+            login_line("/t", &plan_of(bad, "/f"), None),
             Err(BAD_PATH),
             "{bad:?}"
         );
         assert_eq!(
-            login_line(bad, &plan_of("/d", "/f")),
+            login_line(bad, &plan_of("/d", "/f"), None),
             Err(BAD_PATH),
             "{bad:?}"
         );
@@ -277,7 +277,7 @@ fn a_quote_is_escaped_and_a_control_character_or_substitution_refused() {
 
 #[test]
 fn the_line_stays_outside_mcp_and_names_no_confidential_value() {
-    let line = login_line("/t", &plan_of("/h/.config/mcp-gsc", "/f")).unwrap();
+    let line = login_line("/t", &plan_of("/h/.config/mcp-gsc", "/f"), None).unwrap();
     for word in ["uvx", "npx", "pipx run", "dlx", "$(", "`"] {
         assert!(!line.contains(word), "{word}");
     }
@@ -350,17 +350,17 @@ fn the_link_refuses_a_token_folder_the_tools_could_read() {
 fn a_unicode_format_character_in_a_path_is_refused() {
     for bad in ["/a\u{202e}b", "/a\u{200b}b", "/a\u{2066}b", "/a\u{feff}"] {
         assert_eq!(
-            login_line("/t", &plan_of("/d", bad)),
+            login_line("/t", &plan_of("/d", bad), None),
             Err(BAD_PATH),
             "{bad:?}"
         );
         assert_eq!(
-            login_line("/t", &plan_of(bad, "/f")),
+            login_line("/t", &plan_of(bad, "/f"), None),
             Err(BAD_PATH),
             "{bad:?}"
         );
         assert_eq!(
-            login_line(bad, &plan_of("/d", "/f")),
+            login_line(bad, &plan_of("/d", "/f"), None),
             Err(BAD_PATH),
             "{bad:?}"
         );
@@ -370,7 +370,7 @@ fn a_unicode_format_character_in_a_path_is_refused() {
 // W1: the token and its folder are created private.
 #[test]
 fn the_login_command_sets_a_private_umask_before_the_import() {
-    let line = login_line("/t", &plan_of("/d", "/f")).unwrap();
+    let line = login_line("/t", &plan_of("/d", "/f"), None).unwrap();
     let umask = line.find("os.umask(0o077)").expect("umask");
     let import = line.find("import gsc_server").expect("import");
     assert!(line.contains("-c 'import os; os.umask(0o077); import gsc_server"));
@@ -379,4 +379,28 @@ fn the_login_command_sets_a_private_umask_before_the_import() {
         !line.contains("(umask") && !line.contains("sh -c"),
         "no subshell"
     );
+}
+
+// The OAuth flow opens the browser through Python's `webbrowser`, which on
+// WSL picks `xdg-open` and fails silently when no Linux browser is
+// installed: the line hands it lazarobox's own opener instead.
+#[test]
+fn the_line_hands_python_the_opener_lazarobox_uses() {
+    let plan = plan_of("/d", "/f");
+    let line = login_line("/t", &plan, Some("rundll32.exe")).unwrap();
+    assert!(
+        line.contains(
+            "-u GSC_SKIP_OAUTH BROWSER='rundll32.exe url.dll,FileProtocolHandler %s' GSC_CONFIG_DIR="
+        ),
+        "{line}"
+    );
+    let line = login_line("/t", &plan, Some("wslview")).unwrap();
+    assert!(line.contains(" BROWSER='wslview %s' "), "{line}");
+}
+
+#[test]
+fn with_no_opener_the_line_leaves_the_browser_to_python() {
+    let plan = plan_of("/d", "/f");
+    let line = login_line("/t", &plan, None).unwrap();
+    assert!(!line.contains("BROWSER"), "{line}");
 }

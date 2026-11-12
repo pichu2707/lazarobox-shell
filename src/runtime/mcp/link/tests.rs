@@ -38,7 +38,7 @@ impl Fake {
 }
 
 fn checked(fake: &Fake, client: bool) -> Result<String, String> {
-    check(&plan(), &|args: &[&str]| fake.run(args), |_| client)
+    check(&plan(), &|args: &[&str]| fake.run(args), |_| client, None)
 }
 
 // Spec mcp-connect, gsc link prompt shows the exact line.
@@ -53,6 +53,23 @@ fn a_ready_machine_gives_the_exact_line() {
     assert_eq!(
         *fake.calls.borrow(),
         [vec!["tool", "list"], vec!["tool", "dir"]]
+    );
+}
+
+// On WSL the line carries the opener lazarobox uses for links.
+#[test]
+fn the_line_carries_the_hosts_opener() {
+    let fake = Fake::ok();
+    let line = check(
+        &plan(),
+        &|args: &[&str]| fake.run(args),
+        |_| true,
+        Some("rundll32.exe"),
+    )
+    .unwrap();
+    assert!(
+        line.contains(" BROWSER='rundll32.exe url.dll,FileProtocolHandler %s' "),
+        "{line}"
     );
 }
 
@@ -136,7 +153,10 @@ fn a_path_the_line_cannot_carry_is_a_notice() {
         ..plan()
     };
     let run = |args: &[&str]| fake.run(args);
-    assert_eq!(check(&bad, &run, |_| true), Err(gsc::BAD_PATH.to_owned()));
+    assert_eq!(
+        check(&bad, &run, |_| true, None),
+        Err(gsc::BAD_PATH.to_owned())
+    );
 }
 
 // The real runner: direct argv, a limit, and a child that is stopped.
@@ -167,7 +187,7 @@ async fn the_linker_answers_one_event_and_a_missing_client_file_runs_no_uv() {
         dir: dir.path().join("mcp-gsc").display().to_string(),
         file: dir.path().join("none.json").display().to_string(),
     };
-    Linker::new(tx).check(missing);
+    Linker::new(tx, None).check(missing);
     match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
         Ok(Some(AppEvent::GscLine(reply))) => assert_eq!(reply, Err(NO_CLIENT.to_owned())),
         other => panic!("no answer: {other:?}"),
