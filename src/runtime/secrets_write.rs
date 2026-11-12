@@ -496,6 +496,38 @@ pub fn save_client_with(
     })
 }
 
+/// Why the cache write stopped: a refusal, or the file already holds the text.
+enum CacheEnd {
+    Refused(Refusal),
+    Same,
+}
+
+impl From<Refusal> for CacheEnd {
+    fn from(refusal: Refusal) -> Self {
+        Self::Refused(refusal)
+    }
+}
+
+/// Writes the lazarobox client cache next to `secrets`, by the same steps as
+/// a save, with no backup. A file that already holds the same bytes is left
+/// as it is.
+pub fn save_cache_with(
+    fs: &impl SaveFs,
+    secrets: Option<&Path>,
+    id: &str,
+    secret: &str,
+) -> Result<(), Refusal> {
+    let json = client_json(id, secret)?;
+    let done = replace_with(fs, secrets, CACHE, |current| match current {
+        Some(bytes) if bytes == json.as_bytes() => Err(CacheEnd::Same),
+        _ => Ok(json.clone()),
+    });
+    match done {
+        Ok(_) | Err(CacheEnd::Same) => Ok(()),
+        Err(CacheEnd::Refused(refusal)) => Err(refusal),
+    }
+}
+
 /// Replaces `target` in the folder of `secrets` (any file of that folder)
 /// with what `build` makes from the bytes it holds (`None`: it does not
 /// exist): folder judged, file read and judged on its handle, temp file,

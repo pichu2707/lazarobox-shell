@@ -992,3 +992,110 @@ fn a_target_without_a_backup_replaces_the_file_and_keeps_no_copy() {
     assert_eq!(fs::read_to_string(&path).unwrap(), "new");
     assert_eq!(lab.names(), ["lazarobox-google-client.json"]);
 }
+
+impl Lab {
+    fn cache(&self) -> PathBuf {
+        self.dir.join(CACHE.file)
+    }
+
+    fn save_cache(&self, fs: &TestFs) -> Result<(), Refusal> {
+        save_cache_with(fs, Some(&self.path()), ID, "GOCSPX-s3cr3t")
+    }
+}
+
+// Spec (Cache file): a regular 0600 file with the canonical text, and no
+// other file of the folder touched.
+#[test]
+fn the_cache_is_saved_0600_and_no_other_file_changes() {
+    let lab = lab();
+    lab.write("[clarity]\nCLARITY_API_TOKEN = \"a\"\n", 0o600);
+    lab.write_client(OLD_CLIENT, 0o600);
+    let config = lab.dir.join("config.toml");
+    fs::write(&config, "# mine\n").unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o644)).unwrap();
+    let before: Vec<_> = [lab.path(), lab.client(), config.clone()]
+        .iter()
+        .map(|p| (fs::read(p).unwrap(), lab.mode(p)))
+        .collect();
+    lab.save_cache(&TestFs::default()).unwrap();
+    let text = fs::read_to_string(lab.cache()).unwrap();
+    assert_eq!(text, client_json(ID, "GOCSPX-s3cr3t").unwrap());
+    assert_eq!(lab.mode(&lab.cache()), 0o600);
+    assert!(fs::symlink_metadata(lab.cache()).unwrap().is_file());
+    let after: Vec<_> = [lab.path(), lab.client(), config]
+        .iter()
+        .map(|p| (fs::read(p).unwrap(), lab.mode(p)))
+        .collect();
+    assert_eq!(before, after);
+    assert_eq!(
+        lab.names(),
+        [
+            "config.toml",
+            "google-oauth-client.json",
+            "lazarobox-google-client.json",
+            "secrets.toml"
+        ]
+    );
+}
+
+#[test]
+fn a_cache_that_is_loose_linked_or_a_symlink_is_refused_without_the_secret() {
+    let lab = lab();
+    fs::write(lab.cache(), "old").unwrap();
+    fs::set_permissions(&lab.cache(), fs::Permissions::from_mode(0o644)).unwrap();
+    let err = lab.save_cache(&TestFs::default()).unwrap_err();
+    let notice = err.notice_of(CACHE_FILE);
+    assert!(
+        notice.starts_with("lazarobox-google-client.json: mode must be 0600"),
+        "{notice}"
+    );
+    assert_eq!(fs::read_to_string(lab.cache()).unwrap(), "old");
+
+    fs::set_permissions(&lab.cache(), fs::Permissions::from_mode(0o600)).unwrap();
+    fs::hard_link(lab.cache(), lab.root.path().join("other")).unwrap();
+    let err = lab.save_cache(&TestFs::default()).unwrap_err();
+    assert_eq!(err, Refusal::HardLinked);
+    assert_eq!(
+        err.notice_of(CACHE_FILE),
+        "lazarobox-google-client.json has other hard links; edit it by hand"
+    );
+    fs::remove_file(lab.cache()).unwrap();
+
+    symlink(lab.root.path().join("elsewhere"), lab.cache()).unwrap();
+    let err = lab.save_cache(&TestFs::default()).unwrap_err();
+    assert_eq!(err, Refusal::FileSymlink);
+    assert_eq!(
+        err.notice_of(CACHE_FILE),
+        "lazarobox-google-client.json is a symlink; edit it by hand"
+    );
+    assert!(!lab.root.path().join("elsewhere").exists());
+    for refusal in [Refusal::HardLinked, Refusal::FileSymlink] {
+        assert!(!refusal.notice_of(CACHE_FILE).contains("GOCSPX"));
+    }
+}
+
+#[test]
+fn a_failure_after_the_temp_file_exists_leaves_nothing_behind() {
+    let lab = lab();
+    let err = lab.save_cache(&TestFs::failing("rename", 0)).unwrap_err();
+    assert!(matches!(err, Refusal::Io(_)), "{err:?}");
+    assert_eq!(lab.names(), Vec::<String>::new());
+    let err = lab.save_cache(&TestFs::failing("write", 0)).unwrap_err();
+    assert!(matches!(err, Refusal::Io(_)), "{err:?}");
+    assert_eq!(lab.names(), Vec::<String>::new());
+}
+
+#[test]
+fn identical_existing_bytes_skip_the_write() {
+    let lab = lab();
+    lab.save_cache(&TestFs::default()).unwrap();
+    let first = fs::metadata(lab.cache()).unwrap();
+    // A second save that would write fails on any write: it must not try.
+    lab.save_cache(&TestFs::failing("write", 0)).unwrap();
+    let second = fs::metadata(lab.cache()).unwrap();
+    assert_eq!(
+        (first.ino(), first.mtime_nsec()),
+        (second.ino(), second.mtime_nsec())
+    );
+    assert_eq!(lab.names(), ["lazarobox-google-client.json"]);
+}
