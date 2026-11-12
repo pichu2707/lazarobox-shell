@@ -144,7 +144,7 @@ fn linked_is_the_token_file_for_the_oauth_way_only() {
 fn the_plan_holds_what_the_server_would_get() {
     let s = server("gsc", &ALL);
     assert_eq!(
-        plan(&s, &values(&OAUTH)),
+        plan(&s, home(), &values(&OAUTH)),
         Ok(Plan {
             dir: "/h/.config/mcp-gsc".to_owned(),
             file: "/h/.config/lazarobox/google-oauth-client.json".to_owned(),
@@ -155,11 +155,13 @@ fn the_plan_holds_what_the_server_would_get() {
 #[test]
 fn a_declared_entry_that_does_not_pass_a_value_is_refused_naming_it() {
     let no_dir = server("gsc", &["GSC_OAUTH_CLIENT_SECRETS_FILE", "GSC_SKIP_OAUTH"]);
-    assert_eq!(plan(&no_dir, &values(&OAUTH)), Err(PASS_DIR));
+    assert_eq!(plan(&no_dir, home(), &values(&OAUTH)), Err(PASS_DIR));
     let no_file = server("gsc", &["GSC_CONFIG_DIR", "GSC_SKIP_OAUTH"]);
-    assert_eq!(plan(&no_file, &values(&OAUTH)), Err(PASS_FILE));
+    assert_eq!(plan(&no_file, home(), &values(&OAUTH)), Err(PASS_FILE));
     let s5 = server("gsc", &["GSC_CREDENTIALS_PATH", "GSC_SKIP_OAUTH"]);
-    assert!(plan(&s5, &values(&OAUTH)).is_err_and(|n| n.contains("paste the current entry")));
+    assert!(
+        plan(&s5, home(), &values(&OAUTH)).is_err_and(|n| n.contains("paste the current entry"))
+    );
 }
 
 #[test]
@@ -170,7 +172,11 @@ fn unfilled_relative_or_skipped_values_say_to_fill_them_first() {
     let relative_file = [("GSC_OAUTH_CLIENT_SECRETS_FILE", "client.json"), OAUTH[1]];
     let skip = [OAUTH[0], OAUTH[1], ("GSC_SKIP_OAUTH", "true")];
     for pairs in [&rel[..], &empty, &relative_file, &skip, &[]] {
-        assert_eq!(plan(&s, &values(pairs)), Err(FILL_FIRST), "{pairs:?}");
+        assert_eq!(
+            plan(&s, home(), &values(pairs)),
+            Err(FILL_FIRST),
+            "{pairs:?}"
+        );
     }
 }
 
@@ -239,7 +245,7 @@ fn the_line_is_exactly_the_spec_text() {
     );
     assert_eq!(
         login_line("/h/.local/share/uv/tools", &plan).unwrap(),
-        "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u GSC_ALLOW_DESTRUCTIVE -u GSC_SKIP_OAUTH GSC_CONFIG_DIR='/h/.config/mcp-gsc' GSC_OAUTH_CLIENT_SECRETS_FILE='/h/.config/lazarobox/google-oauth-client.json' '/h/.local/share/uv/tools/mcp-search-console/bin/python' -I -c 'import gsc_server as g; g.get_gsc_service_oauth(); print(\"Search Console linked\")'"
+        "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u GSC_ALLOW_DESTRUCTIVE -u GSC_SKIP_OAUTH GSC_CONFIG_DIR='/h/.config/mcp-gsc' GSC_OAUTH_CLIENT_SECRETS_FILE='/h/.config/lazarobox/google-oauth-client.json' '/h/.local/share/uv/tools/mcp-search-console/bin/python' -I -c 'import os; os.umask(0o077); import gsc_server as g; g.get_gsc_service_oauth(); print(\"Search Console linked\")'"
     );
 }
 
@@ -329,4 +335,48 @@ fn a_token_folder_the_tools_could_read_is_refused() {
         let refusal = start_refusal(&s, home(), &values(&pairs), |_| true);
         assert_eq!(refusal, None, "{dir}");
     }
+}
+
+// W2 on the link side: the same folders the start accepts.
+#[test]
+fn the_link_refuses_a_token_folder_the_tools_could_read() {
+    let s = server("gsc", &ALL);
+    let pairs = [OAUTH[0], ("GSC_CONFIG_DIR", "/tmp/tokens"), OAUTH[2]];
+    assert_eq!(plan(&s, home(), &values(&pairs)), Err(OUTSIDE));
+}
+
+// S6: Unicode format characters can reorder or hide text in the prompt.
+#[test]
+fn a_unicode_format_character_in_a_path_is_refused() {
+    for bad in ["/a\u{202e}b", "/a\u{200b}b", "/a\u{2066}b", "/a\u{feff}"] {
+        assert_eq!(
+            login_line("/t", &plan_of("/d", bad)),
+            Err(BAD_PATH),
+            "{bad:?}"
+        );
+        assert_eq!(
+            login_line("/t", &plan_of(bad, "/f")),
+            Err(BAD_PATH),
+            "{bad:?}"
+        );
+        assert_eq!(
+            login_line(bad, &plan_of("/d", "/f")),
+            Err(BAD_PATH),
+            "{bad:?}"
+        );
+    }
+}
+
+// W1: the token and its folder are created private.
+#[test]
+fn the_login_command_sets_a_private_umask_before_the_import() {
+    let line = login_line("/t", &plan_of("/d", "/f")).unwrap();
+    let umask = line.find("os.umask(0o077)").expect("umask");
+    let import = line.find("import gsc_server").expect("import");
+    assert!(line.contains("-c 'import os; os.umask(0o077); import gsc_server"));
+    assert!(umask < import);
+    assert!(
+        !line.contains("(umask") && !line.contains("sh -c"),
+        "no subshell"
+    );
 }

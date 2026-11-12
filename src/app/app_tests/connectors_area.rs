@@ -462,7 +462,7 @@ const GSC_CONFIG: &str = "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"mcp-se
     env = [\"GSC_OAUTH_CLIENT_SECRETS_FILE\", \"GSC_CONFIG_DIR\", \"GSC_CREDENTIALS_PATH\", \"GSC_SKIP_OAUTH\"]\n";
 const GSC_OAUTH: &str = "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/h/.config/lazarobox/google-oauth-client.json\"\n\
     GSC_CONFIG_DIR = \"/h/.config/mcp-gsc\"\nGSC_SKIP_OAUTH = \"false\"\n";
-const GSC_LINE: &str = "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u GSC_ALLOW_DESTRUCTIVE -u GSC_SKIP_OAUTH GSC_CONFIG_DIR='/h/.config/mcp-gsc' GSC_OAUTH_CLIENT_SECRETS_FILE='/h/.config/lazarobox/google-oauth-client.json' '/h/.local/share/uv/tools/mcp-search-console/bin/python' -I -c 'import gsc_server as g; g.get_gsc_service_oauth(); print(\"Search Console linked\")'";
+const GSC_LINE: &str = "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u GSC_ALLOW_DESTRUCTIVE -u GSC_SKIP_OAUTH GSC_CONFIG_DIR='/h/.config/mcp-gsc' GSC_OAUTH_CLIENT_SECRETS_FILE='/h/.config/lazarobox/google-oauth-client.json' '/h/.local/share/uv/tools/mcp-search-console/bin/python' -I -c 'import os; os.umask(0o077); import gsc_server as g; g.get_gsc_service_oauth(); print(\"Search Console linked\")'";
 
 fn gsc_plan() -> crate::core::ai::mcp_catalog::gsc::Plan {
     crate::core::ai::mcp_catalog::gsc::Plan {
@@ -481,7 +481,9 @@ fn on_gsc() -> App {
     let loaded = Secrets::parse(GSC_OAUTH.as_bytes());
     tap(
         &mut a,
-        AppEvent::McpPresence(Presence::read(Ok(GSC_CONFIG.to_owned()), &loaded)),
+        AppEvent::McpPresence(
+            Presence::read(Ok(GSC_CONFIG.to_owned()), &loaded).with_home(Some("/h".to_owned())),
+        ),
     );
     for e in [key('j'), key('j'), code(KeyCode::Enter)] {
         tap(&mut a, e);

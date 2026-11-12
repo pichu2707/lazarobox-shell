@@ -650,7 +650,11 @@ impl Connectors {
                 .and_then(|p| p.shown(entry.id, name))
                 .map(str::to_owned)
         };
-        match gsc::plan(server, &value) {
+        match gsc::plan(
+            server,
+            std::path::Path::new(presence.map_or("", Presence::home)),
+            &value,
+        ) {
             Ok(plan) => {
                 self.linking = Some(dirty);
                 self.notice = Some("checking the client file and uv…");

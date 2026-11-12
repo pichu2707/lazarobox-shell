@@ -114,7 +114,7 @@ async fn the_gsc_token_is_noticed_by_stat_and_never_opened() {
     std::fs::write(&token, "{\"refresh_token\":\"r\"}").unwrap();
     // Mode 000: an open would fail, a stat does not.
     std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let presence = asked(config, secrets).await;
+    let presence = asked(config.clone(), secrets.clone()).await;
     assert_eq!(presence.linked(), Some(true));
     assert!(!format!("{presence:?}").contains("refresh_token"));
     std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -122,4 +122,8 @@ async fn the_gsc_token_is_noticed_by_stat_and_never_opened() {
         std::fs::read_to_string(&token).unwrap(),
         "{\"refresh_token\":\"r\"}"
     );
+    // W4: an empty file is not a link.
+    std::fs::write(&token, "").unwrap();
+    let presence = asked(config, secrets).await;
+    assert_eq!(presence.linked(), Some(false));
 }

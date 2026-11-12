@@ -12,7 +12,7 @@ const CONFIG: &str = "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"mcp-search
     env = [\"GSC_OAUTH_CLIENT_SECRETS_FILE\", \"GSC_CONFIG_DIR\", \"GSC_CREDENTIALS_PATH\", \"GSC_SKIP_OAUTH\"]\n";
 const OAUTH: &str = "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/h/.config/lazarobox/google-oauth-client.json\"\n\
     GSC_CONFIG_DIR = \"/h/.config/mcp-gsc\"\nGSC_SKIP_OAUTH = \"false\"\n";
-const LINE: &str = "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u GSC_ALLOW_DESTRUCTIVE -u GSC_SKIP_OAUTH GSC_CONFIG_DIR='/h/.config/mcp-gsc' GSC_OAUTH_CLIENT_SECRETS_FILE='/h/.config/lazarobox/google-oauth-client.json' '/h/.local/share/uv/tools/mcp-search-console/bin/python' -I -c 'import gsc_server as g; g.get_gsc_service_oauth(); print(\"Search Console linked\")'";
+const LINE: &str = "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u GSC_ALLOW_DESTRUCTIVE -u GSC_SKIP_OAUTH GSC_CONFIG_DIR='/h/.config/mcp-gsc' GSC_OAUTH_CLIENT_SECRETS_FILE='/h/.config/lazarobox/google-oauth-client.json' '/h/.local/share/uv/tools/mcp-search-console/bin/python' -I -c 'import os; os.umask(0o077); import gsc_server as g; g.get_gsc_service_oauth(); print(\"Search Console linked\")'";
 
 fn plan() -> Plan {
     Plan {
@@ -24,7 +24,7 @@ fn plan() -> Plan {
 /// The `gsc` entry screen with this disk copy.
 fn gsc(config: &str, secrets: &str) -> MenuState {
     let mut m = entry(Vec::new(), 2);
-    m.presence_reply(presence(config, secrets));
+    m.presence_reply(presence(config, secrets).with_home(Some("/h".to_owned())));
     m
 }
 

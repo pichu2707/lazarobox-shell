@@ -63,8 +63,9 @@ impl Reader {
                 .with_backup(backup)
                 .with_client_file(client)
                 .with_home(home)
-                // A `stat`: a token file is never opened.
-                .with_token(|token| std::fs::metadata(token).is_ok());
+                // A `stat`: a token file is never opened, and an empty one is
+                // not a link.
+                .with_token(|token| std::fs::metadata(token).is_ok_and(|m| m.len() > 0));
             let _ = events.send(AppEvent::McpPresence(presence)).await;
         });
     }

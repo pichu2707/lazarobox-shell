@@ -152,7 +152,7 @@ const GSC: Entry = Entry {
         "OAuth (your own client, the default):",
         "1. In your own Google Cloud project, enable the Google Search Console API and create an OAuth client of type Desktop app (the one of the GA4 guide works).",
         "2. Add the OAuth client in Connectors (o) or save its JSON as ~/.config/lazarobox/google-oauth-client.json. If the config folder is a symlink the menu save refuses; hand-editing still works.",
-        "3. Fill the values (f), then use Link with Google (g): the browser opens once. The token is written by mcp-gsc with the default umask: chmod 600 ~/.config/mcp-gsc/token.json. Link before the first chat call: a call made before linking is refused at start, and if calls hang, link again (Esc cancels the call).",
+        "3. Fill the values (f), keeping GSC_CONFIG_DIR under ~/.config/mcp-gsc (a start from another folder is refused), then use Link with Google (g): the browser opens once. The Link command creates the token and its folder private (umask 077); for a token made another way, run chmod 700 ~/.config/mcp-gsc and chmod 600 ~/.config/mcp-gsc/token.json. Link before the first chat call: a call made before linking is refused at start, and if calls hang, link again (Esc cancels the call).",
         "Service account:",
         "1. In your own Google Cloud project, enable the Google Search Console API and create a service account.",
         "2. Create a JSON key for it and save it as ~/.config/lazarobox/gsc-service-account.json with mode 0600 (lazarobox refuses to read it).",
