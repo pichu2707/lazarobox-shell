@@ -26,6 +26,7 @@
 pub mod active;
 pub mod client;
 pub mod external;
+pub mod link;
 pub mod presence;
 pub mod probe;
 #[cfg(test)]

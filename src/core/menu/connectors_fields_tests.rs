@@ -711,7 +711,11 @@ fn the_gsc_field_list_is_the_selected_ways_and_w_chooses_the_other() {
     let mut m = fields(2, GSC, "");
     assert_eq!(
         labels(&m),
-        ["GSC_OAUTH_CLIENT_SECRETS_FILE", "GSC_CONFIG_DIR", "GSC_SKIP_OAUTH"]
+        [
+            "GSC_OAUTH_CLIENT_SECRETS_FILE",
+            "GSC_CONFIG_DIR",
+            "GSC_SKIP_OAUTH"
+        ]
     );
     assert_eq!(press(&mut m, 'w'), MenuCommand::None);
     assert_eq!(labels(&m), ["GSC_CREDENTIALS_PATH", "GSC_SKIP_OAUTH"]);
@@ -727,7 +731,10 @@ fn a_value_saved_from_the_second_way_is_that_ways_var() {
     press(&mut m, 'w');
     assert_eq!(enter(&mut m), MenuCommand::None);
     type_in(&mut m, "/k.json");
-    assert_eq!(enter(&mut m), save("gsc", "GSC_CREDENTIALS_PATH", "/k.json"));
+    assert_eq!(
+        enter(&mut m),
+        save("gsc", "GSC_CREDENTIALS_PATH", "/k.json")
+    );
 }
 
 #[test]

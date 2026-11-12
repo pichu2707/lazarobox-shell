@@ -2638,6 +2638,7 @@ impl App {
                 replace,
             }],
             MenuCommand::DeleteBackup => vec![Effect::DeleteBackup],
+            MenuCommand::LinkGsc(_) => Vec::new(),
             MenuCommand::Connector(line) => self.start_connector(line),
             MenuCommand::None => Vec::new(),
         }

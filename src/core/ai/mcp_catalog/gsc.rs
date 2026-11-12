@@ -9,7 +9,8 @@ use crate::core::ai::{config::McpServer, sanitize::clean};
 pub const UNFILLED: &str = "fill the OAuth values in Connectors (f)";
 pub const NOT_LINKED: &str = "not linked; open Connectors and use Link with Google";
 pub const FILL_FIRST: &str = "fill the OAuth values first (f)";
-pub const PASS_DIR: &str = "the declared gsc entry does not pass GSC_CONFIG_DIR; paste the current entry";
+pub const PASS_DIR: &str =
+    "the declared gsc entry does not pass GSC_CONFIG_DIR; paste the current entry";
 pub const PASS_FILE: &str =
     "the declared gsc entry does not pass GSC_OAUTH_CLIENT_SECRETS_FILE; paste the current entry";
 pub const BAD_PATH: &str = "a path holds a character the command cannot carry; choose another (f)";
@@ -66,8 +67,7 @@ pub fn linked(
     exists: impl Fn(&Path) -> bool,
 ) -> Option<bool> {
     let got = Got::of(server, get);
-    (server.name == "gsc" && got.oauth())
-        .then(|| got.token().is_some_and(|token| exists(&token)))
+    (server.name == "gsc" && got.oauth()).then(|| got.token().is_some_and(|token| exists(&token)))
 }
 
 /// Why a start of `server` is refused, if it is: with no usable folder the

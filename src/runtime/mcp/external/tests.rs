@@ -335,7 +335,10 @@ async fn gsc_with_a_token_starts_normally() {
     std::fs::write(dir.join("token.json"), "{}").unwrap();
     let set = gsc_start(&lab, "gsc", &gsc_values(dir.to_str().unwrap())).await;
     assert!(set.notices().is_empty(), "{:?}", set.notices());
-    assert!(has(&lab.env_of("gsc"), &format!("GSC_CONFIG_DIR={}", dir.display())));
+    assert!(has(
+        &lab.env_of("gsc"),
+        &format!("GSC_CONFIG_DIR={}", dir.display())
+    ));
 }
 
 #[tokio::test]
@@ -360,7 +363,9 @@ async fn the_service_account_way_and_another_name_start_without_a_token() {
     assert!(set.notices().is_empty(), "{:?}", set.notices());
     assert!(!lab.env_of("gsc").is_empty());
     // Another name gets neither the hidden tool nor the check (documented).
-    let other = secrets("[search]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/c.json\"\nGSC_SKIP_OAUTH = \"false\"\n");
+    let other = secrets(
+        "[search]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/c.json\"\nGSC_SKIP_OAUTH = \"false\"\n",
+    );
     let set = gsc_start(&lab, "search", &other).await;
     assert!(set.notices().is_empty(), "{:?}", set.notices());
     assert!(!lab.env_of("search").is_empty());

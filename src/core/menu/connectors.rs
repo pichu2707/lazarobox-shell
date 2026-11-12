@@ -13,8 +13,8 @@ use super::{MenuCommand, Row, VIEW_BODY};
 use crate::core::ai::{
     config::McpServer,
     mcp_catalog::{
-        self, Entry, Group, checks::Probed, checks::Verdict, presence::Presence, secrets_template,
-        snippet,
+        self, Entry, Group, checks::Probed, checks::Verdict, gsc, presence::Presence,
+        secrets_template, snippet,
     },
     mcp_secrets::{BACKUP, CLIENT_FILE, FILE as SECRETS_FILE},
     sanitize::clean,
@@ -59,6 +59,11 @@ enum Prompt {
         discards: bool,
     },
     Probe(Box<McpServer>),
+    /// The login line of Link with Google, built from resolved values.
+    Link {
+        line: String,
+        discards: bool,
+    },
     /// The declared command is not the catalog's: a save asks first.
     Command(Pending),
     /// A value is already saved under that name.
@@ -88,6 +93,8 @@ pub(super) struct Connectors {
     way: Option<usize>,
     /// A save went through: the list says when it takes effect.
     saved: bool,
+    /// The link checks are running (the flag: the draft has unsaved changes).
+    linking: Option<bool>,
 }
 
 /// `text` cut at `room` columns on word boundaries (a long word is split).
@@ -158,17 +165,13 @@ fn prompt_rows(prompt: &Prompt, room: usize) -> Option<Vec<Row>> {
             id,
             line,
             discards,
-        } => {
-            let mut rows = vec![
-                title(format!("{what} {id}? (y/n)")),
-                text("Runs in a new tab, with Enter:"),
-            ];
-            rows.extend(verbatim(line, "  ", room));
-            if *discards {
-                rows.push(text("Unsaved menu changes are discarded."));
-            }
-            rows
-        }
+        } => run_rows(format!("{what} {id}? (y/n)"), line, *discards, room),
+        Prompt::Link { line, discards } => run_rows(
+            "link gsc with Google? (y/n)".to_owned(),
+            line,
+            *discards,
+            room,
+        ),
         Prompt::Probe(server) => {
             let mut rows = vec![
                 title(format!("probe {}? (y/n)", server.name)),
@@ -197,6 +200,16 @@ fn prompt_rows(prompt: &Prompt, room: usize) -> Option<Vec<Row>> {
         rows.shrink_to_fit();
         rows
     })
+}
+
+/// The rows of a prompt that types `line` in a new tab.
+fn run_rows(heading: String, line: &str, discards: bool, room: usize) -> Vec<Row> {
+    let mut rows = vec![title(heading), text("Runs in a new tab, with Enter:")];
+    rows.extend(verbatim(line, "  ", room));
+    if discards {
+        rows.push(text("Unsaved menu changes are discarded."));
+    }
+    rows
 }
 
 /// What a probe spawns, as one line: the command and its arguments.
@@ -265,6 +278,7 @@ impl Connectors {
         self.screen = Some(Screen::List(0));
         self.presence = None;
         self.way = None;
+        self.linking = None;
         MenuCommand::LoadPresence
     }
 
@@ -446,6 +460,9 @@ impl Connectors {
             let title = entry.ways[self.way_of(entry)].title;
             rows.push(text(format!("  w way: {title} (w changes it)")));
         }
+        if entry.id == "gsc" && self.way_of(entry) == 0 {
+            rows.push(text("  g link with Google"));
+        }
         rows.push(text("  1-9 open a link · c copy the entry"));
         if secrets_template(entry).is_some() {
             rows.push(text("  f fill the values"));
@@ -465,7 +482,9 @@ impl Connectors {
         }
         Cow::Borrowed(match (&self.prompt, self.screen) {
             (Some(_), _) => HINT_PROMPT,
-            (None, Some(Screen::Entry { at, .. })) if !mcp_catalog::entries()[at].ways.is_empty() => {
+            (None, Some(Screen::Entry { at, .. }))
+                if !mcp_catalog::entries()[at].ways.is_empty() =>
+            {
                 HINT_ENTRY_WAYS
             }
             (None, Some(Screen::Entry { .. })) => HINT_ENTRY,
@@ -485,6 +504,7 @@ impl Connectors {
             }
             return match (plain_y, prompt) {
                 (true, Prompt::Run { line, .. }) => MenuCommand::Connector(line.to_owned()),
+                (true, Prompt::Link { line, .. }) => MenuCommand::Connector(line),
                 (true, Prompt::Probe(server)) => {
                     self.probing = Some(server.name.clone());
                     MenuCommand::Probe(server)
@@ -572,7 +592,11 @@ impl Connectors {
                 self.screen = Some(moved((scroll + 1).min(last)));
             }
             KeyCode::Char('k') | KeyCode::Up => self.screen = Some(moved(scroll.saturating_sub(1))),
-            KeyCode::Esc => self.screen = Some(Screen::List(at)),
+            KeyCode::Esc => {
+                self.linking = None;
+                self.screen = Some(Screen::List(at));
+            }
+            KeyCode::Char('g') if entry.id == "gsc" => return self.link_gsc(entry, dirty),
             KeyCode::Char('i') => self.ask(run("install", entry.install), room),
             KeyCode::Char('l') => match entry.login {
                 Some(login) => self.ask(run("log in to", login.line), room),
@@ -602,6 +626,61 @@ impl Connectors {
         } else {
             self.notice = Some(WIDEN);
         }
+    }
+
+    /// `g` on `gsc`: the OAuth way, a declared and enabled server, and the
+    /// values it would get; then the runtime checks the client file and `uv`.
+    fn link_gsc(&mut self, entry: &Entry, dirty: bool) -> MenuCommand {
+        // The OAuth way is the first of the entry.
+        if self.way_of(entry) != 0 {
+            self.notice = Some("linking needs the OAuth way (w chooses it)");
+            return MenuCommand::None;
+        }
+        let Some(server) = self.server(entry.id) else {
+            self.notice = Some(NOT_DECLARED);
+            return MenuCommand::None;
+        };
+        if !server.enabled {
+            self.notice = Some("disabled in config.toml");
+            return MenuCommand::None;
+        }
+        let presence = self.presence.as_ref();
+        let value = |name: &str| {
+            presence
+                .and_then(|p| p.shown(entry.id, name))
+                .map(str::to_owned)
+        };
+        match gsc::plan(server, &value) {
+            Ok(plan) => {
+                self.linking = Some(dirty);
+                self.notice = Some("checking the client file and uv…");
+                MenuCommand::LinkGsc(plan)
+            }
+            Err(notice) => {
+                self.notice = Some(notice);
+                MenuCommand::None
+            }
+        }
+    }
+
+    /// The answer of the link checks, `None` when none was asked for: the
+    /// notice that replaces "checking", or the prompt with the line (dropped
+    /// when the user left the entry meanwhile).
+    pub(super) fn link_reply(
+        &mut self,
+        reply: Result<String, String>,
+        room: usize,
+    ) -> Option<Option<String>> {
+        let discards = self.linking.take()?;
+        let line = match reply {
+            Ok(line) => line,
+            Err(notice) => return Some(Some(notice)),
+        };
+        let here = matches!(self.screen, Some(Screen::Entry { at, .. }) if mcp_catalog::entries()[at].id == "gsc");
+        if here && self.prompt.is_none() {
+            self.ask(Prompt::Link { line, discards }, room);
+        }
+        Some(None)
     }
 
     fn ask_probe(&mut self, entry: &Entry, room: usize) -> MenuCommand {

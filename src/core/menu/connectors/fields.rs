@@ -100,7 +100,11 @@ impl Connectors {
     /// The way shown: the user's choice, else the one the table fills.
     pub(super) fn way_of(&self, entry: &Entry) -> usize {
         self.way.unwrap_or_else(|| {
-            let has = |name: &str| self.presence.as_ref().is_some_and(|p| p.has(entry.id, name));
+            let has = |name: &str| {
+                self.presence
+                    .as_ref()
+                    .is_some_and(|p| p.has(entry.id, name))
+            };
             entry.way_for(has)
         })
     }

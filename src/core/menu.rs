@@ -1080,6 +1080,9 @@ pub enum MenuCommand {
     /// `y` on the backup deletion prompt; the reply comes back through
     /// [`MenuState::backup_reply`].
     DeleteBackup,
+    /// `g` on `gsc`: check the client file and `uv`, and build the login
+    /// line; the answer comes back through [`MenuState::link_reply`].
+    LinkGsc(crate::core::ai::mcp_catalog::gsc::Plan),
     /// Send this Feedback request with `gh` (find similar issues, create,
     /// or comment); the answer comes back through
     /// [`MenuState::feedback_reply`].
@@ -1349,6 +1352,16 @@ impl MenuState {
         } else {
             MenuCommand::None
         }
+    }
+
+    /// What the checks of Link with Google answered: the line to confirm, or
+    /// the notice of the check that failed.
+    pub fn link_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
+        let room = self.connectors_room();
+        if let Some(notice) = self.connectors.link_reply(reply, room) {
+            self.notice = notice;
+        }
+        MenuCommand::None
     }
 
     /// A probe ended.
@@ -3646,5 +3659,7 @@ mod feedback_menu_tests;
 
 #[cfg(test)]
 mod connectors_fields_tests;
+#[cfg(test)]
+mod connectors_link_tests;
 #[cfg(test)]
 mod connectors_tests;

@@ -28,7 +28,10 @@ fn values<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String
 }
 
 const OAUTH: [(&str, &str); 3] = [
-    ("GSC_OAUTH_CLIENT_SECRETS_FILE", "/h/.config/lazarobox/google-oauth-client.json"),
+    (
+        "GSC_OAUTH_CLIENT_SECRETS_FILE",
+        "/h/.config/lazarobox/google-oauth-client.json",
+    ),
     ("GSC_CONFIG_DIR", "/h/.config/mcp-gsc"),
     ("GSC_SKIP_OAUTH", "false"),
 ];
@@ -44,7 +47,10 @@ fn oauth_values_without_a_token_are_refused_as_not_linked() {
         false
     });
     assert_eq!(refusal, Some(NOT_LINKED));
-    assert_eq!(NOT_LINKED, "not linked; open Connectors and use Link with Google");
+    assert_eq!(
+        NOT_LINKED,
+        "not linked; open Connectors and use Link with Google"
+    );
     assert_eq!(
         *seen.borrow(),
         [Path::new("/h/.config/mcp-gsc/token.json").to_owned()]
@@ -83,7 +89,11 @@ fn the_service_account_way_and_old_entries_are_never_refused() {
     let host = [OAUTH[0], OAUTH[1], ("GSC_SKIP_OAUTH", "true")];
     for skip in ["true", "1", "yes", "TRUE", " Yes "] {
         let pairs = [OAUTH[0], OAUTH[1], ("GSC_SKIP_OAUTH", skip)];
-        assert_eq!(start_refusal(&new, &values(&pairs), |_| false), None, "{skip}");
+        assert_eq!(
+            start_refusal(&new, &values(&pairs), |_| false),
+            None,
+            "{skip}"
+        );
     }
     assert_eq!(start_refusal(&new, &values(&key), |_| false), None);
     assert_eq!(start_refusal(&s5, &values(&key), |_| false), None);
@@ -105,12 +115,18 @@ fn linked_is_the_token_file_for_the_oauth_way_only() {
     let s = server("gsc", &ALL);
     assert_eq!(linked(&s, &values(&OAUTH), |_| true), Some(true));
     assert_eq!(linked(&s, &values(&OAUTH), |_| false), Some(false));
-    let key = [("GSC_CREDENTIALS_PATH", "/k.json"), ("GSC_SKIP_OAUTH", "true")];
+    let key = [
+        ("GSC_CREDENTIALS_PATH", "/k.json"),
+        ("GSC_SKIP_OAUTH", "true"),
+    ];
     assert_eq!(linked(&s, &values(&key), |_| true), None);
     assert_eq!(linked(&server("x", &ALL), &values(&OAUTH), |_| true), None);
     // A relative folder is not linked: nothing is looked for.
     let rel = [OAUTH[0], ("GSC_CONFIG_DIR", "rel")];
-    assert_eq!(linked(&s, &values(&rel), |_| panic!("no stat")), Some(false));
+    assert_eq!(
+        linked(&s, &values(&rel), |_| panic!("no stat")),
+        Some(false)
+    );
 }
 
 // 6b1.3: the values of the line are the values the server gets
@@ -162,8 +178,10 @@ fn the_pinned_version_in_uv_tool_list_passes() {
 fn another_version_or_none_names_what_was_found_and_the_fix() {
     assert_eq!(
         pinned("mcp-search-console v0.4.3\n- mcp-gsc\n"),
-        Err("mcp-search-console 0.4.3; run: uv tool install --force mcp-search-console==0.4.2"
-            .to_owned())
+        Err(
+            "mcp-search-console 0.4.3; run: uv tool install --force mcp-search-console==0.4.2"
+                .to_owned()
+        )
     );
     assert_eq!(
         pinned("ruff v0.1.0\n"),
@@ -219,11 +237,26 @@ fn the_line_is_exactly_the_spec_text() {
 #[test]
 fn a_quote_is_escaped_and_a_control_character_or_substitution_refused() {
     let line = login_line("/t", &plan_of("/d", "/it's here/c.json")).unwrap();
-    assert!(line.contains("GSC_OAUTH_CLIENT_SECRETS_FILE='/it'\\''s here/c.json'"), "{line}");
+    assert!(
+        line.contains("GSC_OAUTH_CLIENT_SECRETS_FILE='/it'\\''s here/c.json'"),
+        "{line}"
+    );
     for bad in ["/a\nb", "/a\u{1b}b", "/a\tb", "/a$(x)", "/a\u{7f}"] {
-        assert_eq!(login_line("/t", &plan_of("/d", bad)), Err(BAD_PATH), "{bad:?}");
-        assert_eq!(login_line("/t", &plan_of(bad, "/f")), Err(BAD_PATH), "{bad:?}");
-        assert_eq!(login_line(bad, &plan_of("/d", "/f")), Err(BAD_PATH), "{bad:?}");
+        assert_eq!(
+            login_line("/t", &plan_of("/d", bad)),
+            Err(BAD_PATH),
+            "{bad:?}"
+        );
+        assert_eq!(
+            login_line("/t", &plan_of(bad, "/f")),
+            Err(BAD_PATH),
+            "{bad:?}"
+        );
+        assert_eq!(
+            login_line(bad, &plan_of("/d", "/f")),
+            Err(BAD_PATH),
+            "{bad:?}"
+        );
     }
 }
 
@@ -233,7 +266,12 @@ fn the_line_stays_outside_mcp_and_names_no_confidential_value() {
     for word in ["uvx", "npx", "pipx run", "dlx", "$(", "`"] {
         assert!(!line.contains(word), "{word}");
     }
-    for unset in ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "GSC_ALLOW_DESTRUCTIVE", "GSC_SKIP_OAUTH"] {
+    for unset in [
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "GSC_ALLOW_DESTRUCTIVE",
+        "GSC_SKIP_OAUTH",
+    ] {
         assert!(line.contains(&format!("-u {unset} ")), "{unset}");
     }
     assert!(line.contains("GSC_CONFIG_DIR='/h/.config/mcp-gsc'"));
