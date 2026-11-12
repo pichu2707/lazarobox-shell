@@ -158,3 +158,18 @@ fn the_real_runner_gives_stdout_not_found_a_failure_and_a_timeout() {
     assert_eq!(slow, Err(Fail::Other("uv did not answer in 5 s")));
     assert!(started.elapsed() < Duration::from_secs(5));
 }
+
+#[tokio::test]
+async fn the_linker_answers_one_event_and_a_missing_client_file_runs_no_uv() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let dir = tempfile::tempdir().unwrap();
+    let missing = Plan {
+        dir: dir.path().join("mcp-gsc").display().to_string(),
+        file: dir.path().join("none.json").display().to_string(),
+    };
+    Linker::new(tx).check(missing);
+    match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+        Ok(Some(AppEvent::GscLine(reply))) => assert_eq!(reply, Err(NO_CLIENT.to_owned())),
+        other => panic!("no answer: {other:?}"),
+    }
+}

@@ -329,6 +329,9 @@ pub enum AppEvent {
     SecretSaved(Result<String, String>),
     /// What became of `Effect::DeleteBackup`.
     BackupDeleted(Result<String, String>),
+    /// The answer to `Effect::LinkGsc`: the login line to confirm, or the
+    /// notice of the check that failed.
+    GscLine(Result<String, String>),
     /// What became of the `Effect::CopyLocal` numbered `seq`: `Err` carries
     /// the short reason.
     Clipboard {
@@ -414,6 +417,10 @@ pub enum Effect {
     /// Delete `secrets.toml.bak` (the user's `y`); the answer is one
     /// `AppEvent::BackupDeleted`.
     DeleteBackup,
+    /// Check the client file and `uv` for Link with Google on `gsc` and build
+    /// its login line (nothing is started); the answer is one
+    /// `AppEvent::GscLine`.
+    LinkGsc(crate::core::ai::mcp_catalog::gsc::Plan),
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
     /// Like `DetectEngines`, but the codex model listing is read again even
@@ -2311,6 +2318,7 @@ impl App {
             }
             AppEvent::SecretSaved(reply) => self.on_secret_reply(reply, true),
             AppEvent::BackupDeleted(reply) => self.on_secret_reply(reply, false),
+            AppEvent::GscLine(reply) => self.on_gsc_line(reply),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
@@ -2638,7 +2646,7 @@ impl App {
                 replace,
             }],
             MenuCommand::DeleteBackup => vec![Effect::DeleteBackup],
-            MenuCommand::LinkGsc(_) => Vec::new(),
+            MenuCommand::LinkGsc(plan) => vec![Effect::LinkGsc(plan)],
             MenuCommand::Connector(line) => self.start_connector(line),
             MenuCommand::None => Vec::new(),
         }
@@ -2679,6 +2687,23 @@ impl App {
         };
         self.dirty = true;
         self.on_menu_command(command)
+    }
+
+    /// The checks of Link with Google answered: the menu prompts with the line
+    /// or says why not; with the menu closed a refusal is said in the notice.
+    fn on_gsc_line(&mut self, reply: Result<String, String>) -> Vec<Effect> {
+        self.dirty = true;
+        match (self.menu.as_mut(), reply) {
+            (Some(menu), reply) => {
+                let command = menu.link_reply(reply);
+                self.on_menu_command(command)
+            }
+            (None, Err(notice)) => {
+                self.notice = Some(notice);
+                Vec::new()
+            }
+            (None, Ok(_)) => Vec::new(),
+        }
     }
 
     /// The browser did not open `url`: the link is copied instead and the

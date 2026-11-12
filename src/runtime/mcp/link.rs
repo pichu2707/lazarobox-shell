@@ -12,7 +12,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::core::ai::mcp_catalog::gsc::{self, Plan};
+use tokio::sync::mpsc;
+
+use crate::{
+    app::AppEvent,
+    core::ai::mcp_catalog::gsc::{self, Plan},
+};
 
 /// Why one `uv` call gave no output.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -82,6 +87,30 @@ pub fn check(
     let dir = run(&["tool", "dir"]).map_err(said)?;
     let dir = gsc::tool_dir(&dir).ok_or_else(|| gsc::NO_TOOL_DIR.to_owned())?;
     gsc::login_line(&dir, plan).map_err(str::to_owned)
+}
+
+/// Answers each `Effect::LinkGsc` with one `AppEvent::GscLine`.
+pub struct Linker {
+    events: mpsc::Sender<AppEvent>,
+}
+
+impl Linker {
+    pub fn new(events: mpsc::Sender<AppEvent>) -> Self {
+        Self { events }
+    }
+
+    /// Runs the checks on a blocking thread and sends the answer. A stat of
+    /// the client file, then `uv`: nothing is spawned but `uv`.
+    pub fn check(&self, plan: Plan) {
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            let run = move || check(&plan, &uv, |file| file.metadata().is_ok());
+            let reply = tokio::task::spawn_blocking(run)
+                .await
+                .unwrap_or_else(|_| Err("the check failed".to_owned()));
+            let _ = events.send(AppEvent::GscLine(reply)).await;
+        });
+    }
 }
 
 #[cfg(test)]
