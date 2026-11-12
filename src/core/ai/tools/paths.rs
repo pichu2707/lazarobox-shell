@@ -37,6 +37,9 @@ pub(crate) const SECRET_DIRS: &[&str] = &[
     ".google_workspace_mcp",
     ".clasprc.json",
     ".config/mcp-gsc",
+    // platformdirs' default for mcp-gsc on macOS (tokens written before
+    // `GSC_CONFIG_DIR` fixed the folder).
+    "Library/Application Support/mcp-gsc",
 ];
 
 /// File names that are never readable wherever they sit below `$HOME`:
@@ -1352,6 +1355,28 @@ mod tests {
         for kept in [".config", ".config/mcp-gsc-other", ".clasp.json", "project"] {
             assert!(roots.judge_real(&f.home.join(kept)), "{kept} is hidden");
         }
+    }
+
+    // Spec agent-tools, mcp-gsc token on macOS: platformdirs keeps it in
+    // `Library/Application Support/mcp-gsc`, a path with a space.
+    #[test]
+    fn the_mcp_gsc_folder_of_macos_is_refused_unlisted_and_never_written() {
+        let f = fixture();
+        let dir = "Library/Application Support/mcp-gsc";
+        fs::create_dir_all(f.home.join(dir)).unwrap();
+        fs::create_dir_all(f.home.join("Library/Application Support/other")).unwrap();
+        fs::write(f.home.join(dir).join("token.json"), "{\"token\":\"t\"}").unwrap();
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
+        let token = format!("~/{dir}/token.json");
+        assert_eq!(resolve(&roots, &f.home, &token), PathVerdict::Refused);
+        assert_eq!(
+            resolve(&roots, &f.home, &token),
+            resolve(&roots, &f.home, "~/missing")
+        );
+        assert!(!roots.judge_write(&f.home.join(dir).join("token.json")));
+        assert!(!roots.judge_real(&f.home.join(dir)));
+        assert!(roots.judge_real(&f.home.join("Library/Application Support/other")));
+        assert!(roots.judge_real(&f.home.join("Library/Application Support")));
     }
 
     #[test]
