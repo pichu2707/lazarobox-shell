@@ -1,12 +1,14 @@
 //! The Connectors area of the menu (mcp-connect): the catalog entries with
 //! their state, and the screen of one entry (guide, snippet, template, files,
-//! actions). It writes no configuration and draws no `secrets.toml` value;
+//! actions). It writes no configuration and draws no confidential value; the
+//! one write to `secrets.toml` is a confirmed secret field (`fields`), and
 //! nothing runs until the user's `y` on a prompt that shows what will run.
 
 use std::{borrow::Cow, collections::HashMap, path::PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use self::fields::{Field, HINT_FIELDS, Pending};
 use super::{MenuCommand, Row, VIEW_BODY};
 use crate::core::ai::{
     config::McpServer,
@@ -14,9 +16,11 @@ use crate::core::ai::{
         self, Entry, Group, checks::Probed, checks::Verdict, presence::Presence, secrets_template,
         snippet,
     },
-    mcp_secrets::FILE as SECRETS_FILE,
+    mcp_secrets::{BACKUP, FILE as SECRETS_FILE},
     sanitize::clean,
 };
+
+mod fields;
 
 /// The narrowest text column a prompt is shown in.
 const MIN_ROOM: usize = 24;
@@ -26,13 +30,21 @@ pub(super) const RESTART: &str = "restart lazarobox to use it in chats";
 const UNREAD: &str = "config.toml could not be read; showing the list loaded at startup";
 const NOT_DECLARED: &str = "not declared: paste the entry into config.toml first";
 const HINT_LIST: &str = "j/k move · Enter open · Esc back";
-const HINT_ENTRY: &str = "j/k scroll · i install · l login · p probe · c copy · Esc";
+const HINT_ENTRY: &str = "j/k scroll · i install · l login · p probe · f fill · Esc";
 const HINT_PROMPT: &str = "y yes · any other key cancels";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Screen {
     List(usize),
-    Entry { at: usize, scroll: usize },
+    Entry {
+        at: usize,
+        scroll: usize,
+    },
+    /// The values of entry `at`, one row each.
+    Fields {
+        at: usize,
+        cursor: usize,
+    },
 }
 
 /// What waits for the user's `y`.
@@ -46,6 +58,12 @@ enum Prompt {
         discards: bool,
     },
     Probe(Box<McpServer>),
+    /// The declared command is not the catalog's: a save asks first.
+    Command(Pending),
+    /// A value is already saved under that name.
+    Replace(Pending),
+    /// `d`: delete `secrets.toml.bak`.
+    DeleteBackup,
 }
 
 /// The area's state; it lives as long as the menu.
@@ -61,6 +79,10 @@ pub(super) struct Connectors {
     prompt: Option<Prompt>,
     probing: Option<String>,
     notice: Option<&'static str>,
+    /// The field that is open on a `Screen::Fields`.
+    field: Option<Field>,
+    /// A save went through: the list says when it takes effect.
+    saved: bool,
 }
 
 /// `text` cut at `room` columns on word boundaries (a long word is split).
@@ -150,6 +172,20 @@ fn prompt_rows(prompt: &Prompt, room: usize) -> Option<Vec<Row>> {
             rows.extend(verbatim(&command_of(server), "  ", room));
             rows
         }
+        Prompt::Command(pending) => {
+            let command = pending.command.as_deref().unwrap_or_default();
+            let ask = format!(
+                "save {} for a server that runs {command}? (y/n)",
+                pending.name
+            );
+            verbatim(&ask, "", room)
+        }
+        Prompt::Replace(pending) => {
+            vec![title(format!("replace the saved {}? (y/n)", pending.name))]
+        }
+        Prompt::DeleteBackup => vec![title(format!(
+            "delete {BACKUP}? It holds your previous values (y/n)"
+        ))],
     };
     (rows.len() <= VIEW_BODY).then(|| {
         rows.shrink_to_fit();
@@ -279,6 +315,7 @@ impl Connectors {
         let mut rows = match (&self.prompt, self.screen) {
             (Some(prompt), _) => prompt_rows(prompt, room).unwrap_or_else(|| vec![text(WIDEN)]),
             (None, Some(Screen::Entry { at, scroll })) => self.entry_rows(at, scroll, room),
+            (None, Some(Screen::Fields { at, cursor })) => self.field_rows(at, cursor, room),
             (None, Some(Screen::List(cursor))) => self.list_rows(cursor, room),
             (None, None) => Vec::new(),
         };
@@ -394,6 +431,7 @@ impl Connectors {
         }
         rows.push(text("  1-9 open a link · c copy the entry"));
         if secrets_template(entry).is_some() {
+            rows.push(text("  f fill the values"));
             rows.push(text("  t copy the secrets.toml table"));
         }
         rows
@@ -403,9 +441,15 @@ impl Connectors {
         if let Some(name) = &self.probing {
             return Cow::Owned(format!("probing {name}… · Esc stops it"));
         }
+        if let Some(Screen::Fields { at, .. }) = self.screen
+            && let Some(hint) = self.field_hint(at)
+        {
+            return Cow::Owned(hint);
+        }
         Cow::Borrowed(match (&self.prompt, self.screen) {
             (Some(_), _) => HINT_PROMPT,
             (None, Some(Screen::Entry { .. })) => HINT_ENTRY,
+            (None, Some(Screen::Fields { .. })) => HINT_FIELDS,
             _ => HINT_LIST,
         })
     }
@@ -425,11 +469,27 @@ impl Connectors {
                     self.probing = Some(server.name.clone());
                     MenuCommand::Probe(server)
                 }
+                (true, Prompt::Command(pending)) => self.after_command(pending, room),
+                (true, Prompt::Replace(pending)) => pending.into_command(),
+                (true, Prompt::DeleteBackup) => MenuCommand::DeleteBackup,
+                (false, Prompt::Command(_)) => {
+                    self.notice = Some("not saved");
+                    MenuCommand::None
+                }
+                (false, Prompt::Replace(_)) => {
+                    self.notice = Some("not replaced");
+                    MenuCommand::None
+                }
                 _ => {
                     self.notice = Some(CANCELLED);
                     MenuCommand::None
                 }
             };
+        }
+        if let Some(Screen::Fields { at, .. }) = self.screen
+            && self.field.is_some()
+        {
+            return self.field_key(key, at, room);
         }
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         let (Some(screen), true) = (self.screen, plain) else {
@@ -442,6 +502,7 @@ impl Connectors {
         match screen {
             Screen::List(cursor) => self.list_key(key.code, cursor),
             Screen::Entry { at, scroll } => self.entry_key(key.code, (at, scroll), dirty, room),
+            Screen::Fields { at, cursor } => self.fields_key(key.code, (at, cursor), room),
         }
     }
 
@@ -497,6 +558,7 @@ impl Connectors {
                 None => self.notice = Some("this entry has no login"),
             },
             KeyCode::Char('p') => return self.ask_probe(entry, room),
+            KeyCode::Char('f') => self.open_fields(entry, at),
             KeyCode::Char('c') => return MenuCommand::Copy(snippet(entry)),
             KeyCode::Char('t') => match secrets_template(entry) {
                 Some(template) => return MenuCommand::Copy(template),

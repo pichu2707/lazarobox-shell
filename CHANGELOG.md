@@ -17,6 +17,17 @@ baseline.
   yourself; any change needs a command the user reviews and runs", after the
   delegation rule; it now says a worker started with `spawn_agent` makes every
   change.
+### Added
+
+- The `Connectors` area can save a value into `secrets.toml` for you: `f` on an
+  entry opens its values, and Enter on one opens a masked field where you type
+  or paste it (confidential values always show as `••••••••`, never their
+  length or any character). Saving keeps your comments and every other line,
+  writes `secrets.toml` with mode 0600, keeps the previous file as
+  `secrets.toml.bak` until you delete it with `d`, and asks before it replaces
+  a value or when your declared command is not the catalog's. The value reaches
+  the server at the next chat start; it never goes to a model, a log or the
+  transcript.
 
 ## [1.20.0] - 2026-11-11
 

@@ -292,7 +292,7 @@ fn a_config_that_cannot_be_read_keeps_the_startup_list_and_says_so() {
 // ---- 4.3 the entry screen ---------------------------------------------------
 
 /// The area on the entry `at` (0 clarity, 1 ga4), `servers` declared.
-fn entry(servers: Vec<McpServer>, at: usize) -> MenuState {
+pub(super) fn entry(servers: Vec<McpServer>, at: usize) -> MenuState {
     let mut m = area(servers);
     for _ in 0..at {
         press(&mut m, 'j');

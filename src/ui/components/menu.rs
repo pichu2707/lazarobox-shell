@@ -2040,6 +2040,19 @@ mod tests {
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
     }
 
+    // Spec (mcp-connect, Secret fields): the field list, then the masked field.
+    #[test]
+    fn snapshot_the_secret_field_list_and_the_masked_field() {
+        let mut menu = connectors_entry(0);
+        press(&mut menu, &[KeyCode::Char('f')]);
+        let list = text(&draw(62, POPUP_H, &menu));
+        press(&mut menu, &[KeyCode::Enter]);
+        menu.on_paste("sk-abcdefghijklmnopqrstuvwxyz");
+        let field = text(&draw(62, POPUP_H, &menu));
+        assert!(!field.contains("abcdef"), "{field}");
+        insta::assert_snapshot!(format!("{list}\n{field}"));
+    }
+
     // Spec (mcp-connect, Install and login): the prompt shows the command.
     #[test]
     fn snapshot_the_login_prompt_shows_the_full_command() {

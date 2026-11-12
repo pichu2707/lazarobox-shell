@@ -1315,6 +1315,7 @@ impl MenuState {
 
     /// What the save of a secret field answered: the notice either way.
     pub fn secret_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
+        self.connectors.saved(reply.is_ok());
         self.backup_reply(reply)
     }
 
@@ -1346,13 +1347,14 @@ impl MenuState {
         matches!(self.selected_kind(), Some(ItemKind::Connectors))
     }
 
-    /// Keys in the Connectors area. A repeat only scrolls and moves.
+    /// Keys in the Connectors area. A repeat only scrolls and moves, except
+    /// in an open field: a doubled letter there is text.
     fn on_connectors_key(&mut self, key: &KeyEvent, repeat: bool, config: &Config) -> MenuCommand {
         let moves = matches!(
             key.code,
             KeyCode::Char('j' | 'k') | KeyCode::Up | KeyCode::Down
         );
-        if repeat && !moves {
+        if repeat && !moves && !self.connectors.field_open() {
             return MenuCommand::None;
         }
         let dirty = !self.edits(config).is_empty();
@@ -2970,7 +2972,13 @@ impl MenuState {
                 }
             }
             Some(SubView::Usage) => self.paste_limit(text),
-            Some(SubView::Connectors | SubView::Warning) | None => {}
+            Some(SubView::Connectors) => {
+                self.connectors.paste(text);
+                if let Some(notice) = self.connectors.take_notice() {
+                    self.notice = Some(notice.to_owned());
+                }
+            }
+            Some(SubView::Warning) | None => {}
         }
     }
 
@@ -3616,5 +3624,7 @@ mod descriptor_tests;
 #[cfg(test)]
 mod feedback_menu_tests;
 
+#[cfg(test)]
+mod connectors_fields_tests;
 #[cfg(test)]
 mod connectors_tests;

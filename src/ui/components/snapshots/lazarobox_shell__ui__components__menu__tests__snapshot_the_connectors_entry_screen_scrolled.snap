@@ -18,5 +18,5 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │   GOOGLE_CLOUD_PROJECT = ""                                │
 │   GOOGLE_CLOUD_PROJECT: not set                            │
 │                                                            │
-│ j/k scroll · i install · l login · p probe · c copy · Esc  │
+│ j/k scroll · i install · l login · p probe · f fill · Esc  │
 └────────────────────────────────────────────────────────────┘

@@ -1,0 +1,284 @@
+//! The fields form of the Connectors area (mcp-connect, Secret fields): one
+//! row per value of the entry, the masked field, and the confirmations before
+//! a save. The value lives in a [`SecretText`] from the first key to the
+//! command that sends it; nothing here formats it.
+
+use super::*;
+use crate::core::ai::mcp_catalog::Var;
+use crate::core::ai::mcp_secrets::{BACKUP, SecretText};
+
+/// What a confidential field draws once it holds text, whatever the length.
+const MASK: &str = "••••••••";
+/// The longest value a field takes.
+const MAX_FIELD: usize = 4096;
+const BAD: &str = "the value must be one line without control characters";
+const LONG: &str = "the value is longer than 4096 bytes";
+const EMPTY: &str = "empty value not saved; edit secrets.toml by hand to remove a value";
+const NO_VALUES: &str = "this entry has no values to fill";
+const NO_HOME: &str = "HOME is not an absolute path; edit secrets.toml by hand";
+const NO_BACKUP: &str = "secrets.toml.bak: there is no backup";
+pub(super) const HINT_FIELDS: &str = "j/k move · Enter fill · d delete backup · Esc back";
+
+/// A save waiting for the user's `y` (or ready to go).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct Pending {
+    server: &'static str,
+    pub(super) name: &'static str,
+    value: SecretText,
+    /// The declared command, when it is not the catalog's.
+    pub(super) command: Option<String>,
+    /// A value is already saved under that name.
+    replace: bool,
+}
+
+impl Pending {
+    pub(super) fn into_command(self) -> MenuCommand {
+        MenuCommand::SaveSecret {
+            server: self.server,
+            name: self.name,
+            value: self.value,
+        }
+    }
+}
+
+/// The field that is open: the index of its row, and what was typed.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct Field {
+    var: usize,
+    text: SecretText,
+}
+
+fn secret(text: &str) -> SecretText {
+    let mut value = SecretText::new();
+    value.push_str(text);
+    value
+}
+
+/// The values of an entry that live in `secrets.toml`.
+fn vars(entry: &Entry) -> Vec<&'static Var> {
+    entry.env.iter().filter(|v| v.secret).collect()
+}
+
+impl Connectors {
+    /// What differs: the declared command, when it is not the catalog's.
+    fn differing_command(&self, entry: &Entry) -> Option<String> {
+        let server = self.server(entry.id)?;
+        (server.command != entry.command).then(|| clean(&server.command))
+    }
+
+    /// Sends the save of `value`, or asks first: the command that differs,
+    /// then the value that would be replaced.
+    fn submit(&mut self, entry: &Entry, var: &Var, value: SecretText, room: usize) -> MenuCommand {
+        let held = |p: &Presence| {
+            p.has(entry.id, var.name)
+                && (var.confidential() || p.shown(entry.id, var.name) != Some(value.expose()))
+        };
+        let replace = self.presence.as_ref().is_some_and(held);
+        let pending = Pending {
+            server: entry.id,
+            name: var.name,
+            command: self.differing_command(entry),
+            value,
+            replace,
+        };
+        match (&pending.command, replace) {
+            (Some(_), _) => self.ask(Prompt::Command(pending), room),
+            (None, true) => self.ask(Prompt::Replace(pending), room),
+            (None, false) => return pending.into_command(),
+        }
+        MenuCommand::None
+    }
+
+    /// `y` on the command prompt: the replace prompt next, or the save.
+    pub(super) fn after_command(&mut self, pending: Pending, room: usize) -> MenuCommand {
+        if !pending.replace {
+            return pending.into_command();
+        }
+        self.ask(Prompt::Replace(pending), room);
+        MenuCommand::None
+    }
+
+    pub(super) fn open_fields(&mut self, entry: &Entry, at: usize) {
+        if vars(entry).is_empty() {
+            self.notice = Some(NO_VALUES);
+        } else {
+            self.saved = false;
+            self.screen = Some(Screen::Fields { at, cursor: 0 });
+        }
+    }
+
+    pub(in crate::core::menu) fn field_open(&self) -> bool {
+        self.field.is_some()
+    }
+
+    /// The result of a save: the list asks the user to restart on success.
+    pub(in crate::core::menu) fn saved(&mut self, ok: bool) {
+        self.saved = ok;
+    }
+
+    pub(super) fn field_hint(&self, at: usize) -> Option<String> {
+        let field = self.field.as_ref()?;
+        let var = vars(&mcp_catalog::entries()[at])[field.var];
+        Some(format!(
+            "type or paste {}; Enter saves · Esc cancels",
+            var.name
+        ))
+    }
+
+    pub(super) fn field_rows(&self, at: usize, cursor: usize, room: usize) -> Vec<Row> {
+        let entry = &mcp_catalog::entries()[at];
+        let list = vars(entry);
+        if let Some(field) = &self.field {
+            let var = list[field.var];
+            let shown = if var.confidential() {
+                if field.text.is_empty() { "" } else { MASK }.to_owned()
+            } else {
+                let text = clean(field.text.expose());
+                let skip = text.chars().count().saturating_sub(room.saturating_sub(2));
+                text.chars().skip(skip).collect()
+            };
+            return vec![
+                title(format!("{} · {}", entry.title, var.name)),
+                text(format!("  {shown}")),
+            ];
+        }
+        let mut rows = vec![title(format!("{} · values", entry.title))];
+        if let Some(command) = self.differing_command(entry) {
+            let line = format!("declared command differs from the catalog: {command}");
+            rows.extend(wrap(&line, "", room));
+        }
+        for (i, var) in list.iter().enumerate() {
+            rows.push(Row::Item {
+                label: var.name,
+                value: Some(Cow::Owned(self.value_text(entry, var, room))),
+                selected: i == cursor,
+                enabled: true,
+            });
+        }
+        if self.presence.as_ref().is_some_and(Presence::backup) {
+            rows.push(text(format!("d delete {BACKUP}")));
+        }
+        if self.saved {
+            rows.push(text("restart the chat or probe again to use it"));
+        }
+        rows
+    }
+
+    /// `set` for a confidential value; the value for the others.
+    fn value_text(&self, entry: &Entry, var: &Var, room: usize) -> String {
+        let presence = self.presence.as_ref();
+        if var.confidential() {
+            let set = presence.is_some_and(|p| p.has(entry.id, var.name));
+            return if set { "set" } else { "not set" }.to_owned();
+        }
+        if let Some(value) = presence.and_then(|p| p.shown(entry.id, var.name)) {
+            return clean(value)
+                .chars()
+                .take(room.saturating_sub(var.name.len() + 2))
+                .collect();
+        }
+        match var.preset {
+            Some(preset) => {
+                let home = presence.map_or("", Presence::home);
+                let value = var.preset_for(home).unwrap_or_else(|| preset.to_owned());
+                format!("not set · Enter writes {}", clean(&value))
+            }
+            None => "not set".to_owned(),
+        }
+    }
+
+    pub(super) fn fields_key(
+        &mut self,
+        code: KeyCode,
+        (at, cursor): (usize, usize),
+        room: usize,
+    ) -> MenuCommand {
+        let entry = &mcp_catalog::entries()[at];
+        let list = vars(entry);
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.screen = Some(Screen::Fields {
+                    at,
+                    cursor: (cursor + 1) % list.len(),
+                });
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let cursor = (cursor + list.len() - 1) % list.len();
+                self.screen = Some(Screen::Fields { at, cursor });
+            }
+            KeyCode::Esc => self.screen = Some(Screen::Entry { at, scroll: 0 }),
+            KeyCode::Char('d') => match self.presence.as_ref().is_some_and(Presence::backup) {
+                true => self.ask(Prompt::DeleteBackup, room),
+                false => self.notice = Some(NO_BACKUP),
+            },
+            KeyCode::Enter => {
+                let var = list[cursor];
+                match var.preset {
+                    None => {
+                        self.field = Some(Field {
+                            var: cursor,
+                            text: SecretText::new(),
+                        });
+                    }
+                    Some(_) => {
+                        let home = self.presence.as_ref().map_or("", Presence::home);
+                        match var.preset_for(home) {
+                            Some(value) => return self.submit(entry, var, secret(&value), room),
+                            None => self.notice = Some(NO_HOME),
+                        }
+                    }
+                }
+            }
+            _ => self.notice = Some("no such key here"),
+        }
+        MenuCommand::None
+    }
+
+    /// A key while a field is open: it is text, or one of the field's keys.
+    pub(super) fn field_key(&mut self, key: &KeyEvent, at: usize, room: usize) -> MenuCommand {
+        let entry = &mcp_catalog::entries()[at];
+        let Some(field) = self.field.as_mut() else {
+            return MenuCommand::None;
+        };
+        let var = vars(entry)[field.var];
+        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        match key.code {
+            KeyCode::Esc => self.field = None,
+            KeyCode::Enter if field.text.is_empty() => self.notice = Some(EMPTY),
+            KeyCode::Enter => {
+                let text = std::mem::take(&mut field.text);
+                self.field = None;
+                return self.submit(entry, var, text, room);
+            }
+            KeyCode::Backspace if plain => field.text.pop(),
+            KeyCode::Char(c) if plain => match accepts(&field.text, c.encode_utf8(&mut [0; 4])) {
+                Ok(()) => field.text.push(c),
+                Err(notice) => self.notice = Some(notice),
+            },
+            _ => self.notice = Some("no such key here"),
+        }
+        MenuCommand::None
+    }
+
+    pub(in crate::core::menu) fn paste(&mut self, pasted: &str) {
+        let Some(field) = self.field.as_mut() else {
+            return;
+        };
+        match accepts(&field.text, pasted) {
+            Ok(()) => field.text.push_str(pasted),
+            Err(notice) => self.notice = Some(notice),
+        }
+    }
+}
+
+/// Whether `more` may follow `text` in a field: one line, no control
+/// character, within [`MAX_FIELD`] bytes.
+fn accepts(text: &SecretText, more: &str) -> Result<(), &'static str> {
+    if more.chars().any(char::is_control) {
+        Err(BAD)
+    } else if text.len() + more.len() > MAX_FIELD {
+        Err(LONG)
+    } else {
+        Ok(())
+    }
+}
