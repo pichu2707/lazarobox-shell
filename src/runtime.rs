@@ -2321,6 +2321,13 @@ impl Panes {
                         prober.start(id, *server);
                     }
                 }
+                // Returns at once: the session runs on its own task, in the
+                // slot of the probe.
+                Effect::LinkGoogle { server, ask } => {
+                    if let Some(prober) = self.prober.as_mut() {
+                        prober.link(*server, ask);
+                    }
+                }
                 Effect::LoadPresence => {
                     if let Some(reader) = self.presence.as_ref() {
                         reader.load();

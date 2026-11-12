@@ -247,3 +247,32 @@ fn a_step_nobody_asked_for_changes_nothing() {
     );
     assert!(!hint(&m).contains("linked google"));
 }
+
+// Spec: Token files never opened: the state reads only the account's names.
+#[test]
+fn the_state_asks_only_whether_the_accounts_files_exist() {
+    let seen = std::cell::RefCell::new(Vec::new());
+    let stat = |p: &std::path::Path| {
+        seen.borrow_mut().push(p.to_owned());
+        false
+    };
+    let secrets = VALUES.replace("me@x.org", "me+a@x.org");
+    presence(CONFIG, &secrets)
+        .with_home(Some("/h".to_owned()))
+        .with_credentials(stat);
+    let base = std::path::Path::new("/h/.google_workspace_mcp/credentials");
+    assert_eq!(
+        *seen.borrow(),
+        [base.join("me%2Ba@x.org.json"), base.join("me_a@x.org.json")]
+    );
+    // No account, no home or a relative home: nothing is looked at.
+    seen.borrow_mut().clear();
+    presence(CONFIG, "")
+        .with_home(Some("/h".to_owned()))
+        .with_credentials(stat);
+    presence(CONFIG, VALUES).with_credentials(stat);
+    presence(CONFIG, VALUES)
+        .with_home(Some("h".to_owned()))
+        .with_credentials(stat);
+    assert!(seen.borrow().is_empty());
+}

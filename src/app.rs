@@ -423,6 +423,12 @@ pub enum Effect {
     /// its login line (nothing is started); the answer is one
     /// `AppEvent::GscLine`.
     LinkGsc(crate::core::ai::mcp_catalog::gsc::Plan),
+    /// Start the link session of `google` (the user's `y`): the runtime answers
+    /// with `AppEvent::McpLink` steps. It takes the slot of the probe.
+    LinkGoogle {
+        server: Box<crate::core::ai::config::McpServer>,
+        ask: crate::core::ai::mcp_catalog::link::Ask,
+    },
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
     /// Like `DetectEngines`, but the codex model listing is read again even
@@ -2320,7 +2326,7 @@ impl App {
             }
             AppEvent::SecretSaved(reply) => self.on_secret_reply(reply, true),
             AppEvent::BackupDeleted(reply) => self.on_secret_reply(reply, false),
-            AppEvent::McpLink(_) => Vec::new(),
+            AppEvent::McpLink(step) => self.on_mcp_link(step),
             AppEvent::GscLine(reply) => self.on_gsc_line(reply),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),
@@ -2650,7 +2656,7 @@ impl App {
             }],
             MenuCommand::DeleteBackup => vec![Effect::DeleteBackup],
             MenuCommand::LinkGsc(plan) => vec![Effect::LinkGsc(plan)],
-            MenuCommand::LinkGoogle { .. } => Vec::new(),
+            MenuCommand::LinkGoogle { server, ask } => vec![Effect::LinkGoogle { server, ask }],
             MenuCommand::Connector(line) => self.start_connector(line),
             MenuCommand::None => Vec::new(),
         }
