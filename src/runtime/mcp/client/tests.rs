@@ -751,3 +751,31 @@ async fn schema_strings_keep_newlines_and_tabs() {
     let schema = schema_of(json!({"type": "object", "title": "a\n\tb"})).await;
     assert_eq!(schema["title"], "a\n\tb");
 }
+
+// S6b2: the link session tells a timeout from a server that stopped.
+#[tokio::test]
+async fn a_checked_call_keeps_the_answer_the_timeout_and_the_hang_up() {
+    let (mut client, mut fake) = pair(timeouts());
+    let serve = async {
+        let (id, _) = fake.request("tools/call").await;
+        fake.reply(id, json!({"content": [{"type": "text", "text": "hi"}]}))
+            .await;
+    };
+    let (got, ()) = tokio::join!(client.call_checked("t", json!({}), never()), serve);
+    assert_eq!(got.unwrap().text, "hi");
+
+    let (mut client, mut fake) = pair(Timeouts {
+        handshake: WAIT,
+        call: Duration::from_millis(100),
+    });
+    let (got, _) = tokio::join!(
+        client.call_checked("t", json!({}), never()),
+        fake.request("tools/call")
+    );
+    assert_eq!(got.unwrap_err(), ClientError::Timeout);
+
+    let (mut client, fake) = pair(timeouts());
+    drop(fake);
+    let got = client.call_checked("t", json!({}), never()).await;
+    assert_eq!(got.unwrap_err(), ClientError::Closed);
+}

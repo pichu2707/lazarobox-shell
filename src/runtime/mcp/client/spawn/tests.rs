@@ -330,3 +330,18 @@ async fn dropping_the_client_leaves_no_orphan_grandchild() {
     assert!(wait_gone(leader).await);
     assert!(wait_gone(grand).await);
 }
+
+// S6b2: the link session notices a server that stopped.
+#[tokio::test]
+async fn a_client_knows_when_its_process_ended() {
+    let lab = lab();
+    let mut live = McpClient::spawn(&sh("sleep 30", &[]), &lab.home, host_env).unwrap();
+    assert!(!live.has_exited());
+    let mut gone = McpClient::spawn(&sh("exit 0", &[]), &lab.home, host_env).unwrap();
+    let end = Instant::now() + BOUND;
+    while !gone.has_exited() {
+        assert!(Instant::now() < end, "the exit is noticed");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    live.shutdown().await;
+}

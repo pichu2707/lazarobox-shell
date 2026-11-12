@@ -231,18 +231,30 @@ impl McpClient {
         arguments: Value,
         cancel: impl Future<Output = ()>,
     ) -> Outcome {
-        let limit = self.timeouts.call;
-        let params = json!({"name": raw, "arguments": arguments});
-        match self.request("tools/call", params, limit, cancel).await {
-            Ok(result) => Outcome {
-                is_error: result.get("isError") == Some(&Value::Bool(true)),
-                text: content_text(&result, &self.redact),
-            },
+        match self.call_checked(raw, arguments, cancel).await {
+            Ok(outcome) => outcome,
             Err(error) => Outcome {
                 text: format!("mcp error: {}", error.reason()),
                 is_error: true,
             },
         }
+    }
+
+    /// [`McpClient::call`] that keeps why a call got no result, so a caller
+    /// can tell a timeout from a server that stopped.
+    pub async fn call_checked(
+        &mut self,
+        raw: &str,
+        arguments: Value,
+        cancel: impl Future<Output = ()>,
+    ) -> Result<Outcome, ClientError> {
+        let limit = self.timeouts.call;
+        let params = json!({"name": raw, "arguments": arguments});
+        let result = self.request("tools/call", params, limit, cancel).await?;
+        Ok(Outcome {
+            is_error: result.get("isError") == Some(&Value::Bool(true)),
+            text: content_text(&result, &self.redact),
+        })
     }
 
     /// Writes one frame. Any failure kills the client; a write that is

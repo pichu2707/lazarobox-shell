@@ -190,6 +190,12 @@ impl McpClient {
         })
     }
 
+    /// Whether the process behind this client has ended (a `try_wait`).
+    pub fn has_exited(&mut self) -> bool {
+        let ended = |p: &mut Process| p.child.try_wait().is_ok_and(|status| status.is_some());
+        self.process.as_mut().is_some_and(ended)
+    }
+
     /// Kills the server's whole process group and reaps it, in at most 3 s.
     /// Nothing is left running, grandchildren included.
     pub async fn shutdown(mut self) {
