@@ -706,7 +706,18 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
             hub_tx.clone(),
         ))
         // Link with Google for `gsc` (S6b1): the `uv` checks, nothing else.
-        .with_link(mcp::link::Linker::new(hub_tx.clone(), browser))
+        .with_link(mcp::link::Linker::new(
+            hub_tx.clone(),
+            browser,
+            mcp::link::Fetch::new(
+                hf::Curl::google_client(cli_env.path.clone()),
+                crate::core::ai::mcp_secrets::secrets_path(
+                    env::var_os("XDG_CONFIG_HOME"),
+                    env::var_os("HOME"),
+                ),
+                crate::core::ai::mcp_secrets::PROJECT_NUMBER.map(str::to_owned),
+            ),
+        ))
         // The menu's secret field and backup deletion (S6a2): the only writer
         // of `secrets.toml`, reachable from those two effects only.
         .with_secrets(secrets_write::Writer::new(

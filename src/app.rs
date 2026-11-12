@@ -341,8 +341,9 @@ pub enum AppEvent {
     /// The link session of `google` moved on: the link to open, or its end.
     McpLink(crate::core::ai::mcp_catalog::link::Step),
     /// The answer to `Effect::LinkGsc`: the login line to confirm, or the
-    /// notice of the check that failed.
-    GscLine(Result<String, String>),
+    /// notice of the check that failed; and the notice that the saved copy
+    /// of the lazarobox client was used because the fetch failed.
+    GscLine(Result<String, String>, Option<String>),
     /// What became of the `Effect::CopyLocal` numbered `seq`: `Err` carries
     /// the short reason.
     Clipboard {
@@ -2372,7 +2373,7 @@ impl App {
                 Vec::new()
             }
             AppEvent::McpLink(step) => self.on_mcp_link(step),
-            AppEvent::GscLine(reply) => self.on_gsc_line(reply),
+            AppEvent::GscLine(reply, notice) => self.on_gsc_line(reply, notice),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
@@ -2748,11 +2749,11 @@ impl App {
 
     /// The checks of Link with Google answered: the menu prompts with the line
     /// or says why not; with the menu closed a refusal is said in the notice.
-    fn on_gsc_line(&mut self, reply: Result<String, String>) -> Vec<Effect> {
+    fn on_gsc_line(&mut self, reply: Result<String, String>, said: Option<String>) -> Vec<Effect> {
         self.dirty = true;
         match (self.menu.as_mut(), reply) {
             (Some(menu), reply) => {
-                let command = menu.link_reply(reply);
+                let command = menu.link_reply(reply, said);
                 self.on_menu_command(command)
             }
             (None, Err(notice)) => {

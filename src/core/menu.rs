@@ -1372,9 +1372,13 @@ impl MenuState {
 
     /// What the checks of Link with Google answered: the line to confirm, or
     /// the notice of the check that failed.
-    pub fn link_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
+    pub fn link_reply(
+        &mut self,
+        reply: Result<String, String>,
+        said: Option<String>,
+    ) -> MenuCommand {
         let room = self.connectors_room();
-        if let Some(notice) = self.connectors.link_reply(reply, room) {
+        if let Some(notice) = self.connectors.link_reply(reply, said, room) {
             self.notice = notice;
         }
         MenuCommand::None

@@ -211,3 +211,15 @@ fn no_notice_holds_the_secret_or_the_body() {
         }
     }
 }
+
+// Design 5: the cache sits next to `secrets.toml`, as an absolute path.
+#[test]
+fn the_cache_path_is_next_to_secrets_toml_and_absolute() {
+    use std::path::Path;
+    assert_eq!(
+        cache_path(Some(Path::new("/h/.config/lazarobox/secrets.toml"))).as_deref(),
+        Some("/h/.config/lazarobox/lazarobox-google-client.json")
+    );
+    assert_eq!(cache_path(Some(Path::new("secrets.toml"))), None);
+    assert_eq!(cache_path(None), None);
+}

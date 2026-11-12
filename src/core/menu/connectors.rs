@@ -829,6 +829,7 @@ impl Connectors {
     pub(super) fn link_reply(
         &mut self,
         reply: Result<String, String>,
+        said: Option<String>,
         room: usize,
     ) -> Option<Option<String>> {
         let discards = self.linking.take()?;
@@ -844,7 +845,8 @@ impl Connectors {
         if here && self.prompt.is_none() {
             self.ask(Prompt::Link { line, discards }, room);
         }
-        Some(None)
+        // The fallback notice stays in the footer while the prompt shows.
+        Some(said)
     }
 
     fn ask_probe(&mut self, entry: &Entry, room: usize) -> MenuCommand {

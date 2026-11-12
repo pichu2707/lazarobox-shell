@@ -614,7 +614,10 @@ fn g_links_search_console_first_then_workspace() {
         file: "/h/.config/lazarobox/google-oauth-client.json".to_owned(),
     };
     assert_eq!(press(&mut m, 'g'), MenuCommand::LinkGsc(plan));
-    assert_eq!(m.link_reply(Ok("the line".to_owned())), MenuCommand::None);
+    assert_eq!(
+        m.link_reply(Ok("the line".to_owned()), None),
+        MenuCommand::None
+    );
     assert!(
         texts(&m)[0].starts_with("link gsc"),
         "the prompt on this screen"

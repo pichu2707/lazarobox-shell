@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 
 use super::*;
+use crate::runtime::hf::Curl;
 
 fn plan() -> Plan {
     Plan {
@@ -187,9 +188,10 @@ async fn the_linker_answers_one_event_and_a_missing_client_file_runs_no_uv() {
         dir: dir.path().join("mcp-gsc").display().to_string(),
         file: dir.path().join("none.json").display().to_string(),
     };
-    Linker::new(tx, None).check(missing);
+    let fetch = Fetch::new(Curl::google_client(std::ffi::OsString::new()), None, None);
+    Linker::new(tx, None, fetch).check(missing);
     match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
-        Ok(Some(AppEvent::GscLine(reply))) => assert_eq!(reply, Err(NO_CLIENT.to_owned())),
+        Ok(Some(AppEvent::GscLine(reply, None))) => assert_eq!(reply, Err(NO_CLIENT.to_owned())),
         other => panic!("no answer: {other:?}"),
     }
 }

@@ -16,6 +16,16 @@ pub const CACHE_FILE: &str = "lazarobox-google-client.json";
 /// The path of the file on `https://www.javilazaro.es`.
 pub const URL_PATH: &str = "/lazarobox/google-client.json";
 
+/// The absolute path of the cache next to `secrets.toml` (so it honours
+/// `XDG_CONFIG_HOME`); `None` without an absolute one. The planner and the
+/// `f` preset write this path, and Link fetches when the plan holds it.
+pub fn cache_path(secrets: Option<&std::path::Path>) -> Option<String> {
+    let path = secrets?.parent()?.join(CACHE_FILE);
+    path.is_absolute()
+        .then(|| path.to_str().map(str::to_owned))
+        .flatten()
+}
+
 /// The screen's client line on this route.
 pub const CLIENT_LINE: &str = "client: lazarobox (fetched from www.javilazaro.es when you link)";
 

@@ -36,7 +36,7 @@ fn ready() -> MenuState {
 fn prompted() -> MenuState {
     let mut m = ready();
     assert_eq!(press(&mut m, 'g'), MenuCommand::LinkGsc(plan()));
-    assert_eq!(m.link_reply(Ok(LINE.to_owned())), MenuCommand::None);
+    assert_eq!(m.link_reply(Ok(LINE.to_owned()), None), MenuCommand::None);
     m
 }
 
@@ -145,7 +145,7 @@ fn a_refused_check_shows_its_notice_and_no_prompt() {
     let mut m = ready();
     press(&mut m, 'g');
     let why = "mcp-search-console 0.4.3; run: uv tool install --force mcp-search-console==0.4.2";
-    assert_eq!(m.link_reply(Err(why.to_owned())), MenuCommand::None);
+    assert_eq!(m.link_reply(Err(why.to_owned()), None), MenuCommand::None);
     assert_eq!(hint(&m), why);
     assert!(texts(&m)[0].starts_with("Search Console"));
 }
@@ -155,11 +155,11 @@ fn an_answer_after_the_area_was_left_prompts_nothing() {
     let mut m = ready();
     press(&mut m, 'g');
     send(&mut m, key(KeyCode::Esc));
-    assert_eq!(m.link_reply(Ok(LINE.to_owned())), MenuCommand::None);
+    assert_eq!(m.link_reply(Ok(LINE.to_owned()), None), MenuCommand::None);
     assert!(!texts(&m).concat().contains("link gsc"));
     // An answer nobody asked for is dropped too.
     let mut m = ready();
-    assert_eq!(m.link_reply(Ok(LINE.to_owned())), MenuCommand::None);
+    assert_eq!(m.link_reply(Ok(LINE.to_owned()), None), MenuCommand::None);
     assert!(
         texts(&m)[0].starts_with("Search Console"),
         "{:?}",
