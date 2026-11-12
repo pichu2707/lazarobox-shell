@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-11-12
+
 ### Added
 
 - **Connect Google** in the `Connectors` area (the first row): one screen that
@@ -2844,7 +2846,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.24.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.25.0...HEAD
+[1.25.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.22.0...v1.23.0
 [1.22.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.21.0...v1.22.0
