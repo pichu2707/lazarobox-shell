@@ -75,6 +75,7 @@ pub fn check(
     plan: &Plan,
     run: &impl Fn(&[&str]) -> Result<String, Fail>,
     exists: impl Fn(&Path) -> bool,
+    opener: Option<&str>,
 ) -> Result<String, String> {
     if !exists(Path::new(&plan.file)) {
         return Err(NO_CLIENT.to_owned());
@@ -86,25 +87,36 @@ pub fn check(
     gsc::pinned(&run(&["tool", "list"]).map_err(said)?)?;
     let dir = run(&["tool", "dir"]).map_err(said)?;
     let dir = gsc::tool_dir(&dir).ok_or_else(|| gsc::NO_TOOL_DIR.to_owned())?;
-    gsc::login_line(&dir, plan).map_err(str::to_owned)
+    gsc::login_line(&dir, plan, opener).map_err(str::to_owned)
 }
 
 /// Answers each `Effect::LinkGsc` with one `AppEvent::GscLine`.
 pub struct Linker {
     events: mpsc::Sender<AppEvent>,
+    /// The name of the program lazarobox opens links with, handed to the
+    /// login line as `BROWSER`; `None` when the host has none.
+    opener: Option<String>,
 }
 
 impl Linker {
-    pub fn new(events: mpsc::Sender<AppEvent>) -> Self {
-        Self { events }
+    pub fn new(events: mpsc::Sender<AppEvent>, opener: Option<String>) -> Self {
+        Self { events, opener }
     }
 
     /// Runs the checks on a blocking thread and sends the answer. A stat of
     /// the client file, then `uv`: nothing is spawned but `uv`.
     pub fn check(&self, plan: Plan) {
         let events = self.events.clone();
+        let opener = self.opener.clone();
         tokio::spawn(async move {
-            let run = move || check(&plan, &uv, |file| file.metadata().is_ok());
+            let run = move || {
+                check(
+                    &plan,
+                    &uv,
+                    |file| file.metadata().is_ok(),
+                    opener.as_deref(),
+                )
+            };
             let reply = tokio::task::spawn_blocking(run)
                 .await
                 .unwrap_or_else(|_| Err("the check failed".to_owned()));

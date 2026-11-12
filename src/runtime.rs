@@ -322,6 +322,8 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     // Looked up once, on the same PATH as the engines.
     let opener = opener::Opener::find(&cli_env.path);
     app = app.with_opener(opener.is_some());
+    // Link with Google for `gsc` opens the browser through this opener too.
+    let browser = opener.as_ref().map(|o| o.name().to_owned());
     // The local clipboard tool of this session, looked up once on the same
     // PATH; none over SSH, where the terminal's clipboard is the one that
     // matters.
@@ -702,7 +704,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
             hub_tx.clone(),
         ))
         // Link with Google for `gsc` (S6b1): the `uv` checks, nothing else.
-        .with_link(mcp::link::Linker::new(hub_tx.clone()))
+        .with_link(mcp::link::Linker::new(hub_tx.clone(), browser))
         // The menu's secret field and backup deletion (S6a2): the only writer
         // of `secrets.toml`, reachable from those two effects only.
         .with_secrets(secrets_write::Writer::new(

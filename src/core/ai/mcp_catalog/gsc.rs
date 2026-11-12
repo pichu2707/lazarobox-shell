@@ -8,6 +8,7 @@ use crate::core::ai::{
     config::McpServer,
     sanitize::{clean, is_format},
 };
+use crate::core::opener::leading_args;
 
 pub const UNFILLED: &str = "fill the OAuth values in Connectors (f)";
 pub const NOT_LINKED: &str = "not linked; open Connectors and use Link with Google";
@@ -174,10 +175,29 @@ fn quoted(value: &str) -> Result<String, &'static str> {
 /// The login line, from resolved values, each single-quoted. It runs the
 /// server's own OAuth function outside MCP, with the scrubbed environment the
 /// chat server gets, so the token lands where the chat looks for it.
-pub fn login_line(tool_dir: &str, plan: &Plan) -> Result<String, &'static str> {
+///
+/// `opener` is the program lazarobox opens links with (a name from
+/// [`candidates`](crate::core::opener::candidates)), passed as `BROWSER`:
+/// the OAuth flow opens the browser through Python's `webbrowser`, which on
+/// WSL picks `xdg-open` and fails silently when no Linux browser is
+/// installed. With `None`, Python picks the browser as it would.
+pub fn login_line(
+    tool_dir: &str,
+    plan: &Plan,
+    opener: Option<&str>,
+) -> Result<String, &'static str> {
     let python = quoted(&format!("{tool_dir}/mcp-search-console/bin/python"))?;
+    let browser = match opener {
+        Some(name) => {
+            let mut words = vec![name];
+            words.extend(leading_args(name));
+            words.push("%s");
+            format!("BROWSER={} ", quoted(&words.join(" "))?)
+        }
+        None => String::new(),
+    };
     Ok(format!(
-        "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u GSC_ALLOW_DESTRUCTIVE -u GSC_SKIP_OAUTH GSC_CONFIG_DIR={} GSC_OAUTH_CLIENT_SECRETS_FILE={} {python} -I -c 'import os; os.umask(0o077); import gsc_server as g; g.get_gsc_service_oauth(); print(\"Search Console linked\")'",
+        "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u GSC_ALLOW_DESTRUCTIVE -u GSC_SKIP_OAUTH {browser}GSC_CONFIG_DIR={} GSC_OAUTH_CLIENT_SECRETS_FILE={} {python} -I -c 'import os; os.umask(0o077); import gsc_server as g; g.get_gsc_service_oauth(); print(\"Search Console linked\")'",
         quoted(&plan.dir)?,
         quoted(&plan.file)?,
     ))
