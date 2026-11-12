@@ -306,11 +306,17 @@ impl Connectors {
         if !missing.is_empty() {
             return format!("values missing: {}", missing.join(", "));
         }
+        let link = match self.presence.as_ref().and_then(|p| p.linked()) {
+            Some(_) if entry.id != "gsc" => "",
+            Some(true) => " · linked",
+            Some(false) => " · not linked",
+            None => "",
+        };
         match self.probes.get(entry.id).map(|p| p.verdict) {
-            Some(Verdict::Started) => "declared · probe: started".to_owned(),
-            Some(Verdict::Failed) => "declared · probe: failed".to_owned(),
-            Some(Verdict::Stopped) => "declared · probe: stopped".to_owned(),
-            None => "declared".to_owned(),
+            Some(Verdict::Started) => format!("declared{link} · probe: started"),
+            Some(Verdict::Failed) => format!("declared{link} · probe: failed"),
+            Some(Verdict::Stopped) => format!("declared{link} · probe: stopped"),
+            None => format!("declared{link}"),
         }
     }
 

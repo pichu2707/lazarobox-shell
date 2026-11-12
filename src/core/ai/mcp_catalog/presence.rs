@@ -6,9 +6,10 @@
 use std::{
     collections::{HashMap, HashSet},
     io,
+    path::Path,
 };
 
-use super::entries;
+use super::{entries, gsc};
 use crate::core::{
     ai::{config::McpServer, mcp_secrets::Loaded},
     config::Config,
@@ -29,6 +30,8 @@ pub struct Presence {
     client: bool,
     /// The home folder, for the presets that live under it.
     home: Option<String>,
+    /// `gsc` in its OAuth way: whether its token file exists (`stat` only).
+    linked: Option<bool>,
     /// What made `secrets.toml` unused or partly unused: one line each, naming
     /// a table, a key or a path at most, never a value.
     pub problems: Vec<String>,
@@ -91,6 +94,7 @@ impl Presence {
             backup: false,
             client: false,
             home: None,
+            linked: None,
             problems: loaded.problems.clone(),
         }
     }
@@ -103,6 +107,20 @@ impl Presence {
     pub fn with_home(mut self, home: Option<String>) -> Self {
         self.home = home;
         self
+    }
+
+    /// Looks for the token of a declared `gsc` whose values select the OAuth
+    /// way: `exists` is a `stat`, and the file is never opened.
+    pub fn with_token(mut self, exists: impl Fn(&Path) -> bool) -> Self {
+        let value = |name: &str| self.shown("gsc", name).map(str::to_owned);
+        let server = self.servers.iter().flatten().find(|s| s.name == "gsc");
+        self.linked = server.and_then(|s| gsc::linked(s, &value, exists));
+        self
+    }
+
+    /// `Some(linked)` when `gsc` is in its OAuth way.
+    pub fn linked(&self) -> Option<bool> {
+        self.linked
     }
 
     pub fn backup(&self) -> bool {
