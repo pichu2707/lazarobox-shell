@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-11-12
+
 ### Fixed
 
 - With ORCH on, the claude coordinator no longer answers a file change with a
@@ -2743,7 +2745,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.20.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.21.0...HEAD
+[1.21.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.17.0...v1.18.0
