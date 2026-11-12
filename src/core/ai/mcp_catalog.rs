@@ -156,11 +156,12 @@ impl Entry {
     /// The names the user still has to fill. With ways, the first way the
     /// table completes decides (so an S5 service-account table is complete),
     /// else the first (default) way names what is missing. Only names the user
-    /// types count: a preset is filled by the template.
+    /// types count: a preset is filled by the template, except a path under
+    /// `$HOME`, which the template leaves empty (it is written absolute).
     pub fn missing(&self, has: impl Fn(&str) -> bool) -> Vec<&'static str> {
         let unset = |vars: &'static [Var]| -> Vec<&'static str> {
             vars.iter()
-                .filter(|v| v.secret && v.preset.is_none())
+                .filter(|v| v.secret && (v.preset.is_none() || v.under_home))
                 .filter(|v| !has(v.name))
                 .map(|v| v.name)
                 .collect()

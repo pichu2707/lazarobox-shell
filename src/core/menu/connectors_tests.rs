@@ -185,7 +185,7 @@ fn gsc_is_declared_with_only_its_key_path() {
     };
     assert_eq!(
         state(""),
-        "Search Console: values missing: GSC_CREDENTIALS_PATH"
+        "Search Console: values missing: GSC_OAUTH_CLIENT_SECRETS_FILE, GSC_CONFIG_DIR"
     );
     let s5 = "[gsc]\nGSC_CREDENTIALS_PATH = \"/p.json\"\nGSC_SKIP_OAUTH = \"true\"\n";
     assert_eq!(state(s5), "Search Console: declared");
