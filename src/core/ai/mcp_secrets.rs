@@ -284,11 +284,16 @@ fn shown(name: &str) -> String {
 }
 
 mod client;
+mod lazarobox_client;
 mod save;
 mod text;
 pub use client::{
     BAD_ID, BAD_SECRET, CLIENT_BACKUP, CLIENT_FILE, CLIENT_MAX, Client, client_json, read_client,
     valid_id, valid_secret,
+};
+pub use lazarobox_client::{
+    CACHE_FILE, CLIENT_LINE, PROJECT_NUMBER, URL_PATH, Why, accept, failure_notice,
+    fallback_notice, not_saved_notice, pinned,
 };
 pub use save::{Refusal, edit, edit_all, line_of};
 pub use text::SecretText;
