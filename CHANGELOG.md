@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- In the `Connectors` area, `o` in the values of `ga4` or `gsc` opens a form for
+  your Desktop OAuth client: the client id is shown as you type it and the
+  client secret is masked. It writes `google-oauth-client.json` (mode 0600) in
+  the lazarobox config folder, the file the `ga4` login reads, with the same
+  safety checks as `secrets.toml`. An existing file is replaced only after you
+  answer `y`, and its previous bytes stay in `google-oauth-client.json.bak`.
+
 ## [1.21.0] - 2026-11-12
 
 ### Fixed

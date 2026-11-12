@@ -1069,6 +1069,14 @@ pub enum MenuCommand {
         name: &'static str,
         value: SecretText,
     },
+    /// A confirmed OAuth client form: write `google-oauth-client.json`
+    /// (mcp-secrets, OAuth client file). `replace` is the user's `y` over an
+    /// existing file. The reply comes back through [`MenuState::secret_reply`].
+    SaveClient {
+        id: String,
+        secret: SecretText,
+        replace: bool,
+    },
     /// `y` on the backup deletion prompt; the reply comes back through
     /// [`MenuState::backup_reply`].
     DeleteBackup,

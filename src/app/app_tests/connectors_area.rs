@@ -417,3 +417,41 @@ fn nothing_but_a_confirmed_field_or_a_confirmed_backup_prompt_writes() {
         "{effects:?}"
     );
 }
+
+// ---- S6a3: the client form through the app ----------------------------------
+
+/// The `ga4` fields list over a chat, with `o` pressed.
+fn client_form_in_a_chat() -> App {
+    let mut a = super::run_pane::one_shell_and_a_chat("hello");
+    for e in [
+        ctrl_space(),
+        key('m'),
+        key('4'),
+        code(KeyCode::Enter),
+        key('j'),
+        code(KeyCode::Enter),
+        key('f'),
+        key('o'),
+    ] {
+        tap(&mut a, e);
+    }
+    a
+}
+
+#[test]
+fn a_confirmed_client_form_becomes_one_save_client_effect_and_the_paste_stays_in_the_form() {
+    let mut a = client_form_in_a_chat();
+    let id = "123-abc.apps.googleusercontent.com";
+    assert_eq!(tap(&mut a, AppEvent::Paste(id.to_owned())), []);
+    assert_eq!(tap(&mut a, code(KeyCode::Enter)), []);
+    assert_eq!(tap(&mut a, AppEvent::Paste("GOCSPX-abc".to_owned())), []);
+    assert_eq!(super::run_pane::chat(&a, id2()).composer().text(), "");
+    assert_eq!(
+        tap(&mut a, code(KeyCode::Enter)),
+        [Effect::SaveClient {
+            id: id.to_owned(),
+            secret: secret("GOCSPX-abc"),
+            replace: false
+        }]
+    );
+}
