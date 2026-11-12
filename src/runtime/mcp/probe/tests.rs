@@ -277,7 +277,11 @@ async fn a_gsc_probe_without_a_token_is_refused_with_a_notice_and_no_spawn() {
     );
     let mut server = lab.recorder(
         "gsc",
-        &["GSC_OAUTH_CLIENT_SECRETS_FILE", "GSC_CONFIG_DIR", "GSC_SKIP_OAUTH"],
+        &[
+            "GSC_OAUTH_CLIENT_SECRETS_FILE",
+            "GSC_CONFIG_DIR",
+            "GSC_SKIP_OAUTH",
+        ],
     );
     server.name = "gsc".to_owned();
     let report = run(&lab, &server, Some(&file)).await;
