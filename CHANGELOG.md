@@ -10,6 +10,22 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **Link Search Console with the lazarobox client.** With Search Console ticked
+  alone, Connect Google plans `GSC_OAUTH_CLIENT_SECRETS_FILE` on a Desktop
+  OAuth client that Link with Google fetches from `www.javilazaro.es` on every
+  Link and keeps in `lazarobox-google-client.json` next to `secrets.toml` (mode
+  0600, no `.bak`), with no Google Cloud step. `u` chooses your own client
+  instead (`o` too), Workspace always uses your own client, and Enter on the
+  `GSC_OAUTH_CLIENT_SECRETS_FILE` row of the `gsc` entry switches between the
+  two. If the fetch fails, a valid saved copy is used with a notice; with none,
+  Link stops with a notice that offers your own client. The route stays off
+  (with its notice) in builds without the project number. The request is one
+  `GET` that reveals your IP address and the version (`User-Agent`), made only
+  on Link with this client; the README "Sin telemetría" lists say so. Users
+  already linked with their own client are untouched.
+
 ## [1.25.0] - 2026-11-12
 
 ### Added
