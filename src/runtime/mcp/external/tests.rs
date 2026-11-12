@@ -292,3 +292,76 @@ async fn each_server_gets_only_its_own_tables_values() {
     assert!(has(&envs[1], "GOOGLE_CLOUD_PROJECT=my-project"), "{envs:?}");
     assert!(!names(&envs[1]).contains(&"CLARITY_API_TOKEN"), "{envs:?}");
 }
+
+// Spec mcp-catalog, Not linked is refused at chat start; OAuth way without a
+// usable GSC_CONFIG_DIR (6b1.5).
+const GSC_ENV: [&str; 4] = [
+    "GSC_OAUTH_CLIENT_SECRETS_FILE",
+    "GSC_CONFIG_DIR",
+    "GSC_CREDENTIALS_PATH",
+    "GSC_SKIP_OAUTH",
+];
+
+fn gsc_values(dir: &str) -> Secrets {
+    secrets(&format!(
+        "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/c.json\"\nGSC_CONFIG_DIR = \"{dir}\"\nGSC_SKIP_OAUTH = \"false\"\n"
+    ))
+}
+
+async fn gsc_start(lab: &super::fake::Lab, name: &str, file: &Secrets) -> ExternalSet {
+    let server = lab.recorder(name, &GSC_ENV);
+    let set = ExternalSet::start_with(&[&server], &lab.home, host_env, file, timeouts(LONG)).await;
+    set.shutdown().await;
+    set
+}
+
+#[tokio::test]
+async fn gsc_with_oauth_values_and_no_token_is_not_spawned_and_says_so_once() {
+    let lab = lab();
+    let dir = lab.home.join("mcp-gsc");
+    let set = gsc_start(&lab, "gsc", &gsc_values(dir.to_str().unwrap())).await;
+    assert_eq!(
+        set.notices(),
+        ["mcp: gsc unavailable: not linked; open Connectors and use Link with Google"]
+    );
+    assert!(lab.env_of("gsc").is_empty(), "the server was spawned");
+}
+
+#[tokio::test]
+async fn gsc_with_a_token_starts_normally() {
+    let lab = lab();
+    let dir = lab.home.join("mcp-gsc");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("token.json"), "{}").unwrap();
+    let set = gsc_start(&lab, "gsc", &gsc_values(dir.to_str().unwrap())).await;
+    assert!(set.notices().is_empty(), "{:?}", set.notices());
+    assert!(has(&lab.env_of("gsc"), &format!("GSC_CONFIG_DIR={}", dir.display())));
+}
+
+#[tokio::test]
+async fn gsc_without_a_usable_config_dir_is_not_spawned() {
+    let lab = lab();
+    for dir in ["", "~/.config/mcp-gsc", "relative"] {
+        let set = gsc_start(&lab, "gsc", &gsc_values(dir)).await;
+        assert_eq!(
+            set.notices(),
+            ["mcp: gsc unavailable: fill the OAuth values in Connectors (f)"],
+            "{dir:?}"
+        );
+        assert!(lab.env_of("gsc").is_empty(), "{dir:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_service_account_way_and_another_name_start_without_a_token() {
+    let lab = lab();
+    let key = secrets("[gsc]\nGSC_CREDENTIALS_PATH = \"/k.json\"\nGSC_SKIP_OAUTH = \"true\"\n");
+    let set = gsc_start(&lab, "gsc", &key).await;
+    assert!(set.notices().is_empty(), "{:?}", set.notices());
+    assert!(!lab.env_of("gsc").is_empty());
+    // Another name gets neither the hidden tool nor the check (documented).
+    let other = secrets("[search]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/c.json\"\nGSC_SKIP_OAUTH = \"false\"\n");
+    let set = gsc_start(&lab, "search", &other).await;
+    assert!(set.notices().is_empty(), "{:?}", set.notices());
+    assert!(!lab.env_of("search").is_empty());
+}
