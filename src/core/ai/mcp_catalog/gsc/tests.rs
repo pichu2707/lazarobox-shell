@@ -27,6 +27,10 @@ fn values<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String
     }
 }
 
+fn home() -> &'static Path {
+    Path::new("/h")
+}
+
 const OAUTH: [(&str, &str); 3] = [
     (
         "GSC_OAUTH_CLIENT_SECRETS_FILE",
@@ -42,7 +46,7 @@ const OAUTH: [(&str, &str); 3] = [
 fn oauth_values_without_a_token_are_refused_as_not_linked() {
     let s = server("gsc", &ALL);
     let seen = std::cell::RefCell::new(Vec::new());
-    let refusal = start_refusal(&s, &values(&OAUTH), |p| {
+    let refusal = start_refusal(&s, home(), &values(&OAUTH), |p| {
         seen.borrow_mut().push(p.to_owned());
         false
     });
@@ -60,7 +64,7 @@ fn oauth_values_without_a_token_are_refused_as_not_linked() {
 #[test]
 fn a_token_lets_the_start_through() {
     let s = server("gsc", &ALL);
-    assert_eq!(start_refusal(&s, &values(&OAUTH), |_| true), None);
+    assert_eq!(start_refusal(&s, home(), &values(&OAUTH), |_| true), None);
 }
 
 #[test]
@@ -71,7 +75,9 @@ fn a_missing_or_relative_config_dir_is_refused_without_looking_for_a_token() {
         if let Some(dir) = &dir {
             pairs.push(("GSC_CONFIG_DIR", dir));
         }
-        let refusal = start_refusal(&s, &values(&pairs), |_| panic!("no stat without a folder"));
+        let refusal = start_refusal(&s, home(), &values(&pairs), |_| {
+            panic!("no stat without a folder")
+        });
         assert_eq!(refusal, Some(UNFILLED), "{dir:?}");
     }
     assert_eq!(UNFILLED, "fill the OAuth values in Connectors (f)");
@@ -87,27 +93,30 @@ fn the_service_account_way_and_old_entries_are_never_refused() {
     // An S5 entry pasted before the OAuth way: it names neither OAuth value.
     let s5 = server("gsc", &["GSC_CREDENTIALS_PATH", "GSC_SKIP_OAUTH"]);
     let host = [OAUTH[0], OAUTH[1], ("GSC_SKIP_OAUTH", "true")];
-    for skip in ["true", "1", "yes", "TRUE", " Yes "] {
+    for skip in ["true", "1", "yes", "TRUE", "Yes"] {
         let pairs = [OAUTH[0], OAUTH[1], ("GSC_SKIP_OAUTH", skip)];
         assert_eq!(
-            start_refusal(&new, &values(&pairs), |_| false),
+            start_refusal(&new, home(), &values(&pairs), |_| false),
             None,
             "{skip}"
         );
     }
-    assert_eq!(start_refusal(&new, &values(&key), |_| false), None);
-    assert_eq!(start_refusal(&s5, &values(&key), |_| false), None);
+    assert_eq!(start_refusal(&new, home(), &values(&key), |_| false), None);
+    assert_eq!(start_refusal(&s5, home(), &values(&key), |_| false), None);
     // The server only gets the names it lists: a host value of the others
     // does not select OAuth.
-    assert_eq!(start_refusal(&s5, &values(&host), |_| false), None);
+    assert_eq!(start_refusal(&s5, home(), &values(&host), |_| false), None);
     let host_oauth = [OAUTH[0], OAUTH[1]];
-    assert_eq!(start_refusal(&s5, &values(&host_oauth), |_| false), None);
+    assert_eq!(
+        start_refusal(&s5, home(), &values(&host_oauth), |_| false),
+        None
+    );
 }
 
 #[test]
 fn another_name_is_not_covered() {
     let s = server("search", &ALL);
-    assert_eq!(start_refusal(&s, &values(&OAUTH), |_| false), None);
+    assert_eq!(start_refusal(&s, home(), &values(&OAUTH), |_| false), None);
 }
 
 #[test]
@@ -276,4 +285,48 @@ fn the_line_stays_outside_mcp_and_names_no_confidential_value() {
     }
     assert!(line.contains("GSC_CONFIG_DIR='/h/.config/mcp-gsc'"));
     assert!(line.chars().all(|c| !c.is_control()));
+}
+
+// W3: the server does `.lower() in ("true", "1", "yes")` with no trim, so a
+// padded value is not a skip there and must not be one here.
+#[test]
+fn a_padded_skip_value_is_not_a_skip() {
+    let s = server("gsc", &ALL);
+    for skip in ["true ", " true", "yes\n", "1 "] {
+        let pairs = [OAUTH[0], OAUTH[1], ("GSC_SKIP_OAUTH", skip)];
+        let refusal = start_refusal(&s, home(), &values(&pairs), |_| false);
+        assert_eq!(refusal, Some(NOT_LINKED), "{skip:?}");
+        assert_eq!(
+            linked(&s, &values(&pairs), |_| false),
+            Some(false),
+            "{skip:?}"
+        );
+    }
+}
+
+// W2: the token folder must be one the tools already refuse to read.
+#[test]
+fn a_token_folder_the_tools_could_read_is_refused() {
+    let s = server("gsc", &ALL);
+    for dir in [
+        "/tmp/x",
+        "/h",
+        "/h/.config",
+        "/h/.config/mcp-gscx",
+        "/h/.config/mcp-gsc/../x",
+        "/other/.config/mcp-gsc",
+    ] {
+        let pairs = [OAUTH[0], ("GSC_CONFIG_DIR", dir), OAUTH[2]];
+        let refusal = start_refusal(&s, home(), &values(&pairs), |_| panic!("no stat"));
+        assert_eq!(refusal, Some(OUTSIDE), "{dir}");
+    }
+    for dir in [
+        "/h/.config/mcp-gsc",
+        "/h/.config/mcp-gsc/sub",
+        "/h/Library/Application Support/mcp-gsc",
+    ] {
+        let pairs = [OAUTH[0], ("GSC_CONFIG_DIR", dir), OAUTH[2]];
+        let refusal = start_refusal(&s, home(), &values(&pairs), |_| true);
+        assert_eq!(refusal, None, "{dir}");
+    }
 }

@@ -13,6 +13,8 @@ pub const PASS_DIR: &str =
     "the declared gsc entry does not pass GSC_CONFIG_DIR; paste the current entry";
 pub const PASS_FILE: &str =
     "the declared gsc entry does not pass GSC_OAUTH_CLIENT_SECRETS_FILE; paste the current entry";
+pub const OUTSIDE: &str =
+    "GSC_CONFIG_DIR must be under ~/.config/mcp-gsc; fix it in Connectors (f)";
 pub const BAD_PATH: &str = "a path holds a character the command cannot carry; choose another (f)";
 pub const NO_TOOL_DIR: &str = "uv tool dir did not print one absolute folder";
 pub const NO_UV: &str = "uv not found: install uv first";
@@ -48,7 +50,9 @@ impl Got {
 
     /// The server would start its browser flow when there is no token.
     fn oauth(&self) -> bool {
-        let skip = self.skip.trim().to_ascii_lowercase();
+        // The server compares `.lower()` with no trim: a padded value is not
+        // a skip there, so it is not one here (fail closed).
+        let skip = self.skip.to_ascii_lowercase();
         !self.file.is_empty() && !matches!(skip.as_str(), "true" | "1" | "yes")
     }
 
@@ -71,10 +75,12 @@ pub fn linked(
 }
 
 /// Why a start of `server` is refused, if it is: with no usable folder the
-/// server would look for its token elsewhere, and with no token any call
+/// server would look for its token elsewhere, with a folder the tools could
+/// read the token would be exposed to the model, and with no token any call
 /// starts a browser flow inside the call.
 pub fn start_refusal(
     server: &McpServer,
+    home: &Path,
     get: &impl Fn(&str) -> Option<String>,
     exists: impl Fn(&Path) -> bool,
 ) -> Option<&'static str> {
@@ -84,8 +90,20 @@ pub fn start_refusal(
     }
     match got.token() {
         None => Some(UNFILLED),
+        Some(_) if !denied(Path::new(&got.dir), home) => Some(OUTSIDE),
         Some(token) => (!exists(&token)).then_some(NOT_LINKED),
     }
+}
+
+/// Whether the model's tools already refuse to read `dir`: the default token
+/// folder of mcp-gsc on Linux or macOS, or a folder inside it. A `..` is
+/// refused (the path is not resolved here).
+pub fn denied(dir: &Path, home: &Path) -> bool {
+    let inside = |rel: &str| dir.starts_with(home.join(rel));
+    let plain = !dir
+        .components()
+        .any(|c| c == std::path::Component::ParentDir);
+    plain && (inside(".config/mcp-gsc") || inside("Library/Application Support/mcp-gsc"))
 }
 
 /// What the link line is built from, or why there is none: the declared
