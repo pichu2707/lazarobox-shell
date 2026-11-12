@@ -62,7 +62,9 @@ impl Reader {
             let presence = Presence::read(text, &loaded)
                 .with_backup(backup)
                 .with_client_file(client)
-                .with_home(home);
+                .with_home(home)
+                // A `stat`: a token file is never opened.
+                .with_token(|token| std::fs::metadata(token).is_ok());
             let _ = events.send(AppEvent::McpPresence(presence)).await;
         });
     }

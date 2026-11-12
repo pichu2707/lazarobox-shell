@@ -84,3 +84,42 @@ async fn the_client_file_is_noticed_when_it_exists() {
     let presence = asked(config, secrets).await;
     assert!(presence.client_file());
 }
+
+// Spec mcp-connect, Token files never opened: the state is a `stat`.
+#[tokio::test]
+async fn the_gsc_token_is_noticed_by_stat_and_never_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    let tokens = dir.path().join("mcp-gsc");
+    let config = dir.path().join("config.toml");
+    let secrets = dir.path().join("secrets.toml");
+    std::fs::write(
+        &config,
+        "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"x\"\n\
+         env = [\"GSC_OAUTH_CLIENT_SECRETS_FILE\", \"GSC_CONFIG_DIR\", \"GSC_SKIP_OAUTH\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &secrets,
+        format!(
+            "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/c.json\"\nGSC_CONFIG_DIR = \"{}\"\nGSC_SKIP_OAUTH = \"false\"\n",
+            tokens.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let presence = asked(config.clone(), secrets.clone()).await;
+    assert_eq!(presence.linked(), Some(false));
+    std::fs::create_dir_all(&tokens).unwrap();
+    let token = tokens.join("token.json");
+    std::fs::write(&token, "{\"refresh_token\":\"r\"}").unwrap();
+    // Mode 000: an open would fail, a stat does not.
+    std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let presence = asked(config, secrets).await;
+    assert_eq!(presence.linked(), Some(true));
+    assert!(!format!("{presence:?}").contains("refresh_token"));
+    std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&token).unwrap(),
+        "{\"refresh_token\":\"r\"}"
+    );
+}
