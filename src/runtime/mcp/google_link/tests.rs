@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 use super::*;
 use crate::{
     core::ai::{
-        mcp_catalog::link::{NO_LINK, Step},
+        mcp_catalog::link::{NO_LINK, Refused, Step},
         tools::mcp::PROTOCOL_VERSION,
     },
     runtime::{
@@ -111,6 +111,7 @@ fn real_stat(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
 }
 
+#[derive(Debug)]
 struct Run {
     result: Result<String, String>,
     steps: Vec<Step>,
@@ -269,7 +270,8 @@ async fn an_answer_without_an_acceptable_link_is_refused() {
     let evil = answer().replace("accounts.google.com", "evil.example");
     let server = google(&lab, &evil, FILE, false);
     let run = run(&lab, &server, quick()).await;
-    assert_eq!(run.result, Err(NO_LINK.to_owned()));
+    assert_eq!(run.result, Err(Refused::Shape.notice().to_owned()));
+    assert!(!format!("{run:?}").contains("evil.example"));
     assert!(run.steps.is_empty());
     assert_reaped(&lab);
 }
@@ -408,4 +410,15 @@ fn a_reason_is_short_clean_and_holds_no_value() {
 fn a_plain_answer_without_a_link_or_an_error_is_no_link() {
     assert_eq!(why(&said("hello\nthere", false), &[]), NO_LINK);
     assert_eq!(why(&said("", true), &[]), NO_LINK);
+}
+
+// S6b2 review: while it waits, another account's file is not this link.
+#[tokio::test]
+async fn a_change_to_another_accounts_file_is_not_success() {
+    let lab = lab();
+    let server = google(&lab, &answer(), "other@x.org.json", false);
+    let run = run(&lab, &server, quick()).await;
+    assert_eq!(run.result, Err("link timed out after 5 min".to_owned()));
+    assert!(creds(&lab).join("other@x.org.json").exists());
+    assert_reaped(&lab);
 }

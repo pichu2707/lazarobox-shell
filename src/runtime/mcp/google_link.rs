@@ -19,7 +19,7 @@ use crate::{
     app::AppEvent,
     core::ai::{
         config::McpServer,
-        mcp_catalog::link::{Ask, NO_LINK, Step, credentials_names, sign_in_url},
+        mcp_catalog::link::{Ask, NO_LINK, Refused, Step, credentials_names, sign_in_url},
         mcp_secrets::{redact_list, redact_values},
         sanitize::clean,
     },
@@ -153,8 +153,10 @@ async fn drive(
             ClientError::Closed => STOPPED.to_owned(),
             other => failed(&other.reason(), values),
         })?;
-    let Some(url) = sign_in_url(&outcome.text, &ask.client_id) else {
-        return Err(why(&outcome, values));
+    let url = match sign_in_url(&outcome.text, &ask.client_id) {
+        Ok(url) => url,
+        Err(Refused::NoLink) => return Err(why(&outcome, values)),
+        Err(refused) => return Err(refused.notice().to_owned()),
     };
     let _ = events
         .send(AppEvent::McpLink(Step::Waiting(url.to_owned())))
