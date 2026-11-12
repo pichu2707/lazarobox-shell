@@ -237,24 +237,39 @@ fn the_ga4_guide_warns_about_testing_clients() {
     assert!(guide.contains("google-oauth-client.json"));
 }
 
-// 5.1 gsc with a service account
+// 5.1 gsc with two ways (6b1.0)
 
 #[test]
-fn gsc_uses_a_service_account_and_never_names_the_destructive_flag() {
+fn gsc_has_two_ways_and_never_names_the_destructive_flag() {
     let e = entry("gsc").unwrap();
     assert_eq!(e.install, "uv tool install mcp-search-console==0.4.2");
     assert_eq!(e.command, "mcp-search-console");
     assert!(e.login.is_none());
     let server = parse_snippet(e);
-    assert_eq!(server.env, ["GSC_CREDENTIALS_PATH", "GSC_SKIP_OAUTH"]);
+    assert_eq!(
+        server.env,
+        [
+            "GSC_OAUTH_CLIENT_SECRETS_FILE",
+            "GSC_CONFIG_DIR",
+            "GSC_CREDENTIALS_PATH",
+            "GSC_SKIP_OAUTH"
+        ]
+    );
     let all = format!("{}{:?}", snippet(e), e);
     assert!(!all.contains("GSC_ALLOW_DESTRUCTIVE"), "{all}");
 }
 
 #[test]
-fn the_gsc_guide_walks_through_the_service_account() {
+fn the_gsc_guide_walks_through_both_ways() {
     let guide = entry("gsc").unwrap().guide.join("\n");
     for word in [
+        "Desktop",
+        "google-oauth-client.json",
+        "(o)",
+        "Link with Google",
+        "umask 077",
+        "under ~/.config/mcp-gsc",
+        "refused at start",
         "service account",
         "Search Console API",
         "JSON",

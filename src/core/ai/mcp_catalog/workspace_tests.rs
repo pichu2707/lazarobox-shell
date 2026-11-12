@@ -81,7 +81,9 @@ fn a_secret_is_confidential_unless_it_opts_out_and_the_shown_set_is_listed() {
         [
             "GOOGLE_CLOUD_PROJECT",
             "GOOGLE_OAUTH_CLIENT_ID",
+            "GSC_CONFIG_DIR",
             "GSC_CREDENTIALS_PATH",
+            "GSC_OAUTH_CLIENT_SECRETS_FILE",
             "GSC_SKIP_OAUTH",
             "USER_GOOGLE_EMAIL",
             "WORKSPACE_MCP_DISABLE_LOCAL_FILES",
@@ -179,20 +181,44 @@ fn ways_resolve_their_own_presets_with_an_absolute_path_and_no_tilde() {
 }
 
 #[test]
-fn gsc_is_the_service_account_only_until_the_oauth_way_returns_with_its_link() {
+fn gsc_has_an_oauth_way_first_and_a_service_account_way() {
     let e = entry("gsc").unwrap();
-    // The OAuth way waits for S6b1: without the start refusal a chat call
-    // could run the server's browser flow and hang.
-    assert_eq!(e.ways.len(), 1);
-    assert_eq!(e.ways[0].title, "Service account");
-    assert_eq!(e.env.len(), 2);
-    let text = format!("{e:?}");
-    for word in ["OAUTH_CLIENT", "GSC_CONFIG_DIR", "Link", "\"false\""] {
-        assert!(!text.contains(word), "{word}");
+    assert_eq!(e.ways.len(), 2);
+    assert_eq!(e.ways[0].title, "OAuth");
+    assert_eq!(
+        e.ways[0].values("/h"),
+        [
+            (
+                "GSC_OAUTH_CLIENT_SECRETS_FILE",
+                "/h/.config/lazarobox/google-oauth-client.json".to_owned()
+            ),
+            ("GSC_CONFIG_DIR", "/h/.config/mcp-gsc".to_owned()),
+            ("GSC_SKIP_OAUTH", "false".to_owned()),
+        ]
+    );
+    assert_eq!(
+        e.ways[1].values("/h"),
+        [
+            ("GSC_CREDENTIALS_PATH", String::new()),
+            ("GSC_SKIP_OAUTH", "true".to_owned()),
+        ]
+    );
+    for way in e.ways {
+        for (name, value) in way.values("/h") {
+            assert!(!value.contains('~'), "{name}");
+        }
     }
+    // The OAuth way comes back only with the Link action.
+    assert_eq!(e.link, Link::Login);
+    assert!(e.ways[0].login.is_none() && e.login.is_none());
+}
+
+#[test]
+fn the_gsc_template_keeps_the_service_account_values_of_s5() {
+    let e = entry("gsc").unwrap();
     assert_eq!(
         secrets_template(e).unwrap(),
-        "[gsc]\nGSC_CREDENTIALS_PATH = \"\"\nGSC_SKIP_OAUTH = \"true\"\n"
+        "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"\"\nGSC_CONFIG_DIR = \"\"\nGSC_CREDENTIALS_PATH = \"\"\nGSC_SKIP_OAUTH = \"true\"\n"
     );
 }
 
@@ -208,14 +234,31 @@ fn gsc_hides_reauthenticate_and_names_no_destructive_flag() {
 fn a_table_with_only_the_key_path_is_complete_as_on_main() {
     let gsc = entry("gsc").unwrap();
     assert!(gsc.missing(|n| n == "GSC_CREDENTIALS_PATH").is_empty());
-    assert_eq!(gsc.missing(|_| false), ["GSC_CREDENTIALS_PATH"]);
+    // Nothing set: the OAuth way, the default, names what is missing. Its
+    // path presets are under `$HOME`, so the template cannot fill them.
+    assert_eq!(
+        gsc.missing(|_| false),
+        ["GSC_OAUTH_CLIENT_SECRETS_FILE", "GSC_CONFIG_DIR"]
+    );
     // With ways: the first complete way wins, else the first way names it.
     let e = two_ways();
     assert!(e.missing(|n| n == "KEY_PATH").is_empty());
-    assert_eq!(e.missing(|_| false), ["TOKEN_DIR"]);
+    assert_eq!(e.missing(|_| false), ["CLIENT_FILE", "TOKEN_DIR"]);
     let ga4 = entry("ga4").unwrap();
     assert_eq!(ga4.missing(|_| false), ["GOOGLE_CLOUD_PROJECT"]);
     assert!(entry("apps-script").unwrap().missing(|_| false).is_empty());
+}
+
+#[test]
+fn the_way_is_the_one_the_table_fills_completely_else_the_first() {
+    let gsc = entry("gsc").unwrap();
+    assert_eq!(gsc.way_for(|_| false), 0);
+    assert_eq!(gsc.way_for(|n| n == "GSC_CREDENTIALS_PATH"), 1);
+    let oauth = |n: &str| ["GSC_OAUTH_CLIENT_SECRETS_FILE", "GSC_CONFIG_DIR"].contains(&n);
+    assert_eq!(gsc.way_for(oauth), 0);
+    // Both complete: the first.
+    assert_eq!(gsc.way_for(|_| true), 0);
+    assert_eq!(entry("ga4").unwrap().way_for(|_| true), 0);
 }
 
 // 6c.3 google

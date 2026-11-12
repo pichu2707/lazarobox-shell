@@ -14,6 +14,33 @@ const SKIP: Var = Var {
     ..Var::SECRET
 };
 
+/// The OAuth way of `gsc`: the client file of the GA4 guide, a fixed token
+/// folder (mcp-gsc does not expand `~`, and a chat gets a scrubbed `XDG_*`),
+/// and the browser flow on.
+const OAUTH_FILE: Var = Var {
+    name: "GSC_OAUTH_CLIENT_SECRETS_FILE",
+    shown: true,
+    preset: Some(".config/lazarobox/google-oauth-client.json"),
+    under_home: true,
+    ..Var::SECRET
+};
+const OAUTH_DIR: Var = Var {
+    name: "GSC_CONFIG_DIR",
+    shown: true,
+    preset: Some(".config/mcp-gsc"),
+    under_home: true,
+    ..Var::SECRET
+};
+const OAUTH_ON: Var = Var {
+    preset: Some("false"),
+    ..SKIP
+};
+const KEY_PATH: Var = Var {
+    name: "GSC_CREDENTIALS_PATH",
+    shown: true,
+    ..Var::SECRET
+};
+
 const CLARITY: Entry = Entry {
     id: "clarity",
     title: "Clarity",
@@ -103,44 +130,43 @@ const GSC: Entry = Entry {
     install: "uv tool install mcp-search-console==0.4.2",
     command: "mcp-search-console",
     args: &[],
-    env: &[
-        Var {
-            name: "GSC_CREDENTIALS_PATH",
-            shown: true,
-            ..Var::SECRET
+    env: &[OAUTH_FILE, OAUTH_DIR, KEY_PATH, SKIP],
+    ways: &[
+        Way {
+            title: "OAuth",
+            vars: &[OAUTH_FILE, OAUTH_DIR, OAUTH_ON],
+            login: None,
         },
-        SKIP,
+        Way {
+            title: "Service account",
+            vars: &[KEY_PATH, SKIP],
+            login: None,
+        },
     ],
-    ways: &[Way {
-        title: "Service account",
-        vars: &[
-            Var {
-                name: "GSC_CREDENTIALS_PATH",
-                shown: true,
-                ..Var::SECRET
-            },
-            SKIP,
-        ],
-        login: None,
-    }],
     login: None,
-    link: Link::None,
+    link: Link::Login,
     hidden: &["reauthenticate"],
     gmail_allowlist: false,
     guide: &[
-        "Declare the server with name = \"gsc\": the hidden reauthenticate tool applies to that name only.",
+        "Two ways. Declare the server with name = \"gsc\": the hidden tool and the start check apply to that name only.",
+        "OAuth (your own client, the default):",
+        "1. In your own Google Cloud project, enable the Google Search Console API and create an OAuth client of type Desktop app (the one of the GA4 guide works).",
+        "2. Add the OAuth client in Connectors (o) or save its JSON as ~/.config/lazarobox/google-oauth-client.json. If the config folder is a symlink the menu save refuses; hand-editing still works.",
+        "3. Fill the values (f), keeping GSC_CONFIG_DIR under ~/.config/mcp-gsc (a start from another folder is refused), then use Link with Google (g): the browser opens once. The Link command creates the token and its folder private (umask 077); for a token made another way, run chmod 700 ~/.config/mcp-gsc and chmod 600 ~/.config/mcp-gsc/token.json. Link before the first chat call: a call made before linking is refused at start, and if calls hang, link again (Esc cancels the call).",
+        "Service account:",
         "1. In your own Google Cloud project, enable the Google Search Console API and create a service account.",
         "2. Create a JSON key for it and save it as ~/.config/lazarobox/gsc-service-account.json with mode 0600 (lazarobox refuses to read it).",
         "3. In Search Console, open Settings, Users and permissions, and add the service account e-mail as a user of the property (Restricted is enough for search analytics; if URL inspection is denied, use Full).",
-        "4. Put the path of the JSON file in secrets.toml under [gsc] as GSC_CREDENTIALS_PATH; GSC_SKIP_OAUTH is already \"true\". There is no login step.",
-        "Warning: the reauthenticate tool is useless with a service account (it deletes the token and starts a browser OAuth flow); lazarobox does not offer it to the model.",
+        "4. Choose this way (w), then put the path of the JSON file in secrets.toml under [gsc] as GSC_CREDENTIALS_PATH and set GSC_SKIP_OAUTH to \"true\". There is no login step.",
+        "The reauthenticate tool is hidden from chats: it deletes the token and starts a browser OAuth flow.",
     ],
     links: &[
+        "https://console.cloud.google.com/apis/credentials",
         "https://console.cloud.google.com/iam-admin/serviceaccounts",
         "https://search.google.com/search-console/users",
         "https://github.com/AminForou/mcp-gsc",
     ],
-    token_location: "the service-account JSON key (GSC_CREDENTIALS_PATH)",
+    token_location: "~/.config/mcp-gsc/token.json (OAuth) or the service-account JSON key (GSC_CREDENTIALS_PATH)",
     tools: &[
         ("get_capabilities", Class::Read),
         ("get_creator_info", Class::Read),

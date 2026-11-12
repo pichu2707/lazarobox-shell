@@ -185,7 +185,7 @@ fn gsc_is_declared_with_only_its_key_path() {
     };
     assert_eq!(
         state(""),
-        "Search Console: values missing: GSC_CREDENTIALS_PATH"
+        "Search Console: values missing: GSC_OAUTH_CLIENT_SECRETS_FILE, GSC_CONFIG_DIR"
     );
     let s5 = "[gsc]\nGSC_CREDENTIALS_PATH = \"/p.json\"\nGSC_SKIP_OAUTH = \"true\"\n";
     assert_eq!(state(s5), "Search Console: declared");
@@ -302,7 +302,7 @@ pub(super) fn entry(servers: Vec<McpServer>, at: usize) -> MenuState {
 }
 
 /// Every row of the entry screen, whatever the scroll.
-fn whole(m: &mut MenuState) -> Vec<String> {
+pub(super) fn whole(m: &mut MenuState) -> Vec<String> {
     let mut seen = texts(m);
     for _ in 0..60 {
         press(m, 'j');
@@ -752,4 +752,63 @@ fn a_secrets_file_that_is_not_used_is_named_next_to_the_missing_values() {
     assert!(all.contains("secrets.toml: mode must be 0600"), "{all}");
     assert!(all.contains("chmod 600 /h/secrets.toml"), "{all}");
     assert!(!format!("{m:?}").contains("sk-"));
+}
+
+// ---- S6b1 6b1.5 linked state ----------------------------------------------
+
+const GSC_ENV: &str = "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"x\"\n\
+    env = [\"GSC_OAUTH_CLIENT_SECRETS_FILE\", \"GSC_CONFIG_DIR\", \"GSC_CREDENTIALS_PATH\", \"GSC_SKIP_OAUTH\"]\n";
+const GSC_OAUTH: &str = "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/h/.config/lazarobox/google-oauth-client.json\"\n\
+    GSC_CONFIG_DIR = \"/h/.config/mcp-gsc\"\nGSC_SKIP_OAUTH = \"false\"\n";
+
+fn gsc_state(secrets: &str, token: bool) -> String {
+    let stat = move |path: &std::path::Path| {
+        token && path == std::path::Path::new("/h/.config/mcp-gsc/token.json")
+    };
+    let mut m = area(Vec::new());
+    m.presence_reply(presence(GSC_ENV, secrets).with_token(stat));
+    texts(&m)
+        .into_iter()
+        .find(|t| t.starts_with("Search Console"))
+        .unwrap()
+}
+
+// Spec (mcp-connect, Entry list): `not linked` until the token file exists.
+#[test]
+fn gsc_in_the_oauth_way_shows_linked_by_the_token_files_existence() {
+    assert_eq!(
+        gsc_state(GSC_OAUTH, false),
+        "Search Console: declared · not linked"
+    );
+    assert_eq!(
+        gsc_state(GSC_OAUTH, true),
+        "Search Console: declared · linked"
+    );
+}
+
+#[test]
+fn gsc_in_the_service_account_way_or_unfilled_shows_no_link_state() {
+    let key = "[gsc]\nGSC_CREDENTIALS_PATH = \"/p.json\"\nGSC_SKIP_OAUTH = \"true\"\n";
+    assert_eq!(gsc_state(key, true), "Search Console: declared");
+    assert_eq!(
+        gsc_state("", true),
+        "Search Console: values missing: GSC_OAUTH_CLIENT_SECRETS_FILE, GSC_CONFIG_DIR"
+    );
+}
+
+#[test]
+fn the_link_state_goes_before_the_probe_result() {
+    let mut m = area(Vec::new());
+    m.presence_reply(presence(GSC_ENV, GSC_OAUTH).with_token(|_| true));
+    m.probe_reply(Probed {
+        server: "gsc".to_owned(),
+        verdict: Verdict::Started,
+        lines: Vec::new(),
+        problems: Vec::new(),
+    });
+    let state = texts(&m)
+        .into_iter()
+        .find(|t| t.starts_with("Search Console"))
+        .unwrap();
+    assert_eq!(state, "Search Console: declared · linked · probe: started");
 }

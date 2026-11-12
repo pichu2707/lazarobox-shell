@@ -28,6 +28,14 @@ baseline.
   the lazarobox config folder, the file the `ga4` login reads, with the same
   safety checks as `secrets.toml`. An existing file is replaced only after you
   answer `y`, and its previous bytes stay in `google-oauth-client.json.bak`.
+- `gsc` (Search Console) in the `Connectors` area has two ways again: OAuth with
+  your own Desktop client, and a service account (`w` chooses one). In the
+  OAuth way, `g` shows the exact command that signs you in (it uses the
+  server's own login, outside any chat, with the token folder the chats use and
+  a private umask, so the token is created readable only by you)
+  and runs it in a new tab only after you answer `y`; the entry shows
+  `linked` or `not linked` by whether the token file exists, and lazarobox
+  never opens that file.
 
 ## [1.21.0] - 2026-11-12
 

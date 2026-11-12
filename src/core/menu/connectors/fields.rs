@@ -89,12 +89,38 @@ fn secret(text: &str) -> SecretText {
     value
 }
 
-/// The values of an entry that live in `secrets.toml`.
-fn vars(entry: &Entry) -> Vec<&'static Var> {
-    entry.env.iter().filter(|v| v.secret).collect()
+/// The values of an entry that live in `secrets.toml`, on the way chosen
+/// (all of them for an entry with one way).
+fn vars(entry: &Entry, way: usize) -> Vec<&'static Var> {
+    let all = entry.ways.get(way).map_or(entry.env, |w| w.vars);
+    all.iter().filter(|v| v.secret).collect()
 }
 
 impl Connectors {
+    /// The way shown: the user's choice, else the one the table fills.
+    pub(super) fn way_of(&self, entry: &Entry) -> usize {
+        self.way.unwrap_or_else(|| {
+            let has = |name: &str| {
+                self.presence
+                    .as_ref()
+                    .is_some_and(|p| p.has(entry.id, name))
+            };
+            entry.way_for(has)
+        })
+    }
+
+    /// `w`: the next way of an entry that has more than one.
+    pub(super) fn choose_way(&mut self, entry: &Entry) {
+        if entry.ways.len() < 2 {
+            self.notice = Some("this entry has one way");
+        } else {
+            self.way = Some((self.way_of(entry) + 1) % entry.ways.len());
+            if let Some(Screen::Fields { at, .. }) = self.screen {
+                self.screen = Some(Screen::Fields { at, cursor: 0 });
+            }
+        }
+    }
+
     /// What differs: the declared command, when it is not the catalog's.
     fn differing_command(&self, entry: &Entry) -> Option<String> {
         let server = self.server(entry.id)?;
@@ -134,7 +160,7 @@ impl Connectors {
     }
 
     pub(super) fn open_fields(&mut self, entry: &Entry, at: usize) {
-        if vars(entry).is_empty() {
+        if vars(entry, 0).is_empty() {
             self.notice = Some(NO_VALUES);
         } else {
             self.saved = false;
@@ -151,10 +177,15 @@ impl Connectors {
         self.saved = ok;
     }
 
+    fn vars_at(&self, at: usize) -> Vec<&'static Var> {
+        let entry = &mcp_catalog::entries()[at];
+        vars(entry, self.way_of(entry))
+    }
+
     pub(super) fn field_hint(&self, at: usize) -> Option<String> {
         let field = self.field.as_ref()?;
         let (what, enter) = match &field.slot {
-            Slot::Var(i) => (vars(&mcp_catalog::entries()[at])[*i].name, "saves"),
+            Slot::Var(i) => (self.vars_at(at)[*i].name, "saves"),
             Slot::ClientId => ("client id", "continues"),
             Slot::ClientSecret(_) => ("client secret", "saves"),
         };
@@ -163,7 +194,7 @@ impl Connectors {
 
     pub(super) fn field_rows(&self, at: usize, cursor: usize, room: usize) -> Vec<Row> {
         let entry = &mcp_catalog::entries()[at];
-        let list = vars(entry);
+        let list = self.vars_at(at);
         if let Some(field) = &self.field {
             let (name, confidential) = match &field.slot {
                 Slot::Var(i) => (list[*i].name, list[*i].confidential()),
@@ -237,7 +268,7 @@ impl Connectors {
         room: usize,
     ) -> MenuCommand {
         let entry = &mcp_catalog::entries()[at];
-        let list = vars(entry);
+        let list = self.vars_at(at);
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.screen = Some(Screen::Fields {
@@ -250,6 +281,7 @@ impl Connectors {
                 self.screen = Some(Screen::Fields { at, cursor });
             }
             KeyCode::Esc => self.screen = Some(Screen::Entry { at, scroll: 0 }),
+            KeyCode::Char('w') => self.choose_way(entry),
             KeyCode::Char('o') if takes_client(entry) => {
                 self.field = Some(Field {
                     slot: Slot::ClientId,
@@ -328,7 +360,10 @@ impl Connectors {
             MenuCommand::None
         };
         match slot {
-            Slot::Var(i) => return self.submit(entry, vars(entry)[i], text, room),
+            Slot::Var(i) => {
+                let var = vars(entry, self.way_of(entry))[i];
+                return self.submit(entry, var, text, room);
+            }
             Slot::ClientId if !valid_id(text.expose()) => {
                 return refuse(self, Slot::ClientId, text, BAD_ID);
             }

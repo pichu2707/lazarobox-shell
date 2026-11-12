@@ -701,6 +701,8 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
             ),
             hub_tx.clone(),
         ))
+        // Link with Google for `gsc` (S6b1): the `uv` checks, nothing else.
+        .with_link(mcp::link::Linker::new(hub_tx.clone()))
         // The menu's secret field and backup deletion (S6a2): the only writer
         // of `secrets.toml`, reachable from those two effects only.
         .with_secrets(secrets_write::Writer::new(
@@ -1471,6 +1473,7 @@ struct Panes {
     /// The connector probe. `None` ignores its effects (unit tests).
     prober: Option<mcp::probe::Prober>,
     presence: Option<mcp::presence::Reader>,
+    link: Option<mcp::link::Linker>,
     secrets: Option<secrets_write::Writer>,
     /// The Ollama library requests and pull. `None` ignores the Ollama
     /// effects (unit tests).
@@ -1524,6 +1527,7 @@ impl Panes {
             hub: None,
             prober: None,
             presence: None,
+            link: None,
             secrets: None,
             ollama: None,
             deletes: None,
@@ -1752,6 +1756,11 @@ impl Panes {
 
     fn with_presence(mut self, reader: mcp::presence::Reader) -> Self {
         self.presence = Some(reader);
+        self
+    }
+
+    fn with_link(mut self, linker: mcp::link::Linker) -> Self {
+        self.link = Some(linker);
         self
     }
 
@@ -2333,6 +2342,11 @@ impl Panes {
                 } => {
                     if let Some(writer) = self.secrets.as_ref() {
                         writer.save_client(id, secret, replace);
+                    }
+                }
+                Effect::LinkGsc(plan) => {
+                    if let Some(linker) = self.link.as_ref() {
+                        linker.check(plan);
                     }
                 }
                 Effect::DeleteBackup => {

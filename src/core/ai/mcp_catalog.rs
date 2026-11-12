@@ -153,23 +153,20 @@ pub fn entry(name: &str) -> Option<&'static Entry> {
 }
 
 impl Entry {
-    /// The names the user still has to fill. With ways, the first way the
-    /// table completes decides (so an S5 service-account table is complete),
-    /// else the first (default) way names what is missing. Only names the user
-    /// types count: a preset is filled by the template.
+    /// The way the table already fills completely, else the first (default).
+    pub fn way_for(&self, has: impl Fn(&str) -> bool) -> usize {
+        let complete = |way: &Way| unset(way.vars, &has).is_empty();
+        self.ways.iter().position(complete).unwrap_or(0)
+    }
+
+    /// The names the user still has to fill, on the way `way_for` picks (so an
+    /// S5 service-account table is complete). Only names the user types
+    /// count: a preset is filled by the template, except a path under
+    /// `$HOME`, which the template leaves empty (it is written absolute).
     pub fn missing(&self, has: impl Fn(&str) -> bool) -> Vec<&'static str> {
-        let unset = |vars: &'static [Var]| -> Vec<&'static str> {
-            vars.iter()
-                .filter(|v| v.secret && v.preset.is_none())
-                .filter(|v| !has(v.name))
-                .map(|v| v.name)
-                .collect()
-        };
-        let mut per_way = self.ways.iter().map(|w| unset(w.vars));
-        match per_way.next() {
-            None => unset(self.env),
-            Some(first) if first.is_empty() => first,
-            Some(first) => per_way.find(Vec::is_empty).unwrap_or(first),
+        match self.ways.get(self.way_for(&has)) {
+            Some(way) => unset(way.vars, &has),
+            None => unset(self.env, &has),
         }
     }
 
@@ -181,6 +178,15 @@ impl Entry {
             .find(|(name, _)| *name == tool)
             .map_or(Class::Write, |(_, class)| *class)
     }
+}
+
+/// The names of `vars` the user has to type and that hold no value.
+fn unset(vars: &'static [Var], has: &impl Fn(&str) -> bool) -> Vec<&'static str> {
+    vars.iter()
+        .filter(|v| v.secret && (v.preset.is_none() || v.under_home))
+        .filter(|v| !has(v.name))
+        .map(|v| v.name)
+        .collect()
 }
 
 /// The class of `tool` on `server`: the entry's, or `Write` when the server is

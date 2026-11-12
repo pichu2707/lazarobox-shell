@@ -4,7 +4,10 @@
 
 use std::path::Path;
 
-use crate::core::ai::{config::McpServer, sanitize::clean};
+use crate::core::ai::{
+    config::McpServer,
+    sanitize::{clean, is_format},
+};
 
 pub const UNFILLED: &str = "fill the OAuth values in Connectors (f)";
 pub const NOT_LINKED: &str = "not linked; open Connectors and use Link with Google";
@@ -111,6 +114,7 @@ pub fn denied(dir: &Path, home: &Path) -> bool {
 /// skip the OAuth flow.
 pub fn plan(
     server: &McpServer,
+    home: &Path,
     get: &impl Fn(&str) -> Option<String>,
 ) -> Result<Plan, &'static str> {
     let lists = |name: &str| server.env.iter().any(|n| n == name);
@@ -123,6 +127,9 @@ pub fn plan(
     let got = Got::of(server, get);
     if !got.oauth() || got.token().is_none() || !Path::new(&got.file).is_absolute() {
         return Err(FILL_FIRST);
+    }
+    if !denied(Path::new(&got.dir), home) {
+        return Err(OUTSIDE);
     }
     Ok(Plan {
         dir: got.dir,
@@ -152,9 +159,10 @@ pub fn pinned(list: &str) -> Result<(), String> {
     }
 }
 
-/// A value the line can carry inside single quotes.
+/// A value the line can carry inside single quotes: no control character, no
+/// Unicode format character (they reorder or hide text in the prompt), no `$(`.
 fn carries(value: &str) -> bool {
-    !value.chars().any(char::is_control) && !value.contains("$(")
+    !value.chars().any(|c| c.is_control() || is_format(c)) && !value.contains("$(")
 }
 
 fn quoted(value: &str) -> Result<String, &'static str> {
@@ -169,7 +177,7 @@ fn quoted(value: &str) -> Result<String, &'static str> {
 pub fn login_line(tool_dir: &str, plan: &Plan) -> Result<String, &'static str> {
     let python = quoted(&format!("{tool_dir}/mcp-search-console/bin/python"))?;
     Ok(format!(
-        "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u GSC_ALLOW_DESTRUCTIVE -u GSC_SKIP_OAUTH GSC_CONFIG_DIR={} GSC_OAUTH_CLIENT_SECRETS_FILE={} {python} -I -c 'import gsc_server as g; g.get_gsc_service_oauth(); print(\"Search Console linked\")'",
+        "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u GSC_ALLOW_DESTRUCTIVE -u GSC_SKIP_OAUTH GSC_CONFIG_DIR={} GSC_OAUTH_CLIENT_SECRETS_FILE={} {python} -I -c 'import os; os.umask(0o077); import gsc_server as g; g.get_gsc_service_oauth(); print(\"Search Console linked\")'",
         quoted(&plan.dir)?,
         quoted(&plan.file)?,
     ))

@@ -455,3 +455,82 @@ fn a_confirmed_client_form_becomes_one_save_client_effect_and_the_paste_stays_in
         }]
     );
 }
+
+// ---- S6b1: Link with Google for gsc through the app --------------------------
+
+const GSC_CONFIG: &str = "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"mcp-search-console\"\n\
+    env = [\"GSC_OAUTH_CLIENT_SECRETS_FILE\", \"GSC_CONFIG_DIR\", \"GSC_CREDENTIALS_PATH\", \"GSC_SKIP_OAUTH\"]\n";
+const GSC_OAUTH: &str = "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/h/.config/lazarobox/google-oauth-client.json\"\n\
+    GSC_CONFIG_DIR = \"/h/.config/mcp-gsc\"\nGSC_SKIP_OAUTH = \"false\"\n";
+const GSC_LINE: &str = "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u GSC_ALLOW_DESTRUCTIVE -u GSC_SKIP_OAUTH GSC_CONFIG_DIR='/h/.config/mcp-gsc' GSC_OAUTH_CLIENT_SECRETS_FILE='/h/.config/lazarobox/google-oauth-client.json' '/h/.local/share/uv/tools/mcp-search-console/bin/python' -I -c 'import os; os.umask(0o077); import gsc_server as g; g.get_gsc_service_oauth(); print(\"Search Console linked\")'";
+
+fn gsc_plan() -> crate::core::ai::mcp_catalog::gsc::Plan {
+    crate::core::ai::mcp_catalog::gsc::Plan {
+        dir: "/h/.config/mcp-gsc".to_owned(),
+        file: "/h/.config/lazarobox/google-oauth-client.json".to_owned(),
+    }
+}
+
+/// The `gsc` entry screen, filled in the OAuth way, `g` not yet pressed.
+fn on_gsc() -> App {
+    let ai = FileConfig::parse(GSC_CONFIG).unwrap().ai;
+    let mut a = launched(80, 40).with_ai(ai);
+    for e in [ctrl_space(), key('m'), key('4'), code(KeyCode::Enter)] {
+        tap(&mut a, e);
+    }
+    let loaded = Secrets::parse(GSC_OAUTH.as_bytes());
+    tap(
+        &mut a,
+        AppEvent::McpPresence(
+            Presence::read(Ok(GSC_CONFIG.to_owned()), &loaded).with_home(Some("/h".to_owned())),
+        ),
+    );
+    for e in [key('j'), key('j'), code(KeyCode::Enter)] {
+        tap(&mut a, e);
+    }
+    a
+}
+
+// Spec mcp-connect, gsc link types the line; Nothing without y.
+#[test]
+fn g_asks_for_the_checks_and_only_y_after_the_answer_types_the_line_in_one_new_pane() {
+    let mut a = on_gsc();
+    let before = a.panes.len();
+    let asked = tap(&mut a, key('g'));
+    assert_eq!(asked, [Effect::LinkGsc(gsc_plan())]);
+    assert_eq!(tap(&mut a, AppEvent::GscLine(Ok(GSC_LINE.to_owned()))), []);
+    let declined = tap(&mut a, key('n'));
+    assert_eq!((spawned(&declined), writes(&declined)), (None, vec![]));
+    assert_eq!(a.panes.len(), before);
+    tap(&mut a, key('g'));
+    tap(&mut a, AppEvent::GscLine(Ok(GSC_LINE.to_owned())));
+    let run = tap(&mut a, key('y'));
+    let id = spawned(&run).expect("one new pane");
+    let typed = tap(&mut a, AppEvent::Pty(id, PtyEvent::Output(b"$ ".to_vec())));
+    assert_eq!(writes(&typed), [(id, format!("{GSC_LINE}\r").into_bytes())]);
+    // No MCP server was started by the menu.
+    assert!(!run.iter().any(|e| matches!(e, Effect::McpProbe(..))));
+}
+
+#[test]
+fn a_refused_check_is_a_footer_notice_and_types_nothing() {
+    let mut a = on_gsc();
+    tap(&mut a, key('g'));
+    let why = "uv not found: install uv first";
+    assert_eq!(tap(&mut a, AppEvent::GscLine(Err(why.to_owned()))), []);
+    assert!(matches!(a.menu().unwrap().footer(), Footer::Hint(h) if h == why));
+}
+
+#[test]
+fn a_check_that_answers_after_the_menu_closed_says_why_and_prompts_nothing() {
+    let mut a = on_gsc();
+    tap(&mut a, key('g'));
+    tap(&mut a, esc());
+    tap(&mut a, esc());
+    tap(&mut a, esc());
+    assert!(a.menu().is_none() || !rows(&a).concat().contains("link gsc"));
+    let why = "uv failed";
+    assert_eq!(tap(&mut a, AppEvent::GscLine(Err(why.to_owned()))), []);
+    let effects = tap(&mut a, AppEvent::GscLine(Ok(GSC_LINE.to_owned())));
+    assert_eq!((spawned(&effects), writes(&effects)), (None, vec![]));
+}

@@ -3,7 +3,7 @@
 //! the sweep that no confidential value is drawn or formatted anywhere.
 
 use super::ai_tests::{ch, press};
-use super::connectors_tests::{declared, entry, presence, texts};
+use super::connectors_tests::{declared, entry, presence, texts, whole};
 use super::footer_tests::hint;
 use super::picker_tests::{key, send};
 use super::*;
@@ -689,4 +689,80 @@ fn a_client_file_save_does_not_say_to_restart_the_chat() {
     let mut m = fields(0, CLARITY, "");
     m.secret_reply(Ok("saved CLARITY_API_TOKEN".to_owned()));
     assert!(texts(&m).concat().contains("restart the chat"));
+}
+
+// ---- S6b1: the way of an entry (`w`) ----
+
+const GSC: &str = "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"mcp-search-console\"\n";
+const S5: &str = "[gsc]\nGSC_CREDENTIALS_PATH = \"/k.json\"\nGSC_SKIP_OAUTH = \"true\"\n";
+
+fn labels(m: &MenuState) -> Vec<String> {
+    texts(m)
+        .into_iter()
+        .filter_map(|t| t.split(':').next().map(str::to_owned))
+        .filter(|l| l.starts_with("GSC_"))
+        .collect()
+}
+
+// Spec: the field list of `gsc` is the selected way's, the OAuth way by
+// default and the way the table already fills when there is one.
+#[test]
+fn the_gsc_field_list_is_the_selected_ways_and_w_chooses_the_other() {
+    let mut m = fields(2, GSC, "");
+    assert_eq!(
+        labels(&m),
+        [
+            "GSC_OAUTH_CLIENT_SECRETS_FILE",
+            "GSC_CONFIG_DIR",
+            "GSC_SKIP_OAUTH"
+        ]
+    );
+    assert_eq!(press(&mut m, 'w'), MenuCommand::None);
+    assert_eq!(labels(&m), ["GSC_CREDENTIALS_PATH", "GSC_SKIP_OAUTH"]);
+    assert_eq!(press(&mut m, 'w'), MenuCommand::None);
+    assert_eq!(labels(&m).len(), 3);
+    let m = fields(2, GSC, S5);
+    assert_eq!(labels(&m), ["GSC_CREDENTIALS_PATH", "GSC_SKIP_OAUTH"]);
+}
+
+#[test]
+fn a_value_saved_from_the_second_way_is_that_ways_var() {
+    let mut m = fields(2, GSC, "");
+    press(&mut m, 'w');
+    assert_eq!(enter(&mut m), MenuCommand::None);
+    type_in(&mut m, "/k.json");
+    assert_eq!(
+        enter(&mut m),
+        save("gsc", "GSC_CREDENTIALS_PATH", "/k.json")
+    );
+}
+
+#[test]
+fn w_works_from_the_entry_screen_and_only_where_there_are_ways() {
+    let mut m = entry(Vec::new(), 2);
+    m.presence_reply(presence(GSC, ""));
+    assert!(whole(&mut m).concat().contains("w way: OAuth"));
+    let mut m = entry(Vec::new(), 2);
+    m.presence_reply(presence(GSC, ""));
+    press(&mut m, 'w');
+    assert!(whole(&mut m).concat().contains("w way: Service account"));
+    let mut m = entry(Vec::new(), 2);
+    m.presence_reply(presence(GSC, ""));
+    press(&mut m, 'w');
+    press(&mut m, 'f');
+    assert_eq!(labels(&m), ["GSC_CREDENTIALS_PATH", "GSC_SKIP_OAUTH"]);
+    for at in [0, 1, 3, 4] {
+        let mut m = entry(Vec::new(), at);
+        assert_eq!(press(&mut m, 'w'), MenuCommand::None);
+        assert_eq!(hint(&m), "this entry has one way", "{at}");
+    }
+}
+
+#[test]
+fn the_gsc_entry_hint_lists_the_way_and_the_link() {
+    assert_eq!(
+        hint(&entry(Vec::new(), 2)),
+        "j/k · i install · p probe · f fill · w way · g link · Esc"
+    );
+    assert!(hint(&entry(Vec::new(), 2)).chars().count() <= 59);
 }
