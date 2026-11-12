@@ -842,3 +842,82 @@ async fn a_failed_github_request_carries_the_github_label() {
         Err(hf::UNREADABLE.to_owned())
     );
 }
+
+// Spec (lazarobox-google-client, Request shape): one fixed command line,
+// HTTPS only, no redirect, no data of the user.
+#[test]
+fn the_google_client_request_is_the_fixed_command_line() {
+    let curl = Curl::google_client("/usr/bin".into());
+    let args = curl.fetch_args(crate::core::ai::mcp_secrets::URL_PATH, CLIENT);
+    let expected: Vec<String> = [
+        "-q",
+        "--silent",
+        "--show-error",
+        "--user-agent",
+        &crate::runtime::update::user_agent(env!("CARGO_PKG_VERSION")),
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
+        "--max-time",
+        "15",
+        "--connect-timeout",
+        "15",
+        "--max-filesize",
+        "16384",
+        "--header",
+        "Accept: application/json",
+        "--write-out",
+        "\n%{http_code}",
+        "--",
+        "https://www.javilazaro.es/lazarobox/google-client.json",
+    ]
+    .map(str::to_owned)
+    .into();
+    assert_eq!(args, expected);
+    for banned in [
+        "-L",
+        "--location",
+        "--fail",
+        "--cookie",
+        "--data",
+        "--config",
+    ] {
+        assert!(!args.iter().any(|a| a == banned), "{banned}");
+    }
+    assert_eq!(curl.stdin_config(), None);
+}
+
+#[tokio::test]
+async fn a_google_client_reply_without_a_length_is_still_capped() {
+    need_curl!();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let (base, _) = serve(Box::new(|_| {
+        let mut out = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+        out.extend(std::iter::repeat_n(b' ', 64 * 1024));
+        out
+    }));
+    let curl = Curl::google_client(path).local(&base);
+    // Either curl stops at the cap or the read does: never more than the cap
+    // reaches the caller.
+    match curl.fetch("/lazarobox/google-client.json", CLIENT).await {
+        Err(_) => {}
+        Ok((_, body)) => assert!(body.len() <= CLIENT.cap, "{}", body.len()),
+    }
+}
+
+#[tokio::test]
+async fn a_google_client_redirect_comes_back_as_its_status() {
+    need_curl!();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let (base, seen) = serve(Box::new(|_| {
+        b"HTTP/1.1 301 Moved\r\nLocation: http://127.0.0.1:1/x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+    }));
+    let curl = Curl::google_client(path).local(&base);
+    let (status, _) = curl
+        .fetch("/lazarobox/google-client.json", CLIENT)
+        .await
+        .unwrap();
+    assert_eq!(status, 301);
+    assert_eq!(seen.lock().unwrap().len(), 1, "no redirect was followed");
+}

@@ -70,6 +70,15 @@ pub const API: Fetch = Fetch {
     follow: false,
 };
 
+/// The lazarobox Google client file: JSON, 16 KiB, no redirects (a 301 comes
+/// back as its status and is refused).
+pub const CLIENT: Fetch = Fetch {
+    accept: "application/json",
+    cap: crate::core::ai::mcp_secrets::CLIENT_MAX,
+    cut: false,
+    follow: false,
+};
+
 /// How curl is run for the Hub, GitHub (the llama-server install) or the
 /// Ollama library.
 pub struct Curl {
@@ -103,6 +112,12 @@ impl Curl {
     /// The GitHub download host over HTTPS only, for release assets.
     pub fn github(path: OsString) -> Self {
         Self::to("GitHub", GITHUB, path, None)
+    }
+
+    /// The lazarobox Google client file on www.javilazaro.es (the bare domain
+    /// redirects), over HTTPS only. No token, no cookie.
+    pub fn google_client(path: OsString) -> Self {
+        Self::to("javilazaro.es", "https://www.javilazaro.es", path, None)
     }
 
     fn to(label: &'static str, base: &str, path: OsString, token: Option<Secret>) -> Self {
