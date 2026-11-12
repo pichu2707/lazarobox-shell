@@ -972,7 +972,8 @@ fn the_cache_target_keeps_no_backup_and_is_private() {
     assert_eq!(CACHE.file, "lazarobox-google-client.json");
     assert_eq!(CACHE.backup, None);
     assert_eq!(CACHE.max, 16 * 1024);
-    assert!(!CACHE.keep_mode);
+    let keep = std::hint::black_box(CACHE.keep_mode);
+    assert!(!keep);
     // The other targets keep their backups.
     assert_eq!(SECRETS.backup, Some("secrets.toml.bak"));
     assert_eq!(CLIENT.backup, Some("google-oauth-client.json.bak"));
@@ -1042,7 +1043,7 @@ fn the_cache_is_saved_0600_and_no_other_file_changes() {
 fn a_cache_that_is_loose_linked_or_a_symlink_is_refused_without_the_secret() {
     let lab = lab();
     fs::write(lab.cache(), "old").unwrap();
-    fs::set_permissions(&lab.cache(), fs::Permissions::from_mode(0o644)).unwrap();
+    fs::set_permissions(lab.cache(), fs::Permissions::from_mode(0o644)).unwrap();
     let err = lab.save_cache(&TestFs::default()).unwrap_err();
     let notice = err.notice_of(CACHE_FILE);
     assert!(
@@ -1051,7 +1052,7 @@ fn a_cache_that_is_loose_linked_or_a_symlink_is_refused_without_the_secret() {
     );
     assert_eq!(fs::read_to_string(lab.cache()).unwrap(), "old");
 
-    fs::set_permissions(&lab.cache(), fs::Permissions::from_mode(0o600)).unwrap();
+    fs::set_permissions(lab.cache(), fs::Permissions::from_mode(0o600)).unwrap();
     fs::hard_link(lab.cache(), lab.root.path().join("other")).unwrap();
     let err = lab.save_cache(&TestFs::default()).unwrap_err();
     assert_eq!(err, Refusal::HardLinked);
