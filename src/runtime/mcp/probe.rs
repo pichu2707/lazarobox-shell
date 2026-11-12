@@ -20,7 +20,11 @@ use tokio::{
     task::JoinHandle,
 };
 
-use super::{client::Timeouts, external::connect};
+use super::{
+    client::Timeouts,
+    external::connect,
+    google_link::{self, Ctx, Limits},
+};
 use crate::{
     app::AppEvent,
     core::ai::{
@@ -28,6 +32,7 @@ use crate::{
         mcp_catalog::{
             checks::{self, Probed, Verdict},
             entry,
+            link::{Ask, Step},
         },
         mcp_secrets::{redact_list, redact_values},
         sanitize::clean,
@@ -105,6 +110,13 @@ async fn guarded(server: &str, report: impl Future<Output = Probed>) -> Probed {
     }
 }
 
+/// Ends when Esc is pressed; a dropped sender is not an Esc.
+async fn on_esc(stopped: oneshot::Receiver<()>) {
+    if stopped.await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
 /// Runs the probes the app asks for, one at a time, and answers each with one
 /// `AppEvent::McpProbe` carrying the number the app gave it.
 pub struct Prober {
@@ -130,31 +142,59 @@ impl Prober {
     /// is replaced: its task is aborted (dropping its server kills the
     /// process group) and it reports nothing, so two probes never overlap.
     pub fn start(&mut self, id: u64, server: McpServer) {
-        self.stop = None;
-        if let Some(old) = self.task.take() {
-            old.abort();
-        }
-        let (stop, stopped) = oneshot::channel::<()>();
-        self.stop = Some(stop);
+        let stopped = self.arm();
         let (home, secrets, events) =
             (self.home.clone(), self.secrets.clone(), self.events.clone());
         self.task = Some(tokio::spawn(async move {
-            let cancel = async {
-                // A dropped sender is not an Esc.
-                if stopped.await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            };
             let run = probe(
                 &server,
                 &home,
                 |name| std::env::var_os(name),
                 secrets,
                 Timeouts::default(),
-                cancel,
+                on_esc(stopped),
             );
             let report = guarded(&server.name, run).await;
             let _ = events.send(AppEvent::McpProbe(id, report)).await;
+        }));
+    }
+
+    /// Takes the slot: a task that still runs is aborted (dropping its server
+    /// kills the process group) and reports nothing. The receiver ends when
+    /// Esc is pressed.
+    fn arm(&mut self) -> oneshot::Receiver<()> {
+        self.stop = None;
+        if let Some(old) = self.task.take() {
+            old.abort();
+        }
+        let (stop, stopped) = oneshot::channel::<()>();
+        self.stop = Some(stop);
+        stopped
+    }
+
+    /// Starts the link session of `google` in the slot of the probe: one at
+    /// a time, and Esc ([`Prober::cancel`]) stops it. It sends the link to open
+    /// and then its end, as `AppEvent::McpLink`.
+    pub fn link(&mut self, server: McpServer, ask: Ask) {
+        let stopped = self.arm();
+        let (home, secrets, events) =
+            (self.home.clone(), self.secrets.clone(), self.events.clone());
+        self.task = Some(tokio::spawn(async move {
+            let cancel = on_esc(stopped);
+            let ctx = Ctx {
+                home: &home,
+                secrets,
+                events: &events,
+                limits: Limits::default(),
+            };
+            let stat = |path: &std::path::Path| path.metadata().ok()?.modified().ok();
+            let run =
+                google_link::session(&server, &ask, ctx, |n| std::env::var_os(n), stat, cancel);
+            let ended = AssertUnwindSafe(run)
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| Err("link failed: the session failed".to_owned()));
+            let _ = events.send(AppEvent::McpLink(Step::Ended(ended))).await;
         }));
     }
 

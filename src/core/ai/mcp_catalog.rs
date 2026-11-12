@@ -13,6 +13,7 @@ use crate::core::ai::config::McpServer;
 pub mod checks;
 mod entries;
 pub mod gsc;
+pub mod link;
 pub mod presence;
 
 /// Where an entry sits in the Connectors area.

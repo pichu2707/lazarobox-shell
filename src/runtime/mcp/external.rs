@@ -30,7 +30,7 @@ use super::{
 };
 use crate::core::ai::{
     config::McpServer,
-    mcp_catalog::{admits, gsc},
+    mcp_catalog::{admits, gsc, link},
     mcp_secrets::{Secrets, redact_list, redact_values},
     sanitize::clean,
     tools::servers::{Qualified, qualify},
@@ -63,7 +63,8 @@ pub struct ExternalSet {
 
 /// Starts one server and reads its tools, or says why it cannot. A `gsc` whose
 /// values select the OAuth way is refused first when it has no folder or no
-/// token (`stat` only): its server would run a browser flow inside a call.
+/// token (`stat` only): its server would run a browser flow inside a call. A
+/// `google` whose `env` names a credentials folder is refused too.
 pub(crate) async fn connect(
     server: &McpServer,
     home: &Path,
@@ -76,6 +77,9 @@ pub(crate) async fn connect(
         // A `stat`: an empty file is not a link.
         token.metadata().is_ok_and(|m| m.len() > 0)
     }) {
+        return Err(why.to_owned());
+    }
+    if let Some(why) = link::start_refusal(server) {
         return Err(why.to_owned());
     }
     let mut client =
