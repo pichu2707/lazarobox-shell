@@ -31,6 +31,7 @@ const UNREAD: &str = "config.toml could not be read; showing the list loaded at 
 const NOT_DECLARED: &str = "not declared: paste the entry into config.toml first";
 const HINT_LIST: &str = "j/k move · Enter open · Esc back";
 const HINT_ENTRY: &str = "j/k scroll · i install · l login · p probe · f fill · Esc";
+const HINT_ENTRY_WAYS: &str = "j/k · i install · p probe · f fill · w way · g link · Esc";
 const HINT_PROMPT: &str = "y yes · any other key cancels";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -83,6 +84,8 @@ pub(super) struct Connectors {
     notice: Option<&'static str>,
     /// The field that is open on a `Screen::Fields`.
     field: Option<Field>,
+    /// The way of an entry the user chose (`w`); `None` follows the table.
+    way: Option<usize>,
     /// A save went through: the list says when it takes effect.
     saved: bool,
 }
@@ -261,6 +264,7 @@ impl Connectors {
     pub(super) fn open(&mut self) -> MenuCommand {
         self.screen = Some(Screen::List(0));
         self.presence = None;
+        self.way = None;
         MenuCommand::LoadPresence
     }
 
@@ -438,6 +442,10 @@ impl Connectors {
         } else {
             rows.extend(wrap(NOT_DECLARED, "  ", room));
         }
+        if entry.ways.len() > 1 {
+            let title = entry.ways[self.way_of(entry)].title;
+            rows.push(text(format!("  w way: {title} (w changes it)")));
+        }
         rows.push(text("  1-9 open a link · c copy the entry"));
         if secrets_template(entry).is_some() {
             rows.push(text("  f fill the values"));
@@ -457,6 +465,9 @@ impl Connectors {
         }
         Cow::Borrowed(match (&self.prompt, self.screen) {
             (Some(_), _) => HINT_PROMPT,
+            (None, Some(Screen::Entry { at, .. })) if !mcp_catalog::entries()[at].ways.is_empty() => {
+                HINT_ENTRY_WAYS
+            }
             (None, Some(Screen::Entry { .. })) => HINT_ENTRY,
             (None, Some(Screen::Fields { .. })) => HINT_FIELDS,
             _ => HINT_LIST,
@@ -569,6 +580,7 @@ impl Connectors {
             },
             KeyCode::Char('p') => return self.ask_probe(entry, room),
             KeyCode::Char('f') => self.open_fields(entry, at),
+            KeyCode::Char('w') => self.choose_way(entry),
             KeyCode::Char('c') => return MenuCommand::Copy(snippet(entry)),
             KeyCode::Char('t') => match secrets_template(entry) {
                 Some(template) => return MenuCommand::Copy(template),

@@ -302,7 +302,7 @@ pub(super) fn entry(servers: Vec<McpServer>, at: usize) -> MenuState {
 }
 
 /// Every row of the entry screen, whatever the scroll.
-fn whole(m: &mut MenuState) -> Vec<String> {
+pub(super) fn whole(m: &mut MenuState) -> Vec<String> {
     let mut seen = texts(m);
     for _ in 0..60 {
         press(m, 'j');

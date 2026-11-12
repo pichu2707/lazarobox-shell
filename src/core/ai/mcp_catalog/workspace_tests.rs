@@ -249,6 +249,18 @@ fn a_table_with_only_the_key_path_is_complete_as_on_main() {
     assert!(entry("apps-script").unwrap().missing(|_| false).is_empty());
 }
 
+#[test]
+fn the_way_is_the_one_the_table_fills_completely_else_the_first() {
+    let gsc = entry("gsc").unwrap();
+    assert_eq!(gsc.way_for(|_| false), 0);
+    assert_eq!(gsc.way_for(|n| n == "GSC_CREDENTIALS_PATH"), 1);
+    let oauth = |n: &str| ["GSC_OAUTH_CLIENT_SECRETS_FILE", "GSC_CONFIG_DIR"].contains(&n);
+    assert_eq!(gsc.way_for(oauth), 0);
+    // Both complete: the first.
+    assert_eq!(gsc.way_for(|_| true), 0);
+    assert_eq!(entry("ga4").unwrap().way_for(|_| true), 0);
+}
+
 // 6c.3 google
 
 #[test]
