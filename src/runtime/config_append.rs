@@ -16,7 +16,7 @@ use crate::core::{
 
 const CONFIG: Target = Target {
     file: FILE,
-    backup: BACKUP,
+    backup: Some(BACKUP),
     max: MAX_BYTES,
     keep_mode: true,
 };

@@ -14,7 +14,8 @@ use crate::core::{
             presence::Presence,
         },
         mcp_secrets::{
-            CLIENT_FILE, CLIENT_MAX, Client, FILE, Refusal, Secrets, line_of, read_client,
+            CACHE_FILE, CLIENT_FILE, CLIENT_MAX, Client, FILE, Refusal, Secrets, Why, line_of,
+            pinned, read_client,
         },
     },
     config_append::{self, AppendRefusal},
@@ -23,7 +24,7 @@ use crate::core::{
 /// `config.toml` as the append judges it, for the plan's read.
 const CONFIG: Target = Target {
     file: config_append::FILE,
-    backup: config_append::BACKUP,
+    backup: Some(config_append::BACKUP),
     max: config_append::MAX_BYTES,
     keep_mode: true,
 };
@@ -40,6 +41,16 @@ pub fn read_client_with(
     fs: &impl SaveFs,
     secrets: Option<&Path>,
 ) -> Result<Option<Client>, Refusal> {
+    read_client_file(fs, secrets, CLIENT_FILE)
+}
+
+/// The Desktop client in the file `file` next to `secrets`, judged as
+/// [`read_client_with`] judges its own: that file or the lazarobox cache.
+pub fn read_client_file(
+    fs: &impl SaveFs,
+    secrets: Option<&Path>,
+    file: &str,
+) -> Result<Option<Client>, Refusal> {
     let Some(folder) = secrets.and_then(Path::parent) else {
         return Ok(None);
     };
@@ -47,7 +58,7 @@ pub fn read_client_with(
         return Ok(None);
     }
     let dir = open_folder(fs, secrets)?;
-    let fd = match fs.open_read(&dir, CLIENT_FILE) {
+    let fd = match fs.open_read(&dir, file) {
         Ok(fd) => fd,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
         Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(Refusal::FileSymlink),
@@ -64,7 +75,7 @@ pub fn read_client_with(
         return Err(Refusal::HardLinked);
     }
     if stat.mode & 0o077 != 0 {
-        return Err(Refusal::FileMode(folder.join(CLIENT_FILE)));
+        return Err(Refusal::FileMode(folder.join(file)));
     }
     let max = CLIENT_MAX as u64;
     if stat.len > max {
@@ -76,6 +87,22 @@ pub fn read_client_with(
     }
     let text = std::str::from_utf8(&bytes).map_err(|_| Refusal::BadClientFile)?;
     read_client(text).map(Some)
+}
+
+/// The lazarobox client cache next to `secrets`: `None` when there is none,
+/// the client when it passes the pin, else the notice that names the cache
+/// file and the problem (never a value).
+pub fn read_cache(
+    fs: &impl SaveFs,
+    secrets: Option<&Path>,
+    pin: Option<&str>,
+) -> Result<Option<Client>, String> {
+    match read_client_file(fs, secrets, CACHE_FILE) {
+        Ok(Some(client)) if pinned(&client.id, pin) => Ok(Some(client)),
+        Ok(Some(_)) => Err(format!("{CACHE_FILE}: {}", Why::Foreign.text())),
+        Ok(None) => Ok(None),
+        Err(refusal) => Err(refusal.notice_of(CACHE_FILE)),
+    }
 }
 
 /// What the screen's `client:` line says: the id, `None` when there is no

@@ -35,6 +35,7 @@ pub mod feedback;
 pub mod folder;
 pub mod gguf;
 pub mod gh;
+pub mod google_client;
 pub mod hf;
 pub mod jail;
 pub mod jobs;
