@@ -126,11 +126,7 @@ fn route_asked_or_email(m: &mut MenuState) -> ClientRoute {
 }
 
 #[test]
-fn the_o_form_selects_the_own_route_and_the_choice_is_not_kept() {
-    let mut m = alone(Some(PIN), Some(ID));
-    press(&mut m, 'o');
-    send(&mut m, key(KeyCode::Esc));
-    assert_eq!(route_asked(&mut m), ClientRoute::Own);
+fn the_choice_of_the_own_client_is_not_kept_after_leaving_the_screen() {
     // Leave the screen and come back: the default again.
     let mut m = alone(Some(PIN), Some(ID));
     press(&mut m, 'u');
@@ -138,6 +134,116 @@ fn the_o_form_selects_the_own_route_and_the_choice_is_not_kept() {
     assert_eq!(send(&mut m, key(KeyCode::Enter)), MenuCommand::None);
     m.google_client(Ok(Some(ID.to_owned())));
     assert_eq!(route_asked(&mut m), ClientRoute::Lazarobox);
+}
+
+// ---- review: held values, `o` and a declared gsc ---------------------------------
+
+fn kept(label: &str) -> String {
+    format!("kept from secrets.toml: {label}; f on the entry changes it")
+}
+
+/// Connect Google with this value held for the gsc client file, not declared.
+fn held_on_screen(path: &str, pin: Option<&'static str>) -> MenuState {
+    let mut m = connect(pin, Some(ID));
+    m.presence_reply(
+        presence("", &held(path))
+            .with_home(Some("/h".to_owned()))
+            .with_client_cache(Some(CACHE.to_owned())),
+    );
+    m
+}
+
+// The held value is kept (#736), so the route and the screen say what it is.
+#[test]
+fn a_held_own_path_makes_the_route_own_and_says_so() {
+    let mut m = held_on_screen(OWN, Some(PIN));
+    press(&mut m, 'w');
+    let screen = all(&mut m);
+    assert!(screen.contains(&kept("your own client")), "{screen}");
+    assert!(screen.contains("route: my own client"), "{screen}");
+    assert!(!screen.contains("(u uses"), "{screen}");
+    press(&mut m, 'u');
+    assert!(said(&m).contains(&kept("your own client")), "{}", said(&m));
+    assert_eq!(route_asked(&mut m), ClientRoute::Own);
+}
+
+#[test]
+fn a_held_cache_path_makes_the_route_lazarobox_and_says_so() {
+    let mut m = held_on_screen(CACHE, Some(PIN));
+    press(&mut m, 'w');
+    let screen = all(&mut m);
+    assert!(screen.contains(&kept("lazarobox client")), "{screen}");
+    assert!(screen.contains(CLIENT_LINE), "{screen}");
+    // The user asked for their own client: the held value still wins.
+    press(&mut m, 'o');
+    send(&mut m, key(KeyCode::Esc));
+    assert_eq!(route_asked(&mut m), ClientRoute::Lazarobox);
+    // With Workspace ticked too, the own client is used for both and the
+    // screen still says what stays for Search Console.
+    let mut m = held_on_screen(CACHE, Some(PIN));
+    assert!(all(&mut m).contains(&kept("lazarobox client")));
+}
+
+#[test]
+fn no_caveat_without_a_held_value() {
+    let mut m = alone(Some(PIN), Some(ID));
+    assert!(!all(&mut m).contains("kept from secrets.toml"));
+}
+
+// `o` selects the own route only once the form saves, not when it is cancelled.
+#[test]
+fn a_cancelled_o_form_keeps_the_lazarobox_route_and_a_saved_one_selects_own() {
+    let mut m = alone(Some(PIN), None);
+    press(&mut m, 'o');
+    send(&mut m, key(KeyCode::Esc));
+    assert_eq!(route_asked(&mut m), ClientRoute::Lazarobox);
+    let mut m = alone(Some(PIN), None);
+    press(&mut m, 'o');
+    for c in ID.chars() {
+        press(&mut m, c);
+    }
+    send(&mut m, key(KeyCode::Enter));
+    for c in "GOCSPX-abc".chars() {
+        press(&mut m, c);
+    }
+    assert!(matches!(
+        send(&mut m, key(KeyCode::Enter)),
+        MenuCommand::SaveClient { .. }
+    ));
+    m.google_client(Ok(Some(ID.to_owned())));
+    assert_eq!(route_asked(&mut m), ClientRoute::Own);
+}
+
+// `u` with gsc declared only points at `f`, and Enter on the entry's client
+// row is the real switch.
+#[test]
+fn with_gsc_declared_u_points_at_f_and_enter_on_the_entry_switches() {
+    let mut m = linking();
+    assert!(matches!(
+        m.link_reply(Err("x".to_owned()), None),
+        MenuCommand::None
+    ));
+    press(&mut m, 'u');
+    assert_eq!(
+        m.notice.as_deref(),
+        Some("u picks the client of Search Console; f on its entry changes it")
+    );
+    let mut m = entry(Vec::new(), GSC);
+    m.set_client_pin(Some(PIN));
+    let config = snippet(mcp_catalog::entry("gsc").unwrap());
+    m.presence_reply(
+        presence(&config, &held(CACHE))
+            .with_home(Some("/h".to_owned()))
+            .with_client_cache(Some(CACHE.to_owned())),
+    );
+    assert_eq!(press(&mut m, 'f'), MenuCommand::None);
+    assert!(
+        texts(&m)
+            .join(" ")
+            .contains("Enter switches to your own client")
+    );
+    assert_eq!(enter(&mut m), MenuCommand::None, "asks first");
+    assert_eq!(press(&mut m, 'y'), save(OWN));
 }
 
 // ---- 2.6: the screen on each route -----------------------------------------------

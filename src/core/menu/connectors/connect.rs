@@ -25,6 +25,19 @@ const TITLE: &str = "Connect Google · Search Console and Workspace";
 const TITLE_PLAN: &str = "Connect Google · plan";
 const TITLE_EMAIL: &str = "Connect Google · USER_GOOGLE_EMAIL";
 const HINT: &str = "j/k scroll · s/w tick · e e-mail · o client · n plan · Esc";
+fn route_is_lazarobox(held: ClientRoute, available: bool) -> bool {
+    held == ClientRoute::Lazarobox && available
+}
+
+/// What the screen says about a client value the plan keeps.
+fn kept_line(held: ClientRoute) -> String {
+    let what = match held {
+        ClientRoute::Lazarobox => "lazarobox client",
+        ClientRoute::Own => "your own client",
+    };
+    format!("kept from secrets.toml: {what}; f on the entry changes it")
+}
+
 const HINT_ROUTE: &str = "j/k · s/w tick · e e-mail · o own · u route · n plan · Esc";
 const HINT_PLAN: &str = "j/k scroll · y write · c copy the entries · Esc back";
 const HINT_EMAIL: &str = "type your Google e-mail; Enter keeps it · Esc cancels";
@@ -61,7 +74,7 @@ pub(super) struct Google {
     paste: bool,
     /// The user chose their own client (`u`, or `o`) over the lazarobox one;
     /// not kept after leaving the screen.
-    own: bool,
+    pub(super) own: bool,
 }
 
 impl Google {
@@ -160,13 +173,34 @@ impl Connectors {
 
     /// The route the plan takes: the lazarobox client only for Search Console
     /// alone, when the build has it and the user did not choose their own.
+    /// A client file value kept in `secrets.toml` wins (the plan keeps held
+    /// values), so the route follows it.
     fn route(&self) -> ClientRoute {
         let alone = self.chosen() == ["gsc"];
-        if alone && self.lazarobox() && !self.google.own {
+        let wanted = if alone && self.lazarobox() && !self.google.own {
             ClientRoute::Lazarobox
         } else {
             ClientRoute::Own
+        };
+        match self.held_client() {
+            Some(held) if alone && (held == ClientRoute::Own || self.lazarobox()) => held,
+            _ => wanted,
         }
+    }
+
+    /// Which client the Search Console value that `secrets.toml` already
+    /// holds points at, while `gsc` is ticked (so the plan would keep it).
+    fn held_client(&self) -> Option<ClientRoute> {
+        let presence = self.presence.as_ref()?;
+        if !self.chosen().contains(&"gsc") {
+            return None;
+        }
+        let held = presence.shown("gsc", "GSC_OAUTH_CLIENT_SECRETS_FILE")?;
+        Some(if Some(held) == presence.client_cache() {
+            ClientRoute::Lazarobox
+        } else {
+            ClientRoute::Own
+        })
     }
 
     /// `u`: the other client for Search Console, or why there is no choice.
@@ -176,6 +210,8 @@ impl Connectors {
             self.notice = Some("u picks the client of Search Console; f on its entry changes it");
         } else if chosen.contains(&"google") {
             self.said = Some(Refused::NeedsOwnClient.notice());
+        } else if let Some(held) = self.held_client() {
+            self.said = Some(kept_line(held));
         } else if !self.lazarobox() {
             self.said = Some(NOT_CONFIGURED_SCREEN.to_owned());
         } else {
@@ -187,7 +223,19 @@ impl Connectors {
     fn client_rows(&self, route: ClientRoute, room: usize) -> Vec<Row> {
         let chosen = self.chosen();
         let mut rows = Vec::new();
-        if route == ClientRoute::Lazarobox {
+        let held = self.held_client();
+        if let Some(held) = held {
+            let route = match route {
+                ClientRoute::Lazarobox => "lazarobox client",
+                ClientRoute::Own => "my own client",
+            };
+            rows.push(text(format!("route: {route}")));
+            rows.extend(wrap(&kept_line(held), "", room));
+            if route_is_lazarobox(held, self.lazarobox()) && chosen == ["gsc"] {
+                rows.extend(wrap(CLIENT_LINE, "", room));
+                return rows;
+            }
+        } else if route == ClientRoute::Lazarobox {
             rows.extend(wrap(
                 "route: lazarobox client (u uses your own client)",
                 "",
@@ -195,8 +243,7 @@ impl Connectors {
             ));
             rows.extend(wrap(CLIENT_LINE, "", room));
             return rows;
-        }
-        if chosen == ["gsc"] && self.lazarobox() {
+        } else if chosen == ["gsc"] && self.lazarobox() {
             rows.extend(wrap(
                 "route: my own client (u uses the lazarobox client)",
                 "",
@@ -471,10 +518,7 @@ impl Connectors {
             KeyCode::Char('s') => self.tick("gsc"),
             KeyCode::Char('w') => self.tick("google"),
             KeyCode::Char('e') => self.edit_email(),
-            KeyCode::Char('o') => {
-                self.google.own = true;
-                self.open_client_form();
-            }
+            KeyCode::Char('o') => self.open_client_form(),
             KeyCode::Char('u') => self.pick_route(),
             KeyCode::Char('n') | KeyCode::Enter => return self.google_ask(),
             KeyCode::Char('i') => self.google_install(dirty, room),
