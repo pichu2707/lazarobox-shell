@@ -79,7 +79,7 @@ fn without_a_pin_the_lazarobox_route_is_not_planned() {
         let notice = lab.plan(ClientRoute::Lazarobox, pin, &["gsc"]).unwrap_err();
         assert_eq!(
             notice,
-            "lazarobox client not configured in this build; u uses your own client"
+            "lazarobox client not configured in this build; this screen uses your own client"
         );
     }
 }
@@ -92,7 +92,10 @@ fn workspace_on_the_lazarobox_route_is_refused() {
         let notice = lab
             .plan(ClientRoute::Lazarobox, Some(PIN), chosen)
             .unwrap_err();
-        assert!(notice.contains("only for Search Console alone"), "{notice}");
+        assert!(
+            notice.contains("with Workspace ticked your own client is used"),
+            "{notice}"
+        );
     }
 }
 

@@ -98,19 +98,28 @@ pub fn accept(status: u16, body: &str, pin: Option<&str>) -> Result<Client, Why>
     Ok(client)
 }
 
-/// The notice of a Link that has no saved copy to fall back on.
+/// The screen's notice when the build has no pin: Connect Google then plans
+/// with your own client.
+pub const NOT_CONFIGURED_SCREEN: &str =
+    "lazarobox client not configured in this build; this screen uses your own client";
+
+/// How a linked `gsc` switches to your own client: the menu path that exists
+/// once the entry is declared.
+const OWN_AFTER_LINK: &str = "f on the gsc entry, Enter on its client row, then g";
+
+/// The notice of a Link that has no saved copy to fall back on. Link runs on
+/// a declared `gsc`, so it names that path, not the screen's `u`.
 pub fn failure_notice(why: &Why) -> String {
-    let own = "u uses your own client";
     match why {
-        Why::NotConfigured => format!("lazarobox client not configured in this build; {own}"),
-        why if why.refused() => {
-            format!(
-                "lazarobox client refused ({}); nothing saved; {own}",
-                why.text()
-            )
-        }
+        Why::NotConfigured => format!(
+            "lazarobox client not configured in this build; to use your own client: {OWN_AFTER_LINK}"
+        ),
+        why if why.refused() => format!(
+            "lazarobox client refused ({}); nothing saved; to use your own client: {OWN_AFTER_LINK}",
+            why.text()
+        ),
         why => format!(
-            "lazarobox client not fetched ({}); link again later, or {own}",
+            "lazarobox client not fetched ({}); link again later, or use your own client: {OWN_AFTER_LINK}",
             why.text()
         ),
     }

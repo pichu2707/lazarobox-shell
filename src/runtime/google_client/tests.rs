@@ -154,7 +154,7 @@ async fn a_refused_answer_without_a_cache_fails_and_writes_nothing() {
     assert_eq!(kind, "failed");
     assert_eq!(
         text,
-        "lazarobox client refused (not from the lazarobox project); nothing saved; u uses your own client"
+        "lazarobox client refused (not from the lazarobox project); nothing saved; to use your own client: f on the gsc entry, Enter on its client row, then g"
     );
     assert_eq!(lab.names(), Vec::<String>::new());
 
@@ -164,7 +164,7 @@ async fn a_refused_answer_without_a_cache_fails_and_writes_nothing() {
     assert_eq!(kind, "failed");
     assert_eq!(
         text,
-        "lazarobox client not fetched (HTTP 404); link again later, or u uses your own client"
+        "lazarobox client not fetched (HTTP 404); link again later, or use your own client: f on the gsc entry, Enter on its client row, then g"
     );
     assert_eq!(lab.names(), Vec::<String>::new());
 }
@@ -188,7 +188,7 @@ async fn an_unreachable_host_and_a_missing_curl_have_their_notice() {
     assert_eq!(kind, "failed");
     assert_eq!(
         text,
-        "lazarobox client not fetched (javilazaro.es needs curl on the PATH); link again later, or u uses your own client"
+        "lazarobox client not fetched (javilazaro.es needs curl on the PATH); link again later, or use your own client: f on the gsc entry, Enter on its client row, then g"
     );
     assert_eq!(lab.names(), Vec::<String>::new());
 }
@@ -204,7 +204,7 @@ async fn without_a_pin_no_curl_runs_and_the_notice_says_so() {
     assert_eq!(kind, "failed");
     assert_eq!(
         text,
-        "lazarobox client not configured in this build; u uses your own client"
+        "lazarobox client not configured in this build; to use your own client: f on the gsc entry, Enter on its client row, then g"
     );
     assert!(seen.lock().unwrap().is_empty(), "no request was made");
 }
@@ -276,7 +276,7 @@ async fn an_oversize_answer_says_larger_than_16_kib_and_is_never_accepted() {
         assert_eq!(kind, "failed", "{name}");
         assert_eq!(
             text,
-            "lazarobox client refused (larger than 16 KiB); nothing saved; u uses your own client",
+            "lazarobox client refused (larger than 16 KiB); nothing saved; to use your own client: f on the gsc entry, Enter on its client row, then g",
             "{name}"
         );
         assert_eq!(lab.names(), Vec::<String>::new(), "{name}");

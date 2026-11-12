@@ -157,33 +157,33 @@ fn the_constants_are_the_design_names() {
 fn each_notice_is_the_design_text() {
     assert_eq!(
         failure_notice(&Why::NotConfigured),
-        "lazarobox client not configured in this build; u uses your own client"
+        "lazarobox client not configured in this build; to use your own client: f on the gsc entry, Enter on its client row, then g"
     );
     assert_eq!(
         failure_notice(&Why::Http(404)),
-        "lazarobox client not fetched (HTTP 404); link again later, or u uses your own client"
+        "lazarobox client not fetched (HTTP 404); link again later, or use your own client: f on the gsc entry, Enter on its client row, then g"
     );
     assert_eq!(
         failure_notice(&Why::Redirected(301)),
-        "lazarobox client not fetched (redirected (HTTP 301)); link again later, or u uses your own client"
+        "lazarobox client not fetched (redirected (HTTP 301)); link again later, or use your own client: f on the gsc entry, Enter on its client row, then g"
     );
     assert_eq!(
         failure_notice(&Why::Curl(
             "javilazaro.es request failed: no reply".to_owned()
         )),
-        "lazarobox client not fetched (javilazaro.es request failed: no reply); link again later, or u uses your own client"
+        "lazarobox client not fetched (javilazaro.es request failed: no reply); link again later, or use your own client: f on the gsc entry, Enter on its client row, then g"
     );
     assert_eq!(
         failure_notice(&Why::Foreign),
-        "lazarobox client refused (not from the lazarobox project); nothing saved; u uses your own client"
+        "lazarobox client refused (not from the lazarobox project); nothing saved; to use your own client: f on the gsc entry, Enter on its client row, then g"
     );
     assert_eq!(
         failure_notice(&Why::NotDesktop),
-        "lazarobox client refused (not a Desktop client file); nothing saved; u uses your own client"
+        "lazarobox client refused (not a Desktop client file); nothing saved; to use your own client: f on the gsc entry, Enter on its client row, then g"
     );
     assert_eq!(
         failure_notice(&Why::TooLarge),
-        "lazarobox client refused (larger than 16 KiB); nothing saved; u uses your own client"
+        "lazarobox client refused (larger than 16 KiB); nothing saved; to use your own client: f on the gsc entry, Enter on its client row, then g"
     );
     assert_eq!(
         fallback_notice(&Why::Http(500)),

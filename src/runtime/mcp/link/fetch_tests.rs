@@ -135,7 +135,7 @@ async fn a_failed_fetch_without_a_cache_stops_before_any_check() {
     assert_eq!(
         line,
         Err(
-            "lazarobox client not fetched (HTTP 404); link again later, or u uses your own client"
+            "lazarobox client not fetched (HTTP 404); link again later, or use your own client: f on the gsc entry, Enter on its client row, then g"
                 .to_owned()
         )
     );
@@ -160,20 +160,68 @@ async fn a_failed_fetch_with_a_saved_copy_links_and_carries_the_notice() {
     assert_eq!(*calls.lock().unwrap(), [1]);
 }
 
-// Spec (Nothing else fetches): the Linker is the only caller of `refresh`.
+// Spec (Nothing else fetches): Link is the only caller of `refresh`, and the
+// URL path of the client file is used nowhere else.
 #[test]
-fn the_linker_is_the_only_caller_of_refresh() {
-    let callers: Vec<&str> = [
-        "src/runtime.rs",
-        "src/app.rs",
-        "src/runtime/mcp/presence.rs",
-    ]
-    .into_iter()
-    .filter(|file| {
-        let text = fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))
-            .unwrap();
-        text.contains("google_client::refresh") || text.contains("refresh(")
-    })
-    .collect();
-    assert_eq!(callers, Vec::<&str>::new());
+fn nothing_but_link_reaches_the_fetch() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk(&src, &mut files);
+    assert!(files.len() > 100, "the walk found the sources");
+    let mut found = Vec::new();
+    for file in files {
+        let rel = file
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let own = rel == "runtime/google_client.rs"
+            || rel.starts_with("runtime/google_client/")
+            || rel == "runtime/mcp/link.rs"
+            || rel.starts_with("runtime/mcp/link/");
+        let text = fs::read_to_string(&file).unwrap();
+        let core = rel.starts_with("core/ai/mcp_secrets");
+        let url = text.contains("URL_PATH") && !core && rel != "runtime/hf/tests.rs";
+        let refresh = text.contains("google_client::refresh")
+            || text.contains("google_client::{")
+            || text.contains("Refresh::");
+        if !own && (url || refresh) {
+            found.push(rel);
+        }
+    }
+    assert_eq!(found, Vec::<String>::new());
+}
+
+// A build with no pin runs no curl, even on the cache path.
+#[tokio::test]
+async fn without_a_pin_the_cache_path_spawns_no_curl() {
+    let lab = lab();
+    let fetch = Fetch::new(
+        Curl::google_client(OsString::new()),
+        Some(lab.secrets.clone()),
+        None,
+    );
+    let calls = Calls::default();
+    let (line, notice) = answer(
+        lab.plan(&lab.cache()),
+        &fetch,
+        checking(&Seen::default(), &calls),
+    )
+    .await;
+    assert!(
+        line.unwrap_err()
+            .starts_with("lazarobox client not configured in this build")
+    );
+    assert_eq!(notice, None);
+    assert!(calls.lock().unwrap().is_empty());
 }

@@ -21,8 +21,8 @@ const OWN: &str = "/h/.config/lazarobox/google-oauth-client.json";
 const CACHE: &str = "/h/.config/lazarobox/lazarobox-google-client.json";
 const XDG_CACHE: &str = "/x/cfg/lazarobox/lazarobox-google-client.json";
 const NOT_CONFIGURED: &str =
-    "lazarobox client not configured in this build; u uses your own client";
-const ALONE: &str = "the lazarobox client is only for Search Console alone";
+    "lazarobox client not configured in this build; this screen uses your own client";
+const ALONE: &str = "the lazarobox client is only for Search Console alone; with Workspace ticked your own client is used";
 
 /// The Connect Google screen with this pin, the own client read as `client`.
 fn connect(pin: Option<&'static str>, client: Option<&str>) -> MenuState {
@@ -199,11 +199,10 @@ fn linking() -> MenuState {
 #[test]
 fn a_link_failure_is_the_footer_notice_and_offers_the_own_client() {
     let mut m = linking();
-    let why =
-        "lazarobox client not fetched (HTTP 404); link again later, or u uses your own client";
+    let why = "lazarobox client not fetched (HTTP 404); link again later, or use your own client: f on the gsc entry, Enter on its client row, then g";
     assert_eq!(m.link_reply(Err(why.to_owned()), None), MenuCommand::None);
     assert_eq!(m.notice.as_deref(), Some(why));
-    assert!(why.contains("u uses your own client"));
+    assert!(why.contains("f on the gsc entry"));
 }
 
 #[test]

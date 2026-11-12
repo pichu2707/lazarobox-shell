@@ -172,7 +172,7 @@ impl Refused {
             Self::BadEmail => "type your Google e-mail address (name@domain, no spaces)".to_owned(),
             Self::NoHome => "no absolute home folder for the Search Console token".to_owned(),
             Self::NeedsOwnClient => {
-                "the lazarobox client is only for Search Console alone; u uses your own client"
+                "the lazarobox client is only for Search Console alone; with Workspace ticked your own client is used"
                     .to_owned()
             }
             Self::Uncovered { table, name } => {

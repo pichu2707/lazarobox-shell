@@ -15,7 +15,7 @@ use crate::core::{
         entry,
         link::plain_email,
     },
-    ai::mcp_secrets::{CLIENT_LINE, Why, failure_notice},
+    ai::mcp_secrets::{CLIENT_LINE, NOT_CONFIGURED_SCREEN},
     config_append::Connected,
 };
 
@@ -177,7 +177,7 @@ impl Connectors {
         } else if chosen.contains(&"google") {
             self.said = Some(Refused::NeedsOwnClient.notice());
         } else if !self.lazarobox() {
-            self.said = Some(failure_notice(&Why::NotConfigured));
+            self.said = Some(NOT_CONFIGURED_SCREEN.to_owned());
         } else {
             self.google.own = !self.google.own;
         }
@@ -204,7 +204,7 @@ impl Connectors {
             ));
         } else if chosen == ["gsc"] {
             rows.push(text("route: my own client"));
-            rows.extend(wrap(&failure_notice(&Why::NotConfigured), "", room));
+            rows.extend(wrap(NOT_CONFIGURED_SCREEN, "", room));
         } else if chosen.contains(&"gsc") && self.lazarobox() {
             let line = format!(
                 "route: my own client ({})",

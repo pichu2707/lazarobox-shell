@@ -14,8 +14,8 @@ use crate::core::{
             presence::Presence,
         },
         mcp_secrets::{
-            CACHE_FILE, CLIENT_FILE, CLIENT_MAX, Client, FILE, Refusal, Secrets, Why, cache_path,
-            failure_notice, line_of, pinned, read_client,
+            CACHE_FILE, CLIENT_FILE, CLIENT_MAX, Client, FILE, NOT_CONFIGURED_SCREEN, Refusal,
+            Secrets, Why, cache_path, line_of, pinned, read_client,
         },
     },
     config_append::{self, AppendRefusal},
@@ -128,7 +128,7 @@ pub fn plan_with(
 ) -> Result<Preview, String> {
     let lazarobox = ask.route == ClientRoute::Lazarobox;
     if lazarobox && pin.is_none_or(str::is_empty) {
-        return Err(failure_notice(&Why::NotConfigured));
+        return Err(NOT_CONFIGURED_SCREEN.to_owned());
     }
     let client = match (lazarobox, read_client_with(fs, secrets)) {
         (true, _) => None,

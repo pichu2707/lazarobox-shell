@@ -9,8 +9,8 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │   [x] Search Console                                       │
 │   [ ] Google Workspace: Gmail read + drafts, Docs, Sheets  │
 │ route: my own client                                       │
-│ lazarobox client not configured in this build; u uses your │
-│ own client                                                 │
+│ lazarobox client not configured in this build; this screen │
+│ uses your own client                                       │
 │ client: 123-abc.apps.googleusercontent.com                 │
 │ e-mail: not needed (Google Workspace is not ticked)        │
 │ n shows the plan · c copies the entries                    │

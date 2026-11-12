@@ -292,8 +292,8 @@ pub use client::{
     valid_id, valid_secret,
 };
 pub use lazarobox_client::{
-    CACHE_FILE, CLIENT_LINE, PROJECT_NUMBER, URL_PATH, Why, accept, cache_path, failure_notice,
-    fallback_notice, not_saved_notice, pinned,
+    CACHE_FILE, CLIENT_LINE, NOT_CONFIGURED_SCREEN, PROJECT_NUMBER, URL_PATH, Why, accept,
+    cache_path, failure_notice, fallback_notice, not_saved_notice, pinned,
 };
 pub use save::{Refusal, edit, edit_all, line_of};
 pub use text::SecretText;
