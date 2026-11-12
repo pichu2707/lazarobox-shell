@@ -10,6 +10,22 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `g` on the `google` entry (Gmail, Docs, Sheets) in the `Connectors` area links
+  your Google account. After you answer `y` to `start workspace-mcp and ask
+  Google to link <your e-mail>?`, lazarobox starts the declared server as a
+  chat would, asks it for its sign-in link and opens that link (or copies it
+  and shows it). It accepts only a link on `accounts.google.com` that carries
+  your own client id and a local callback port; anything else is refused with
+  a notice. The server stays alive to receive the answer of Google, so the
+  entry turns `linked` when its credentials file changes (checked by `stat`:
+  lazarobox never opens it, and never stores a Google token). Esc cancels, and
+  five minutes without an answer ends the wait; the server is always stopped.
+  A `google` entry that names `WORKSPACE_MCP_CREDENTIALS_DIR` or
+  `GOOGLE_MCP_CREDENTIALS_DIR` is refused with a notice, because its tokens
+  would be kept outside the folder the tools refuse to read.
+
 ## [1.22.0] - 2026-11-12
 
 ### Changed

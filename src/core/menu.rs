@@ -1083,6 +1083,13 @@ pub enum MenuCommand {
     /// `g` on `gsc`: check the client file and `uv`, and build the login
     /// line; the answer comes back through [`MenuState::link_reply`].
     LinkGsc(crate::core::ai::mcp_catalog::gsc::Plan),
+    /// `y` on the prompt of Link with Google for `google`: start the link
+    /// session of this declared server. Its steps come back through
+    /// [`MenuState::link_step`]; Esc stops it with [`MenuCommand::CancelProbe`].
+    LinkGoogle {
+        server: Box<crate::core::ai::config::McpServer>,
+        ask: crate::core::ai::mcp_catalog::link::Ask,
+    },
     /// Send this Feedback request with `gh` (find similar issues, create,
     /// or comment); the answer comes back through
     /// [`MenuState::feedback_reply`].
@@ -1364,6 +1371,20 @@ impl MenuState {
         MenuCommand::None
     }
 
+    /// This menu started a link session that has not ended.
+    pub fn link_running(&self) -> bool {
+        self.connectors.link_running()
+    }
+
+    /// The link session moved on.
+    pub fn link_step(&mut self, step: crate::core::ai::mcp_catalog::link::Step) -> MenuCommand {
+        match self.connectors.link_step(step) {
+            connectors::Moved::Nothing => MenuCommand::None,
+            connectors::Moved::Open(url) => self.open_or_copy(url),
+            connectors::Moved::Said(result) => self.backup_reply(result),
+        }
+    }
+
     /// A probe ended.
     pub fn probe_reply(&mut self, report: Probed) {
         self.connectors.probe_reply(report);
@@ -1393,7 +1414,7 @@ impl MenuState {
         let dirty = !self.edits(config).is_empty();
         let command = self.connectors.key(key, dirty, self.connectors_room());
         if let Some(notice) = self.connectors.take_notice() {
-            self.notice = Some(notice.to_owned());
+            self.notice = Some(notice.into_owned());
         }
         match command {
             MenuCommand::Open(url) => self.open_or_copy(url),
@@ -3008,7 +3029,7 @@ impl MenuState {
             Some(SubView::Connectors) => {
                 self.connectors.paste(text);
                 if let Some(notice) = self.connectors.take_notice() {
-                    self.notice = Some(notice.to_owned());
+                    self.notice = Some(notice.into_owned());
                 }
             }
             Some(SubView::Warning) | None => {}
@@ -3659,6 +3680,8 @@ mod feedback_menu_tests;
 
 #[cfg(test)]
 mod connectors_fields_tests;
+#[cfg(test)]
+mod connectors_google_tests;
 #[cfg(test)]
 mod connectors_link_tests;
 #[cfg(test)]

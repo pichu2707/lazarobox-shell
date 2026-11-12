@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 
 use super::{App, Effect, NewPane, Outcome};
 use crate::core::{
-    ai::{mcp_catalog::checks::Probed, sanitize::is_format},
+    ai::{
+        mcp_catalog::{checks::Probed, link::Step},
+        sanitize::is_format,
+    },
     layout::PaneId,
 };
 
@@ -108,6 +111,25 @@ impl App {
         self.mcp_probes.insert(report.server.clone(), report);
         self.dirty = true;
         Vec::new()
+    }
+
+    /// The link session of `google` moved on: the menu opens (or copies) the
+    /// link it says, or shows how the session ended. With the menu closed
+    /// nobody sees the link (the menu is closed, or was reopened), so the session is stopped, and its end is a notice.
+    pub(super) fn on_mcp_link(&mut self, step: Step) -> Vec<Effect> {
+        self.dirty = true;
+        let shown = self.menu.as_ref().is_some_and(|m| m.link_running());
+        match (self.menu.as_mut().filter(|_| shown), step) {
+            (Some(menu), step) => {
+                let command = menu.link_step(step);
+                self.on_menu_command(command)
+            }
+            (None, Step::Waiting(_)) => vec![Effect::CancelMcpProbe],
+            (None, Step::Ended(result)) => {
+                self.notice = Some(result.unwrap_or_else(|notice| notice));
+                Vec::new()
+            }
+        }
     }
 
     /// The last probe report of the server `name` this session.

@@ -13,7 +13,12 @@ use super::{MenuCommand, Row, VIEW_BODY};
 use crate::core::ai::{
     config::McpServer,
     mcp_catalog::{
-        self, Entry, Group, checks::Probed, checks::Verdict, gsc, presence::Presence,
+        self, Entry, Group, Link,
+        checks::Probed,
+        checks::Verdict,
+        gsc,
+        link::{self as google, Ask, Step},
+        presence::Presence,
         secrets_template, snippet,
     },
     mcp_secrets::{BACKUP, CLIENT_FILE, FILE as SECRETS_FILE},
@@ -32,6 +37,9 @@ const NOT_DECLARED: &str = "not declared: paste the entry into config.toml first
 const HINT_LIST: &str = "j/k move · Enter open · Esc back";
 const HINT_ENTRY: &str = "j/k scroll · i install · l login · p probe · f fill · Esc";
 const HINT_ENTRY_WAYS: &str = "j/k · i install · p probe · f fill · w way · g link · Esc";
+const HINT_ENTRY_GOOGLE: &str = "j/k scroll · i install · p probe · f fill · g link · Esc";
+const STARTING: &str = "starting workspace-mcp… · Esc cancels";
+const WAITING: &str = "waiting for Google… · Esc cancels";
 const HINT_PROMPT: &str = "y yes · any other key cancels";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -59,6 +67,8 @@ enum Prompt {
         discards: bool,
     },
     Probe(Box<McpServer>),
+    /// Link with Google for `google`: the declared server and the account.
+    Google(Box<McpServer>, Ask),
     /// The login line of Link with Google, built from resolved values.
     Link {
         line: String,
@@ -87,6 +97,10 @@ pub(super) struct Connectors {
     prompt: Option<Prompt>,
     probing: Option<String>,
     notice: Option<&'static str>,
+    /// A notice that holds a name or a server's reason.
+    said: Option<String>,
+    /// The link session of `google` runs: no link yet, or the link to open.
+    waiting: Option<Option<String>>,
     /// The field that is open on a `Screen::Fields`.
     field: Option<Field>,
     /// The way of an entry the user chose (`w`); `None` follows the table.
@@ -95,6 +109,15 @@ pub(super) struct Connectors {
     saved: bool,
     /// The link checks are running (the flag: the draft has unsaved changes).
     linking: Option<bool>,
+}
+
+/// What a link step asks of the menu.
+pub(super) enum Moved {
+    Nothing,
+    /// Open this link (or copy it).
+    Open(String),
+    /// The session ended.
+    Said(Result<String, String>),
 }
 
 /// `text` cut at `room` columns on word boundaries (a long word is split).
@@ -177,6 +200,19 @@ fn prompt_rows(prompt: &Prompt, room: usize) -> Option<Vec<Row>> {
                 title(format!("probe {}? (y/n)", server.name)),
                 text("Starts, without a shell:"),
             ];
+            rows.extend(verbatim(&command_of(server), "  ", room));
+            rows
+        }
+        Prompt::Google(server, ask) => {
+            let mut rows = verbatim(
+                &format!(
+                    "start workspace-mcp and ask Google to link {}? (y/n)",
+                    ask.email
+                ),
+                "",
+                room,
+            );
+            rows.push(text("Starts, without a shell:"));
             rows.extend(verbatim(&command_of(server), "  ", room));
             rows
         }
@@ -293,8 +329,9 @@ impl Connectors {
         self.probes.insert(report.server.clone(), report);
     }
 
-    pub(super) fn take_notice(&mut self) -> Option<&'static str> {
-        self.notice.take()
+    pub(super) fn take_notice(&mut self) -> Option<Cow<'static, str>> {
+        let said = self.said.take().map(Cow::Owned);
+        self.notice.take().map(Cow::Borrowed).or(said)
     }
 
     /// The disk copy differs from what the chats loaded at startup. The order
@@ -324,8 +361,12 @@ impl Connectors {
         if !missing.is_empty() {
             return format!("values missing: {}", missing.join(", "));
         }
-        let link = match self.presence.as_ref().and_then(|p| p.linked()) {
-            Some(_) if entry.id != "gsc" => "",
+        let linked = self.presence.as_ref().and_then(|p| match entry.id {
+            "gsc" => p.linked(),
+            "google" => p.google_linked(),
+            _ => None,
+        });
+        let link = match linked {
             Some(true) => " · linked",
             Some(false) => " · not linked",
             None => "",
@@ -340,6 +381,7 @@ impl Connectors {
 
     pub(super) fn rows(&self, room: usize) -> Vec<Row> {
         let mut rows = match (&self.prompt, self.screen) {
+            _ if self.waiting.is_some() => self.wait_rows(room),
             (Some(prompt), _) => prompt_rows(prompt, room).unwrap_or_else(|| vec![text(WIDEN)]),
             (None, Some(Screen::Entry { at, scroll })) => self.entry_rows(at, scroll, room),
             (None, Some(Screen::Fields { at, cursor })) => self.field_rows(at, cursor, room),
@@ -347,6 +389,19 @@ impl Connectors {
             (None, None) => Vec::new(),
         };
         rows.truncate(VIEW_BODY);
+        rows
+    }
+
+    /// The screen of a link session: the link, as text, once there is one.
+    fn wait_rows(&self, room: usize) -> Vec<Row> {
+        let Some(Some(url)) = &self.waiting else {
+            return vec![title(STARTING)];
+        };
+        let mut rows = vec![
+            title(WAITING),
+            text("Open this link if the browser did not:"),
+        ];
+        rows.extend(verbatim(url, "  ", room));
         rows
     }
 
@@ -460,7 +515,7 @@ impl Connectors {
             let title = entry.ways[self.way_of(entry)].title;
             rows.push(text(format!("  w way: {title} (w changes it)")));
         }
-        if entry.id == "gsc" && self.way_of(entry) == 0 {
+        if (entry.id == "gsc" && self.way_of(entry) == 0) || entry.link == Link::GoogleAuth {
             rows.push(text("  g link with Google"));
         }
         rows.push(text("  1-9 open a link · c copy the entry"));
@@ -472,6 +527,9 @@ impl Connectors {
     }
 
     pub(super) fn hint(&self) -> Cow<'static, str> {
+        if let Some(wait) = &self.waiting {
+            return Cow::Borrowed(if wait.is_some() { WAITING } else { STARTING });
+        }
         if let Some(name) = &self.probing {
             return Cow::Owned(format!("probing {name}… · Esc stops it"));
         }
@@ -487,6 +545,11 @@ impl Connectors {
             {
                 HINT_ENTRY_WAYS
             }
+            (None, Some(Screen::Entry { at, .. }))
+                if mcp_catalog::entries()[at].link == Link::GoogleAuth =>
+            {
+                HINT_ENTRY_GOOGLE
+            }
             (None, Some(Screen::Entry { .. })) => HINT_ENTRY,
             (None, Some(Screen::Fields { .. })) => HINT_FIELDS,
             _ => HINT_LIST,
@@ -494,6 +557,14 @@ impl Connectors {
     }
 
     pub(super) fn key(&mut self, key: &KeyEvent, dirty: bool, room: usize) -> MenuCommand {
+        if let Some(wait) = &self.waiting {
+            // Only Esc leaves a link session; it ends with its own notice.
+            if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+                return MenuCommand::CancelProbe;
+            }
+            self.notice = Some(if wait.is_some() { WAITING } else { STARTING });
+            return MenuCommand::None;
+        }
         if let Some(prompt) = self.prompt.take() {
             // Only a plain `y` confirms (not Ctrl+y or Alt+y), and only while
             // the command is shown whole at this width.
@@ -508,6 +579,10 @@ impl Connectors {
                 (true, Prompt::Probe(server)) => {
                     self.probing = Some(server.name.clone());
                     MenuCommand::Probe(server)
+                }
+                (true, Prompt::Google(server, ask)) => {
+                    self.waiting = Some(None);
+                    MenuCommand::LinkGoogle { server, ask }
                 }
                 (true, Prompt::Command(pending)) => self.after_command(pending, room),
                 (true, Prompt::Replace(pending)) => pending.into_command(),
@@ -597,6 +672,7 @@ impl Connectors {
                 self.screen = Some(Screen::List(at));
             }
             KeyCode::Char('g') if entry.id == "gsc" => return self.link_gsc(entry, dirty),
+            KeyCode::Char('g') if entry.link == Link::GoogleAuth => self.link_google(entry, room),
             KeyCode::Char('i') => self.ask(run("install", entry.install), room),
             KeyCode::Char('l') => match entry.login {
                 Some(login) => self.ask(run("log in to", login.line), room),
@@ -663,6 +739,54 @@ impl Connectors {
             Err(notice) => {
                 self.notice = Some(notice);
                 MenuCommand::None
+            }
+        }
+    }
+
+    /// `g` on `google`: a declared and enabled server with the three values
+    /// it needs; the prompt names the account.
+    fn link_google(&mut self, entry: &Entry, room: usize) {
+        if self.probing.is_some() {
+            self.notice = Some("a probe is already running");
+            return;
+        }
+        let Some(server) = self.server(entry.id) else {
+            self.notice = Some(NOT_DECLARED);
+            return;
+        };
+        if !server.enabled {
+            self.notice = Some("disabled in config.toml");
+            return;
+        }
+        let presence = self.presence.as_ref();
+        let has = |name: &str| presence.is_some_and(|p| p.has(entry.id, name));
+        let shown = |name: &str| presence.and_then(|p| p.shown(entry.id, name).map(str::to_owned));
+        match google::plan(server, &has, &shown) {
+            Ok(ask) => {
+                let prompt = Prompt::Google(Box::new(server.clone()), ask);
+                self.ask(prompt, room);
+            }
+            Err(notice) => self.said = Some(notice),
+        }
+    }
+
+    pub(super) fn link_running(&self) -> bool {
+        self.waiting.is_some()
+    }
+
+    /// A step of the link session, when one runs.
+    pub(super) fn link_step(&mut self, step: Step) -> Moved {
+        if self.waiting.is_none() {
+            return Moved::Nothing;
+        }
+        match step {
+            Step::Waiting(url) => {
+                self.waiting = Some(Some(url.clone()));
+                Moved::Open(url)
+            }
+            Step::Ended(result) => {
+                self.waiting = None;
+                Moved::Said(result)
             }
         }
     }

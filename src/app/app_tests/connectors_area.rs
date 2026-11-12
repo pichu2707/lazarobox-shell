@@ -10,6 +10,7 @@ use crate::core::{
         mcp_catalog::{
             checks::{Probed, Verdict},
             entry,
+            link::Step,
             presence::Presence,
         },
         mcp_secrets::Loaded,
@@ -533,4 +534,149 @@ fn a_check_that_answers_after_the_menu_closed_says_why_and_prompts_nothing() {
     assert_eq!(tap(&mut a, AppEvent::GscLine(Err(why.to_owned()))), []);
     let effects = tap(&mut a, AppEvent::GscLine(Ok(GSC_LINE.to_owned())));
     assert_eq!((spawned(&effects), writes(&effects)), (None, vec![]));
+}
+
+// ---- S6b2: Link with Google for google through the app -----------------------
+
+const GOOGLE_CONFIG: &str = "[[ai.mcp.servers]]\nname = \"google\"\ncommand = \"workspace-mcp\"\n\
+    env = [\"GOOGLE_OAUTH_CLIENT_ID\", \"GOOGLE_OAUTH_CLIENT_SECRET\", \"USER_GOOGLE_EMAIL\", \"WORKSPACE_MCP_DISABLE_LOCAL_FILES\"]\n";
+const GOOGLE_VALUES: &str = "[google]\nGOOGLE_OAUTH_CLIENT_ID = \"the-id.apps.googleusercontent.com\"\n\
+    GOOGLE_OAUTH_CLIENT_SECRET = \"the-secret\"\nUSER_GOOGLE_EMAIL = \"me@x.org\"\n";
+const GOOGLE_URL: &str = "https://accounts.google.com/o/oauth2/auth?client_id=the-id.apps.googleusercontent.com&redirect_uri=http%3A%2F%2Flocalhost%3A8000%2F";
+
+/// The `google` entry screen, filled, `g` not yet pressed.
+fn on_google(opener: bool) -> App {
+    let ai = FileConfig::parse(GOOGLE_CONFIG).unwrap().ai;
+    let mut a = launched(80, 40).with_ai(ai);
+    a.opener = opener;
+    for e in [ctrl_space(), key('m'), key('4'), code(KeyCode::Enter)] {
+        tap(&mut a, e);
+    }
+    let loaded = Secrets::parse(GOOGLE_VALUES.as_bytes());
+    tap(
+        &mut a,
+        AppEvent::McpPresence(
+            Presence::read(Ok(GOOGLE_CONFIG.to_owned()), &loaded).with_home(Some("/h".to_owned())),
+        ),
+    );
+    for e in [key('j'), key('j'), key('j'), code(KeyCode::Enter)] {
+        tap(&mut a, e);
+    }
+    a
+}
+
+fn hint_of(a: &App) -> String {
+    match a.menu().unwrap().footer() {
+        Footer::Hint(h) => h.into_owned(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// `g` then `y`: the session was asked for.
+fn linking(opener: bool) -> App {
+    let mut a = on_google(opener);
+    tap(&mut a, key('g'));
+    let asked = tap(&mut a, key('y'));
+    assert!(
+        matches!(asked.as_slice(), [Effect::LinkGoogle { .. }]),
+        "{asked:?}"
+    );
+    a
+}
+
+// Spec mcp-connect, Nothing without y; the session starts only after `y`.
+#[test]
+fn g_asks_and_only_y_becomes_one_link_effect_and_no_pane() {
+    let mut a = on_google(false);
+    let before = a.panes.len();
+    assert_eq!(tap(&mut a, key('g')), []);
+    let declined = tap(&mut a, key('n'));
+    assert_eq!((spawned(&declined), writes(&declined)), (None, vec![]));
+    tap(&mut a, key('g'));
+    let run = tap(&mut a, key('y'));
+    let [Effect::LinkGoogle { server, ask }] = run.as_slice() else {
+        panic!("one link effect: {run:?}");
+    };
+    assert_eq!(server.name, "google");
+    assert_eq!(ask.email, "me@x.org");
+    assert_eq!(a.panes.len(), before);
+}
+
+// Spec: google link succeeds. The link is opened through the opener.
+#[test]
+fn the_link_is_opened_once_and_shown_while_waiting() {
+    let mut a = linking(true);
+    let step = Step::Waiting(GOOGLE_URL.to_owned());
+    let effects = tap(&mut a, AppEvent::McpLink(step));
+    assert_eq!(effects, [Effect::OpenUrl(GOOGLE_URL.to_owned())]);
+    assert!(rows(&a).concat().replace(' ', "").contains(GOOGLE_URL));
+    // Esc cancels the session; the runtime stops it.
+    assert_eq!(tap(&mut a, esc()), [Effect::CancelMcpProbe]);
+}
+
+#[test]
+fn without_an_opener_the_link_is_copied() {
+    let mut a = linking(false);
+    let effects = tap(
+        &mut a,
+        AppEvent::McpLink(Step::Waiting(GOOGLE_URL.to_owned())),
+    );
+    assert!(
+        !effects.iter().any(|e| matches!(e, Effect::OpenUrl(_))),
+        "{effects:?}"
+    );
+    assert!(!effects.is_empty(), "the link is copied instead");
+}
+
+#[test]
+fn success_reads_the_files_again_and_a_failure_says_why() {
+    let mut a = linking(false);
+    let ended = Step::Ended(Ok("linked google".to_owned()));
+    assert_eq!(
+        tap(&mut a, AppEvent::McpLink(ended)),
+        [Effect::LoadPresence]
+    );
+    assert_eq!(hint_of(&a), "linked google");
+    let mut a = linking(false);
+    let why = "link failed: ports 8000-8004 are in use";
+    let ended = Step::Ended(Err(why.to_owned()));
+    assert_eq!(tap(&mut a, AppEvent::McpLink(ended)), []);
+    assert_eq!(hint_of(&a), why);
+}
+
+// With the menu closed a step is not lost: the end is a notice and the
+// session, which nobody sees, is stopped.
+#[test]
+fn a_step_after_the_menu_closed_is_said_or_stopped() {
+    let mut a = linking(false);
+    a.close_menu(Outcome::Reverted);
+    let waiting = tap(
+        &mut a,
+        AppEvent::McpLink(Step::Waiting(GOOGLE_URL.to_owned())),
+    );
+    assert_eq!(waiting, [Effect::CancelMcpProbe]);
+    let why = "link cancelled";
+    assert_eq!(
+        tap(&mut a, AppEvent::McpLink(Step::Ended(Err(why.to_owned())))),
+        []
+    );
+    assert_eq!(a.notice.as_deref(), Some(why));
+}
+
+// S6b2 review: a session this menu did not start (the menu was reopened)
+// shows nothing, so it is stopped and its end is said as a notice.
+#[test]
+fn a_step_for_a_menu_that_did_not_start_the_session_stops_it_and_is_said() {
+    let mut a = on_google(false);
+    let waiting = tap(
+        &mut a,
+        AppEvent::McpLink(Step::Waiting(GOOGLE_URL.to_owned())),
+    );
+    assert_eq!(waiting, [Effect::CancelMcpProbe]);
+    let why = "link cancelled";
+    assert_eq!(
+        tap(&mut a, AppEvent::McpLink(Step::Ended(Err(why.to_owned())))),
+        []
+    );
+    assert_eq!(a.notice.as_deref(), Some(why));
 }

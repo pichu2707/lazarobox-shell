@@ -9,7 +9,7 @@ use std::{
     path::Path,
 };
 
-use super::{entries, gsc};
+use super::{entries, gsc, link};
 use crate::core::{
     ai::{config::McpServer, mcp_secrets::Loaded},
     config::Config,
@@ -32,6 +32,8 @@ pub struct Presence {
     home: Option<String>,
     /// `gsc` in its OAuth way: whether its token file exists (`stat` only).
     linked: Option<bool>,
+    /// `google` with an account: whether its credentials file exists.
+    google: Option<bool>,
     /// What made `secrets.toml` unused or partly unused: one line each, naming
     /// a table, a key or a path at most, never a value.
     pub problems: Vec<String>,
@@ -95,6 +97,7 @@ impl Presence {
             client: false,
             home: None,
             linked: None,
+            google: None,
             problems: loaded.problems.clone(),
         }
     }
@@ -116,6 +119,29 @@ impl Presence {
         let server = self.servers.iter().flatten().find(|s| s.name == "gsc");
         self.linked = server.and_then(|s| gsc::linked(s, &value, exists));
         self
+    }
+
+    /// Looks for the credentials file of the account of a declared `google`:
+    /// `exists` is a `stat`, and the file is never opened.
+    pub fn with_credentials(mut self, exists: impl Fn(&Path) -> bool) -> Self {
+        let declared = self.servers.iter().flatten().any(|s| s.name == "google");
+        let email = self.shown("google", "USER_GOOGLE_EMAIL");
+        let home = self
+            .home
+            .as_deref()
+            .map(Path::new)
+            .filter(|h| h.is_absolute());
+        if let (true, Some(email), Some(home)) = (declared, email, home) {
+            let dir = home.join(".google_workspace_mcp/credentials");
+            let names = link::credentials_names(email);
+            self.google = Some(names.iter().any(|name| exists(&dir.join(name))));
+        }
+        self
+    }
+
+    /// `Some(linked)` when `google` is declared with an account.
+    pub fn google_linked(&self) -> Option<bool> {
+        self.google
     }
 
     /// `Some(linked)` when `gsc` is in its OAuth way.
