@@ -463,7 +463,11 @@ impl Connectors {
         } else {
             String::new()
         };
-        MenuCommand::PlanGoogle(Ask { chosen, email })
+        MenuCommand::PlanGoogle(Ask {
+            chosen,
+            email,
+            route: Default::default(),
+        })
     }
 
     /// `y` on the plan: its write, once.

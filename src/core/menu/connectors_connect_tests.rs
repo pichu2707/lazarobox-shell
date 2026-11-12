@@ -277,6 +277,7 @@ fn an_invalid_declared_gsc_shows_already_declared() {
         MenuCommand::PlanGoogle(Ask {
             chosen: vec!["google"],
             email: "ana@example.com".to_owned(),
+            route: Default::default(),
         })
     );
 }
@@ -379,6 +380,7 @@ fn an_e_mail_already_in_secrets_toml_is_kept_and_not_asked() {
         MenuCommand::PlanGoogle(Ask {
             chosen: vec!["gsc", "google"],
             email: String::new(),
+            route: Default::default(),
         })
     );
 }
@@ -393,6 +395,7 @@ fn n_or_enter_asks_the_runtime_for_the_plan_of_the_ticked_services() {
     let ask = Ask {
         chosen: vec!["gsc", "google"],
         email: "ana@example.com".to_owned(),
+        route: Default::default(),
     };
     assert_eq!(press(&mut m, 'n'), MenuCommand::PlanGoogle(ask.clone()));
     assert_eq!(hint(&m), "reading the files…");
@@ -408,7 +411,8 @@ fn n_or_enter_asks_the_runtime_for_the_plan_of_the_ticked_services() {
         press(&mut m, 'n'),
         MenuCommand::PlanGoogle(Ask {
             chosen: vec!["gsc"],
-            email: String::new()
+            email: String::new(),
+            route: Default::default(),
         }),
         "a declared service is not asked for, nor its e-mail"
     );

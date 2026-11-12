@@ -32,6 +32,9 @@ pub struct Presence {
     backup: bool,
     /// `google-oauth-client.json` exists.
     client: bool,
+    /// The absolute path of the lazarobox client cache, which the Search
+    /// Console value and the `f` preset write.
+    client_cache: Option<String>,
     /// The home folder, for the presets that live under it.
     home: Option<String>,
     /// `gsc` in its OAuth way: whether its token file exists (`stat` only).
@@ -105,6 +108,7 @@ impl Presence {
             shown,
             backup: false,
             client: false,
+            client_cache: None,
             home: None,
             linked: None,
             google: None,
@@ -168,6 +172,16 @@ impl Presence {
 
     pub fn backup(&self) -> bool {
         self.backup
+    }
+
+    pub fn with_client_cache(mut self, path: Option<String>) -> Self {
+        self.client_cache = path;
+        self
+    }
+
+    /// The absolute path of the lazarobox client cache, when there is one.
+    pub fn client_cache(&self) -> Option<&str> {
+        self.client_cache.as_deref()
     }
 
     pub fn with_client_file(mut self, yes: bool) -> Self {

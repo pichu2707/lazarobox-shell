@@ -176,7 +176,9 @@ fn the_write_of_a_plan_carries_its_values_entries_and_digest() {
         names: &[],
         has: &has,
         home: Some("/home/ana"),
-        client: &client,
+        client: Some(&client),
+        client_file: None,
+        route: crate::core::ai::mcp_catalog::connect::ClientRoute::Own,
         email: "ana@example.com",
         chosen: &SERVICES,
     })

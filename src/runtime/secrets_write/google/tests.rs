@@ -51,8 +51,15 @@ impl Lab {
         let ask = Ask {
             chosen: chosen.to_vec(),
             email: email.to_owned(),
+            route: ClientRoute::Own,
         };
-        plan_with(&RealFs, Some(&self.secrets()), Some("/home/ana"), &ask)
+        plan_with(
+            &RealFs,
+            Some(&self.secrets()),
+            Some("/home/ana"),
+            &ask,
+            None,
+        )
     }
 }
 

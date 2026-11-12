@@ -383,7 +383,8 @@ impl Writer {
             let done = tokio::task::spawn_blocking(move || {
                 let _turn = turn.lock().unwrap_or_else(PoisonError::into_inner);
                 let home = std::env::var("HOME").ok();
-                google::plan_with(&RealFs, secrets.as_deref(), home.as_deref(), &ask)
+                let pin = crate::core::ai::mcp_secrets::PROJECT_NUMBER;
+                google::plan_with(&RealFs, secrets.as_deref(), home.as_deref(), &ask, pin)
             })
             .await;
             let reply = done

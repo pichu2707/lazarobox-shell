@@ -734,7 +734,8 @@ fn connect_google_plans_on_n_and_writes_only_on_y_after_the_plan() {
         tap(&mut a, key('n')),
         [Effect::PlanGoogle(Ask {
             chosen: vec!["gsc"],
-            email: String::new()
+            email: String::new(),
+            route: Default::default(),
         })]
     );
     let plan = AppEvent::GooglePlan(Ok(Box::new(gsc_preview())));

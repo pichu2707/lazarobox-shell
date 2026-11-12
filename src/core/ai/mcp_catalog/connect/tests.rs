@@ -34,7 +34,9 @@ fn input<'a>(
         names: &[],
         has,
         home: Some(HOME),
-        client,
+        client: Some(client),
+        client_file: None,
+        route: ClientRoute::Own,
         email: "ana@example.com",
         chosen,
     }
