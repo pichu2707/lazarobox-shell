@@ -386,9 +386,30 @@ fn a_refused_append_after_the_save_says_the_values_stay_saved() {
         notice.contains("saved 3 values") && notice.contains("paste"),
         "{notice:?}"
     );
+    assert!(notice.contains(", but gsc was not added: "), "{notice:?}");
     assert!(!notice.contains('\n') && !notice.contains("s3cret-value"));
     assert_eq!(lab.read("config.toml"), inline);
     assert!(lab.read("secrets.toml").contains("s3cret-value"));
+
+    // Two entries: "were".
+    let lab = self::lab();
+    lab.put(&lab.config(), inline, 0o644);
+    lab.put(&lab.secrets(), SECRETS, 0o600);
+    let both = Connect {
+        snippets: format!(
+            "{}\n{}",
+            snippet(entry("gsc").unwrap()),
+            snippet(entry("google").unwrap())
+        ),
+        names: vec!["gsc", "google"],
+        ..write(&VALUES, Some(inline))
+    };
+    let done = connect_with(&RealFs, Some(&lab.secrets()), &both);
+    let notice = done.notice();
+    assert!(
+        notice.contains(", but gsc, google were not added: "),
+        "{notice:?}"
+    );
 }
 
 #[test]

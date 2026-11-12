@@ -173,6 +173,7 @@ fn the_write_of_a_plan_carries_its_values_entries_and_digest() {
     let has = |_: &str, _: &str| false;
     let plan = plan(&Input {
         servers: &[],
+        names: &[],
         has: &has,
         home: Some("/home/ana"),
         client: &client,

@@ -135,6 +135,7 @@ pub fn plan_with(
     let has = |table: &str, name: &str| presence.has(table, name);
     let input = Input {
         servers,
+        names: &presence.names,
         has: &has,
         home,
         client: &client,

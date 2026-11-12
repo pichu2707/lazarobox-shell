@@ -249,3 +249,70 @@ fn an_inline_server_list_is_a_blocked_plan_not_a_refusal() {
     let shown = lab.plan(&["gsc"], "").unwrap();
     assert!(shown.blocked.unwrap().contains("inline ai.mcp.servers"));
 }
+
+/// The plan of `chosen` with `config` on disk, then its `y` when there is a
+/// plan. Returns the plan's answer.
+fn plan_and_write(lab: &Lab, config: &str, chosen: &[&'static str]) -> Result<Preview, String> {
+    lab.client();
+    lab.put("config.toml", config, 0o600);
+    let shown = lab.plan(chosen, "ana@example.com");
+    if let Ok(preview) = &shown {
+        crate::runtime::config_append::connect_with(&RealFs, Some(&lab.secrets()), &preview.write);
+    }
+    shown
+}
+
+// Spec S3: a service declared in any form, valid or not, is left alone.
+#[test]
+fn an_invalid_declared_gsc_is_left_alone_end_to_end() {
+    let lab = lab();
+    // No `command`: the parsed server list skips it.
+    let config = "[[ai.mcp.servers]]\nname = \"gsc\"\nargs = [\"x\"]\n";
+    let shown = plan_and_write(&lab, config, &["gsc"]);
+    assert_eq!(
+        shown.unwrap_err(),
+        "connect: gsc is already declared; nothing to write"
+    );
+    assert_eq!(
+        fs::read_to_string(lab.dir.join("config.toml")).unwrap(),
+        config
+    );
+    assert!(!lab.secrets().exists());
+}
+
+#[test]
+fn an_invalid_declared_google_is_left_alone_end_to_end() {
+    let lab = lab();
+    // A relative `project`: the parsed server list skips it.
+    let config =
+        "[[ai.mcp.servers]]\nname = \"google\"\ncommand = \"uvx\"\nproject = \"rel/dir\"\n";
+    let shown = plan_and_write(&lab, config, &["google"]);
+    assert_eq!(
+        shown.unwrap_err(),
+        "connect: google is already declared; nothing to write"
+    );
+    assert_eq!(
+        fs::read_to_string(lab.dir.join("config.toml")).unwrap(),
+        config
+    );
+    assert!(!lab.secrets().exists());
+}
+
+// The other service is still planned, and the declared one gets no values.
+#[test]
+fn an_invalid_declared_gsc_leaves_google_planned() {
+    let lab = lab();
+    lab.client();
+    let config = "[[ai.mcp.servers]]\nname = \"gsc\"\nargs = [\"x\"]\n";
+    lab.put("config.toml", config, 0o600);
+    let shown = lab.plan(&["gsc", "google"], "ana@example.com").unwrap();
+    assert_eq!(shown.declared, ["gsc"]);
+    assert_eq!(shown.write.names, ["google"]);
+    assert!(
+        shown
+            .write
+            .set
+            .iter()
+            .all(|(table, _, _)| *table == "google")
+    );
+}

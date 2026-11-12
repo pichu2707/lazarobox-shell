@@ -112,15 +112,20 @@ pub fn appended(old: &str, snippets: &str, names: &[&str]) -> Result<String, App
 /// Whether an `ai.mcp.servers` entry of `raw` is named `name`, valid or not,
 /// limited to a project or not.
 fn declares(raw: &toml::Table, name: &str) -> bool {
-    let servers = raw
-        .get("ai")
+    declared_names(raw).any(|declared| declared == name)
+}
+
+/// The `name` string of every `ai.mcp.servers` entry of `raw`, valid or not
+/// (the parsed server list skips an invalid one), limited to a project or
+/// not. A service named here is declared, in some form.
+pub fn declared_names(raw: &toml::Table) -> impl Iterator<Item = &str> {
+    raw.get("ai")
         .and_then(|ai| ai.get("mcp"))
         .and_then(|mcp| mcp.get("servers"))
-        .and_then(Value::as_array);
-    servers.is_some_and(|list| {
-        list.iter()
-            .any(|entry| entry.get("name").and_then(Value::as_str) == Some(name))
-    })
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("name").and_then(Value::as_str))
 }
 
 /// Whether `after` lists the servers of `before` unchanged, then `names`, and

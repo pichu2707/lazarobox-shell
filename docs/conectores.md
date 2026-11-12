@@ -487,7 +487,7 @@ Los textos son los que ves en el pie del menú o en el chat. Ninguno contiene un
 | `type your Google e-mail first (e)` / `type your Google e-mail address (name@domain, no spaces)` | Falta el correo o no es una dirección válida. |
 | `config.toml: the entries would not parse after it (an inline ai.mcp.servers list?)` | Tu `config.toml` declara los servidores en una lista en línea. `y` guarda solo los valores; pega las entradas (`c`) a mano, o pasa tus servidores a bloques `[[ai.mcp.servers]]`. |
 | `config.toml is a symlink; edit it by hand` / `config.toml is writable by group or others; run chmod go-w <ruta>` / `config.toml is read-only; chmod u+w <ruta> to write it from the menu` | El archivo no se puede escribir con seguridad. Arréglalo o pega las entradas a mano. |
-| `connect: <valores>, but gsc, google were not added: <motivo>; paste the entries by hand` | Los valores se guardaron, las entradas no: `c` las copia. |
+| `connect: <valores>, but gsc, google were not added: <motivo>; paste the entries by hand` (con una sola entrada, `gsc was not added`) | Los valores se guardaron, las entradas no: `c` las copia. |
 | `connect: nothing was written: <motivo>` | No se escribió nada; el motivo dice por qué. Si es `config.toml changed on disk`, otro programa lo cambió después del plan: pulsa `n` otra vez. |
 | `nothing to install yet: n plans the entries first` / `nothing to link yet: n plans the entries first` | Aún no hay servicios declarados. |
 | `every declared service is linked; restart lazarobox to use it in chats` | Todo enlazado: reinicia. |

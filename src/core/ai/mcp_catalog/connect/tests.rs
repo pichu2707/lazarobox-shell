@@ -31,6 +31,7 @@ fn input<'a>(
 ) -> Input<'a> {
     Input {
         servers,
+        names: &[],
         has,
         home: Some(HOME),
         client,

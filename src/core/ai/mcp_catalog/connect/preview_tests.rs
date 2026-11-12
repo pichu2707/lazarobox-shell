@@ -26,6 +26,7 @@ fn input<'a>(
 ) -> Input<'a> {
     Input {
         servers,
+        names: &[],
         has,
         home: Some("/home/ana"),
         client,

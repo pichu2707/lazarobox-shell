@@ -72,6 +72,9 @@ pub struct Ask {
 pub struct Input<'a> {
     /// The disk copy of the declared servers.
     pub servers: &'a [McpServer],
+    /// The name of every server entry of the raw `config.toml`, valid or not
+    /// ([`crate::core::config_append::declared_names`]).
+    pub names: &'a [String],
     /// Whether `secrets.toml` holds a non-empty value for (table, name).
     pub has: &'a dyn Fn(&str, &str) -> bool,
     /// The home folder, for the Search Console paths.
@@ -174,7 +177,9 @@ pub fn plan(input: &Input) -> Result<Plan, Refused> {
     };
     for id in SERVICES.iter().filter(|id| input.chosen.contains(id)) {
         let entry = entry(id).expect("every Connect Google service is a catalog entry");
-        if input.servers.iter().any(|s| s.name == entry.id) {
+        let declared = input.servers.iter().any(|s| s.name == entry.id)
+            || input.names.iter().any(|name| name == entry.id);
+        if declared {
             plan.declared.push(entry.id);
             continue;
         }

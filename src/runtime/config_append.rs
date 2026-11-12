@@ -115,7 +115,12 @@ pub fn connect_with(fs: &impl SaveFs, secrets: Option<&Path>, write: &Connect) -
             refusal.notice()
         )),
         (Err(refusal), Some(values)) => Connected::ValuesOnly(format!(
-            "connect: {values}, but {entries} were not added: {}; paste the entries by hand",
+            "connect: {values}, but {entries} {} not added: {}; paste the entries by hand",
+            if write.names.len() == 1 {
+                "was"
+            } else {
+                "were"
+            },
             refusal.notice()
         )),
     }

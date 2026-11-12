@@ -254,6 +254,46 @@ fn s_and_w_tick_the_services_and_a_declared_one_stays_alone() {
     assert!(m.notice.as_deref().unwrap().contains("already declared"));
 }
 
+// Spec S3, S5.3: an entry declared in config.toml but invalid (skipped by the
+// parsed list) is still declared: never ticked, never planned, no paste.
+#[test]
+fn an_invalid_declared_gsc_shows_already_declared() {
+    let mut m = connect(Vec::new());
+    m.presence_reply(presence(
+        "[[ai.mcp.servers]]\nname = \"gsc\"\nargs = [\"x\"]\n",
+        "",
+    ));
+    assert!(texts(&m).contains(&"  [-] Search Console: already declared".to_owned()));
+    assert!(
+        texts(&m).contains(&"  [x] Google Workspace: Gmail read + drafts, Docs, Sheets".to_owned())
+    );
+    press(&mut m, 'e');
+    for c in "ana@example.com".chars() {
+        press(&mut m, c);
+    }
+    send(&mut m, key(KeyCode::Enter));
+    assert_eq!(
+        press(&mut m, 'n'),
+        MenuCommand::PlanGoogle(Ask {
+            chosen: vec!["google"],
+            email: "ana@example.com".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn an_invalid_declared_google_shows_already_declared() {
+    let mut m = connect(Vec::new());
+    m.presence_reply(presence(
+        "[[ai.mcp.servers]]\nname = \"google\"\ncommand = \"uvx\"\nproject = \"rel/dir\"\n",
+        "",
+    ));
+    assert!(texts(&m).contains(&"  [-] Google Workspace: already declared".to_owned()));
+    assert!(texts(&m).contains(&"e-mail: not needed (Google Workspace is declared)".to_owned()));
+    press(&mut m, 'w');
+    assert!(m.notice.as_deref().unwrap().contains("already declared"));
+}
+
 // Spec S5.4: `o` opens the existing client form from this screen.
 #[test]
 fn o_opens_the_client_form_and_its_enter_saves_the_client() {

@@ -123,8 +123,10 @@ impl Connectors {
         }
     }
 
+    /// Declared in any form: a parsed server, or an entry of that name in
+    /// `config.toml` that the parsed list skipped as invalid.
     fn declared(&self, id: &str) -> bool {
-        self.server(id).is_some()
+        self.server(id).is_some() || self.presence.as_ref().is_some_and(|p| p.declares(id))
     }
 
     /// The value of the row.

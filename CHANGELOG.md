@@ -27,8 +27,8 @@ baseline.
   after its prompt, and `g` links Search Console, then Google Workspace, through
   their existing flows. `c` copies the entries to paste by hand when they could
   not be added. `google-oauth-client.json` is now read back (the form's file or
-  the one Google downloads), only when it is a regular `0600` file of yours; its
-  secret is never shown.
+  the one Google downloads), only when it is a regular file of yours with no
+  group or other access; its secret is never shown.
 
 ### Changed
 
