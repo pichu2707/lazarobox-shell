@@ -316,3 +316,91 @@ fn an_invalid_declared_gsc_leaves_google_planned() {
             .all(|(table, _, _)| *table == "google")
     );
 }
+
+// ---- the lazarobox client cache (gsc-lazarobox-client) ----
+
+const PIN: &str = "123";
+
+impl Lab {
+    fn cache(&self, id: &str, mode: u32) {
+        self.put(CACHE_FILE, &client_json(id, SECRET).unwrap(), mode);
+    }
+
+    fn read_cache(&self) -> Result<Option<Client>, String> {
+        read_cache(&RealFs, Some(&self.secrets()), Some(PIN))
+    }
+}
+
+// Spec (mcp-secrets, OAuth client file read back): a pinned 0600 cache reads.
+#[test]
+fn a_pinned_private_cache_reads_back_with_no_notice() {
+    let lab = lab();
+    lab.cache(ID, 0o600);
+    let client = lab.read_cache().unwrap().unwrap();
+    assert_eq!((client.id.as_str(), client.secret.expose()), (ID, SECRET));
+}
+
+#[test]
+fn a_cache_of_another_project_is_refused_with_a_notice_without_the_secret() {
+    let lab = lab();
+    lab.cache("999-abc.apps.googleusercontent.com", 0o600);
+    let notice = lab.read_cache().unwrap_err();
+    assert_eq!(
+        notice,
+        "lazarobox-google-client.json: not from the lazarobox project"
+    );
+    assert!(!notice.contains(SECRET));
+}
+
+#[test]
+fn a_loose_linked_or_symlinked_cache_is_refused_with_the_cache_name() {
+    let lab = lab();
+    lab.cache(ID, 0o644);
+    let notice = lab.read_cache().unwrap_err();
+    assert!(
+        notice.starts_with("lazarobox-google-client.json: mode must be 0600 (chmod 600 "),
+        "{notice}"
+    );
+    assert!(
+        notice.ends_with("lazarobox-google-client.json)"),
+        "{notice}"
+    );
+    fs::remove_file(lab.dir.join(CACHE_FILE)).unwrap();
+
+    let real = lab.dir.join("real.json");
+    fs::write(&real, client_json(ID, SECRET).unwrap()).unwrap();
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::hard_link(&real, lab.dir.join(CACHE_FILE)).unwrap();
+    assert_eq!(
+        lab.read_cache().unwrap_err(),
+        "lazarobox-google-client.json has other hard links; edit it by hand"
+    );
+    fs::remove_file(lab.dir.join(CACHE_FILE)).unwrap();
+
+    symlink(&real, lab.dir.join(CACHE_FILE)).unwrap();
+    assert_eq!(
+        lab.read_cache().unwrap_err(),
+        "lazarobox-google-client.json is a symlink; edit it by hand"
+    );
+}
+
+#[test]
+fn a_missing_cache_is_none_and_the_two_files_are_never_read_as_each_other() {
+    let lab = lab();
+    assert!(lab.read_cache().unwrap().is_none());
+    // Only the own client: the cache read finds nothing.
+    lab.client();
+    assert!(lab.read_cache().unwrap().is_none());
+    fs::remove_file(lab.dir.join(CLIENT_FILE)).unwrap();
+    // Only the cache: the own-client read finds nothing.
+    lab.cache(ID, 0o600);
+    assert!(lab.read().unwrap().is_none());
+    assert!(lab.read_cache().unwrap().is_some());
+}
+
+#[test]
+fn without_a_pin_no_cache_is_used() {
+    let lab = lab();
+    lab.cache(ID, 0o600);
+    assert!(read_cache(&RealFs, Some(&lab.secrets()), None).is_err());
+}
