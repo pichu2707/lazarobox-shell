@@ -2650,6 +2650,7 @@ impl App {
             }],
             MenuCommand::DeleteBackup => vec![Effect::DeleteBackup],
             MenuCommand::LinkGsc(plan) => vec![Effect::LinkGsc(plan)],
+            MenuCommand::LinkGoogle { .. } => Vec::new(),
             MenuCommand::Connector(line) => self.start_connector(line),
             MenuCommand::None => Vec::new(),
         }
