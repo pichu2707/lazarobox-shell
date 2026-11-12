@@ -1370,6 +1370,12 @@ impl MenuState {
         }
     }
 
+    /// Tests: the pin of the lazarobox client, which the build leaves empty.
+    #[cfg(test)]
+    pub(crate) fn set_client_pin(&mut self, pin: Option<&'static str>) {
+        self.connectors.pin = pin;
+    }
+
     /// What the checks of Link with Google answered: the line to confirm, or
     /// the notice of the check that failed.
     pub fn link_reply(
@@ -3721,6 +3727,8 @@ mod descriptor_tests;
 #[cfg(test)]
 mod feedback_menu_tests;
 
+#[cfg(test)]
+mod connectors_client_tests;
 #[cfg(test)]
 mod connectors_connect_tests;
 #[cfg(test)]

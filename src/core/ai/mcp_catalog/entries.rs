@@ -152,7 +152,8 @@ const GSC: Entry = Entry {
     gmail_allowlist: false,
     guide: &[
         "Two ways. Declare the server with name = \"gsc\": the hidden tool and the start check apply to that name only.",
-        "OAuth (your own client, the default):",
+        "OAuth with the lazarobox client (the default when this build has it): fill the client row (f, Enter writes the lazarobox client), then Link with Google (g) fetches the client from www.javilazaro.es on every Link; no Google Cloud project is needed. Enter on that row switches between it and your own client.",
+        "OAuth with your own client:",
         "1. In your own Google Cloud project, enable the Google Search Console API and create an OAuth client of type Desktop app (the one of the GA4 guide works).",
         "2. Add the OAuth client in Connectors (o) or save its JSON as ~/.config/lazarobox/google-oauth-client.json. If the config folder is a symlink the menu save refuses; hand-editing still works.",
         "3. Fill the values (f), keeping GSC_CONFIG_DIR under ~/.config/mcp-gsc (a start from another folder is refused), then use Link with Google (g): the browser opens once. The Link command creates the token and its folder private (umask 077); for a token made another way, run chmod 700 ~/.config/mcp-gsc and chmod 600 ~/.config/mcp-gsc/token.json. Link before the first chat call: a call made before linking is refused at start, and if calls hang, link again (Esc cancels the call).",

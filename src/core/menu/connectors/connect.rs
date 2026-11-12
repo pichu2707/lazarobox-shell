@@ -11,10 +11,11 @@ use super::fields::{MASK, tail};
 use super::*;
 use crate::core::{
     ai::mcp_catalog::{
-        connect::{Ask, CHECKLIST, Preview, Refused, SERVICES},
+        connect::{Ask, CHECKLIST, ClientRoute, Preview, Refused, SERVICES},
         entry,
         link::plain_email,
     },
+    ai::mcp_secrets::{CLIENT_LINE, Why, failure_notice},
     config_append::Connected,
 };
 
@@ -24,6 +25,7 @@ const TITLE: &str = "Connect Google · Search Console and Workspace";
 const TITLE_PLAN: &str = "Connect Google · plan";
 const TITLE_EMAIL: &str = "Connect Google · USER_GOOGLE_EMAIL";
 const HINT: &str = "j/k scroll · s/w tick · e e-mail · o client · n plan · Esc";
+const HINT_ROUTE: &str = "j/k · s/w tick · e e-mail · o own · u route · n plan · Esc";
 const HINT_PLAN: &str = "j/k scroll · y write · c copy the entries · Esc back";
 const HINT_EMAIL: &str = "type your Google e-mail; Enter keeps it · Esc cancels";
 const READING: &str = "reading the files…";
@@ -57,6 +59,9 @@ pub(super) struct Google {
     done: bool,
     /// The last write did not add the entries: they are pasted by hand.
     paste: bool,
+    /// The user chose their own client (`u`, or `o`) over the lazarobox one;
+    /// not kept after leaving the screen.
+    own: bool,
 }
 
 impl Google {
@@ -111,6 +116,7 @@ impl Connectors {
         self.screen = Some(Screen::Google { scroll: 0 });
         self.way = None;
         self.linking = None;
+        self.google.own = false;
         if self.google.phase != Phase::Writing {
             self.google.phase = Phase::Setup;
         }
@@ -145,6 +151,75 @@ impl Connectors {
             .copied()
             .filter(|id| !self.google.off.contains(id) && !self.declared(id))
             .collect()
+    }
+
+    /// Whether the build has the project number the lazarobox client needs.
+    pub(super) fn lazarobox(&self) -> bool {
+        self.pin.is_some_and(|pin| !pin.is_empty())
+    }
+
+    /// The route the plan takes: the lazarobox client only for Search Console
+    /// alone, when the build has it and the user did not choose their own.
+    fn route(&self) -> ClientRoute {
+        let alone = self.chosen() == ["gsc"];
+        if alone && self.lazarobox() && !self.google.own {
+            ClientRoute::Lazarobox
+        } else {
+            ClientRoute::Own
+        }
+    }
+
+    /// `u`: the other client for Search Console, or why there is no choice.
+    fn pick_route(&mut self) {
+        let chosen = self.chosen();
+        if !chosen.contains(&"gsc") {
+            self.notice = Some("u picks the client of Search Console; f on its entry changes it");
+        } else if chosen.contains(&"google") {
+            self.said = Some(Refused::NeedsOwnClient.notice());
+        } else if !self.lazarobox() {
+            self.said = Some(failure_notice(&Why::NotConfigured));
+        } else {
+            self.google.own = !self.google.own;
+        }
+    }
+
+    /// The route and client lines of the setup screen.
+    fn client_rows(&self, route: ClientRoute, room: usize) -> Vec<Row> {
+        let chosen = self.chosen();
+        let mut rows = Vec::new();
+        if route == ClientRoute::Lazarobox {
+            rows.extend(wrap(
+                "route: lazarobox client (u uses your own client)",
+                "",
+                room,
+            ));
+            rows.extend(wrap(CLIENT_LINE, "", room));
+            return rows;
+        }
+        if chosen == ["gsc"] && self.lazarobox() {
+            rows.extend(wrap(
+                "route: my own client (u uses the lazarobox client)",
+                "",
+                room,
+            ));
+        } else if chosen == ["gsc"] {
+            rows.push(text("route: my own client"));
+            rows.extend(wrap(&failure_notice(&Why::NotConfigured), "", room));
+        } else if chosen.contains(&"gsc") && self.lazarobox() {
+            let line = format!(
+                "route: my own client ({})",
+                Refused::NeedsOwnClient.notice()
+            );
+            rows.extend(wrap(&line, "", room));
+        }
+        let client = match &self.google.client {
+            None => "client: checking…".to_owned(),
+            Some(Ok(Some(id))) => format!("client: {}", clean(id)),
+            Some(Ok(None)) => "client: missing — press o".to_owned(),
+            Some(Err(notice)) => format!("client: {notice}"),
+        };
+        rows.extend(wrap(&client, "", room));
+        rows
     }
 
     /// The e-mail `secrets.toml` already holds for Workspace.
@@ -229,6 +304,7 @@ impl Connectors {
             return Cow::Owned(hint);
         }
         Cow::Borrowed(match self.google.phase {
+            Phase::Setup if self.lazarobox() && self.chosen().contains(&"gsc") => HINT_ROUTE,
             Phase::Setup => HINT,
             Phase::Planning => READING,
             Phase::Plan(_) => HINT_PLAN,
@@ -283,19 +359,17 @@ impl Connectors {
             };
             rows.extend(wrap(&line, "  ", room));
         }
-        let client = match &self.google.client {
-            None => "client: checking…".to_owned(),
-            Some(Ok(Some(id))) => format!("client: {}", clean(id)),
-            Some(Ok(None)) => "client: missing — press o".to_owned(),
-            Some(Err(notice)) => format!("client: {notice}"),
-        };
-        rows.extend(wrap(&client, "", room));
+        let route = self.route();
+        rows.extend(self.client_rows(route, room));
         rows.extend(wrap(&self.email_line(), "", room));
         rows.push(text("n shows the plan · c copies the entries"));
         if self.google.paste {
             rows.extend(wrap(PASTE, "", room));
         }
         self.next_steps(&mut rows, room);
+        if route == ClientRoute::Lazarobox {
+            return rows;
+        }
         rows.push(title("Google Cloud, once (1-9 open the links)"));
         for (n, (step, _)) in CHECKLIST.iter().enumerate() {
             let mut lines = wrap(step, HANG, room);
@@ -385,7 +459,9 @@ impl Connectors {
                 let (_, link) = CHECKLIST[usize::from(d as u8 - b'1')];
                 return MenuCommand::Open(link.to_owned());
             }
-            KeyCode::Char('s' | 'w' | 'e' | 'o' | 'n' | 'i' | 'g') | KeyCode::Enter if !setup => {
+            KeyCode::Char('s' | 'w' | 'e' | 'o' | 'u' | 'n' | 'i' | 'g') | KeyCode::Enter
+                if !setup =>
+            {
                 self.notice = Some(match self.google.phase {
                     Phase::Writing => WRITING,
                     Phase::Planning => READING,
@@ -395,7 +471,11 @@ impl Connectors {
             KeyCode::Char('s') => self.tick("gsc"),
             KeyCode::Char('w') => self.tick("google"),
             KeyCode::Char('e') => self.edit_email(),
-            KeyCode::Char('o') => self.open_client_form(),
+            KeyCode::Char('o') => {
+                self.google.own = true;
+                self.open_client_form();
+            }
+            KeyCode::Char('u') => self.pick_route(),
             KeyCode::Char('n') | KeyCode::Enter => return self.google_ask(),
             KeyCode::Char('i') => self.google_install(dirty, room),
             KeyCode::Char('g') => return self.google_link(dirty, room),
@@ -441,7 +521,9 @@ impl Connectors {
             }
             return MenuCommand::None;
         }
+        let route = self.route();
         match &self.google.client {
+            _ if route == ClientRoute::Lazarobox => {}
             Some(Ok(None)) => {
                 self.notice = Some(NO_CLIENT);
                 return MenuCommand::None;
@@ -466,7 +548,7 @@ impl Connectors {
         MenuCommand::PlanGoogle(Ask {
             chosen,
             email,
-            route: Default::default(),
+            route,
         })
     }
 

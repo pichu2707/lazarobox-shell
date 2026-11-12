@@ -78,6 +78,12 @@ pub(super) struct Field {
     text: SecretText,
 }
 
+/// The Search Console row that holds the OAuth client file: the lazarobox
+/// cache or the user's own file.
+fn is_client_row(entry: &Entry, var: &Var) -> bool {
+    entry.id == "gsc" && var.name == "GSC_OAUTH_CLIENT_SECRETS_FILE"
+}
+
 /// The entries whose login reads the OAuth client file.
 fn takes_client(entry: &Entry) -> bool {
     matches!(entry.id, "ga4" | "gsc")
@@ -118,6 +124,38 @@ impl Connectors {
             if let Some(Screen::Fields { at, .. }) = self.screen {
                 self.screen = Some(Screen::Fields { at, cursor: 0 });
             }
+        }
+    }
+
+    /// What Enter writes on the client row, the other route's path, and the
+    /// text that names it. Without a pin the lazarobox cache is never offered.
+    fn client_target(&self, var: &Var) -> Option<(String, &'static str)> {
+        let presence = self.presence.as_ref()?;
+        let own = var.preset_for(presence.home())?;
+        let cache = presence.client_cache().filter(|_| self.lazarobox());
+        Some(match (cache, presence.shown("gsc", var.name)) {
+            (Some(cache), Some(held)) if held == cache => {
+                (own, "Enter switches to your own client")
+            }
+            (Some(cache), _) => (cache.to_owned(), "Enter writes the lazarobox client"),
+            (None, _) if self.lazarobox() => (own, "Enter writes your own client"),
+            (None, _) => (
+                own,
+                "lazarobox client not configured in this build; Enter writes your own client",
+            ),
+        })
+    }
+
+    /// The cell of the client row: which client the held value is.
+    fn client_cell(&self, var: &Var) -> Option<&'static str> {
+        let presence = self.presence.as_ref()?;
+        match presence.shown("gsc", var.name) {
+            None => Some("not set"),
+            Some(held) if Some(held) == presence.client_cache() => Some("lazarobox client"),
+            Some(held) if Some(held) == var.preset_for(presence.home()).as_deref() => {
+                Some("your own client")
+            }
+            Some(_) => None,
         }
     }
 
@@ -221,6 +259,10 @@ impl Connectors {
                 enabled: true,
             });
         }
+        let target = list.iter().find(|v| is_client_row(entry, v));
+        if let Some((_, note)) = target.and_then(|v| self.client_target(v)) {
+            rows.extend(wrap(&format!("client file: {note}"), "", room));
+        }
         if takes_client(entry) {
             rows.push(text(format!("o OAuth client file ({CLIENT_FILE})")));
         }
@@ -262,6 +304,11 @@ impl Connectors {
     /// `set` for a confidential value; the value for the others.
     fn value_text(&self, entry: &Entry, var: &Var, room: usize) -> String {
         let presence = self.presence.as_ref();
+        if is_client_row(entry, var)
+            && let Some(cell) = self.client_cell(var)
+        {
+            return cell.to_owned();
+        }
         if var.confidential() {
             let set = presence.is_some_and(|p| p.has(entry.id, var.name));
             return if set { "set" } else { "not set" }.to_owned();
@@ -316,6 +363,10 @@ impl Connectors {
                             slot: Slot::Var(cursor),
                             text: SecretText::new(),
                         });
+                    }
+                    Some(_) if is_client_row(entry, var) && self.client_target(var).is_some() => {
+                        let (value, _) = self.client_target(var).unwrap_or_default();
+                        return self.submit(entry, var, secret(&value), room);
                     }
                     Some(_) => {
                         let home = self.presence.as_ref().map_or("", Presence::home);

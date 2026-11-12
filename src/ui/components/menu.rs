@@ -2098,6 +2098,27 @@ mod tests {
         insta::assert_snapshot!(format!("{top}\n{end}"));
     }
 
+    // Spec (gsc-lazarobox-client, Client route): Search Console alone on the
+    // lazarobox client: its client line, no own client, no checklist, and the
+    // popup keeps its size.
+    #[test]
+    fn snapshot_the_connect_google_lazarobox_route() {
+        let mut menu = connect_google();
+        menu.set_client_pin(Some("123456789012"));
+        press(&mut menu, &[KeyCode::Char('w')]);
+        let screen = text(&draw(62, POPUP_H, &menu));
+        assert!(!screen.contains("123-abc") && !screen.contains("GOCSPX"));
+        insta::assert_snapshot!(screen);
+    }
+
+    // The same with no pin: the route is shown disabled, never hidden.
+    #[test]
+    fn snapshot_the_connect_google_lazarobox_route_without_a_pin() {
+        let mut menu = connect_google();
+        press(&mut menu, &[KeyCode::Char('w')]);
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
     // Spec (google-connect S5.6): the plan before `y`, top and end; the
     // client secret is masked.
     #[test]

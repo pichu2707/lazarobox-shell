@@ -25,7 +25,7 @@ use crate::core::ai::{
         presence::Presence,
         secrets_template, snippet,
     },
-    mcp_secrets::{BACKUP, CLIENT_FILE, FILE as SECRETS_FILE},
+    mcp_secrets::{BACKUP, CLIENT_FILE, FILE as SECRETS_FILE, PROJECT_NUMBER},
     sanitize::clean,
 };
 
@@ -121,6 +121,9 @@ pub(super) struct Connectors {
     linking: Option<bool>,
     /// The Connect Google screen.
     google: connect::Google,
+    /// The Google Cloud project number the lazarobox client is pinned to;
+    /// the route is off while there is none.
+    pub(super) pin: Option<&'static str>,
 }
 
 /// What a link step asks of the menu.
@@ -289,6 +292,7 @@ impl Connectors {
             startup,
             probes,
             config_path,
+            pin: PROJECT_NUMBER,
             ..Self::default()
         }
     }
