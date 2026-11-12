@@ -23,7 +23,7 @@ use crate::core::{
 /// `config.toml` as the append judges it, for the plan's read.
 const CONFIG: Target = Target {
     file: config_append::FILE,
-    backup: config_append::BACKUP,
+    backup: Some(config_append::BACKUP),
     max: config_append::MAX_BYTES,
     keep_mode: true,
 };

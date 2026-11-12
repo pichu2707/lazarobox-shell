@@ -964,3 +964,31 @@ fn a_client_file_with_other_hard_links_is_refused() {
     assert_eq!(fs::read_to_string(lab.client()).unwrap(), OLD_CLIENT);
     assert_eq!(lab.names(), ["google-oauth-client.json"]);
 }
+
+// ---- lazarobox client cache (gsc-lazarobox-client) ----
+
+#[test]
+fn the_cache_target_keeps_no_backup_and_is_private() {
+    assert_eq!(CACHE.file, "lazarobox-google-client.json");
+    assert_eq!(CACHE.backup, None);
+    assert_eq!(CACHE.max, 16 * 1024);
+    assert!(!CACHE.keep_mode);
+    // The other targets keep their backups.
+    assert_eq!(SECRETS.backup, Some("secrets.toml.bak"));
+    assert_eq!(CLIENT.backup, Some("google-oauth-client.json.bak"));
+}
+
+#[test]
+fn a_target_without_a_backup_replaces_the_file_and_keeps_no_copy() {
+    let lab = lab();
+    let path = lab.dir.join(CACHE.file);
+    fs::write(&path, "old").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let backed_up = replace_with(&TestFs::default(), Some(&lab.path()), CACHE, |_| {
+        Ok::<_, Refusal>("new".to_owned())
+    })
+    .unwrap();
+    assert!(!backed_up);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+    assert_eq!(lab.names(), ["lazarobox-google-client.json"]);
+}

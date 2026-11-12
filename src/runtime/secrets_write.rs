@@ -28,19 +28,19 @@ use crate::{
     core::{
         ai::mcp_catalog::connect::Ask,
         ai::mcp_secrets::{
-            BACKUP, CLIENT_BACKUP, CLIENT_FILE, FILE, MAX_BYTES, Refusal, SecretText, client_json,
-            edit, edit_all, line_of,
+            BACKUP, CACHE_FILE, CLIENT_BACKUP, CLIENT_FILE, CLIENT_MAX, FILE, MAX_BYTES, Refusal,
+            SecretText, client_json, edit, edit_all, line_of,
         },
         config_append::{Connect, Connected},
     },
 };
 
-/// The file a write replaces, the backup it keeps, its size bound and its
+/// The file a write replaces, the backup it keeps (`None`: none), its size bound and its
 /// mode rule.
 #[derive(Clone, Copy)]
 pub(super) struct Target {
     pub(super) file: &'static str,
-    pub(super) backup: &'static str,
+    pub(super) backup: Option<&'static str>,
     pub(super) max: u64,
     /// `false`: the file must be 0600 and stays 0600. `true`: any mode
     /// without group or world write is kept (`config.toml`); a new file is
@@ -50,14 +50,22 @@ pub(super) struct Target {
 
 const SECRETS: Target = Target {
     file: FILE,
-    backup: BACKUP,
+    backup: Some(BACKUP),
     max: MAX_BYTES,
     keep_mode: false,
 };
 const CLIENT: Target = Target {
     file: CLIENT_FILE,
-    backup: CLIENT_BACKUP,
+    backup: Some(CLIENT_BACKUP),
     max: MAX_BYTES,
+    keep_mode: false,
+};
+/// The lazarobox client cache: a copy of what the server says, so no backup
+/// of a secret is kept.
+const CACHE: Target = Target {
+    file: CACHE_FILE,
+    backup: None,
+    max: CLIENT_MAX as u64,
     keep_mode: false,
 };
 
@@ -507,8 +515,8 @@ pub(super) fn replace_with<E: From<Refusal>>(
         return Err(Refusal::TooLarge.into());
     }
     let before = current.as_ref().map(|(_, stat)| stat);
-    if current.is_some() {
-        match fs.stat_at(&dir, target.backup) {
+    if let (Some(_), Some(backup)) = (&current, target.backup) {
+        match fs.stat_at(&dir, backup) {
             Ok(stat) if !stat.regular => return Err(Refusal::BackupUnsafe.into()),
             Err(e) if e.kind() != ErrorKind::NotFound => {
                 return Err(Refusal::Io(e.kind()).into());
@@ -526,7 +534,8 @@ pub(super) fn replace_with<E: From<Refusal>>(
     if done.is_err() {
         let _ = fs.unlink(&dir, &temp);
     }
-    done.map(|()| current.is_some()).map_err(E::from)
+    done.map(|()| current.is_some() && target.backup.is_some())
+        .map_err(E::from)
 }
 
 /// The config folder, opened and judged on the handle.
@@ -668,9 +677,9 @@ fn swap(
 ) -> Result<(), Refusal> {
     let io = |e: io::Error| Refusal::Io(e.kind());
     unchanged(fs, dir, target.file, before)?;
-    if let Some(old) = old {
+    if let (Some(old), Some(name)) = (old, target.backup) {
         let backup = write_temp(fs, dir, target, old, 0o600)?;
-        if let Err(e) = fs.rename(dir, &backup, target.backup) {
+        if let Err(e) = fs.rename(dir, &backup, name) {
             let _ = fs.unlink(dir, &backup);
             return Err(io(e));
         }
