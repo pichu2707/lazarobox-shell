@@ -329,6 +329,8 @@ pub enum AppEvent {
     SecretSaved(Result<String, String>),
     /// What became of `Effect::DeleteBackup`.
     BackupDeleted(Result<String, String>),
+    /// The link session of `google` moved on: the link to open, or its end.
+    McpLink(crate::core::ai::mcp_catalog::link::Step),
     /// The answer to `Effect::LinkGsc`: the login line to confirm, or the
     /// notice of the check that failed.
     GscLine(Result<String, String>),
@@ -2318,6 +2320,7 @@ impl App {
             }
             AppEvent::SecretSaved(reply) => self.on_secret_reply(reply, true),
             AppEvent::BackupDeleted(reply) => self.on_secret_reply(reply, false),
+            AppEvent::McpLink(_) => Vec::new(),
             AppEvent::GscLine(reply) => self.on_gsc_line(reply),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
             AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),

@@ -6,6 +6,15 @@ use crate::core::ai::config::McpServer;
 
 pub const NO_LINK: &str = "link failed: no sign-in link in the answer";
 
+/// What the link session tells the app while it runs.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Step {
+    /// The sign-in link to open: the user is to consent now.
+    Waiting(String),
+    /// The session ended: the notice of the result.
+    Ended(Result<String, String>),
+}
+
 /// What the link session needs from the user's values.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Ask {

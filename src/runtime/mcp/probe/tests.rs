@@ -6,7 +6,10 @@ use std::{
 
 use super::*;
 use crate::{
-    core::ai::mcp_catalog::checks::Verdict,
+    core::ai::mcp_catalog::{
+        checks::Verdict,
+        link::{Ask, Step},
+    },
     runtime::{
         mcp::external::fake::{Lab, host_env, lab, timeouts},
         proc::wait_gone_blocking,
@@ -291,4 +294,53 @@ async fn a_gsc_probe_without_a_token_is_refused_with_a_notice_and_no_spawn() {
         ["mcp: gsc unavailable: not linked; open Connectors and use Link with Google"]
     );
     assert!(lab.env_of("gsc").is_empty(), "the server was spawned");
+}
+
+fn link_answer() -> String {
+    "https://accounts.google.com/o/oauth2/auth?client_id=the-id&redirect_uri=http%3A%2F%2Flocalhost%3A8000%2F"
+        .to_owned()
+}
+
+fn ask() -> Ask {
+    Ask {
+        client_id: "the-id".to_owned(),
+        email: "me@x.org".to_owned(),
+    }
+}
+
+// S6b2: the link session takes the slot of the probe; Esc stops it.
+#[tokio::test]
+async fn a_link_says_its_link_then_its_end_and_esc_stops_it() {
+    let lab = lab();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let mut prober = Prober::new(lab.home.clone(), None, tx);
+    prober.link(lab.server("google", "t", &link_answer()), ask());
+    let Some(AppEvent::McpLink(Step::Waiting(url))) = rx.recv().await else {
+        panic!("the link first");
+    };
+    assert_eq!(url, link_answer());
+    prober.cancel();
+    let Some(AppEvent::McpLink(Step::Ended(end))) = rx.recv().await else {
+        panic!("then its end");
+    };
+    assert_eq!(end, Err("link cancelled".to_owned()));
+    assert_reaped(&lab, "google");
+}
+
+#[tokio::test]
+async fn a_probe_replaces_a_link_which_reports_nothing() {
+    let lab = lab();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let mut prober = Prober::new(lab.home.clone(), None, tx);
+    prober.link(lab.server("google", "t", &link_answer()), ask());
+    let Some(AppEvent::McpLink(Step::Waiting(_))) = rx.recv().await else {
+        panic!("the link first");
+    };
+    prober.start(2, lab.listing("ga4", &["a"], "ok", "0"));
+    let Some(AppEvent::McpProbe(2, report)) = rx.recv().await else {
+        panic!("the probe answers");
+    };
+    assert_eq!(report.verdict, Verdict::Started);
+    assert_reaped(&lab, "google");
+    assert!(rx.try_recv().is_err(), "the replaced link says nothing");
 }
