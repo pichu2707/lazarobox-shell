@@ -115,10 +115,11 @@ impl App {
 
     /// The link session of `google` moved on: the menu opens (or copies) the
     /// link it says, or shows how the session ended. With the menu closed
-    /// nobody sees the link, so the session is stopped, and its end is a notice.
+    /// nobody sees the link (the menu is closed, or was reopened), so the session is stopped, and its end is a notice.
     pub(super) fn on_mcp_link(&mut self, step: Step) -> Vec<Effect> {
         self.dirty = true;
-        match (self.menu.as_mut(), step) {
+        let shown = self.menu.as_ref().is_some_and(|m| m.link_running());
+        match (self.menu.as_mut().filter(|_| shown), step) {
             (Some(menu), step) => {
                 let command = menu.link_step(step);
                 self.on_menu_command(command)

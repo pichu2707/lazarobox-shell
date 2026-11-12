@@ -662,3 +662,21 @@ fn a_step_after_the_menu_closed_is_said_or_stopped() {
     );
     assert_eq!(a.notice.as_deref(), Some(why));
 }
+
+// S6b2 review: a session this menu did not start (the menu was reopened)
+// shows nothing, so it is stopped and its end is said as a notice.
+#[test]
+fn a_step_for_a_menu_that_did_not_start_the_session_stops_it_and_is_said() {
+    let mut a = on_google(false);
+    let waiting = tap(
+        &mut a,
+        AppEvent::McpLink(Step::Waiting(GOOGLE_URL.to_owned())),
+    );
+    assert_eq!(waiting, [Effect::CancelMcpProbe]);
+    let why = "link cancelled";
+    assert_eq!(
+        tap(&mut a, AppEvent::McpLink(Step::Ended(Err(why.to_owned())))),
+        []
+    );
+    assert_eq!(a.notice.as_deref(), Some(why));
+}

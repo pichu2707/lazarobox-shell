@@ -1371,6 +1371,11 @@ impl MenuState {
         MenuCommand::None
     }
 
+    /// This menu started a link session that has not ended.
+    pub fn link_running(&self) -> bool {
+        self.connectors.link_running()
+    }
+
     /// The link session moved on.
     pub fn link_step(&mut self, step: crate::core::ai::mcp_catalog::link::Step) -> MenuCommand {
         match self.connectors.link_step(step) {

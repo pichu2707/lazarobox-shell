@@ -770,6 +770,10 @@ impl Connectors {
         }
     }
 
+    pub(super) fn link_running(&self) -> bool {
+        self.waiting.is_some()
+    }
+
     /// A step of the link session, when one runs.
     pub(super) fn link_step(&mut self, step: Step) -> Moved {
         if self.waiting.is_none() {

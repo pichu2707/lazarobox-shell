@@ -22,6 +22,9 @@ baseline.
   entry turns `linked` when its credentials file changes (checked by `stat`:
   lazarobox never opens it, and never stores a Google token). Esc cancels, and
   five minutes without an answer ends the wait; the server is always stopped.
+  A `google` entry that names `WORKSPACE_MCP_CREDENTIALS_DIR` or
+  `GOOGLE_MCP_CREDENTIALS_DIR` is refused with a notice, because its tokens
+  would be kept outside the folder the tools refuse to read.
 
 ## [1.22.0] - 2026-11-12
 
