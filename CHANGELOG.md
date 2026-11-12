@@ -10,6 +10,14 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `docs/conectores.md`: a step-by-step guide (in Spanish) to connect Clarity, GA4,
+  Search Console, Google Workspace and Apps Script from the `Connectors` area. Every
+  connector guide in the area now ends with a link to it, and the README points to
+  it and describes the `secrets.toml` menu save, the `.bak` copy and the OAuth
+  client file.
+
 ## [1.23.0] - 2026-11-12
 
 ### Added

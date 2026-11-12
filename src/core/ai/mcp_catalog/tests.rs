@@ -92,6 +92,19 @@ fn every_entry_is_complete_and_its_links_pass_the_opener_check() {
     }
 }
 
+// S6d: every guide ends with a line that points at the tutorial, and the
+// repository URL is one of its links (the opener check accepts it).
+#[test]
+fn every_guide_ends_with_a_line_that_points_at_the_tutorial() {
+    assert!(is_web_url(TUTORIAL));
+    for e in entries() {
+        let last = e.guide.last().copied().unwrap_or_default();
+        assert!(last.contains("docs/conectores.md"), "{}: {last}", e.id);
+        assert!(e.links.contains(&TUTORIAL), "{}", e.id);
+        assert!(e.links.len() <= 9, "{}: keys 1-9 open links", e.id);
+    }
+}
+
 #[test]
 fn ids_are_unique() {
     let mut ids: Vec<_> = entries().iter().map(|e| e.id).collect();

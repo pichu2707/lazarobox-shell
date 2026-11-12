@@ -2,8 +2,9 @@
 //! reimplements none of them). Pure static data, no IO. A server is a catalog
 //! entry only when the user declared it under the entry's id in
 //! `[[ai.mcp.servers]]`; the catalog never adds, removes or rewrites a declared
-//! server, and it never writes `config.toml` or `secrets.toml` (C4, C6): the
-//! one write to `secrets.toml` is the menu save in `runtime::secrets_write`.
+//! server, and it never writes `config.toml` (C4). Its only write to
+//! `secrets.toml` is the menu save of one value (C6 amended), which lives in
+//! `runtime::secrets_write`; nothing here writes `ai.mcp.*`.
 //!
 //! The read/write class of a tool is recorded here and read by nobody in
 //! approval: every call to a connector tool still needs the user's `y` (C11).
@@ -142,6 +143,10 @@ pub struct Entry {
     /// The known tools and their class.
     pub tools: &'static [(&'static str, Class)],
 }
+
+/// The step-by-step tutorial every guide ends with (S6d); it is in Spanish.
+pub const TUTORIAL: &str =
+    "https://github.com/pichu2707/lazarobox-shell/blob/main/docs/conectores.md";
 
 /// The catalog, in the order of C8.
 pub fn entries() -> &'static [Entry] {

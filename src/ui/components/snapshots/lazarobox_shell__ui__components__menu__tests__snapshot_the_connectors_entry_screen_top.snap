@@ -15,8 +15,8 @@ expression: "text(&draw(62, POPUP_H, &connectors_entry(0)))"
 │   Limits of the Clarity API: 10 requests per project per   │
 │   day, the last 1 to 3 days only, at most 1,000 rows per   │
 │   answer.                                                  │
+│   Guía en español: docs/conectores.md (último enlace).     │
 │   [1] https://clarity.microsoft.com/                       │
-│ Paste into config.toml                                     │
 │                                                            │
 │ j/k scroll · i install · l login · p probe · f fill · Esc  │
 └────────────────────────────────────────────────────────────┘
