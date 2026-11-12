@@ -286,7 +286,8 @@ mod client;
 mod save;
 mod text;
 pub use client::{
-    BAD_ID, BAD_SECRET, CLIENT_BACKUP, CLIENT_FILE, client_json, valid_id, valid_secret,
+    BAD_ID, BAD_SECRET, CLIENT_BACKUP, CLIENT_FILE, CLIENT_MAX, Client, client_json, read_client,
+    valid_id, valid_secret,
 };
 pub use save::{Refusal, edit, line_of};
 pub use text::SecretText;

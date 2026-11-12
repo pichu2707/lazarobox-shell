@@ -13,7 +13,10 @@ use crate::core::ai::{mcp_catalog, sanitize::clean};
 /// Why a save (or a backup deletion) was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    NotAValue { server: String, name: String },
+    NotAValue {
+        server: String,
+        name: String,
+    },
     BadValue,
     ValueTooLong,
     NoFolder,
@@ -30,13 +33,18 @@ pub enum Refusal {
     Unreadable,
     NotToml(usize),
     NotPlainTable(String),
-    NotString { server: String, name: String },
+    NotString {
+        server: String,
+        name: String,
+    },
     Changed,
     TempExists,
     BackupUnsafe,
     NoBackup,
     BadClientId,
     BadClientSecret,
+    /// `google-oauth-client.json` is not a Desktop client file.
+    BadClientFile,
     Exists,
     Io(ErrorKind),
 }
@@ -98,6 +106,10 @@ impl Refusal {
             Self::NoBackup => "secrets.toml.bak: there is no backup".to_owned(),
             Self::BadClientId => super::BAD_ID.to_owned(),
             Self::BadClientSecret => super::BAD_SECRET.to_owned(),
+            Self::BadClientFile => format!(
+                "{} is not a Desktop OAuth client; save it again (o)",
+                super::CLIENT_FILE
+            ),
             Self::Exists => "secrets.toml exists; open the form again to replace it".to_owned(),
             Self::Io(kind) => format!("secrets.toml: not saved ({kind})"),
         };

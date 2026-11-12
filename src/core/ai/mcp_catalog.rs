@@ -12,6 +12,7 @@
 use crate::core::ai::config::McpServer;
 
 pub mod checks;
+pub mod connect;
 mod entries;
 pub mod gsc;
 pub mod link;

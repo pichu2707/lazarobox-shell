@@ -157,6 +157,17 @@ pub fn start_refusal(server: &McpServer) -> Option<&'static str> {
     (server.name == "google" && named).then_some(CREDENTIALS_DIR)
 }
 
+/// Whether `text` is one word of printable ASCII.
+fn graphic(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|b| (0x21..=0x7E).contains(&b))
+}
+
+/// Whether `text` is a plain e-mail address: one word of printable ASCII
+/// with an `@`. What the link passes to the server as `USER_GOOGLE_EMAIL`.
+pub fn plain_email(text: &str) -> bool {
+    graphic(text) && text.contains('@')
+}
+
 /// The values of a declared `google`, or the notice of what is missing: the
 /// entry must pass the three names, and each must hold a value (`has`) the
 /// link can use (`shown` gives the two that are not confidential).
@@ -184,8 +195,7 @@ pub fn plan(
     }
     let value = |name| shown(name).unwrap_or_default();
     let (client_id, email) = (value("GOOGLE_OAUTH_CLIENT_ID"), value("USER_GOOGLE_EMAIL"));
-    let graphic = |v: &str| !v.is_empty() && v.bytes().all(|b| (0x21..=0x7E).contains(&b));
-    if !graphic(&client_id) || !graphic(&email) || !email.contains('@') {
+    if !graphic(&client_id) || !plain_email(&email) {
         return Err(
             "USER_GOOGLE_EMAIL is not a plain e-mail address; fix it in Connectors (f)".to_owned(),
         );
