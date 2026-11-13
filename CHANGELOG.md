@@ -26,6 +26,15 @@ baseline.
   on Link with this client; the README "Sin telemetría" lists say so. Users
   already linked with their own client are untouched.
 
+### Security
+
+- The read, search and git tools also refuse, at any depth, the SSH private
+  keys with their default names (`id_rsa`, `id_dsa`, `id_ecdsa`,
+  `id_ecdsa_sk`, `id_ed25519`, `id_ed25519_sk`) and `credentials.json`, so a
+  copy inside a project no longer reaches the model. The `.pub` files stay
+  readable. In `run` mode, an `rg` or `grep -r` whose walk meets one of them
+  asks instead of running.
+
 ## [1.25.0] - 2026-11-12
 
 ### Added

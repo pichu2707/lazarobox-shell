@@ -44,13 +44,23 @@ pub(crate) const SECRET_DIRS: &[&str] = &[
 
 /// File names that are never readable wherever they sit below `$HOME`:
 /// credential files, `.envrc`, `.npmrc` (denied at any depth on purpose, as a
-/// project file may hold a token) and shell or REPL histories.
+/// project file may hold a token), the private keys `ssh-keygen` names by
+/// default, `credentials.json` (the default name of Google OAuth client and
+/// service account keys) and shell or REPL histories. Unlike the others, the
+/// key and `credentials.json` names are not hidden, so a walk meets them.
 pub(crate) const SECRET_FILES: &[&str] = &[
     ".netrc",
     ".git-credentials",
     ".pgpass",
     ".npmrc",
     ".envrc",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ecdsa_sk",
+    "id_ed25519",
+    "id_ed25519_sk",
+    "credentials.json",
     ".bash_history",
     ".zsh_history",
     ".zhistory",
@@ -1286,6 +1296,40 @@ mod tests {
             }
         }
         assert!(is_excluded_name(".envrc"));
+    }
+
+    // A private key or a credentials file copied into a project is refused at
+    // any depth; its public key and other names stay readable.
+    #[test]
+    fn a_private_key_or_credentials_file_is_refused_at_any_depth() {
+        let f = fixture();
+        for name in [
+            "id_rsa",
+            "id_dsa",
+            "id_ecdsa",
+            "id_ecdsa_sk",
+            "id_ed25519",
+            "id_ed25519_sk",
+            "credentials.json",
+            "ID_RSA",
+            "Credentials.json",
+        ] {
+            for p in [format!("project/{name}"), format!("project/src/{name}")] {
+                assert_eq!(
+                    check_path(&f.home, &f.home.join(&p)),
+                    PathVerdict::Refused,
+                    "{p}"
+                );
+            }
+        }
+        for name in ["id_rsa.pub", "id_ed25519.pub", "my_credentials.json"] {
+            let p = f.home.join("project").join(name);
+            fs::write(&p, "k").unwrap();
+            assert!(
+                matches!(check_path(&f.home, &p), PathVerdict::Allowed(_)),
+                "{name}"
+            );
+        }
     }
 
     #[test]
