@@ -5,7 +5,7 @@ Change `gsc-lazarobox-client`. Base: `openspec/specs/mcp-secrets/spec.md`.
 ## MODIFIED Requirements
 
 ### Requirement: Location and ownership [S1]
-(Base text stays, with one sentence added at its end.) lazarobox also writes one file besides `secrets.toml` and the files named in the base: the lazarobox client cache, `lazarobox-google-client.json` in the same config folder (name to confirm in design), only by Link on the lazarobox route (lazarobox-google-client, Cache file). It is written by the secrets writer's folder and handle checks, mode 0600, atomically, and never replaces `secrets.toml`, `config.toml` or `google-oauth-client.json`. `secrets.toml` holds only the cache's path (`[gsc] GSC_OAUTH_CLIENT_SECRETS_FILE`), never its content.
+(Base text stays, with one sentence added at its end.) lazarobox also writes one file besides `secrets.toml` and the files named in the base: the lazarobox client cache, `lazarobox-google-client.json` in the same config folder (name confirmed in design), only by Link on the lazarobox route (lazarobox-google-client, Cache file). It is written by the secrets writer's folder and handle checks, mode 0600, atomically, and never replaces `secrets.toml`, `config.toml` or `google-oauth-client.json`. `secrets.toml` holds only the cache's path (`[gsc] GSC_OAUTH_CLIENT_SECRETS_FILE`), never its content.
 
 #### Scenario: Link writes only the cache [gsc-lazarobox-client, auto]
 - GIVEN a config folder with `secrets.toml` and `google-oauth-client.json`
@@ -28,7 +28,7 @@ Change `gsc-lazarobox-client`. Base: `openspec/specs/mcp-secrets/spec.md`.
 #### Scenario: Cache of a foreign project [gsc-lazarobox-client, auto]
 - GIVEN a cache whose id is of another project number
 - WHEN it is read back
-- THEN it is refused with a pin notice and the secret is in no notice
+- THEN it is refused with `lazarobox-google-client.json: not from the lazarobox project` and the secret is in no notice
 
 #### Scenario: Loose cache [gsc-lazarobox-client, auto]
 - GIVEN the cache with mode 0644, or a symlink, or a hard link
