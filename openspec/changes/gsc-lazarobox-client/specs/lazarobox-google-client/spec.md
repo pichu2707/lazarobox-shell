@@ -4,7 +4,7 @@
 
 Lets a user link Search Console without a Google Cloud project, using a Desktop OAuth client owned by the `lazarobox` Google Cloud project. lazarobox fetches the client's JSON from the maintainer's site on demand, checks it against an embedded project-number pin, and keeps a private cache that Search Console's login reads. Only `webmasters.readonly` (non-sensitive) uses this client; no other service does. Refs: #733, builds on `google-connect` (#736). Scenario tags: [auto] = `cargo test` (fake `curl`, temp config folder); [manual] = real machine.
 
-Terms: "the lazarobox client" = the OAuth client published at the URL below. "The cache" = `lazarobox-google-client.json` in the lazarobox config folder (name to confirm in design). "The pin" = the embedded project number of the `lazarobox` Google Cloud project. "Link" = the Link action of the Search Console connector (config-menu, Connect Google and the gsc entry). "Own client" = the user's `google-oauth-client.json` (mcp-secrets, OAuth client file read back).
+Terms: "the lazarobox client" = the OAuth client published at the URL below. "The cache" = `lazarobox-google-client.json` in the lazarobox config folder (name confirmed in design). "The pin" = the embedded project number of the `lazarobox` Google Cloud project. "Link" = the Link action of the Search Console connector (config-menu, Connect Google and the gsc entry). "Own client" = the user's `google-oauth-client.json` (mcp-secrets, OAuth client file read back).
 
 ## ADDED Requirements
 
@@ -32,7 +32,7 @@ The fetch MUST be one `GET https://www.javilazaro.es/lazarobox/google-client.jso
 #### Scenario: A redirect is a failure [auto]
 - GIVEN a fake `curl` that reports HTTP 301
 - WHEN the fetch runs
-- THEN it fails with the HTTP-status notice and nothing is cached
+- THEN it fails with `redirected (HTTP 301)` and nothing is cached
 
 #### Scenario: Plain HTTP is never used [auto]
 - GIVEN any configuration
@@ -45,15 +45,15 @@ A body larger than 16 KiB MUST be refused, whether the cap stops the transfer or
 #### Scenario: Oversize [auto]
 - GIVEN a fake `curl` that returns 17 KiB
 - WHEN the fetch runs
-- THEN it fails with the oversize notice and nothing is parsed or cached
+- THEN it fails with `larger than 16 KiB` and nothing is parsed or cached
 
 #### Scenario: Not a Desktop client [auto]
 - GIVEN an answer holding only a `web` client
 - WHEN the fetch runs
-- THEN it fails with the bad-JSON notice and nothing is cached
+- THEN it fails with `not a Desktop client file` and nothing is cached
 
 ### Requirement: Integrity pin
-The pin MUST be an embedded constant, a project number, never read from the network, a file or the environment. A fetched `client_id` MUST be `<project-number>-` followed by a non-empty remainder and `.apps.googleusercontent.com`, with the number equal to the pin, compared on the whole number (a longer number that merely starts with the pin is a mismatch). A mismatch MUST be refused, MUST NOT be cached and MUST NOT replace an existing cache. While the pin is not filled in the build, the lazarobox route MUST be unavailable: no fetch runs, and the user sees the not-configured notice. The number MUST NOT be guessed.
+The pin MUST be an embedded constant, a project number, never read from the network, a file or the environment. A fetched `client_id` MUST be `<project-number>-` followed by a non-empty remainder and `.apps.googleusercontent.com`, with the number equal to the pin, compared on the whole number (a longer number that merely starts with the pin is a mismatch). A mismatch MUST be refused, MUST NOT be cached and MUST NOT replace an existing cache. While the pin is not filled in the build, the lazarobox route MUST be unavailable: no fetch runs, and the user sees the not-configured notice (`lazarobox: not configured in this build`). The number MUST NOT be guessed.
 
 #### Scenario: Matching id [auto]
 - GIVEN the pin `123456789012` and an answer whose id is `123456789012-abc.apps.googleusercontent.com`
@@ -63,7 +63,7 @@ The pin MUST be an embedded constant, a project number, never read from the netw
 #### Scenario: Foreign project [auto]
 - GIVEN the same pin and an id `999-abc.apps.googleusercontent.com`, or `1234567890123-abc...` (longer number)
 - WHEN the fetch runs
-- THEN it fails with the pin-mismatch notice and nothing is cached
+- THEN it fails with `not from the lazarobox project` and nothing is cached
 
 #### Scenario: Pin not filled [auto]
 - GIVEN a build whose pin is `None`
@@ -94,33 +94,32 @@ When the fetch fails (no `curl`, network, HTTP status, oversize, bad JSON or pin
 #### Scenario: Network down, cache valid [auto]
 - GIVEN a valid pinned cache and a fake `curl` that fails to connect
 - WHEN Link starts
-- THEN the notice says the fetch failed and the saved client is used, and the `uv` checks and login line proceed with the cache path
+- THEN the notice `lazarobox client not refreshed (<why>); linking with the saved copy` is shown, and the `uv` checks and login line proceed with the cache path
 
 #### Scenario: Network down, no cache [auto]
 - GIVEN no cache and the same failure
 - WHEN Link starts
-- THEN the network notice is shown, no `uv` check runs, and the own-client route is offered
+- THEN the `not fetched` notice is shown, no `uv` check runs, and the own-client route is offered (instruction `own client: Esc, f on gsc`)
 
 #### Scenario: Mismatch does not poison the cache [auto]
 - GIVEN a valid cache and a fetched client with a foreign project number
 - WHEN Link starts
-- THEN the cache is byte-identical afterwards, the mismatch notice is shown, and (the cache being valid) Link continues with it
+- THEN the cache is byte-identical afterwards, the fallback notice names `not from the lazarobox project`, and (the cache being valid) Link continues with it
 
 ### Requirement: Failure notices
-Every failure MUST be a visible, sanitized notice; none may be silent or only logged. Each notice MUST carry its cause and, when there is no valid cache, the way out (`use your own client`). No notice holds the secret or the response body. The set is:
+Every failure MUST be a visible, sanitized notice; none may be silent or only logged. A notice MUST carry its cause and, when there is no valid cache, the way out (use your own client). The footer is a single clipped line, so a failure notice MUST put the instruction first and the cause after it, and both MUST be drawn at the 62-column popup. No notice holds the secret or the response body. The set, as the code shows it (`<why>` is the sanitized `curl` error line, `HTTP <code>`, `redirected (HTTP 3xx)`, `larger than 16 KiB`, `not a Desktop client file` or `not from the lazarobox project`):
 
-| Cause | Notice |
-|-------|--------|
-| `curl` not found or not runnable | `lazarobox client: curl not found; install curl or use your own client` |
-| Connection, DNS, TLS or timeout error | `lazarobox client: could not reach javilazaro.es (<short reason>)` |
-| Non-2xx or 3xx status | `lazarobox client: javilazaro.es answered HTTP <code>` |
-| Body over 16 KiB | `lazarobox client: answer larger than 16 KiB; refused` |
-| Invalid JSON or not a Desktop client | `lazarobox client: answer is not a Desktop OAuth client; refused` |
-| Project-number mismatch | `lazarobox client: client id is not from the lazarobox project; refused` |
-| Pin not filled | `lazarobox client not configured in this build; use your own client` |
-| Cache unusable (mode, owner, link, symlink, size, pin) | `lazarobox client: saved client unusable (<reason>)` |
+| Case | Notice |
+|------|--------|
+| Fetch failed (`curl` missing or failed, network, HTTP status, redirect), no valid cache | `own client: Esc, f on gsc · lazarobox: not fetched (<why>); link later` |
+| Answer refused (over 16 KiB, not a Desktop client, foreign project), no valid cache | `own client: Esc, f on gsc · lazarobox: refused (<why>); nothing saved` |
+| Pin not filled | `own client: Esc, f on gsc · lazarobox: not configured in this build` |
+| Fetch failed, saved copy valid | `lazarobox client not refreshed (<why>); linking with the saved copy` |
+| Fetch failed and the saved copy fails its checks | the failure notice above, then `; the saved copy is not used: lazarobox-google-client.json: <reason>` |
+| Fetched client valid, cache write refused | `lazarobox client not saved: lazarobox-google-client.json: <refusal>` |
+| Screen on the lazarobox route (not a failure) | `client: lazarobox (fetched from www.javilazaro.es when you link)` |
 
-Exact wording MAY be refined in design; the causes and the rule that each is visible MAY NOT.
+From the `gsc` entry the footer prefix is `own client: f` instead of `own client: Esc, f on gsc` (the menu rewrites it, because Esc there would leave the entry). The cause kind (`not fetched`, `refused`, `not configured`) MUST start inside the first 58 columns of the footer.
 
 #### Scenario: Each cause has a notice [auto]
 - GIVEN a fake `curl` for each cause in the table
@@ -130,7 +129,12 @@ Exact wording MAY be refined in design; the causes and the rule that each is vis
 #### Scenario: Missing curl [auto]
 - GIVEN no `curl` on `PATH`
 - WHEN Link starts on the lazarobox route
-- THEN the curl notice is shown and no other process is started
+- THEN the `not fetched` notice with the curl error line is shown and no other process is started
+
+#### Scenario: The footer draws instruction and cause [auto]
+- GIVEN each of the three failure notices
+- WHEN the footer is drawn at the 62-column popup
+- THEN the instruction and the cause kind (`lazarobox: not fetched (`, `lazarobox: refused (`, `lazarobox: not configured`) are both visible
 
 ### Requirement: Users already linked are untouched
 lazarobox MUST NOT change the config, the secrets file, the token or the link state of a user linked with their own client. A user whose `[gsc]` already holds `GSC_OAUTH_CLIENT_SECRETS_FILE` keeps that value (the existing keep-what-is-there rule of Connect Google); the lazarobox route never overwrites it. Declared entries and values written before this change keep working byte for byte.

@@ -6,7 +6,9 @@ Todo lo que ves aquí sale del código de la versión actual. Los textos entre c
 
 ## Ruta rápida
 
-Para **Search Console** y **Google Workspace** (Gmail, Docs y Hojas), con **Connect Google**:
+Solo **Search Console**, sin Google Cloud: [Vincular Search Console con un clic](#vincular-search-console-con-un-clic).
+
+Para **Google Workspace** (Gmail, Docs y Hojas), con o sin Search Console, con **Connect Google** y tu propio cliente:
 
 1. Abre el menú con `Ctrl+Espacio` `m`, pulsa `4` (pestaña **Connectors**), Enter, y Enter otra vez sobre la primera fila, **Connect Google**.
 2. La primera vez, sigue la lista de Google Cloud de la pantalla (`1` a `9` abren cada página) y guarda tu cliente con `o`.
@@ -29,6 +31,7 @@ Los detalles, en [Conectar Google en un paso](#conectar-google-en-un-paso). Para
 
 - [Antes de empezar](#antes-de-empezar)
 - [Dónde se guarda cada cosa](#dónde-se-guarda-cada-cosa)
+- [Vincular Search Console con un clic](#vincular-search-console-con-un-clic)
 - [Conectar Google en un paso](#conectar-google-en-un-paso)
 - [Clarity](#clarity)
 - [Crear tu propio cliente OAuth de Google](#crear-tu-propio-cliente-oauth-de-google)
@@ -77,9 +80,56 @@ Qué hace lazarobox con esos archivos y qué no:
 - La lectura (el arranque de un servidor) se niega a usar un `secrets.toml` que no tenga modo `0600`, que no sea un archivo normal o que pase de 64 KiB, y en ese caso el servidor arranca solo con tu entorno.
 - Las herramientas de lectura del chat rechazan `~/.config/lazarobox` entero, las carpetas de tokens de los conectores (`~/.config/gcloud`, `~/.config/mcp-gsc`, `~/Library/Application Support/mcp-gsc` (macOS también acepta esa carpeta para `GSC_CONFIG_DIR`), `~/.google_workspace_mcp`, `~/.clasprc.json`) y `~/.config/gh`. El modelo no lee tus valores ni tus tokens por esa vía. Un servidor MCP sí los puede leer, porque corre como tú. Esta lista es de mejor esfuerzo y solo cubre las rutas predeterminadas: si usas un `$XDG_CONFIG_HOME` propio, esa carpeta no queda protegida.
 
+## Vincular Search Console con un clic
+
+Si solo quieres **Search Console**, no necesitas un proyecto de Google Cloud: lazarobox usa el cliente OAuth publicado por el proyecto `lazarobox` y tú solo inicias sesión con **tu propia cuenta de Google**.
+
+1. Abre **Connect Google** (`Ctrl+Espacio` `m`, `4`, Enter, Enter) y deja marcado **solo** Search Console: pulsa `w` para desmarcar Google Workspace. La pantalla dice `route: lazarobox client (u uses your own client)` y `client: lazarobox (fetched from www.javilazaro.es when you link)`. No aparece la lista de Google Cloud ni la línea `client:` de tu cliente.
+2. Pulsa `n` para ver el plan y `y` para escribirlo. El plan añade la entrada `gsc` y guarda en `secrets.toml` los valores de `[gsc]`; `GSC_OAUTH_CLIENT_SECRETS_FILE` apunta a `~/.config/lazarobox/lazarobox-google-client.json`. Ese archivo todavía no existe: lo crea el enlace.
+3. Pulsa `i` para instalar el servidor y `g` para enlazar. Antes de las comprobaciones de `uv`, lazarobox descarga el cliente y lo guarda (`0600`). Se abre el navegador, inicias sesión con tu cuenta y, al terminar, la pestaña imprime `Search Console linked`.
+4. Reinicia lazarobox y pide algo en un chat con **Tools** activado.
+
+Desde la entrada `gsc` el camino es el mismo: `f` ofrece en la fila del cliente `Enter writes the lazarobox client`, y después `g` enlaza.
+
+### Qué conviene saber
+
+| Tema | Detalle |
+|---|---|
+| Tu cuenta | El inicio de sesión es con tu cuenta de Google. El token se queda en tu máquina, en `~/.config/mcp-gsc/token.json`; lazarobox nunca lo lee ni lo guarda. |
+| Permiso que se pide | Solo lectura de Search Console (`webmasters.readonly`). |
+| Qué se descarga | Solo el archivo público del cliente, `https://www.javilazaro.es/lazarobox/google-client.json`, con el `curl` del sistema. Cada vez que pulsas `g` en esta vía se descarga de nuevo, para recoger un cliente renovado. Ese servidor ve tu dirección IP y la versión de lazarobox; no recibe ningún dato tuyo. No se descarga al arrancar, ni al abrir pantallas, ni al construir el plan. |
+| Comprobaciones | El archivo debe ser un cliente de escritorio de hasta 16 KiB y del proyecto `lazarobox` (se compara el número de proyecto del id). Si no lo es, se rechaza y no se guarda. |
+| Dónde queda | `~/.config/lazarobox/lazarobox-google-client.json` (`0600`), aparte de tu `google-oauth-client.json`, que no se toca. Para quitarlo, bórralo. |
+| Con Workspace | El cliente de lazarobox es solo para Search Console. Con Google Workspace marcado (solo o junto a Search Console), Connect Google usa **tu propio cliente** para los dos servicios y la pantalla lo dice (`the lazarobox client is only for Search Console alone; with Workspace ticked your own client is used`). Sigue la [guía de Connect Google](#conectar-google-en-un-paso). |
+| Compilación sin número de proyecto | La vía aparece desactivada: la pantalla dice `lazarobox client not configured in this build; this screen uses your own client` y no se descarga nada. Usa tu propio cliente. |
+| Si ves `403 access_denied` | Google solo deja entrar a las cuentas que la app admita. Mientras la app de lazarobox esté en pruebas, solo pueden enlazar los usuarios de prueba invitados; si no lo eres, usa tu propio cliente. |
+
+### Si la descarga falla
+
+El pie del menú muestra primero qué hacer y después la causa. Un ejemplo: `own client: Esc, f on gsc · lazarobox: not fetched (HTTP 404); link later`.
+
+| Aviso | Qué hacer |
+|---|---|
+| `lazarobox client not refreshed (<causa>); linking with the saved copy` | La descarga falló, pero hay una copia válida: el enlace sigue con ella. Nada que hacer. |
+| `own client: Esc, f on gsc · lazarobox: not fetched (<causa>); link later` | No se pudo descargar y no hay copia válida (sin red, `curl` ausente, `HTTP <código>`, `redirected (HTTP 3xx)`). No se escribió nada: reintenta con `g` más tarde, o usa tu propio cliente. |
+| `own client: Esc, f on gsc · lazarobox: refused (<causa>); nothing saved` | El archivo se rechazó: `larger than 16 KiB`, `not a Desktop client file` o `not from the lazarobox project`. Usa tu propio cliente y avisa en el repositorio. |
+| `own client: Esc, f on gsc · lazarobox: not configured in this build` | La compilación no trae el número de proyecto. Usa tu propio cliente. |
+| `…; the saved copy is not used: <problema>` (al final de los avisos anteriores) | También la copia guardada falló las comprobaciones (permisos, enlaces, tamaño o proyecto). Bórrala y vuelve a enlazar. |
+| `lazarobox client not saved: <motivo>` | El archivo era válido, pero la carpeta o el archivo de destino no pasaron las comprobaciones de escritura (por ejemplo, permisos). El motivo dice cuál. |
+
+Desde la entrada `gsc` el prefijo es más corto: `own client: f · lazarobox: …`.
+
+### Cambiar a tu propio cliente
+
+Es la vía avanzada, y sigue igual que antes: [Crear tu propio cliente OAuth de Google](#crear-tu-propio-cliente-oauth-de-google).
+
+- **Antes de escribir el plan:** en Connect Google, `u` alterna entre `lazarobox client` y `my own client`; `o` abre el formulario de tu cliente y, al guardarlo, elige tu cliente. La elección solo vale para esa pantalla.
+- **Con el valor ya guardado en `secrets.toml`:** si `secrets.toml` ya tiene `GSC_OAUTH_CLIENT_SECRETS_FILE`, se conserva (`kept from secrets.toml: lazarobox client; f on the entry changes it`) y `u` solo lo recuerda. Para cambiarlo: abre la entrada `gsc`, pulsa `f`, Enter sobre la fila del cliente (la nota dice `Enter switches to your own client; then Esc, g links`; si aún no hay cliente propio, antes `o saves your own client first; `), confirma con `y` el reemplazo, pulsa Esc y `g`.
+- Con Workspace marcado no hace falta nada: ya usa tu cliente.
+
 ## Conectar Google en un paso
 
-**Connect Google** conecta **Search Console** y **Google Workspace** (Gmail: leer y crear borradores; Docs; Hojas de cálculo) de una vez, con **tu propio cliente OAuth de escritorio**: lo creas una vez en Google Cloud y lazarobox lo reutiliza para los dos servicios. lazarobox escribe por ti la entrada de `config.toml` y los valores de `secrets.toml`, siempre después de enseñarte el plan y de tu `y`.
+**Connect Google** conecta **Search Console** y **Google Workspace** (Gmail: leer y crear borradores; Docs; Hojas de cálculo) de una vez, con **tu propio cliente OAuth de escritorio** (para Search Console solo, hay una [vía más corta](#vincular-search-console-con-un-clic)): lo creas una vez en Google Cloud y lazarobox lo reutiliza para los dos servicios. lazarobox escribe por ti la entrada de `config.toml` y los valores de `secrets.toml`, siempre después de enseñarte el plan y de tu `y`.
 
 Es la primera fila del área **Connectors**. Su pantalla tiene cuatro partes, y `j`/`k` la desplazan si no cabe.
 
@@ -232,6 +282,8 @@ env = ["GSC_OAUTH_CLIENT_SECRETS_FILE", "GSC_CONFIG_DIR", "GSC_CREDENTIALS_PATH"
 ```
 
 ### Vía 1: OAuth con Link with Google (la predeterminada)
+
+Para Search Console solo, lo más corto es el [cliente de lazarobox](#vincular-search-console-con-un-clic). Lo que sigue es la vía avanzada, con tu propio cliente.
 
 1. Crea el cliente OAuth de escritorio y activa la *Search Console API* ([cómo crearlo](#crear-tu-propio-cliente-oauth-de-google)). El cliente de GA4 sirve.
 2. Instala con `i` (`uv tool install mcp-search-console==0.4.2`) y pega la entrada.
@@ -491,7 +543,7 @@ Los textos son los que ves en el pie del menú o en el chat. Ninguno contiene un
 | `connect: nothing was written: <motivo>` | No se escribió nada; el motivo dice por qué. Si es `config.toml changed on disk`, otro programa lo cambió después del plan: pulsa `n` otra vez. |
 | `nothing to install yet: n plans the entries first` / `nothing to link yet: n plans the entries first` | Aún no hay servicios declarados. |
 | `every declared service is linked; restart lazarobox to use it in chats` | Todo enlazado: reinicia. |
-| `Error 403: access_denied` (en el navegador) | Tu cuenta no está como usuario de prueba de la app. Añádela en *Audience* (paso `7`) y vuelve a pulsar `g`. |
+| `Error 403: access_denied` (en el navegador) | Tu cuenta no está como usuario de prueba de la app. Añádela en *Audience* (paso `7`) y vuelve a pulsar `g`. Si usas el cliente de lazarobox, consulta [Vincular Search Console con un clic](#vincular-search-console-con-un-clic). |
 | `localhost` con `ERR_CONNECTION_TIMED_OUT` (en el navegador), después de un intento fallido | La pestaña de Google apunta al servidor local de un intento anterior, que ya no escucha. No reutilices esa pestaña: pulsa `g` otra vez y usa el enlace nuevo. |
 
 ### Prueba (`p`)

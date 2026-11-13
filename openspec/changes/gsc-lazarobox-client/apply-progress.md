@@ -81,3 +81,11 @@ The footer is one clipped line (no wrapping pattern exists for it; the wrapped l
 ## PR2 decision on the clipped cause
 
 Footer notices point at the screen instead of listing every step: from Connect Google `own client: Esc, f on gsc · lazarobox: <cause>`, from the gsc entry `own client: f · lazarobox: <cause>` (the menu rewrites the prefix there). The cause is `not configured in this build`, `refused (<why>); nothing saved` or `not fetched (<why>); link later`; both parts are drawn at 62 columns (test asserts the instruction and `lazarobox: not configured`, `lazarobox: refused (`, `lazarobox: not fetched (`). The `client file:` line on the gsc `f` screen guides the rest when the held value is the cache path: `Enter switches to your own client; then Esc, g links`, preceded by `o saves your own client first; ` when no own client file exists (test: lines fit 60 columns). Note: the guidance tests were added in the same step as the code, so their RED run was not observed separately.
+
+## PR3: docs and spec sync (done, 3.1-3.3)
+
+Branch `docs/gsc-client-guide` from `origin/feat/gsc-client-link`. Not pushed.
+
+- 3.1 done: `docs/conectores.md` new section "Vincular Search Console con un clic" (steps, what is downloaded and when, notices table, switching to the own client, Workspace, build without pin, 403 note); Ruta rapida, indice, Connect Google intro, Search Console Via 1 and the 403 troubleshooting row link to it. Quoted texts read from `lazarobox_client.rs`, `fields.rs`, `connect.rs`, `mcp_catalog/connect.rs`.
+- 3.2 done: the three change deltas match the code (instruction-first failure notices, fallback, saved-copy-not-used, not-saved, `NOT_CONFIGURED_SCREEN`, `client:` line, `u` key, `o` selects own only on save, `kept from secrets.toml`, NeedsOwnClient text, `f` row `client file:` guidance, cache name confirmed). The merge into `openspec/specs/` is left to sdd-archive.
+- 3.3 done: docs and openspec only, no code touched; internal anchors checked.
