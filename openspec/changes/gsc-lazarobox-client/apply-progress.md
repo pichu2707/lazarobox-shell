@@ -27,3 +27,57 @@ Mode: Strict TDD (`cargo test`). Delivery: 3 chained PRs, `stacked-to-main`. Bra
 ## Environment note
 
 The shell umask here is 002, which makes one existing test (`runtime::mcp::presence::tests::the_client_id_follows_the_presence_and_never_the_secret`) fail on a clean main. The full suite was run with `umask 022`.
+
+## PR2: link, planner, screen, `f` preset, README, CHANGELOG (done, 2.1-2.8, 2.10-2.12; 2.9, 2.13, 2.14 manual are owner tasks)
+
+Branch `feat/gsc-client-link` from origin/main (after PR1, #737). Not pushed; review first.
+
+| Task | Status | Notes |
+|------|--------|-------|
+| 2.1 Link fetches by value | done | `Linker::new(events, opener, Fetch)`; `answer(plan, fetch, check)` fetches only when `plan.file == cache_path(secrets)`; `AppEvent::GscLine(Result, Option<String>)`; `link_reply(reply, said, room)` leaves the fallback notice in the footer while the prompt shows |
+| 2.2 nothing else fetches | done | test in `link/fetch_tests.rs`: `refresh(` is not called from `runtime.rs`, `app.rs` or the presence reader; the own path spawns no curl (empty PATH) |
+| 2.3 `ClientRoute` and planner | done | `Ask.route`, `Input { client: Option, client_file, route }`, `Refused::NeedsOwnClient`; `plan_with(.., pin)` skips the own-client read on the lazarobox route and refuses it without a pin |
+| 2.4 cache path plumbing | done | `mcp_secrets::cache_path(secrets)`; `Presence::with_client_cache`; reader fills it; pin `None` => plan refused with the not-configured notice |
+| 2.5 route state and `u` | done | `Connectors.pin` (= `PROJECT_NUMBER`, tests set it), `Google.own` reset on `open_google`; `o` selects own; `u` toggles, or says why not |
+| 2.6 screen drawing | done | route line, `CLIENT_LINE`, no checklist or own client on the lazarobox route; two new insta snapshots; existing snapshots unchanged |
+| 2.7 Link failure offers own client | done | the refresh notices already carry `u uses your own client`; menu tests prove footer notice and fallback notice |
+| 2.8 `f` row, Enter toggles | done | `client_target` / `client_cell` in `fields.rs`; note line `client file: Enter ...`; gsc guide text updated |
+| 2.9 `PROJECT_NUMBER` | owner | still `None`; never guessed |
+| 2.10 README, CHANGELOG | done | README line 41 and the network list (~1632); CHANGELOG `[Unreleased]` `### Added` |
+| 2.11 chat-tool access | done | test only; the existing `.config/lazarobox` deny entry already refuses the cache, also as an extra root |
+| 2.12 gate | done | fmt, clippy `-D warnings`, `cargo test` all pass (see report) |
+| 2.13, 2.14 manual | owner | live checks |
+
+## PR2 deviations
+
+- `Connectors.pin` is a plain field set from `PROJECT_NUMBER` in `Connectors::new` (the design says the state holds the pin); a `#[cfg(test)]` setter on `MenuState` changes it.
+- `plan_with` gained a `pin` argument (design 10 only named `client` and `client_file`): defence in depth so a build with no pin never writes the cache path, whatever the menu sends.
+- `Refused::NeedsOwnClient` notice: `the lazarobox client is only for Search Console alone; u uses your own client`.
+- The `u` key on Connect Google when `gsc` is already declared only says to use `f` on the entry (the route is by value; the plan skips a declared service).
+- The `f` row cell shows `lazarobox client` / `your own client` / `not set`; the target text (`Enter writes the lazarobox client`, `Enter switches to your own client`, or the not-configured notice) is a `client file:` line under the values, because the cell cannot hold both at 62 columns.
+- Hint line on Connect Google with a pin: `j/k · s/w tick · e e-mail · o own · u route · n plan · Esc` (the usual one is 58 columns already).
+- Test for 2.2 is a source check plus the empty-PATH proof, not an effect-level run of every UI path.
+
+## PR2 review fixes (applied)
+
+- W1: `failure_notice` (Link) now names the real path: `to use your own client: f on the gsc entry, Enter on its client row, then g` (and `or use your own client: ...` for not fetched). Screen variants: `NOT_CONFIGURED_SCREEN` (`...; this screen uses your own client`, also the `u` text and the `plan_with` no-pin refusal) and `NeedsOwnClient` (`...; with Workspace ticked your own client is used`). Snapshot `..._lazarobox_route_without_a_pin.snap` updated intentionally.
+- W2: a Search Console value already held in `secrets.toml` wins: `route()` follows it, the screen shows `route: ...` plus `kept from secrets.toml: <lazarobox client|your own client>; f on the entry changes it`, and `u` says the same.
+- W3: `nothing_but_link_reaches_the_fetch` walks `src/**/*.rs` (excluding `google_client` and `mcp/link` with their tests); verified it fails with a dummy caller.
+- W4: tests for `u` and Enter on a declared gsc, and `answer` with no pin on the cache path (empty PATH, no curl).
+- Suggestions: stale comment fixed, README "Solo cuando...", `o` selects the own route only when the client form saves (set in `enter_field`, so a cancelled form changes nothing). `HINT_ROUTE` left without `scroll` (does not fit 58 columns).
+- Known limit: the menu footer is one clipped line, so the long Link notices show their first ~58 columns on a 62-column popup; the full text is still in the notice.
+
+## PR2 review fix: Link notices fit the footer
+
+The footer is one clipped line (no wrapping pattern exists for it; the wrapped listing reason is a body row). `failure_notice` now puts the instruction first, fixed at 30 columns, then the cause: `own client: f on gsc, Enter, g · lazarobox: not configured in this build` / `... · lazarobox: refused (<why>); nothing saved` / `... · lazarobox: not fetched (<why>); link later`. The cause kind starts inside the first 58 columns. Test `a_link_failure_footer_draws_its_instruction_whole` draws all three at the 62-column popup (the minimum popup, 24, cannot hold any 58-column hint). The word "client" is not in the cause tag; the same line says `own client` and the screen shows `lazarobox client`.
+
+## PR2 re-review fixes
+
+- Link instruction is now `own client: Esc, f on gsc, Enter, y, o if none, Esc, g` followed by ` · lazarobox: <cause>`. Checked step by step: from Connect Google `f` is not a key (Esc first, then select gsc and `f`); Enter on the held client row opens the replace prompt (`y`); `o` is the client form key on that screen; on the fields screen `g` is not a key, so a second `Esc` (back to the entry) is needed before `g`. That last `Esc` is an addition to the requested text. On the gsc entry the first `Esc` would leave the entry, so the menu drops it there (`link_reply`).
+- Consequence: the instruction takes 54 of the 58 footer columns, so the cause tag is clipped to ` · l…`. The cause is no longer visible in the footer (the test no longer asserts it). Needs an owner/orchestrator call if the cause must be shown (for example a second notice line).
+- `own = true` is set only when the client file save is accepted (`secret_reply` Ok naming the client file), not at validation; a declined replace prompt or a refused write leaves the route as it was.
+- `route_is_lazarobox` and `kept_line` moved below the HINT consts.
+
+## PR2 decision on the clipped cause
+
+Footer notices point at the screen instead of listing every step: from Connect Google `own client: Esc, f on gsc · lazarobox: <cause>`, from the gsc entry `own client: f · lazarobox: <cause>` (the menu rewrites the prefix there). The cause is `not configured in this build`, `refused (<why>); nothing saved` or `not fetched (<why>); link later`; both parts are drawn at 62 columns (test asserts the instruction and `lazarobox: not configured`, `lazarobox: refused (`, `lazarobox: not fetched (`). The `client file:` line on the gsc `f` screen guides the rest when the held value is the cache path: `Enter switches to your own client; then Esc, g links`, preceded by `o saves your own client first; ` when no own client file exists (test: lines fit 60 columns). Note: the guidance tests were added in the same step as the code, so their RED run was not observed separately.

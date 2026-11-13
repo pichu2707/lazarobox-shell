@@ -10,12 +10,12 @@ use super::{RealFs, SECRETS, SaveFs, Target, open_folder, read_current};
 use crate::core::{
     ai::{
         mcp_catalog::{
-            connect::{Ask, Input, Preview, preview},
+            connect::{Ask, ClientRoute, Input, Preview, preview},
             presence::Presence,
         },
         mcp_secrets::{
-            CACHE_FILE, CLIENT_FILE, CLIENT_MAX, Client, FILE, Refusal, Secrets, Why, line_of,
-            pinned, read_client,
+            CACHE_FILE, CLIENT_FILE, CLIENT_MAX, Client, FILE, NOT_CONFIGURED_SCREEN, Refusal,
+            Secrets, Why, cache_path, line_of, pinned, read_client,
         },
     },
     config_append::{self, AppendRefusal},
@@ -117,18 +117,26 @@ pub fn client_id(secrets: Option<&Path>) -> Result<Option<String>, String> {
 /// client, `secrets.toml` (which values hold something) and `config.toml`
 /// (which servers are declared, and the bytes the append will start from),
 /// each read with the writer's checks. The answer is the preview, or the one
-/// line that says why there is none.
+/// line that says why there is none. On the lazarobox route the own client
+/// file is not read, and a build with no `pin` plans nothing.
 pub fn plan_with(
     fs: &impl SaveFs,
     secrets: Option<&Path>,
     home: Option<&str>,
     ask: &Ask,
+    pin: Option<&str>,
 ) -> Result<Preview, String> {
-    let client = match read_client_with(fs, secrets) {
-        Ok(Some(client)) => client,
-        Ok(None) => return Err(NO_CLIENT.to_owned()),
-        Err(refusal) => return Err(refusal.notice_of(CLIENT_FILE)),
+    let lazarobox = ask.route == ClientRoute::Lazarobox;
+    if lazarobox && pin.is_none_or(str::is_empty) {
+        return Err(NOT_CONFIGURED_SCREEN.to_owned());
+    }
+    let client = match (lazarobox, read_client_with(fs, secrets)) {
+        (true, _) => None,
+        (false, Ok(Some(client))) => Some(client),
+        (false, Ok(None)) => return Err(NO_CLIENT.to_owned()),
+        (false, Err(refusal)) => return Err(refusal.notice_of(CLIENT_FILE)),
     };
+    let cache = cache_path(secrets);
     let dir = open_folder(fs, secrets).map_err(|refusal| refusal.notice())?;
     let folder = secrets.and_then(Path::parent).unwrap_or(Path::new(""));
     let config = read_current(fs, &dir, &folder.join(config_append::FILE), CONFIG)
@@ -165,12 +173,16 @@ pub fn plan_with(
         names: &presence.names,
         has: &has,
         home,
-        client: &client,
+        client: client.as_ref(),
+        client_file: cache.as_deref(),
+        route: ask.route,
         email: &ask.email,
         chosen: &ask.chosen,
     };
     preview(&input, config.as_deref(), stored)
 }
 
+#[cfg(test)]
+mod route_tests;
 #[cfg(test)]
 mod tests;

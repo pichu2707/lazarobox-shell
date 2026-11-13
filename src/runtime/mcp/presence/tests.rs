@@ -167,3 +167,14 @@ async fn the_client_id_follows_the_presence_and_never_the_secret() {
     let events = read(config, secrets).await;
     assert!(matches!(events[1], AppEvent::GoogleClient(Ok(None))));
 }
+
+// Design 5: the menu gets the absolute cache path next to secrets.toml, and
+// reading it creates nothing.
+#[tokio::test]
+async fn the_presence_carries_the_cache_path_next_to_secrets_toml() {
+    let (dir, config, secrets) = files(0o600);
+    let presence = asked(config, secrets).await;
+    let want = dir.path().join("lazarobox-google-client.json");
+    assert_eq!(presence.client_cache(), want.to_str());
+    assert!(!want.exists(), "reading creates no cache");
+}

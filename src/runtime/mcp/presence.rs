@@ -11,7 +11,7 @@ use crate::{
     app::AppEvent,
     core::ai::{
         mcp_catalog::presence::Presence,
-        mcp_secrets::{BACKUP, CLIENT_FILE},
+        mcp_secrets::{BACKUP, CLIENT_FILE, cache_path},
     },
     runtime::{mcp_secrets::load_for_start, secrets_write::google::client_id},
 };
@@ -65,6 +65,7 @@ impl Reader {
             let presence = Presence::read(text, &loaded)
                 .with_backup(backup)
                 .with_client_file(client)
+                .with_client_cache(cache_path(folder.as_deref()))
                 .with_home(home)
                 // A `stat`: a token file is never opened, and an empty one is
                 // not a link.

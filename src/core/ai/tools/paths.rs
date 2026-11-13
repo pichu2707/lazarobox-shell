@@ -1635,6 +1635,36 @@ mod tests {
         assert!(SecretRoots::load(&f.home, &[looped]).is_none());
     }
 
+    // Spec (gsc-lazarobox-client, mcp-secrets): the lazarobox client cache is
+    // never readable by a chat tool, under `.config/lazarobox` or under the
+    // real XDG config folder passed as an extra root.
+    #[test]
+    fn the_lazarobox_client_cache_is_refused_to_the_tools() {
+        let f = fixture();
+        let origin = f.home.join("project");
+        let cache = ".config/lazarobox/lazarobox-google-client.json";
+        fs::create_dir_all(f.home.join(".config/lazarobox")).unwrap();
+        fs::write(f.home.join(cache), "{\"installed\":{}}").unwrap();
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
+        assert_eq!(
+            resolve(&roots, &origin, &format!("~/{cache}")),
+            PathVerdict::Refused
+        );
+        assert!(!roots.judge_write(&f.home.join(cache)));
+        let xdg = f.home.join("custom-xdg/lazarobox");
+        fs::create_dir_all(&xdg).unwrap();
+        fs::write(xdg.join("lazarobox-google-client.json"), "{}").unwrap();
+        let roots = SecretRoots::load(&f.home, std::slice::from_ref(&xdg)).unwrap();
+        assert_eq!(
+            resolve(
+                &roots,
+                &origin,
+                "~/custom-xdg/lazarobox/lazarobox-google-client.json"
+            ),
+            PathVerdict::Refused
+        );
+    }
+
     #[test]
     fn a_folded_prefix_matches_a_case_variant_on_every_os() {
         let root = Path::new("/h/dotfiles/ssh");

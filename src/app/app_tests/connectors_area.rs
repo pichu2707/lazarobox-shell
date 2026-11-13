@@ -502,12 +502,15 @@ fn g_asks_for_the_checks_and_only_y_after_the_answer_types_the_line_in_one_new_p
     let before = a.panes.len();
     let asked = tap(&mut a, key('g'));
     assert_eq!(asked, [Effect::LinkGsc(gsc_plan())]);
-    assert_eq!(tap(&mut a, AppEvent::GscLine(Ok(GSC_LINE.to_owned()))), []);
+    assert_eq!(
+        tap(&mut a, AppEvent::GscLine(Ok(GSC_LINE.to_owned()), None)),
+        []
+    );
     let declined = tap(&mut a, key('n'));
     assert_eq!((spawned(&declined), writes(&declined)), (None, vec![]));
     assert_eq!(a.panes.len(), before);
     tap(&mut a, key('g'));
-    tap(&mut a, AppEvent::GscLine(Ok(GSC_LINE.to_owned())));
+    tap(&mut a, AppEvent::GscLine(Ok(GSC_LINE.to_owned()), None));
     let run = tap(&mut a, key('y'));
     let id = spawned(&run).expect("one new pane");
     let typed = tap(&mut a, AppEvent::Pty(id, PtyEvent::Output(b"$ ".to_vec())));
@@ -521,7 +524,10 @@ fn a_refused_check_is_a_footer_notice_and_types_nothing() {
     let mut a = on_gsc();
     tap(&mut a, key('g'));
     let why = "uv not found: install uv first";
-    assert_eq!(tap(&mut a, AppEvent::GscLine(Err(why.to_owned()))), []);
+    assert_eq!(
+        tap(&mut a, AppEvent::GscLine(Err(why.to_owned()), None)),
+        []
+    );
     assert!(matches!(a.menu().unwrap().footer(), Footer::Hint(h) if h == why));
 }
 
@@ -534,8 +540,11 @@ fn a_check_that_answers_after_the_menu_closed_says_why_and_prompts_nothing() {
     tap(&mut a, esc());
     assert!(a.menu().is_none() || !rows(&a).concat().contains("link gsc"));
     let why = "uv failed";
-    assert_eq!(tap(&mut a, AppEvent::GscLine(Err(why.to_owned()))), []);
-    let effects = tap(&mut a, AppEvent::GscLine(Ok(GSC_LINE.to_owned())));
+    assert_eq!(
+        tap(&mut a, AppEvent::GscLine(Err(why.to_owned()), None)),
+        []
+    );
+    let effects = tap(&mut a, AppEvent::GscLine(Ok(GSC_LINE.to_owned()), None));
     assert_eq!((spawned(&effects), writes(&effects)), (None, vec![]));
 }
 
@@ -725,7 +734,8 @@ fn connect_google_plans_on_n_and_writes_only_on_y_after_the_plan() {
         tap(&mut a, key('n')),
         [Effect::PlanGoogle(Ask {
             chosen: vec!["gsc"],
-            email: String::new()
+            email: String::new(),
+            route: Default::default(),
         })]
     );
     let plan = AppEvent::GooglePlan(Ok(Box::new(gsc_preview())));

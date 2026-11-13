@@ -2098,6 +2098,65 @@ mod tests {
         insta::assert_snapshot!(format!("{top}\n{end}"));
     }
 
+    // Spec (gsc-lazarobox-client, Client route): Search Console alone on the
+    // lazarobox client: its client line, no own client, no checklist, and the
+    // popup keeps its size.
+    #[test]
+    fn snapshot_the_connect_google_lazarobox_route() {
+        let mut menu = connect_google();
+        menu.set_client_pin(Some("123456789012"));
+        press(&mut menu, &[KeyCode::Char('w')]);
+        let screen = text(&draw(62, POPUP_H, &menu));
+        assert!(!screen.contains("123-abc") && !screen.contains("GOCSPX"));
+        insta::assert_snapshot!(screen);
+    }
+
+    // A Link failure is one clipped footer line: the instruction comes first
+    // and is drawn whole, whatever the cause.
+    #[test]
+    fn a_link_failure_footer_draws_its_instruction_whole() {
+        use crate::core::ai::{
+            mcp_catalog::{entry, snippet},
+            mcp_secrets::{Why, failure_notice},
+        };
+        let why = "javilazaro.es request failed: Could not resolve host: www.javilazaro.es";
+        for (notice, cause) in [
+            (
+                failure_notice(&Why::NotConfigured),
+                "lazarobox: not configured",
+            ),
+            (failure_notice(&Why::Foreign), "lazarobox: refused ("),
+            (
+                failure_notice(&Why::Curl(why.to_owned())),
+                "lazarobox: not fetched (",
+            ),
+        ] {
+            let mut menu = connect_google();
+            let secrets = "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/h/.config/lazarobox/lazarobox-google-client.json\"\nGSC_CONFIG_DIR = \"/h/.config/mcp-gsc\"\nGSC_SKIP_OAUTH = \"false\"\n";
+            menu.presence_reply(
+                crate::core::ai::mcp_catalog::presence::Presence::read(
+                    Ok(snippet(entry("gsc").unwrap())),
+                    &crate::core::ai::mcp_secrets::Secrets::parse(secrets.as_bytes()),
+                )
+                .with_home(Some("/h".to_owned()))
+                .with_token(|_| false),
+            );
+            press(&mut menu, &[KeyCode::Char('g')]);
+            menu.link_reply(Err(notice.clone()), None);
+            let shown = text(&draw(62, POPUP_H, &menu));
+            assert!(shown.contains("own client: Esc, f on gsc"), "{shown}");
+            assert!(shown.contains(cause), "{shown}");
+        }
+    }
+
+    // The same with no pin: the route is shown disabled, never hidden.
+    #[test]
+    fn snapshot_the_connect_google_lazarobox_route_without_a_pin() {
+        let mut menu = connect_google();
+        press(&mut menu, &[KeyCode::Char('w')]);
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
     // Spec (google-connect S5.6): the plan before `y`, top and end; the
     // client secret is masked.
     #[test]

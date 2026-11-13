@@ -60,12 +60,23 @@ pub const CHECKLIST: [(&str, &str); 9] = [
     ("The step-by-step guide (in Spanish)", TUTORIAL),
 ];
 
+/// Which OAuth client Search Console is linked with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClientRoute {
+    /// The client lazarobox fetches (Search Console alone).
+    Lazarobox,
+    /// The user's own Desktop client, as before.
+    #[default]
+    Own,
+}
+
 /// What the Connect Google screen asks the runtime to plan: the services
-/// ticked and the e-mail typed. Nothing in it is a secret.
+/// ticked, the e-mail typed and the client route. Nothing in it is a secret.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ask {
     pub chosen: Vec<&'static str>,
     pub email: String,
+    pub route: ClientRoute,
 }
 
 /// What the plan is built from.
@@ -79,7 +90,12 @@ pub struct Input<'a> {
     pub has: &'a dyn Fn(&str, &str) -> bool,
     /// The home folder, for the Search Console paths.
     pub home: Option<&'a str>,
-    pub client: &'a Client,
+    /// The user's own client; `None` on the lazarobox route, which never
+    /// reads it.
+    pub client: Option<&'a Client>,
+    /// The absolute path of the lazarobox client cache, for that route.
+    pub client_file: Option<&'a str>,
+    pub route: ClientRoute,
     /// The Google account, for Workspace.
     pub email: &'a str,
     /// The services the user ticked, ids of [`SERVICES`].
@@ -137,6 +153,8 @@ pub enum Refused {
     NotAService(String),
     BadEmail,
     NoHome,
+    /// Workspace, or a plan with no own client, on a route that needs it.
+    NeedsOwnClient,
     /// A catalog value with no preset and no source here: the catalog and
     /// this planner drifted apart.
     Uncovered {
@@ -153,6 +171,10 @@ impl Refused {
             Self::NotAService(id) => format!("{id} is not connected by Connect Google"),
             Self::BadEmail => "type your Google e-mail address (name@domain, no spaces)".to_owned(),
             Self::NoHome => "no absolute home folder for the Search Console token".to_owned(),
+            Self::NeedsOwnClient => {
+                "the lazarobox client is only for Search Console alone; with Workspace ticked your own client is used"
+                    .to_owned()
+            }
             Self::Uncovered { table, name } => {
                 format!("{table}.{name} has no value Connect Google can fill; report this")
             }
@@ -167,6 +189,9 @@ pub fn plan(input: &Input) -> Result<Plan, Refused> {
     }
     if let Some(other) = input.chosen.iter().find(|id| !SERVICES.contains(id)) {
         return Err(Refused::NotAService((*other).to_owned()));
+    }
+    if input.route == ClientRoute::Lazarobox && input.chosen.contains(&"google") {
+        return Err(Refused::NeedsOwnClient);
     }
     let mut plan = Plan {
         append: Vec::new(),
@@ -212,13 +237,16 @@ fn add_values(entry: &'static Entry, input: &Input, plan: &mut Plan) -> Result<(
 
 /// Where the value of `var` comes from.
 fn source(entry: &Entry, var: &super::Var, input: &Input) -> Result<String, Refused> {
+    if input.route == ClientRoute::Lazarobox && var.name == "GSC_OAUTH_CLIENT_SECRETS_FILE" {
+        return input.client_file.map(str::to_owned).ok_or(Refused::NoHome);
+    }
     if var.preset.is_some() {
         let home = input.home.unwrap_or_default();
         return var.preset_for(home).ok_or(Refused::NoHome);
     }
     match var.name {
-        "GOOGLE_OAUTH_CLIENT_ID" => Ok(input.client.id.clone()),
-        "GOOGLE_OAUTH_CLIENT_SECRET" => Ok(input.client.secret.expose().to_owned()),
+        "GOOGLE_OAUTH_CLIENT_ID" => Ok(own(input)?.id.clone()),
+        "GOOGLE_OAUTH_CLIENT_SECRET" => Ok(own(input)?.secret.expose().to_owned()),
         "USER_GOOGLE_EMAIL" if link::plain_email(input.email) => Ok(input.email.to_owned()),
         "USER_GOOGLE_EMAIL" => Err(Refused::BadEmail),
         _ => Err(Refused::Uncovered {
@@ -226,6 +254,10 @@ fn source(entry: &Entry, var: &super::Var, input: &Input) -> Result<String, Refu
             name: var.name,
         }),
     }
+}
+
+fn own<'a>(input: &Input<'a>) -> Result<&'a Client, Refused> {
+    input.client.ok_or(Refused::NeedsOwnClient)
 }
 
 /// A plan as the screen shows it, checked against the files it will be
@@ -302,3 +334,6 @@ mod tests;
 
 #[cfg(test)]
 mod preview_tests;
+
+#[cfg(test)]
+mod route_tests;

@@ -16,6 +16,16 @@ pub const CACHE_FILE: &str = "lazarobox-google-client.json";
 /// The path of the file on `https://www.javilazaro.es`.
 pub const URL_PATH: &str = "/lazarobox/google-client.json";
 
+/// The absolute path of the cache next to `secrets.toml` (so it honours
+/// `XDG_CONFIG_HOME`); `None` without an absolute one. The planner and the
+/// `f` preset write this path, and Link fetches when the plan holds it.
+pub fn cache_path(secrets: Option<&std::path::Path>) -> Option<String> {
+    let path = secrets?.parent()?.join(CACHE_FILE);
+    path.is_absolute()
+        .then(|| path.to_str().map(str::to_owned))
+        .flatten()
+}
+
 /// The screen's client line on this route.
 pub const CLIENT_LINE: &str = "client: lazarobox (fetched from www.javilazaro.es when you link)";
 
@@ -88,19 +98,33 @@ pub fn accept(status: u16, body: &str, pin: Option<&str>) -> Result<Client, Why>
     Ok(client)
 }
 
-/// The notice of a Link that has no saved copy to fall back on.
+/// The screen's notice when the build has no pin: Connect Google then plans
+/// with your own client.
+pub const NOT_CONFIGURED_SCREEN: &str =
+    "lazarobox client not configured in this build; this screen uses your own client";
+
+/// The instruction of a Link failure, first so the footer's single clipped
+/// line (58 columns) never cuts it. Link runs on a declared `gsc`, whose
+/// client row is the first on its `f` screen.
+/// From Connect Google: Esc to the list, `f` on the gsc entry, Enter on its
+/// client row (the replace prompt needs `y`), `o` when there is no own client
+/// file, Esc to the entry, then `g`. The menu drops the first `Esc, ` when the
+/// Link started on the entry itself.
+const OWN_AFTER_LINK: &str = "own client: Esc, f on gsc";
+
+/// The notice of a Link that has no saved copy to fall back on: the way out,
+/// then the cause (which the footer clips first when it is long).
 pub fn failure_notice(why: &Why) -> String {
-    let own = "u uses your own client";
     match why {
-        Why::NotConfigured => format!("lazarobox client not configured in this build; {own}"),
-        why if why.refused() => {
-            format!(
-                "lazarobox client refused ({}); nothing saved; {own}",
-                why.text()
-            )
+        Why::NotConfigured => {
+            format!("{OWN_AFTER_LINK} \u{b7} lazarobox: not configured in this build")
         }
+        why if why.refused() => format!(
+            "{OWN_AFTER_LINK} \u{b7} lazarobox: refused ({}); nothing saved",
+            why.text()
+        ),
         why => format!(
-            "lazarobox client not fetched ({}); link again later, or {own}",
+            "{OWN_AFTER_LINK} \u{b7} lazarobox: not fetched ({}); link later",
             why.text()
         ),
     }

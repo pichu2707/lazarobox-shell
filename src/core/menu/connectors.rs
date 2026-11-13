@@ -25,7 +25,7 @@ use crate::core::ai::{
         presence::Presence,
         secrets_template, snippet,
     },
-    mcp_secrets::{BACKUP, CLIENT_FILE, FILE as SECRETS_FILE},
+    mcp_secrets::{BACKUP, CLIENT_FILE, FILE as SECRETS_FILE, PROJECT_NUMBER},
     sanitize::clean,
 };
 
@@ -121,6 +121,9 @@ pub(super) struct Connectors {
     linking: Option<bool>,
     /// The Connect Google screen.
     google: connect::Google,
+    /// The Google Cloud project number the lazarobox client is pinned to;
+    /// the route is off while there is none.
+    pub(super) pin: Option<&'static str>,
 }
 
 /// What a link step asks of the menu.
@@ -289,6 +292,7 @@ impl Connectors {
             startup,
             probes,
             config_path,
+            pin: PROJECT_NUMBER,
             ..Self::default()
         }
     }
@@ -829,12 +833,20 @@ impl Connectors {
     pub(super) fn link_reply(
         &mut self,
         reply: Result<String, String>,
+        said: Option<String>,
         room: usize,
     ) -> Option<Option<String>> {
         let discards = self.linking.take()?;
         let line = match reply {
             Ok(line) => line,
-            Err(notice) => return Some(Some(notice)),
+            Err(notice) => {
+                // On the entry itself `f` works at once: no Esc first.
+                let on_entry = matches!(self.screen, Some(Screen::Entry { .. }));
+                return Some(Some(match on_entry {
+                    true => notice.replacen("own client: Esc, f on gsc", "own client: f", 1),
+                    false => notice,
+                }));
+            }
         };
         let here = match self.screen {
             Some(Screen::Entry { at, .. }) => mcp_catalog::entries()[at].id == "gsc",
@@ -844,7 +856,8 @@ impl Connectors {
         if here && self.prompt.is_none() {
             self.ask(Prompt::Link { line, discards }, room);
         }
-        Some(None)
+        // The fallback notice stays in the footer while the prompt shows.
+        Some(said)
     }
 
     fn ask_probe(&mut self, entry: &Entry, room: usize) -> MenuCommand {

@@ -1,7 +1,7 @@
 //! The lazarobox Google client at run time (openspec change
 //! `gsc-lazarobox-client`): one `curl` GET of the client file, the pin check
 //! of `core::ai::mcp_secrets`, the cache written by the secrets writer, and
-//! the fall back to the saved copy. Nothing calls it from the UI yet. Every
+//! the fall back to the saved copy. Only Link calls it. Every
 //! failure has a notice; none holds the secret or the body.
 
 use std::path::Path;

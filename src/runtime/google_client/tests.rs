@@ -154,7 +154,7 @@ async fn a_refused_answer_without_a_cache_fails_and_writes_nothing() {
     assert_eq!(kind, "failed");
     assert_eq!(
         text,
-        "lazarobox client refused (not from the lazarobox project); nothing saved; u uses your own client"
+        "own client: Esc, f on gsc · lazarobox: refused (not from the lazarobox project); nothing saved"
     );
     assert_eq!(lab.names(), Vec::<String>::new());
 
@@ -164,7 +164,7 @@ async fn a_refused_answer_without_a_cache_fails_and_writes_nothing() {
     assert_eq!(kind, "failed");
     assert_eq!(
         text,
-        "lazarobox client not fetched (HTTP 404); link again later, or u uses your own client"
+        "own client: Esc, f on gsc · lazarobox: not fetched (HTTP 404); link later"
     );
     assert_eq!(lab.names(), Vec::<String>::new());
 }
@@ -179,7 +179,7 @@ async fn an_unreachable_host_and_a_missing_curl_have_their_notice() {
     let (kind, text) = notice(lab.refresh(&curl, Some(PIN)).await);
     assert_eq!(kind, "failed");
     assert!(
-        text.starts_with("lazarobox client not fetched (javilazaro.es request failed: "),
+        text.contains("lazarobox: not fetched (javilazaro.es request failed: "),
         "{text}"
     );
     // An empty PATH starts no process at all.
@@ -188,7 +188,7 @@ async fn an_unreachable_host_and_a_missing_curl_have_their_notice() {
     assert_eq!(kind, "failed");
     assert_eq!(
         text,
-        "lazarobox client not fetched (javilazaro.es needs curl on the PATH); link again later, or u uses your own client"
+        "own client: Esc, f on gsc · lazarobox: not fetched (javilazaro.es needs curl on the PATH); link later"
     );
     assert_eq!(lab.names(), Vec::<String>::new());
 }
@@ -204,7 +204,7 @@ async fn without_a_pin_no_curl_runs_and_the_notice_says_so() {
     assert_eq!(kind, "failed");
     assert_eq!(
         text,
-        "lazarobox client not configured in this build; u uses your own client"
+        "own client: Esc, f on gsc · lazarobox: not configured in this build"
     );
     assert!(seen.lock().unwrap().is_empty(), "no request was made");
 }
@@ -276,7 +276,7 @@ async fn an_oversize_answer_says_larger_than_16_kib_and_is_never_accepted() {
         assert_eq!(kind, "failed", "{name}");
         assert_eq!(
             text,
-            "lazarobox client refused (larger than 16 KiB); nothing saved; u uses your own client",
+            "own client: Esc, f on gsc · lazarobox: refused (larger than 16 KiB); nothing saved",
             "{name}"
         );
         assert_eq!(lab.names(), Vec::<String>::new(), "{name}");
@@ -298,9 +298,6 @@ async fn an_empty_pin_is_no_pin() {
     let curl = Curl::google_client(path()).local(&base);
     let (kind, text) = notice(lab.refresh(&curl, Some("")).await);
     assert_eq!(kind, "failed");
-    assert!(
-        text.starts_with("lazarobox client not configured"),
-        "{text}"
-    );
+    assert!(text.contains("lazarobox: not configured"), "{text}");
     assert!(seen.lock().unwrap().is_empty());
 }

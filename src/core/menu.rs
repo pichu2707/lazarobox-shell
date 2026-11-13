@@ -1343,6 +1343,9 @@ impl MenuState {
     /// What the save of a secret field answered: the notice either way.
     pub fn secret_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
         let client = |notice: &String| notice.contains(CLIENT_FILE);
+        if reply.as_ref().is_ok_and(client) {
+            self.connectors.client_saved();
+        }
         self.connectors
             .saved(reply.as_ref().is_ok_and(|n| !client(n)));
         // A file that appeared since the area read the disk: read again, so
@@ -1370,11 +1373,21 @@ impl MenuState {
         }
     }
 
+    /// Tests: the pin of the lazarobox client, which the build leaves empty.
+    #[cfg(test)]
+    pub(crate) fn set_client_pin(&mut self, pin: Option<&'static str>) {
+        self.connectors.pin = pin;
+    }
+
     /// What the checks of Link with Google answered: the line to confirm, or
     /// the notice of the check that failed.
-    pub fn link_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
+    pub fn link_reply(
+        &mut self,
+        reply: Result<String, String>,
+        said: Option<String>,
+    ) -> MenuCommand {
         let room = self.connectors_room();
-        if let Some(notice) = self.connectors.link_reply(reply, room) {
+        if let Some(notice) = self.connectors.link_reply(reply, said, room) {
             self.notice = notice;
         }
         MenuCommand::None
@@ -3717,6 +3730,8 @@ mod descriptor_tests;
 #[cfg(test)]
 mod feedback_menu_tests;
 
+#[cfg(test)]
+mod connectors_client_tests;
 #[cfg(test)]
 mod connectors_connect_tests;
 #[cfg(test)]

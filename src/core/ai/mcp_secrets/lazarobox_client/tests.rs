@@ -157,33 +157,33 @@ fn the_constants_are_the_design_names() {
 fn each_notice_is_the_design_text() {
     assert_eq!(
         failure_notice(&Why::NotConfigured),
-        "lazarobox client not configured in this build; u uses your own client"
+        "own client: Esc, f on gsc · lazarobox: not configured in this build"
     );
     assert_eq!(
         failure_notice(&Why::Http(404)),
-        "lazarobox client not fetched (HTTP 404); link again later, or u uses your own client"
+        "own client: Esc, f on gsc · lazarobox: not fetched (HTTP 404); link later"
     );
     assert_eq!(
         failure_notice(&Why::Redirected(301)),
-        "lazarobox client not fetched (redirected (HTTP 301)); link again later, or u uses your own client"
+        "own client: Esc, f on gsc · lazarobox: not fetched (redirected (HTTP 301)); link later"
     );
     assert_eq!(
         failure_notice(&Why::Curl(
             "javilazaro.es request failed: no reply".to_owned()
         )),
-        "lazarobox client not fetched (javilazaro.es request failed: no reply); link again later, or u uses your own client"
+        "own client: Esc, f on gsc · lazarobox: not fetched (javilazaro.es request failed: no reply); link later"
     );
     assert_eq!(
         failure_notice(&Why::Foreign),
-        "lazarobox client refused (not from the lazarobox project); nothing saved; u uses your own client"
+        "own client: Esc, f on gsc · lazarobox: refused (not from the lazarobox project); nothing saved"
     );
     assert_eq!(
         failure_notice(&Why::NotDesktop),
-        "lazarobox client refused (not a Desktop client file); nothing saved; u uses your own client"
+        "own client: Esc, f on gsc · lazarobox: refused (not a Desktop client file); nothing saved"
     );
     assert_eq!(
         failure_notice(&Why::TooLarge),
-        "lazarobox client refused (larger than 16 KiB); nothing saved; u uses your own client"
+        "own client: Esc, f on gsc · lazarobox: refused (larger than 16 KiB); nothing saved"
     );
     assert_eq!(
         fallback_notice(&Why::Http(500)),
@@ -210,4 +210,16 @@ fn no_notice_holds_the_secret_or_the_body() {
             }
         }
     }
+}
+
+// Design 5: the cache sits next to `secrets.toml`, as an absolute path.
+#[test]
+fn the_cache_path_is_next_to_secrets_toml_and_absolute() {
+    use std::path::Path;
+    assert_eq!(
+        cache_path(Some(Path::new("/h/.config/lazarobox/secrets.toml"))).as_deref(),
+        Some("/h/.config/lazarobox/lazarobox-google-client.json")
+    );
+    assert_eq!(cache_path(Some(Path::new("secrets.toml"))), None);
+    assert_eq!(cache_path(None), None);
 }
