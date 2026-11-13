@@ -86,6 +86,7 @@ mod run_store;
 mod run_view;
 mod screen;
 mod scroll;
+mod star;
 mod summary;
 mod tags;
 mod tool;
@@ -320,6 +321,10 @@ pub enum AppEvent {
     IssueSent(crate::core::menu::feedback::SendReply),
     /// The opener of `Effect::OpenUrl` failed on this link.
     OpenFailed(String),
+    /// The start-up check of the GitHub star prompt answered (once a run).
+    StarChecked(crate::core::star::Due),
+    /// What became of `Effect::StarRepo`.
+    Starred(crate::core::star::StarReply),
     /// The probe numbered `.0` ended (see `Effect::McpProbe`). A report whose
     /// number is not the last asked for is a superseded probe's and is dropped.
     McpProbe(u64, crate::core::ai::mcp_catalog::checks::Probed),
@@ -403,6 +408,15 @@ pub enum Effect {
     /// answers with one `AppEvent::IssueSent`. Only emitted on the user's
     /// Ctrl+S or Enter, one at a time.
     SendIssue(Box<crate::core::menu::feedback::Request>),
+    /// Star the repository with the user's `gh` (goal #744): only on the
+    /// user's `g` on the star prompt. Off the loop; the runtime marks the
+    /// prompt answered and answers with one `AppEvent::Starred`.
+    StarRepo,
+    /// Write the star mark: answered for good (`false`: the page was opened
+    /// or named), or dismissed by the running version now (`true`).
+    StarMark {
+        dismissed: bool,
+    },
     /// Probe this declared MCP server, after the user's `y`; the runtime
     /// answers with one `AppEvent::McpProbe`. One at a time.
     McpProbe(u64, Box<crate::core::ai::config::McpServer>),
@@ -1207,6 +1221,8 @@ pub struct App {
     offer_shown: bool,
     /// The chat the offer was shown in: the outcome of the start is told there.
     offer_pane: Option<PaneId>,
+    /// The GitHub star prompt of this run (see `star.rs`).
+    star: star::StarPrompt,
     /// The chat showing the provider notice of the orchestrator, until it is
     /// accepted or dismissed (agent-orchestrator D12).
     orch_notice: Option<PaneId>,
@@ -1327,6 +1343,7 @@ impl App {
             server_offer: ServerOffer::new(),
             offer_shown: false,
             offer_pane: None,
+            star: star::StarPrompt::default(),
             orch_notice: None,
             orch_saves: 0,
             no_server: None,
@@ -2375,6 +2392,8 @@ impl App {
             AppEvent::McpLink(step) => self.on_mcp_link(step),
             AppEvent::GscLine(reply, notice) => self.on_gsc_line(reply, notice),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
+            AppEvent::StarChecked(due) => self.on_star_checked(due),
+            AppEvent::Starred(reply) => self.on_starred(&reply),
             AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
                 Some(menu) => {
@@ -2905,7 +2924,13 @@ impl App {
             return Vec::new();
         }
         if self.focused_is_chat() {
-            return self.on_chat_key(key, repeat);
+            // The star prompt sees the key first: `g` answers it, any other
+            // key dismisses it and still goes to the chat.
+            let (mut effects, answered) = self.answer_star(self.tab().focus, &key, repeat);
+            if !answered {
+                effects.extend(self.on_chat_key(key, repeat));
+            }
+            return effects;
         }
         let Some(pty) = self.focused_pty() else {
             return Vec::new();
@@ -9405,6 +9430,9 @@ mod app_tests {
 
     /// The update notice: statusline mark and menu note.
     mod update;
+
+    /// The GitHub star prompt (goal #744).
+    mod star;
 
     /// Enter on the Updates row: the install pane and the copy fallback.
     mod update_install;

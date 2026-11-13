@@ -38,7 +38,7 @@ Aunque nace optimizada para flujos de trabajo en **Desarrollo de Software, SEO, 
 Pensado para equipos a los que les importa dónde van sus datos. **Hoy es una elección, no un bloqueo:** tú eliges el motor de cada tarea, y lazarobox no impide usar uno en la nube.
 
 - **IA local de primera:** con Ollama, LM Studio, llama.cpp o vLLM, nada de lo que lee el modelo sale de tu máquina. Los motores en la nube (claude, codex, gemini, opencode) solo se usan si los eliges, y lazarobox distingue siempre un tipo del otro. Por defecto no hay ningún motor asignado.
-- **Sin telemetría:** lazarobox no envía datos de uso. Por su cuenta hace pocas llamadas de red: la comprobación de versión en crates.io y, al instalar llama-server, la búsqueda de una compilación más nueva; `[updates] check = false` apaga las dos (ver «Avisos de actualización»). Además, al detectar los motores, si tienes `codex` o `claude` instalados les pide la lista de modelos de tu cuenta, y esa consulta puede conectar con su proveedor. Solo cuando enlazas Search Console con el cliente de lazarobox, un `GET` a `www.javilazaro.es` que revela tu dirección IP y la versión de lazarobox (cabecera `User-Agent`); nada más.
+- **Sin telemetría:** lazarobox no envía datos de uso. Por su cuenta hace pocas llamadas de red: la comprobación de versión en crates.io y, al instalar llama-server, la búsqueda de una compilación más nueva; `[updates] check = false` apaga las dos (ver «Avisos de actualización»). Además, al detectar los motores, si tienes `codex` o `claude` instalados les pide la lista de modelos de tu cuenta, y esa consulta puede conectar con su proveedor. Solo cuando enlazas Search Console con el cliente de lazarobox, un `GET` a `www.javilazaro.es` que revela tu dirección IP y la versión de lazarobox (cabecera `User-Agent`); nada más. Tras cinco días de uso del chat, si tienes `gh` con sesión iniciada, una consulta con tu `gh` a la API de GitHub para saber si ya diste una estrella al repositorio; la estrella solo se envía si pulsas `g`, y `[notices] star = false` lo apaga (ver «Pedir una estrella»).
 - **Herramientas apagadas hasta que las activas:** el modelo solo lee archivos, paneles o Git si activas esa familia de herramientas. Con un motor en la nube, leer un archivo, un diff o la lista de paneles pide permiso antes; leer la pantalla de un panel o ejecutar un comando lo pide siempre, con cualquier motor. Los secretos conocidos (claves `sk-…`, `Bearer …`) se redactan en lo que devuelven las herramientas.
 - **CLIs en la jaula:** codex y gemini solo se lanzan dentro de la jaula (Landlock en Linux, Seatbelt en macOS). claude la usa cuando está disponible y avisa una vez cuando corre sin ella.
 - **El modelo adecuado para cada tarea:** cada tarea (chat, resúmenes, orquestador) puede tener su propio motor y modelo, locales o comerciales, y se cambian desde el menú.
@@ -156,7 +156,7 @@ Cada panel de shell define `LAZAROBOX=<pid>` (el pid de la instancia que lo abri
 
 Toda la configuración vive en un solo fichero: `~/.config/lazarobox/config.toml` (o `$XDG_CONFIG_HOME/lazarobox/config.toml` si tienes esa variable). No existe hasta que guardas algo desde el menú (`Ctrl+Espacio m`, `s`); sin él se usan los valores por defecto. Al guardar, la barra de estado dice dónde lo escribió, por ejemplo `saved to ~/.config/lazarobox/config.toml`. El menú solo cambia las claves que edita y conserva el resto del fichero, comentarios incluidos, así que puedes editarlo también a mano; lo que cambies a mano se lee al arrancar lazarobox.
 
-Una clave que lazarobox no conoce dentro de una de sus tablas (`[statusline]`, `[tabbar]`, `[updates]`, `[workspace]` y `[ai]` con todas las que cuelgan de ella) se ignora y avisa al arrancar con su ruta completa, por ejemplo `config: unknown key: ai.tols`; así se ven las erratas. El resto del fichero se carga igual y el menú conserva la clave al guardar. Las claves y tablas de la raíz que no son de lazarobox (por ejemplo una tabla `[custom]` tuya) no avisan.
+Una clave que lazarobox no conoce dentro de una de sus tablas (`[notices]`, `[statusline]`, `[tabbar]`, `[updates]`, `[workspace]` y `[ai]` con todas las que cuelgan de ella) se ignora y avisa al arrancar con su ruta completa, por ejemplo `config: unknown key: ai.tols`; así se ven las erratas. El resto del fichero se carga igual y el menú conserva la clave al guardar. Las claves y tablas de la raíz que no son de lazarobox (por ejemplo una tabla `[custom]` tuya) no avisan.
 
 ### Al cerrar lazarobox
 
@@ -476,6 +476,24 @@ Con `check = false` lazarobox no hace ninguna petición, no lee la caché y no m
 **Cada cuánto.** Al arrancar, en segundo plano, y como máximo una vez cada 24 horas mientras la versión cacheada sea más nueva que la que ejecutas. Entre medias se lee la última respuesta de `update-check.json` en el directorio de datos de lazarobox (`$XDG_DATA_HOME/lazarobox/`, o `~/.local/share/lazarobox/`), así que una actualización conocida se sigue mostrando en cada arranque sin nueva petición. La caché guarda qué versión de lazarobox la escribió (`checked_by`). Si la escribió otra versión (o una antigua, sin ese campo) y su versión más nueva es igual o menor que la que ejecutas, por ejemplo tras actualizar, se comprueba en el siguiente arranque sin esperar 24 h; si la escribió esta misma versión, rige el límite de una vez al día. Límite conocido: si dos versiones de lazarobox comparten el mismo directorio de datos y se usan a la vez, cada arranque de la que no escribió la caché puede hacer una petición (como mucho una por arranque; nunca más de una al día para la misma versión). Una comprobación fallida (sin red, tiempo agotado, error de estado, respuesta ilegible) es silenciosa, conserva la versión nueva ya conocida y se reintenta pasada una hora. Si no se puede escribir la caché (directorio de solo lectura), no se comprueba nada, para no consultar la API en cada arranque. Las versiones preliminares nunca se anuncian.
 
 **Comprobar ahora.** Sobre la fila **Updates**, `r` pregunta a crates.io en ese momento, sin mirar la caché ni el límite de 24 horas. Mientras dura, la fila dice `checking…`; después muestra el resultado como cualquier otra comprobación (y lo guarda en la caché). Una comprobación fallida vuelve en silencio a lo que ya se sabía. Con `check = false`, o tras instalar una versión en esta sesión, `r` no hace nada y el pie no lo ofrece.
+
+---
+
+## ⭐ Pedir una estrella (`[notices]`)
+
+Cuando ya has usado el chat en al menos cinco días distintos (días con una respuesta completa en `chat.db`), lazarobox puede pedirte una estrella en GitHub, una vez por ejecución, en la línea de ayuda del chat enfocado: `Enjoying lazarobox? g: star it on GitHub with gh · any other key: not now`. Solo aparece con el chat en reposo, el compositor vacío y ninguna aprobación pendiente en ningún panel; nunca durante un turno.
+
+- **`g`** con `gh` instalado y con sesión iniciada: `gh api -X PUT user/starred/pichu2707/lazarobox-shell` con tu propio `gh`, y una línea en el chat con el resultado. Si falla, se abre la página del repositorio. Sin `gh` (o sin sesión), `g` abre `https://github.com/pichu2707/lazarobox-shell` en el navegador (o la nombra, si no hay con qué abrirla). En cualquier caso no se vuelve a preguntar.
+- **Cualquier otra tecla** la descarta y llega al compositor como siempre. Se vuelve a preguntar solo con una versión de lazarobox más nueva que la del descarte y pasados al menos 60 días.
+
+**Qué se consulta.** Solo cuando se cumplen las condiciones anteriores y tienes `gh` con sesión, al arrancar, `gh api user/starred/pichu2707/lazarobox-shell` (una lectura: si ya diste la estrella, no se pregunta nunca). Sin `gh` no se consulta nada. La estrella nunca se envía sola: solo con tu `g`. La respuesta se guarda en `star.json` en el directorio de datos de lazarobox (`$XDG_DATA_HOME/lazarobox/`, o `~/.local/share/lazarobox/`), modo 0600; no se envía a ningún otro sitio.
+
+**Configuración** (`config.toml`):
+
+```toml
+[notices]
+star = true   # por defecto; false = ni consulta ni aviso
+```
 
 ---
 
@@ -1622,6 +1640,7 @@ Un índice de qué puede hacer cada función y dónde está explicado. Para avis
 | Servidores MCP propios | Código tuyo con tus variables; cada llamada pide `y` | [Tus propios servidores MCP](#tus-propios-servidores-mcp-aimcpservers) |
 | Memoria de engram | Opcional; las notas salen de `chat.db` y las lee cualquier proceso local | [Memoria del proyecto (engram)](#memoria-del-proyecto-engram) |
 | Comprobación de actualizaciones | Una petición HTTPS a crates.io; se apaga con `check = false` | [Avisos de actualización](#-avisos-de-actualización-updates) |
+| Aviso de estrella | Una lectura a la API de GitHub con tu `gh`; la estrella solo con tu `g`; se apaga con `[notices] star = false` | [Pedir una estrella](#-pedir-una-estrella-notices) |
 
 **Notas de amenaza breves**
 
@@ -1630,6 +1649,7 @@ Un índice de qué puede hacer cada función y dónde está explicado. Para avis
 - **Servidores MCP.** Los declaras tú y corren con tu usuario, sin shell y con un entorno limpio más las variables de `env`. Solo se lee tu configuración de usuario (un `.lazarobox/mcp.toml` de un repositorio se ignora) y reciben solo las variables que nombras en `env`. Toda llamada a una herramienta pide `y`, también en el modo de aprobación `auto`, y el resultado vuelve al modelo como dato no fiable.
 - **Memoria de engram.** Está desactivada por defecto y exige aceptar una advertencia. Una nota guardada deja de estar bajo los permisos `0600` de `chat.db`: la puede leer cualquier proceso local y cualquier agente que use engram, y las rutas HTTP de engram en `127.0.0.1` están abiertas. Antes de enviar una nota se ocultan los secretos reconocibles.
 - **Comprobación de actualizaciones.** Un único `GET` a crates.io con el `curl` del sistema, sin identificadores, cookies ni telemetría. Con `[updates] check = false` no se hace ninguna petición. Actualizar solo ejecuta `cargo install` cuando pulsas `Enter` y en una pestaña visible.
+- **Aviso de estrella.** Tras cinco días de uso del chat y solo con `gh` con sesión, una lectura `gh api user/starred/pichu2707/lazarobox-shell` con tu `gh` al arrancar (límite de 10 s); revela a GitHub, con tu cuenta, que usas lazarobox. La escritura (`-X PUT`) solo se hace al pulsar `g`. Con `[notices] star = false` no se ejecuta `gh` ni se muestra nada.
 - **Cliente OAuth de lazarobox para Search Console.** Solo cuando enlazas Search Console con el cliente de lazarobox (no con el tuyo), un único `GET` a `https://www.javilazaro.es/lazarobox/google-client.json` con el `curl` del sistema (solo HTTPS, sin redirecciones, límite de 16 KiB y 15 s, sin cookies ni identificadores). Revela tu dirección IP y la versión de lazarobox (`User-Agent: lazarobox-shell/<versión>`); nada más. Nada más lo dispara: ni abrir la app, ni el área Conectores, ni guardar el plan, ni arrancar el servidor. El cliente se guarda en `lazarobox-google-client.json` junto a `secrets.toml` (modo 0600, sin copia `.bak`) y las herramientas del chat no pueden leerlo.
 
 ---

@@ -496,6 +496,9 @@ impl App {
         if chat.phase() != Phase::Idle {
             return None;
         }
+        if let Some(star) = self.star_prompt(id) {
+            return Some(star.to_owned());
+        }
         self.orch_refusal(id)
             .or_else(|| guidance(&self.turn_availability(id)))
             .or_else(|| self.delegate_line(id))

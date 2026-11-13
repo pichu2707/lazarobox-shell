@@ -10,6 +10,20 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **Ask for a GitHub star.** After the chat answered on at least five
+  distinct days, the focused idle chat asks once per run on its hint line:
+  `g` stars the repository with your own `gh` (`gh api -X PUT
+  user/starred/pichu2707/lazarobox-shell`), or opens its page without `gh`
+  or when the star fails; any other key dismisses it and is still typed. A
+  star or an opened page is final; a dismissal is asked again only by a
+  newer version and after 60 days. With a logged-in `gh`, startup first reads
+  whether you already starred it. Never during a turn or a pending approval;
+  the star is only sent on `g`. The answer is kept in `star.json` (mode 0600)
+  next to `chat.db`; `[notices] star = false` turns off the check and the
+  prompt.
+
 ## [1.26.0] - 2026-11-13
 
 ### Added

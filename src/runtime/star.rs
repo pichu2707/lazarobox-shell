@@ -41,6 +41,19 @@ pub fn write_mark(path: &Path, mark: &Mark) -> std::io::Result<()> {
     write_private(path, &mark.to_json())
 }
 
+/// The mark of an answer to the prompt: `dismissed` by lazarobox `current`
+/// at `now`, else answered for good.
+pub fn answer_mark(dismissed: bool, current: &str, now: u64) -> Mark {
+    if dismissed {
+        Mark::Dismissed {
+            version: current.to_owned(),
+            at: now,
+        }
+    } else {
+        Mark::Done
+    }
+}
+
 /// The distinct local days with a completed chat answer in the chat store at
 /// `db`, read only. `None` when it cannot be read: no prompt then.
 pub fn answer_days(db: &Path) -> Option<u64> {
@@ -242,6 +255,18 @@ mod tests {
         assert_eq!(mode, 0o600);
         fs::write(&path, "{").unwrap();
         assert_eq!(read_mark(&path), None);
+    }
+
+    #[test]
+    fn an_answer_marks_a_dismissal_with_the_version_and_time_else_done() {
+        assert_eq!(
+            answer_mark(true, "1.27.0", NOW),
+            Mark::Dismissed {
+                version: "1.27.0".into(),
+                at: NOW
+            }
+        );
+        assert_eq!(answer_mark(false, "1.27.0", NOW), Mark::Done);
     }
 
     #[test]
