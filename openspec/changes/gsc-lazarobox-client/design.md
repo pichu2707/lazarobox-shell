@@ -26,14 +26,20 @@ Delivery: three chained PRs (see Slicing).
 
 ## Notices (exact)
 
+Superseded in wording by the final code and by `specs/lazarobox-google-client/spec.md` (Failure notices), which is the reference. The footer is one clipped line, so the failure notices put the instruction first and the cause after it. The first draft of this table (`lazarobox client not fetched (<why>); link again later, or u uses your own client` and similar) is replaced by:
+
 | Case | Text |
 |---|---|
-| Pin `None` | `lazarobox client not configured in this build; u uses your own client` |
-| Fetch failed, no cache | `lazarobox client not fetched (<why>); link again later, or u uses your own client` |
-| Refused, no cache | `lazarobox client refused (<why>); nothing saved; u uses your own client` |
+| Pin `None` (Link) | `own client: Esc, f on gsc · lazarobox: not configured in this build` |
+| Pin `None` (screen, `u`, plan refusal) | `lazarobox client not configured in this build; this screen uses your own client` |
+| Fetch failed, no cache | `own client: Esc, f on gsc · lazarobox: not fetched (<why>); link later` |
+| Refused, no cache | `own client: Esc, f on gsc · lazarobox: refused (<why>); nothing saved` |
 | Fallback to cache | `lazarobox client not refreshed (<why>); linking with the saved copy` |
-| Cache write refused | `lazarobox client not saved: <refusal notice>` |
+| Fetch failed, saved copy fails its checks | the failure notice, then `; the saved copy is not used: lazarobox-google-client.json: <reason>` |
+| Cache write refused | `lazarobox client not saved: lazarobox-google-client.json: <refusal>` |
 | Screen client line | `client: lazarobox (fetched from www.javilazaro.es when you link)` |
+
+From the `gsc` entry the prefix is `own client: f`. Rationale for the change: with the first-draft texts the footer clipped the instruction (see apply-progress, PR2 review fixes).
 
 `<why>` is one of: the curl error line (sanitised), `HTTP <code>`, `redirected (HTTP 3xx)`, `larger than 16 KiB`, `not a Desktop client file`, `not from the lazarobox project`. The text never includes the secret.
 
