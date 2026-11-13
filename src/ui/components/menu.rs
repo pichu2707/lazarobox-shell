@@ -2111,6 +2111,38 @@ mod tests {
         insta::assert_snapshot!(screen);
     }
 
+    // A Link failure is one clipped footer line: the instruction comes first
+    // and is drawn whole, whatever the cause.
+    #[test]
+    fn a_link_failure_footer_draws_its_instruction_whole() {
+        use crate::core::ai::{
+            mcp_catalog::{entry, snippet},
+            mcp_secrets::{Why, failure_notice},
+        };
+        let why = "javilazaro.es request failed: Could not resolve host: www.javilazaro.es";
+        for notice in [
+            failure_notice(&Why::NotConfigured),
+            failure_notice(&Why::Foreign),
+            failure_notice(&Why::Curl(why.to_owned())),
+        ] {
+            let mut menu = connect_google();
+            let secrets = "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/h/.config/lazarobox/lazarobox-google-client.json\"\nGSC_CONFIG_DIR = \"/h/.config/mcp-gsc\"\nGSC_SKIP_OAUTH = \"false\"\n";
+            menu.presence_reply(
+                crate::core::ai::mcp_catalog::presence::Presence::read(
+                    Ok(snippet(entry("gsc").unwrap())),
+                    &crate::core::ai::mcp_secrets::Secrets::parse(secrets.as_bytes()),
+                )
+                .with_home(Some("/h".to_owned()))
+                .with_token(|_| false),
+            );
+            press(&mut menu, &[KeyCode::Char('g')]);
+            menu.link_reply(Err(notice.clone()), None);
+            let shown = text(&draw(62, POPUP_H, &menu));
+            assert!(shown.contains("own client: f on gsc, Enter, g"), "{shown}");
+            assert!(shown.contains("lazarobox:"), "{shown}");
+        }
+    }
+
     // The same with no pin: the route is shown disabled, never hidden.
     #[test]
     fn snapshot_the_connect_google_lazarobox_route_without_a_pin() {

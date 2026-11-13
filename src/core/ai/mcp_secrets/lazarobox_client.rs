@@ -103,23 +103,24 @@ pub fn accept(status: u16, body: &str, pin: Option<&str>) -> Result<Client, Why>
 pub const NOT_CONFIGURED_SCREEN: &str =
     "lazarobox client not configured in this build; this screen uses your own client";
 
-/// How a linked `gsc` switches to your own client: the menu path that exists
-/// once the entry is declared.
-const OWN_AFTER_LINK: &str = "f on the gsc entry, Enter on its client row, then g";
+/// The instruction of a Link failure, first so the footer's single clipped
+/// line (58 columns) never cuts it. Link runs on a declared `gsc`, whose
+/// client row is the first on its `f` screen.
+const OWN_AFTER_LINK: &str = "own client: f on gsc, Enter, g";
 
-/// The notice of a Link that has no saved copy to fall back on. Link runs on
-/// a declared `gsc`, so it names that path, not the screen's `u`.
+/// The notice of a Link that has no saved copy to fall back on: the way out,
+/// then the cause, which starts within the first 58 columns.
 pub fn failure_notice(why: &Why) -> String {
     match why {
-        Why::NotConfigured => format!(
-            "lazarobox client not configured in this build; to use your own client: {OWN_AFTER_LINK}"
-        ),
+        Why::NotConfigured => {
+            format!("{OWN_AFTER_LINK} \u{b7} lazarobox: not configured in this build")
+        }
         why if why.refused() => format!(
-            "lazarobox client refused ({}); nothing saved; to use your own client: {OWN_AFTER_LINK}",
+            "{OWN_AFTER_LINK} \u{b7} lazarobox: refused ({}); nothing saved",
             why.text()
         ),
         why => format!(
-            "lazarobox client not fetched ({}); link again later, or use your own client: {OWN_AFTER_LINK}",
+            "{OWN_AFTER_LINK} \u{b7} lazarobox: not fetched ({}); link later",
             why.text()
         ),
     }

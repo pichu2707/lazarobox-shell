@@ -66,3 +66,7 @@ Branch `feat/gsc-client-link` from origin/main (after PR1, #737). Not pushed; re
 - W4: tests for `u` and Enter on a declared gsc, and `answer` with no pin on the cache path (empty PATH, no curl).
 - Suggestions: stale comment fixed, README "Solo cuando...", `o` selects the own route only when the client form saves (set in `enter_field`, so a cancelled form changes nothing). `HINT_ROUTE` left without `scroll` (does not fit 58 columns).
 - Known limit: the menu footer is one clipped line, so the long Link notices show their first ~58 columns on a 62-column popup; the full text is still in the notice.
+
+## PR2 review fix: Link notices fit the footer
+
+The footer is one clipped line (no wrapping pattern exists for it; the wrapped listing reason is a body row). `failure_notice` now puts the instruction first, fixed at 30 columns, then the cause: `own client: f on gsc, Enter, g · lazarobox: not configured in this build` / `... · lazarobox: refused (<why>); nothing saved` / `... · lazarobox: not fetched (<why>); link later`. The cause kind starts inside the first 58 columns. Test `a_link_failure_footer_draws_its_instruction_whole` draws all three at the 62-column popup (the minimum popup, 24, cannot hold any 58-column hint). The word "client" is not in the cause tag; the same line says `own client` and the screen shows `lazarobox client`.

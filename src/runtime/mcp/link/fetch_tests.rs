@@ -135,7 +135,7 @@ async fn a_failed_fetch_without_a_cache_stops_before_any_check() {
     assert_eq!(
         line,
         Err(
-            "lazarobox client not fetched (HTTP 404); link again later, or use your own client: f on the gsc entry, Enter on its client row, then g"
+            "own client: f on gsc, Enter, g · lazarobox: not fetched (HTTP 404); link later"
                 .to_owned()
         )
     );
@@ -220,7 +220,7 @@ async fn without_a_pin_the_cache_path_spawns_no_curl() {
     .await;
     assert!(
         line.unwrap_err()
-            .starts_with("lazarobox client not configured in this build")
+            .contains("lazarobox: not configured in this build")
     );
     assert_eq!(notice, None);
     assert!(calls.lock().unwrap().is_empty());
