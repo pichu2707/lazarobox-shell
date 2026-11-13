@@ -210,8 +210,76 @@ fn a_cancelled_o_form_keeps_the_lazarobox_route_and_a_saved_one_selects_own() {
         send(&mut m, key(KeyCode::Enter)),
         MenuCommand::SaveClient { .. }
     ));
+    // Only the accepted write selects it.
+    assert_eq!(
+        route_asked_after_save(&mut m, Err("not saved")),
+        ClientRoute::Lazarobox
+    );
+    let mut m = alone(Some(PIN), None);
+    press(&mut m, 'o');
+    for c in ID.chars() {
+        press(&mut m, c);
+    }
+    send(&mut m, key(KeyCode::Enter));
+    for c in "GOCSPX-abc".chars() {
+        press(&mut m, c);
+    }
+    send(&mut m, key(KeyCode::Enter));
+    assert_eq!(
+        route_asked_after_save(&mut m, Ok("saved google-oauth-client.json")),
+        ClientRoute::Own
+    );
+}
+
+fn route_asked_after_save(m: &mut MenuState, reply: Result<&str, &str>) -> ClientRoute {
+    m.secret_reply(reply.map(str::to_owned).map_err(str::to_owned));
     m.google_client(Ok(Some(ID.to_owned())));
-    assert_eq!(route_asked(&mut m), ClientRoute::Own);
+    route_asked(m)
+}
+
+// Declining the replace prompt writes nothing and leaves the route alone.
+#[test]
+fn declining_the_replace_prompt_leaves_the_route_unchanged() {
+    let mut m = alone(Some(PIN), Some(ID));
+    m.presence_reply(presence("", "").with_client_file(true));
+    press(&mut m, 'o');
+    for c in ID.chars() {
+        press(&mut m, c);
+    }
+    send(&mut m, key(KeyCode::Enter));
+    for c in "GOCSPX-abc".chars() {
+        press(&mut m, c);
+    }
+    assert_eq!(
+        send(&mut m, key(KeyCode::Enter)),
+        MenuCommand::None,
+        "asks first"
+    );
+    assert_eq!(press(&mut m, 'n'), MenuCommand::None, "declined");
+    assert_eq!(route_asked(&mut m), ClientRoute::Lazarobox);
+}
+
+// From the gsc entry the Esc step is false (f works there), so it is dropped.
+#[test]
+fn from_the_gsc_entry_the_notice_has_no_leading_esc() {
+    let mut m = entry(Vec::new(), GSC);
+    let secrets = format!(
+        "[gsc]\n{NAME} = \"{CACHE}\"\nGSC_CONFIG_DIR = \"/h/.config/mcp-gsc\"\nGSC_SKIP_OAUTH = \"false\"\n"
+    );
+    let config = snippet(mcp_catalog::entry("gsc").unwrap());
+    m.presence_reply(
+        presence(&config, &secrets)
+            .with_home(Some("/h".to_owned()))
+            .with_token(|_| false),
+    );
+    assert!(matches!(press(&mut m, 'g'), MenuCommand::LinkGsc(_)));
+    let notice =
+        "own client: Esc, f on gsc, Enter, y, o if none, Esc, g \u{b7} lazarobox: refused (x)";
+    m.link_reply(Err(notice.to_owned()), None);
+    assert_eq!(
+        m.notice.as_deref(),
+        Some("own client: f on gsc, Enter, y, o if none, Esc, g \u{b7} lazarobox: refused (x)")
+    );
 }
 
 // `u` with gsc declared only points at `f`, and Enter on the entry's client
@@ -305,10 +373,10 @@ fn linking() -> MenuState {
 #[test]
 fn a_link_failure_is_the_footer_notice_and_offers_the_own_client() {
     let mut m = linking();
-    let why = "own client: f on gsc, Enter, g · lazarobox: not fetched (HTTP 404); link later";
+    let why = "own client: Esc, f on gsc, Enter, y, o if none, Esc, g · lazarobox: not fetched (HTTP 404); link later";
     assert_eq!(m.link_reply(Err(why.to_owned()), None), MenuCommand::None);
     assert_eq!(m.notice.as_deref(), Some(why));
-    assert!(why.contains("f on gsc, Enter, g"));
+    assert!(why.contains("Esc, f on gsc, Enter, y, o if none, Esc, g"));
 }
 
 #[test]

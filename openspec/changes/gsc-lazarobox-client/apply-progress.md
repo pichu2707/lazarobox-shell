@@ -70,3 +70,10 @@ Branch `feat/gsc-client-link` from origin/main (after PR1, #737). Not pushed; re
 ## PR2 review fix: Link notices fit the footer
 
 The footer is one clipped line (no wrapping pattern exists for it; the wrapped listing reason is a body row). `failure_notice` now puts the instruction first, fixed at 30 columns, then the cause: `own client: f on gsc, Enter, g · lazarobox: not configured in this build` / `... · lazarobox: refused (<why>); nothing saved` / `... · lazarobox: not fetched (<why>); link later`. The cause kind starts inside the first 58 columns. Test `a_link_failure_footer_draws_its_instruction_whole` draws all three at the 62-column popup (the minimum popup, 24, cannot hold any 58-column hint). The word "client" is not in the cause tag; the same line says `own client` and the screen shows `lazarobox client`.
+
+## PR2 re-review fixes
+
+- Link instruction is now `own client: Esc, f on gsc, Enter, y, o if none, Esc, g` followed by ` · lazarobox: <cause>`. Checked step by step: from Connect Google `f` is not a key (Esc first, then select gsc and `f`); Enter on the held client row opens the replace prompt (`y`); `o` is the client form key on that screen; on the fields screen `g` is not a key, so a second `Esc` (back to the entry) is needed before `g`. That last `Esc` is an addition to the requested text. On the gsc entry the first `Esc` would leave the entry, so the menu drops it there (`link_reply`).
+- Consequence: the instruction takes 54 of the 58 footer columns, so the cause tag is clipped to ` · l…`. The cause is no longer visible in the footer (the test no longer asserts it). Needs an owner/orchestrator call if the cause must be shown (for example a second notice line).
+- `own = true` is set only when the client file save is accepted (`secret_reply` Ok naming the client file), not at validation; a declined replace prompt or a refused write leaves the route as it was.
+- `route_is_lazarobox` and `kept_line` moved below the HINT consts.

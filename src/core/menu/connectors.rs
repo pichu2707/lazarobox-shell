@@ -839,7 +839,14 @@ impl Connectors {
         let discards = self.linking.take()?;
         let line = match reply {
             Ok(line) => line,
-            Err(notice) => return Some(Some(notice)),
+            Err(notice) => {
+                // On the entry itself `f` works at once: no Esc first.
+                let on_entry = matches!(self.screen, Some(Screen::Entry { .. }));
+                return Some(Some(match on_entry {
+                    true => notice.replacen("own client: Esc, ", "own client: ", 1),
+                    false => notice,
+                }));
+            }
         };
         let here = match self.screen {
             Some(Screen::Entry { at, .. }) => mcp_catalog::entries()[at].id == "gsc",

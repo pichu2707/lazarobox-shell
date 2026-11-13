@@ -106,10 +106,14 @@ pub const NOT_CONFIGURED_SCREEN: &str =
 /// The instruction of a Link failure, first so the footer's single clipped
 /// line (58 columns) never cuts it. Link runs on a declared `gsc`, whose
 /// client row is the first on its `f` screen.
-const OWN_AFTER_LINK: &str = "own client: f on gsc, Enter, g";
+/// From Connect Google: Esc to the list, `f` on the gsc entry, Enter on its
+/// client row (the replace prompt needs `y`), `o` when there is no own client
+/// file, Esc to the entry, then `g`. The menu drops the first `Esc, ` when the
+/// Link started on the entry itself.
+const OWN_AFTER_LINK: &str = "own client: Esc, f on gsc, Enter, y, o if none, Esc, g";
 
 /// The notice of a Link that has no saved copy to fall back on: the way out,
-/// then the cause, which starts within the first 58 columns.
+/// then the cause (which the footer clips first when it is long).
 pub fn failure_notice(why: &Why) -> String {
     match why {
         Why::NotConfigured => {

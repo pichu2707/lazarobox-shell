@@ -445,8 +445,6 @@ impl Connectors {
                 return refuse(self, Slot::ClientSecret(id), text, BAD_SECRET);
             }
             Slot::ClientSecret(id) => {
-                // Saving your own client selects it on Connect Google.
-                self.google.own = true;
                 let replace = self.presence.as_ref().is_some_and(Presence::client_file);
                 let pending = ClientPending {
                     id,

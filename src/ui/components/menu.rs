@@ -2138,8 +2138,10 @@ mod tests {
             press(&mut menu, &[KeyCode::Char('g')]);
             menu.link_reply(Err(notice.clone()), None);
             let shown = text(&draw(62, POPUP_H, &menu));
-            assert!(shown.contains("own client: f on gsc, Enter, g"), "{shown}");
-            assert!(shown.contains("lazarobox:"), "{shown}");
+            assert!(
+                shown.contains("own client: Esc, f on gsc, Enter, y, o if none, Esc, g"),
+                "{shown}"
+            );
         }
     }
 

@@ -1343,6 +1343,9 @@ impl MenuState {
     /// What the save of a secret field answered: the notice either way.
     pub fn secret_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
         let client = |notice: &String| notice.contains(CLIENT_FILE);
+        if reply.as_ref().is_ok_and(client) {
+            self.connectors.client_saved();
+        }
         self.connectors
             .saved(reply.as_ref().is_ok_and(|n| !client(n)));
         // A file that appeared since the area read the disk: read again, so

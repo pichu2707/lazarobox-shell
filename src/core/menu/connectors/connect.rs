@@ -25,6 +25,9 @@ const TITLE: &str = "Connect Google · Search Console and Workspace";
 const TITLE_PLAN: &str = "Connect Google · plan";
 const TITLE_EMAIL: &str = "Connect Google · USER_GOOGLE_EMAIL";
 const HINT: &str = "j/k scroll · s/w tick · e e-mail · o client · n plan · Esc";
+const HINT_ROUTE: &str = "j/k · s/w tick · e e-mail · o own · u route · n plan · Esc";
+const HINT_PLAN: &str = "j/k scroll · y write · c copy the entries · Esc back";
+const HINT_EMAIL: &str = "type your Google e-mail; Enter keeps it · Esc cancels";
 fn route_is_lazarobox(held: ClientRoute, available: bool) -> bool {
     held == ClientRoute::Lazarobox && available
 }
@@ -37,10 +40,6 @@ fn kept_line(held: ClientRoute) -> String {
     };
     format!("kept from secrets.toml: {what}; f on the entry changes it")
 }
-
-const HINT_ROUTE: &str = "j/k · s/w tick · e e-mail · o own · u route · n plan · Esc";
-const HINT_PLAN: &str = "j/k scroll · y write · c copy the entries · Esc back";
-const HINT_EMAIL: &str = "type your Google e-mail; Enter keeps it · Esc cancels";
 const READING: &str = "reading the files…";
 const WRITING: &str = "writing…";
 const EMAIL: &str = "USER_GOOGLE_EMAIL";
@@ -133,6 +132,11 @@ impl Connectors {
         if self.google.phase != Phase::Writing {
             self.google.phase = Phase::Setup;
         }
+    }
+
+    /// An own client file was written: Connect Google uses it from now on.
+    pub(in crate::core::menu) fn client_saved(&mut self) {
+        self.google.own = true;
     }
 
     /// Back to the top of the screen, when it is shown.

@@ -135,7 +135,7 @@ async fn a_failed_fetch_without_a_cache_stops_before_any_check() {
     assert_eq!(
         line,
         Err(
-            "own client: f on gsc, Enter, g · lazarobox: not fetched (HTTP 404); link later"
+            "own client: Esc, f on gsc, Enter, y, o if none, Esc, g · lazarobox: not fetched (HTTP 404); link later"
                 .to_owned()
         )
     );
