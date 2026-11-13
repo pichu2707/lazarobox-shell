@@ -10,6 +10,14 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- Local models: in a round after a tool, the answer is held to find reasoning
+  leaked before a bare `</think>` for at most 8 KiB, not 1 MiB, so a long
+  answer starts to stream instead of appearing whole at the end; past that
+  point a `</think>` stays in the answer. A `</think>` quoted in backticks no
+  longer moves the text before it to the reasoning.
+
 ## [1.26.0] - 2026-11-13
 
 ### Added
