@@ -60,6 +60,12 @@ pub fn answer_days(db: &Path) -> Option<u64> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    // SQLite applies NOFOLLOW to every path component, so a symlinked ancestor
+    // (macOS /var -> /private/var, a symlinked ~/.local/share) would fail.
+    // Resolving the folder keeps the flag guarding the store file only.
+    let db = std::fs::canonicalize(db.parent()?)
+        .ok()?
+        .join(db.file_name()?);
     let conn = Connection::open_with_flags(db, flags).ok()?;
     conn.busy_timeout(DB_BUSY).ok()?;
     conn.query_row(
@@ -238,6 +244,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(answer_days(&store(dir.path(), 3)), Some(3));
         assert_eq!(answer_days(&dir.path().join("missing.db")), None);
+    }
+
+    #[test]
+    fn days_are_read_through_a_symlinked_folder() {
+        // macOS keeps temp and some homes under /var -> /private/var, and
+        // dotfile managers symlink ~/.local/share.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        store(&real, 3);
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(answer_days(&link.join("chat.db")), Some(3));
+    }
+
+    #[test]
+    fn a_symlinked_store_file_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = store(dir.path(), 3);
+        let link = dir.path().join("link.db");
+        std::os::unix::fs::symlink(&db, &link).unwrap();
+        assert_eq!(answer_days(&link), None);
     }
 
     #[test]
