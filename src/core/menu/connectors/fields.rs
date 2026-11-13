@@ -129,19 +129,29 @@ impl Connectors {
 
     /// What Enter writes on the client row, the other route's path, and the
     /// text that names it. Without a pin the lazarobox cache is never offered.
-    fn client_target(&self, var: &Var) -> Option<(String, &'static str)> {
+    fn client_target(&self, var: &Var) -> Option<(String, String)> {
         let presence = self.presence.as_ref()?;
         let own = var.preset_for(presence.home())?;
         let cache = presence.client_cache().filter(|_| self.lazarobox());
         Some(match (cache, presence.shown("gsc", var.name)) {
             (Some(cache), Some(held)) if held == cache => {
-                (own, "Enter switches to your own client")
+                let first = if presence.client_file() {
+                    ""
+                } else {
+                    "o saves your own client first; "
+                };
+                let note = format!("{first}Enter switches to your own client; then Esc, g links");
+                (own, note)
             }
-            (Some(cache), _) => (cache.to_owned(), "Enter writes the lazarobox client"),
-            (None, _) if self.lazarobox() => (own, "Enter writes your own client"),
+            (Some(cache), _) => (
+                cache.to_owned(),
+                "Enter writes the lazarobox client".to_owned(),
+            ),
+            (None, _) if self.lazarobox() => (own, "Enter writes your own client".to_owned()),
             (None, _) => (
                 own,
-                "lazarobox client not configured in this build; Enter writes your own client",
+                "lazarobox client not configured in this build; Enter writes your own client"
+                    .to_owned(),
             ),
         })
     }

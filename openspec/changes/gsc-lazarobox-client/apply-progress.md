@@ -77,3 +77,7 @@ The footer is one clipped line (no wrapping pattern exists for it; the wrapped l
 - Consequence: the instruction takes 54 of the 58 footer columns, so the cause tag is clipped to ` · l…`. The cause is no longer visible in the footer (the test no longer asserts it). Needs an owner/orchestrator call if the cause must be shown (for example a second notice line).
 - `own = true` is set only when the client file save is accepted (`secret_reply` Ok naming the client file), not at validation; a declined replace prompt or a refused write leaves the route as it was.
 - `route_is_lazarobox` and `kept_line` moved below the HINT consts.
+
+## PR2 decision on the clipped cause
+
+Footer notices point at the screen instead of listing every step: from Connect Google `own client: Esc, f on gsc · lazarobox: <cause>`, from the gsc entry `own client: f · lazarobox: <cause>` (the menu rewrites the prefix there). The cause is `not configured in this build`, `refused (<why>); nothing saved` or `not fetched (<why>); link later`; both parts are drawn at 62 columns (test asserts the instruction and `lazarobox: not configured`, `lazarobox: refused (`, `lazarobox: not fetched (`). The `client file:` line on the gsc `f` screen guides the rest when the held value is the cache path: `Enter switches to your own client; then Esc, g links`, preceded by `o saves your own client first; ` when no own client file exists (test: lines fit 60 columns). Note: the guidance tests were added in the same step as the code, so their RED run was not observed separately.

@@ -2120,10 +2120,16 @@ mod tests {
             mcp_secrets::{Why, failure_notice},
         };
         let why = "javilazaro.es request failed: Could not resolve host: www.javilazaro.es";
-        for notice in [
-            failure_notice(&Why::NotConfigured),
-            failure_notice(&Why::Foreign),
-            failure_notice(&Why::Curl(why.to_owned())),
+        for (notice, cause) in [
+            (
+                failure_notice(&Why::NotConfigured),
+                "lazarobox: not configured",
+            ),
+            (failure_notice(&Why::Foreign), "lazarobox: refused ("),
+            (
+                failure_notice(&Why::Curl(why.to_owned())),
+                "lazarobox: not fetched (",
+            ),
         ] {
             let mut menu = connect_google();
             let secrets = "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/h/.config/lazarobox/lazarobox-google-client.json\"\nGSC_CONFIG_DIR = \"/h/.config/mcp-gsc\"\nGSC_SKIP_OAUTH = \"false\"\n";
@@ -2138,10 +2144,8 @@ mod tests {
             press(&mut menu, &[KeyCode::Char('g')]);
             menu.link_reply(Err(notice.clone()), None);
             let shown = text(&draw(62, POPUP_H, &menu));
-            assert!(
-                shown.contains("own client: Esc, f on gsc, Enter, y, o if none, Esc, g"),
-                "{shown}"
-            );
+            assert!(shown.contains("own client: Esc, f on gsc"), "{shown}");
+            assert!(shown.contains(cause), "{shown}");
         }
     }
 

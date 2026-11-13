@@ -157,33 +157,33 @@ fn the_constants_are_the_design_names() {
 fn each_notice_is_the_design_text() {
     assert_eq!(
         failure_notice(&Why::NotConfigured),
-        "own client: Esc, f on gsc, Enter, y, o if none, Esc, g · lazarobox: not configured in this build"
+        "own client: Esc, f on gsc · lazarobox: not configured in this build"
     );
     assert_eq!(
         failure_notice(&Why::Http(404)),
-        "own client: Esc, f on gsc, Enter, y, o if none, Esc, g · lazarobox: not fetched (HTTP 404); link later"
+        "own client: Esc, f on gsc · lazarobox: not fetched (HTTP 404); link later"
     );
     assert_eq!(
         failure_notice(&Why::Redirected(301)),
-        "own client: Esc, f on gsc, Enter, y, o if none, Esc, g · lazarobox: not fetched (redirected (HTTP 301)); link later"
+        "own client: Esc, f on gsc · lazarobox: not fetched (redirected (HTTP 301)); link later"
     );
     assert_eq!(
         failure_notice(&Why::Curl(
             "javilazaro.es request failed: no reply".to_owned()
         )),
-        "own client: Esc, f on gsc, Enter, y, o if none, Esc, g · lazarobox: not fetched (javilazaro.es request failed: no reply); link later"
+        "own client: Esc, f on gsc · lazarobox: not fetched (javilazaro.es request failed: no reply); link later"
     );
     assert_eq!(
         failure_notice(&Why::Foreign),
-        "own client: Esc, f on gsc, Enter, y, o if none, Esc, g · lazarobox: refused (not from the lazarobox project); nothing saved"
+        "own client: Esc, f on gsc · lazarobox: refused (not from the lazarobox project); nothing saved"
     );
     assert_eq!(
         failure_notice(&Why::NotDesktop),
-        "own client: Esc, f on gsc, Enter, y, o if none, Esc, g · lazarobox: refused (not a Desktop client file); nothing saved"
+        "own client: Esc, f on gsc · lazarobox: refused (not a Desktop client file); nothing saved"
     );
     assert_eq!(
         failure_notice(&Why::TooLarge),
-        "own client: Esc, f on gsc, Enter, y, o if none, Esc, g · lazarobox: refused (larger than 16 KiB); nothing saved"
+        "own client: Esc, f on gsc · lazarobox: refused (larger than 16 KiB); nothing saved"
     );
     assert_eq!(
         fallback_notice(&Why::Http(500)),

@@ -110,7 +110,7 @@ pub const NOT_CONFIGURED_SCREEN: &str =
 /// client row (the replace prompt needs `y`), `o` when there is no own client
 /// file, Esc to the entry, then `g`. The menu drops the first `Esc, ` when the
 /// Link started on the entry itself.
-const OWN_AFTER_LINK: &str = "own client: Esc, f on gsc, Enter, y, o if none, Esc, g";
+const OWN_AFTER_LINK: &str = "own client: Esc, f on gsc";
 
 /// The notice of a Link that has no saved copy to fall back on: the way out,
 /// then the cause (which the footer clips first when it is long).

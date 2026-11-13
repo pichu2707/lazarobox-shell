@@ -134,10 +134,7 @@ async fn a_failed_fetch_without_a_cache_stops_before_any_check() {
     let (line, notice) = answer(lab.plan(&lab.cache()), &fetch, checking(&seen, &calls)).await;
     assert_eq!(
         line,
-        Err(
-            "own client: Esc, f on gsc, Enter, y, o if none, Esc, g · lazarobox: not fetched (HTTP 404); link later"
-                .to_owned()
-        )
+        Err("own client: Esc, f on gsc · lazarobox: not fetched (HTTP 404); link later".to_owned())
     );
     assert_eq!(notice, None);
     assert!(calls.lock().unwrap().is_empty());

@@ -843,7 +843,7 @@ impl Connectors {
                 // On the entry itself `f` works at once: no Esc first.
                 let on_entry = matches!(self.screen, Some(Screen::Entry { .. }));
                 return Some(Some(match on_entry {
-                    true => notice.replacen("own client: Esc, ", "own client: ", 1),
+                    true => notice.replacen("own client: Esc, f on gsc", "own client: f", 1),
                     false => notice,
                 }));
             }

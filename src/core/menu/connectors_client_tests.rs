@@ -273,12 +273,11 @@ fn from_the_gsc_entry_the_notice_has_no_leading_esc() {
             .with_token(|_| false),
     );
     assert!(matches!(press(&mut m, 'g'), MenuCommand::LinkGsc(_)));
-    let notice =
-        "own client: Esc, f on gsc, Enter, y, o if none, Esc, g \u{b7} lazarobox: refused (x)";
+    let notice = "own client: Esc, f on gsc \u{b7} lazarobox: refused (x)";
     m.link_reply(Err(notice.to_owned()), None);
     assert_eq!(
         m.notice.as_deref(),
-        Some("own client: f on gsc, Enter, y, o if none, Esc, g \u{b7} lazarobox: refused (x)")
+        Some("own client: f \u{b7} lazarobox: refused (x)")
     );
 }
 
@@ -373,10 +372,10 @@ fn linking() -> MenuState {
 #[test]
 fn a_link_failure_is_the_footer_notice_and_offers_the_own_client() {
     let mut m = linking();
-    let why = "own client: Esc, f on gsc, Enter, y, o if none, Esc, g · lazarobox: not fetched (HTTP 404); link later";
+    let why = "own client: Esc, f on gsc · lazarobox: not fetched (HTTP 404); link later";
     assert_eq!(m.link_reply(Err(why.to_owned()), None), MenuCommand::None);
     assert_eq!(m.notice.as_deref(), Some(why));
-    assert!(why.contains("Esc, f on gsc, Enter, y, o if none, Esc, g"));
+    assert!(why.contains("own client: Esc, f on gsc"));
 }
 
 #[test]
@@ -464,6 +463,37 @@ fn enter_switches_between_the_routes_after_the_replace_prompt() {
     assert!(rows.contains("Enter writes the lazarobox client"), "{rows}");
     assert_eq!(enter(&mut m), MenuCommand::None, "asks first");
     assert_eq!(press(&mut m, 'y'), save(CACHE));
+}
+
+// The `f` screen guides the steps the footer only points at.
+#[test]
+fn the_client_file_line_guides_the_switch_to_your_own_client() {
+    let rows = |m: &MenuState| texts(m).iter().map(|r| r.chars().count()).max().unwrap();
+    let mut m = fields(Some(PIN), CACHE, &held(CACHE));
+    let screen = texts(&m).join(" ");
+    assert!(
+        screen.contains("Enter switches to your own client; then Esc, g links"),
+        "{screen}"
+    );
+    assert!(rows(&m) <= 60, "{:?}", texts(&m));
+    // With no own client file, `o` saves it first.
+    let mut none = entry(Vec::new(), GSC);
+    none.set_client_pin(Some(PIN));
+    none.presence_reply(
+        presence("", &held(CACHE))
+            .with_home(Some("/h".to_owned()))
+            .with_client_cache(Some(CACHE.to_owned())),
+    );
+    press(&mut none, 'f');
+    let screen = texts(&none).join(" ");
+    assert!(
+        screen.contains(
+            "o saves your own client first; Enter switches to your own client; then Esc, g links"
+        ),
+        "{screen}"
+    );
+    assert!(rows(&none) <= 60, "{:?}", texts(&none));
+    let _ = &mut m;
 }
 
 #[test]
