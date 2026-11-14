@@ -965,7 +965,15 @@ mod tests {
     // rg would read it, so the search is refused like any secret name.
     #[test]
     fn an_rg_search_over_a_private_key_or_credentials_file_asks() {
-        for name in ["src/id_ed25519", "web/credentials.json"] {
+        for name in [
+            "src/id_ed25519",
+            "web/credentials.json",
+            "src/server.pem",
+            "web/tls.key",
+            "web/token.json",
+            "src/client_secret_1.json",
+            "src/service-account-ci.json",
+        ] {
             let f = fixture();
             project(&f);
             fs::write(f.home.join("dev/proj").join(name), "secret").unwrap();
@@ -978,6 +986,7 @@ mod tests {
         let f = fixture();
         project(&f);
         fs::write(f.home.join("dev/proj/src/id_ed25519.pub"), "ssh-ed25519 x").unwrap();
+        fs::write(f.home.join("dev/proj/src/server.pem.txt"), "x").unwrap();
         assert!(checked(&run_in(&f, "dev/proj", true, "dev/proj", "rg url")));
     }
 

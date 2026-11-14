@@ -18,6 +18,17 @@ baseline.
   point a `</think>` stays in the answer. A `</think>` quoted in backticks no
   longer moves the text before it to the reasoning.
 
+### Security
+
+- The read, search and git tools also refuse, at any depth, `token.json` and
+  every file named `*.pem`, `*.key`, `client_secret*.json` or
+  `service-account*.json`: private keys, TLS certificates, and Google OAuth
+  clients, tokens and service account keys. A public certificate in a `.pem`
+  file is refused too, as the name cannot tell it from a key. The chat cannot
+  write them either. In `run` mode, an `rg` or `grep -r` whose walk meets one
+  of them, ignored folders such as `node_modules/` included, asks instead of
+  running.
+
 ## [1.26.0] - 2026-11-13
 
 ### Added
