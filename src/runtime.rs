@@ -56,6 +56,7 @@ pub mod prompts;
 pub(crate) mod refused_port;
 mod run_check;
 pub mod secrets_write;
+pub mod star;
 /// The check's reasons that never count toward the pause, for the app tests.
 #[cfg(test)]
 pub(crate) use run_check::{TOO_LARGE, UNCHECKED, UNIGNORED};
