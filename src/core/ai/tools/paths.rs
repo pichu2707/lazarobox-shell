@@ -2,7 +2,7 @@
 //!
 //! The rule is a deny list under `$HOME`: another tool's credential folders,
 //! `~/.ssh`, `~/.gnupg`, tool configs that hold tokens, keyrings, lazarobox's
-//! own store, and credential, history and `.env` files at any depth, plus
+//! own store, and credential, key, history and `.env` files at any depth, plus
 //! everything outside `$HOME`. Every refusal looks the same, so a model cannot probe which files
 //! exist or which are excluded.
 
@@ -44,13 +44,26 @@ pub(crate) const SECRET_DIRS: &[&str] = &[
 
 /// File names that are never readable wherever they sit below `$HOME`:
 /// credential files, `.envrc`, `.npmrc` (denied at any depth on purpose, as a
-/// project file may hold a token) and shell or REPL histories.
+/// project file may hold a token), the private keys `ssh-keygen` names by
+/// default, `credentials.json` (the default name of Google OAuth client and
+/// service account keys), `token.json` (where Google's quickstarts save the
+/// user's OAuth token) and shell or REPL histories. Unlike the others, the
+/// key, `credentials.json` and `token.json` names are not hidden, so a walk
+/// meets them. [`SECRET_PATTERNS`] adds names by pattern.
 pub(crate) const SECRET_FILES: &[&str] = &[
     ".netrc",
     ".git-credentials",
     ".pgpass",
     ".npmrc",
     ".envrc",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ecdsa_sk",
+    "id_ed25519",
+    "id_ed25519_sk",
+    "credentials.json",
+    "token.json",
     ".bash_history",
     ".zsh_history",
     ".zhistory",
@@ -60,6 +73,33 @@ pub(crate) const SECRET_FILES: &[&str] = &[
     ".mysql_history",
     ".sqlite_history",
 ];
+
+/// Name patterns, each with one `*` that stands for any run of characters,
+/// that are never readable wherever they sit below `$HOME` (ASCII
+/// case-insensitive, like [`SECRET_FILES`]): PEM files and `.key` files,
+/// which hold private keys and TLS certificates, the OAuth client file Google
+/// Cloud names `client_secret_<id>.json` and the service account keys named
+/// `service-account*.json`. A public certificate in a `.pem` file is refused
+/// too: the name cannot tell it from a key. Git pathspecs reuse them as
+/// globs (see `git::excludes`), so a pattern holds no `/`, `?` or `[`.
+pub(crate) const SECRET_PATTERNS: &[&str] = &[
+    "*.pem",
+    "*.key",
+    "client_secret*.json",
+    "service-account*.json",
+];
+
+/// Whether `name` matches `pattern`, which holds one `*` (ASCII
+/// case-insensitive). The `*` matches any run of characters, none included.
+fn matches_pattern(pattern: &str, name: &str) -> bool {
+    let Some((head, tail)) = pattern.split_once('*') else {
+        return pattern.eq_ignore_ascii_case(name);
+    };
+    let name = name.as_bytes();
+    name.len() >= head.len() + tail.len()
+        && name[..head.len()].eq_ignore_ascii_case(head.as_bytes())
+        && name[name.len() - tail.len()..].eq_ignore_ascii_case(tail.as_bytes())
+}
 
 /// The verdict on a path. `Allowed` carries the real path to open.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -108,6 +148,9 @@ pub fn is_excluded_name(name: &str) -> bool {
         || SECRET_FILES
             .iter()
             .any(|file| file.eq_ignore_ascii_case(name))
+        || SECRET_PATTERNS
+            .iter()
+            .any(|pattern| matches_pattern(pattern, name))
 }
 
 /// Whether the names below `$HOME` start with an excluded root (ASCII
@@ -1286,6 +1329,82 @@ mod tests {
             }
         }
         assert!(is_excluded_name(".envrc"));
+    }
+
+    // A private key or a credentials file copied into a project is refused at
+    // any depth; its public key and other names stay readable.
+    #[test]
+    fn a_private_key_or_credentials_file_is_refused_at_any_depth() {
+        let f = fixture();
+        for name in [
+            "id_rsa",
+            "id_dsa",
+            "id_ecdsa",
+            "id_ecdsa_sk",
+            "id_ed25519",
+            "id_ed25519_sk",
+            "credentials.json",
+            "ID_RSA",
+            "Credentials.json",
+        ] {
+            for p in [format!("project/{name}"), format!("project/src/{name}")] {
+                assert_eq!(
+                    check_path(&f.home, &f.home.join(&p)),
+                    PathVerdict::Refused,
+                    "{p}"
+                );
+            }
+        }
+        for name in ["id_rsa.pub", "id_ed25519.pub", "my_credentials.json"] {
+            let p = f.home.join("project").join(name);
+            fs::write(&p, "k").unwrap();
+            assert!(
+                matches!(check_path(&f.home, &p), PathVerdict::Allowed(_)),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_certificate_or_token_file_is_refused_at_any_depth() {
+        let f = fixture();
+        for name in [
+            "server.pem",
+            "tls.key",
+            "SERVER.PEM",
+            "Tls.Key",
+            "client_secret.json",
+            "client_secret_123-abc.apps.googleusercontent.com.json",
+            "token.json",
+            "Token.JSON",
+            "service-account.json",
+            "service-account-prod.json",
+        ] {
+            assert!(is_excluded_name(name), "{name}");
+            for p in [format!("project/{name}"), format!("project/src/{name}")] {
+                assert_eq!(
+                    check_path(&f.home, &f.home.join(&p)),
+                    PathVerdict::Refused,
+                    "{p}"
+                );
+            }
+        }
+        for name in [
+            "server.pem.txt",
+            "keys.rs",
+            "my_token.json",
+            "token.json.bak",
+            "account.json",
+            "my_client_secret.json",
+        ] {
+            assert!(!is_excluded_name(name), "{name}");
+            let p = f.home.join("project").join(name);
+            fs::write(&p, "k").unwrap();
+            assert!(
+                matches!(check_path(&f.home, &p), PathVerdict::Allowed(_)),
+                "{name}"
+            );
+        }
     }
 
     #[test]

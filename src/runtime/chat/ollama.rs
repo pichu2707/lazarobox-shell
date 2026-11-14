@@ -22,7 +22,7 @@ use crate::{
                 ToolExchange, ToolRound, offered_names, ollama_round_body, openai_round_body,
             },
             engine::{ChatError, ChatRequest, Finish, StreamEvent, Tools},
-            leaked_thinking::{LeakedThinking, Piece},
+            leaked_thinking::{HOLD_CAP, LeakedThinking, Piece},
             next_step, prompts,
             stream::{
                 CallError, OllamaToolDecoder, OpenAiToolDecoder, StreamDecoder, ToolCalls,
@@ -404,7 +404,7 @@ async fn round<D: StreamDecoder + ToolCalls + Send>(
         let mut end = None;
         let mut usage: Option<TurnUsage> = None;
         let mut gap = gap;
-        let mut split = LeakedThinking::new(hold, ANSWER_CAP);
+        let mut split = LeakedThinking::new(hold, HOLD_CAP);
         let mut sort = |piece: Piece, text: &mut String, thinking: &mut String| match piece {
             Piece::Answer(t) => {
                 push_capped(text, &t, ANSWER_CAP);

@@ -51,6 +51,9 @@ pub struct Config {
     /// Whether a background check may ask crates.io for a newer version
     /// (default on; `[updates] check = false` makes no network call at all).
     pub update_check: bool,
+    /// Whether the chat may ask, once in a while, for a GitHub star (default
+    /// on; `[notices] star = false` turns off the prompt and its `gh` check).
+    pub star_notice: bool,
     /// How many compile jobs a new pane shell is told to run (`[build]
     /// jobs`, default `auto`).
     pub build_jobs: BuildJobs,
@@ -62,6 +65,7 @@ impl Default for Config {
             bars: BarPositions::default(),
             mouse: true,
             update_check: true,
+            star_notice: true,
             build_jobs: BuildJobs::Auto,
         }
     }
@@ -264,8 +268,10 @@ impl Config {
                 defaults.mouse
             }
         };
-        let update_check =
-            read_update_check(&table, &mut problems).unwrap_or(defaults.update_check);
+        let update_check = read_section_bool(&table, "updates", "check", &mut problems)
+            .unwrap_or(defaults.update_check);
+        let star_notice = read_section_bool(&table, "notices", "star", &mut problems)
+            .unwrap_or(defaults.star_notice);
         let build_jobs = read_build_jobs(&table, &mut problems).unwrap_or(defaults.build_jobs);
         let ai = ai::config::read_with_port_env(&table, &mut problems, port_env);
         let workspace_dir = read_workspace(&table, &mut problems, home);
@@ -281,6 +287,7 @@ impl Config {
                 bars: BarPositions { statusline, tabbar },
                 mouse,
                 update_check,
+                star_notice,
                 build_jobs,
             },
             ai,
@@ -366,8 +373,9 @@ impl Config {
 /// [`ai::config::note_unknown_ai_keys`]), with the keys each one holds. The
 /// root of the file is not checked: other top-level keys and tables are the
 /// user's own.
-const OWNED_SECTIONS: [(&str, &[&str]); 5] = [
+const OWNED_SECTIONS: [(&str, &[&str]); 6] = [
     ("build", &["jobs"]),
+    ("notices", &["star"]),
     ("statusline", &["position"]),
     ("tabbar", &["position"]),
     ("updates", &["check"]),
@@ -428,8 +436,6 @@ fn read_workspace(
     Some(path)
 }
 
-/// `updates.check`, or `None` (with a problem noted) when it is missing or
-/// invalid, so the caller falls back to the default.
 /// The table of `jobs`.
 pub const BUILD_TABLE: &str = "build";
 
@@ -460,18 +466,26 @@ fn read_build_jobs(table: &Table, problems: &mut Vec<String>) -> Option<BuildJob
     jobs
 }
 
-fn read_update_check(table: &Table, problems: &mut Vec<String>) -> Option<bool> {
-    let section = match table.get("updates")? {
-        Value::Table(section) => section,
+/// `section.key` as a boolean (`updates.check`, `notices.star`), or `None`
+/// (with a problem noted) when it is missing or invalid, so the caller falls
+/// back to the default.
+fn read_section_bool(
+    table: &Table,
+    section: &str,
+    key: &str,
+    problems: &mut Vec<String>,
+) -> Option<bool> {
+    let section_table = match table.get(section)? {
+        Value::Table(section_table) => section_table,
         _ => {
-            problems.push("updates: expected a table".to_owned());
+            problems.push(format!("{section}: expected a table"));
             return None;
         }
     };
-    match section.get("check")? {
+    match section_table.get(key)? {
         Value::Boolean(on) => Some(*on),
         _ => {
-            problems.push("updates.check: expected true or false".to_owned());
+            problems.push(format!("{section}.{key}: expected true or false"));
             None
         }
     }
@@ -537,6 +551,7 @@ mod tests {
             bars: bars(Bottom, Top),
             mouse: true,
             update_check: true,
+            star_notice: true,
             build_jobs: BuildJobs::Auto,
         };
         assert_eq!(Config::default(), expected);
@@ -758,6 +773,31 @@ mod tests {
         let (config, notice) = Config::load(Ok("updates = 1\n".into()));
         assert!(config.update_check);
         assert_eq!(notice.as_deref(), Some("config: updates: expected a table"));
+    }
+
+    #[test]
+    fn the_star_notice_is_on_by_default_and_can_be_turned_off() {
+        assert!(parse("").star_notice);
+        assert!(parse("[notices]\n").star_notice);
+        assert!(parse("[notices]\nstar = true").star_notice);
+        assert!(!parse("[notices]\nstar = false").star_notice);
+    }
+
+    #[test]
+    fn a_bad_star_notice_falls_back_to_on_with_the_usual_notice() {
+        let (config, notice) = Config::load(Ok("[notices]\nstar = \"no\"\n".into()));
+        assert!(config.star_notice);
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: notices.star: expected true or false")
+        );
+        let (config, notice) = Config::load(Ok("notices = 1\n".into()));
+        assert!(config.star_notice);
+        assert_eq!(notice.as_deref(), Some("config: notices: expected a table"));
+        assert_eq!(
+            problems("[notices]\nstars = false"),
+            ["unknown key: notices.stars"]
+        );
     }
 
     #[test]

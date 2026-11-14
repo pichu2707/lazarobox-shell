@@ -22,5 +22,6 @@ pub mod pane;
 pub mod prefix;
 pub mod probe;
 pub mod pty;
+pub mod star;
 pub mod start;
 pub mod update;

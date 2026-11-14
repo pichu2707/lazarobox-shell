@@ -42,17 +42,29 @@ pub trait Fetcher: Send + 'static {
 /// `$XDG_DATA_HOME/lazarobox/update-check.json`, else `$HOME/.local/share/...`:
 /// the directory the chat store already lives in.
 pub fn cache_path(xdg: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
+    data_file(xdg, home, "update-check.json")
+}
+
+/// `$XDG_DATA_HOME/lazarobox/<name>`, else `$HOME/.local/share/lazarobox/<name>`;
+/// `None` when neither is an absolute path.
+pub(crate) fn data_file(xdg: Option<&OsStr>, home: Option<&OsStr>, name: &str) -> Option<PathBuf> {
     let absolute = |v: Option<&OsStr>| {
         v.map(Path::new)
             .filter(|p| p.is_absolute())
             .map(Path::to_path_buf)
     };
     let base = absolute(xdg).or_else(|| absolute(home).map(|h| h.join(".local/share")))?;
-    Some(base.join("lazarobox").join("update-check.json"))
+    Some(base.join("lazarobox").join(name))
 }
 
 /// The cache, or `None` when it is missing, too big or damaged.
 pub fn read_cache(path: &Path) -> Option<Cache> {
+    Cache::parse(&read_small(path, CACHE_CAP)?)
+}
+
+/// The text of the plain file at `path`, or `None` when it is missing, not a
+/// plain file, a link, longer than `cap` bytes or not UTF-8.
+pub(crate) fn read_small(path: &Path, cap: u64) -> Option<String> {
     use std::os::unix::fs::OpenOptionsExt;
     // Never follow a link, never wait on a FIFO or a device: only a plain
     // file is read.
@@ -65,15 +77,21 @@ pub fn read_cache(path: &Path) -> Option<Cache> {
         return None;
     }
     let mut text = String::new();
-    file.take(CACHE_CAP + 1).read_to_string(&mut text).ok()?;
-    if text.len() as u64 > CACHE_CAP {
+    file.take(cap + 1).read_to_string(&mut text).ok()?;
+    if text.len() as u64 > cap {
         return None;
     }
-    Cache::parse(&text)
+    Some(text)
 }
 
 /// Writes the cache through a temporary file and a rename, mode 0600.
 pub fn write_cache(path: &Path, cache: &Cache) -> io::Result<()> {
+    write_private(path, &cache.to_json())
+}
+
+/// Writes `text` to `path` through a temporary file and a rename, mode 0600,
+/// creating the folder. A link is never written through.
+pub(crate) fn write_private(path: &Path, text: &str) -> io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
@@ -88,7 +106,7 @@ pub fn write_cache(path: &Path, cache: &Cache) -> io::Result<()> {
         .custom_flags(libc::O_NOFOLLOW)
         .mode(0o600)
         .open(&temp)
-        .and_then(|mut file| file.write_all(cache.to_json().as_bytes()))
+        .and_then(|mut file| file.write_all(text.as_bytes()))
         .and_then(|()| fs::rename(&temp, path));
     if written.is_err() {
         let _ = fs::remove_file(&temp);
@@ -158,7 +176,7 @@ pub struct CurlFetcher {
     file_cap: usize,
 }
 
-/// The temporary file `write_cache` fills before the rename.
+/// The temporary file `write_private` fills before the rename.
 fn temp_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(format!(".{}.tmp", std::process::id()));

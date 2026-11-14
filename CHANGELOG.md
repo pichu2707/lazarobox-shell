@@ -10,6 +10,43 @@ baseline.
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-11-14
+
+### Added
+
+- **Ask for a GitHub star.** After the chat answered on at least five
+  distinct days, the focused idle chat asks once per run on its hint line:
+  `g` stars the repository with your own `gh` (`gh api -X PUT
+  user/starred/pichu2707/lazarobox-shell`), or opens its page without `gh`
+  or when the star fails; any other key dismisses it and is still typed. A
+  star or an opened page is final; a dismissal is asked again only by a
+  newer version and after 60 days. With a logged-in `gh`, startup first reads
+  whether you already starred it. Never during a turn or a pending approval;
+  the star is only sent on `g`. The answer is kept in `star.json` (mode 0600)
+  next to `chat.db`; `[notices] star = false` turns off the check and the
+  prompt.
+
+### Fixed
+
+- Local models: in a round after a tool, the answer is held to find reasoning
+  leaked before a bare `</think>` for at most 8 KiB, not 1 MiB, so a long
+  answer starts to stream instead of appearing whole at the end; past that
+  point a `</think>` stays in the answer. A `</think>` quoted in backticks no
+  longer moves the text before it to the reasoning.
+
+### Security
+
+- The read, search and git tools also refuse, at any depth, `token.json` and
+  every file named `*.pem`, `*.key`, `client_secret*.json` or
+  `service-account*.json`: private keys, TLS certificates, and Google OAuth
+  clients, tokens and service account keys. A public certificate in a `.pem`
+  file is refused too, as the name cannot tell it from a key. The chat cannot
+  write them either. In `run` mode, an `rg` or `grep -r` whose walk meets one
+  of them, ignored folders such as `node_modules/` included, asks instead of
+  running.
+
+## [1.26.0] - 2026-11-13
+
 ### Added
 
 - **Link Search Console with the lazarobox client.** With Search Console ticked
@@ -25,6 +62,16 @@ baseline.
   `GET` that reveals your IP address and the version (`User-Agent`), made only
   on Link with this client; the README "Sin telemetría" lists say so. Users
   already linked with their own client are untouched.
+
+### Security
+
+- The read, search and git tools also refuse, at any depth, the SSH private
+  keys with their default names (`id_rsa`, `id_dsa`, `id_ecdsa`,
+  `id_ecdsa_sk`, `id_ed25519`, `id_ed25519_sk`) and `credentials.json`, so a
+  copy inside a project no longer reaches the model. The `.pub` files stay
+  readable. Like `.npmrc` and `.envrc`, the chat cannot write them either. In
+  `run` mode, an `rg` or `grep -r` whose walk meets one of them, ignored
+  folders such as `vendor/` included, asks instead of running.
 
 ## [1.25.0] - 2026-11-12
 
@@ -2862,7 +2909,9 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.25.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.27.0...HEAD
+[1.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.26.0...v1.27.0
+[1.26.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.22.0...v1.23.0
