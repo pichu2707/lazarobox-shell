@@ -8,7 +8,7 @@
 
 use std::path::{Component, Path};
 
-use super::paths::{SECRET_DIRS, SECRET_FILES, is_excluded_name};
+use super::paths::{SECRET_DIRS, SECRET_FILES, SECRET_PATTERNS, is_excluded_name};
 use crate::core::ai::jail::CREDENTIAL_DIRS;
 use crate::core::ai::sanitize::is_format;
 
@@ -194,14 +194,15 @@ pub fn env(read: bool) -> Vec<(&'static str, &'static str)> {
 }
 
 /// The `:(exclude,glob,icase)` pathspecs for the secret names: every
-/// [`SECRET_FILES`] entry, `.env`, `.env.*` and the temp files, plus every
-/// secret root itself (some are files, such as `.clasprc.json`) and its
-/// contents, at any depth. `icase` follows the case-insensitive rule of the
+/// [`SECRET_FILES`] entry and [`SECRET_PATTERNS`] glob, `.env`, `.env.*` and
+/// the temp files, plus every secret root itself (some are files, such as
+/// `.clasprc.json`) and its contents, at any depth. `icase` follows the case-insensitive rule of the
 /// path guard.
 pub fn excludes() -> Vec<String> {
     let mut specs: Vec<String> = [".env", ".env.*", ".lbx-*.tmp"]
         .iter()
         .chain(SECRET_FILES)
+        .chain(SECRET_PATTERNS)
         .map(|name| format!(":(exclude,glob,icase)**/{name}"))
         .collect();
     for dir in SECRET_DIRS.iter().chain(CREDENTIAL_DIRS) {
@@ -736,6 +737,10 @@ mod tests {
         for name in SECRET_FILES {
             assert!(specs.contains(&format!(":(exclude,glob,icase)**/{name}")));
         }
+        for pattern in SECRET_PATTERNS {
+            assert!(specs.contains(&format!(":(exclude,glob,icase)**/{pattern}")));
+        }
+        assert!(specs.contains(&":(exclude,glob,icase)**/*.pem".to_owned()));
         assert!(specs.contains(&":(exclude,glob,icase)**/.env.*".to_owned()));
         assert!(specs.iter().all(|s| s.starts_with(":(exclude,glob")));
     }
