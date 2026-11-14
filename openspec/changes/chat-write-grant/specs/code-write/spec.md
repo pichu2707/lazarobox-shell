@@ -56,9 +56,9 @@ A proposed batch MUST open a full-pane review view in the chat pane. It shows ev
 
 **Auto-apply.** In the review of a batch staged by a plain chat (not a worker, not an orphan) whose approval mode is `run`, with tools on, on a folder below HOME that is not a granted Windows drive folder, the footer MUST offer `a` beside `y`: `a` approves the whole batch exactly like `y`, under the same coverage gate and arm delay, and gives the chat auto-apply (see agent-tools, Chat approval mode) only once the host reports that batch applied in full; if the apply refuses it or ends partial (drift, rollback, any failure), no auto-apply MUST be held. In any other review `a` MUST do nothing and MUST NOT be offered.
 
-While the chat holds auto-apply, a batch it proposes MUST be applied without opening the review only when all of these hold: it is the chat pane's own batch (staged under `StageKey::Pane` of that pane, never `StageKey::Worker`); the mode is `run` and tools are on; no other approval is pending; the batch is reviewable; no row is an environment template; no row carries the build-file warning (provisional: classes and rule depend on open question 2 of the proposal); no row has a coarse diff and the conversation has not read GitHub text (both provisional, open question 5); and the chat folder is not a granted Windows drive folder. A batch that fails any of them MUST open the review as without auto-apply, and auto-apply MUST stay held (a batch that is not reviewable can then only be rejected, as today, with the too-large reason). A batch that arrives while another approval is pending MUST be denied with `another approval is pending`, not queued and not applied.
+While the chat holds auto-apply, a batch it proposes MUST be applied without opening the review only when all of these hold: it is the chat pane's own batch (staged under `StageKey::Pane` of that pane, never `StageKey::Worker`); the mode is `run` and tools are on; no other approval is pending; the batch is reviewable; no row is an environment template; no row carries the build-file warning (provisional: classes and rule depend on open question 2 of the proposal); no row has a coarse diff and the conversation has not read GitHub text (both provisional, open question 4); and the chat folder is not a granted Windows drive folder. A batch that fails any of them MUST open the review as without auto-apply, and auto-apply MUST stay held (a batch that is not reviewable can then only be rejected, as today, with the too-large reason). A batch that arrives while another approval is pending MUST be denied with `another approval is pending`, not queued and not applied.
 
-An applied batch goes through the same checks as one the user approves: the caps (50 entries, 1 MiB) and the path rules (a root inside HOME, no env, secret, `.git` or `node_modules` name, and the secret-looking names of the Deny rules) at staging, and the same apply step (drift check, atomic writes, rollback). Under auto-apply none of them MAY be relaxed. The app MUST learn that a batch applied from the call's tool result (status `Ok` only for an applied batch); a batch that does not apply in full under auto-apply MUST end auto-apply, with one chat line giving the first line of the result. Each batch applied under auto-apply MUST add one chat line naming every path with its kind and added and removed lines. A worker's batch MUST always go through the approval queue (see Worker batches).
+An applied batch goes through the same checks as one the user approves: the caps (50 entries, 1 MiB) and the path rules (a root inside HOME, no env, secret (`SECRET_FILES`, `SECRET_PATTERNS`), `.git` or `node_modules` name) at staging, and the same apply step (drift check, atomic writes, rollback). Under auto-apply none of them MAY be relaxed. The app MUST learn that a batch applied from the call's tool result (status `Ok` only for an applied batch); a batch that does not apply in full under auto-apply MUST end auto-apply, with one chat line giving the first line of the result. Each batch applied under auto-apply MUST add one chat line naming every path with its kind and added and removed lines. A worker's batch MUST always go through the approval queue (see Worker batches).
 
 **Environment templates.** A batch with an environment template row (an env name ending in `.example`, `.sample`, `.template` or `.dist`) MUST always open the batch review, under auto-apply too, and auto-apply MUST stay held. The Deny rules requirement is unchanged: a template reaches the disk only through the user's approval of the batch review, in every approval mode. The ask that `write_file` makes before staging over a template that already exists is not that review and MUST NOT stand in for it.
 
@@ -162,12 +162,12 @@ An applied batch goes through the same checks as one the user approves: the caps
 - WHEN the model proposes a batch that changes one file of each class in turn: `build.rs`, `scripts/run.sh`, `.github/workflows/ci.yml`, `.husky/pre-commit`, and a file of a project below a dot folder of HOME
 - THEN for each the review opens with the build-file warning and waits for `y` or `a`, and auto-apply stays held
 
-#### Scenario: A coarse diff opens the review (provisional, open question 5) [auto]
+#### Scenario: A coarse diff opens the review (provisional, open question 4) [auto]
 - GIVEN a chat holding auto-apply
 - WHEN the model proposes a batch with a row whose diff is coarse
 - THEN the review opens with the coarse-diff warning
 
-#### Scenario: A conversation that read GitHub text asks (provisional, open question 5) [auto]
+#### Scenario: A conversation that read GitHub text asks (provisional, open question 4) [auto]
 - GIVEN a chat holding auto-apply whose conversation read GitHub text
 - WHEN the model proposes a batch
 - THEN the review opens
@@ -197,15 +197,10 @@ An applied batch goes through the same checks as one the user approves: the caps
 - WHEN `write_file` is called in each
 - THEN each is refused and nothing is staged
 
-#### Scenario: Existing secret names still refuse under auto-apply [auto]
+#### Scenario: Secret names still refuse under auto-apply [auto]
 - GIVEN a chat holding auto-apply
-- WHEN `write_file` is called with `.env`, `.envrc`, `.npmrc`, `.netrc` and `.git-credentials`
-- THEN each is refused and nothing is staged
-
-#### Scenario: Secret-looking file names still refuse under auto-apply (provisional, BLOCKING, open question 4) [auto]
-- GIVEN a chat holding auto-apply and the owner's decision of open question 4
-- WHEN `write_file` is called with `token.json`, `server.pem`, `server.key`, `client_secret.json` and `service-account.json`
-- THEN each is refused (decision a) or opens the review (decision b), and nothing is written unseen
+- WHEN `write_file` is called with `.env`, `.envrc`, `.npmrc`, `.netrc`, `.git-credentials`, `token.json`, `server.pem`, `server.key`, `client_secret.json` and `service-account.json`
+- THEN each is refused at staging exactly as without auto-apply (`SECRET_FILES` and `SECRET_PATTERNS` through `is_excluded_name`) and nothing is staged
 
 What changes in `Nothing writes without approval`: the exception for an auto-applied batch, the host sentence, and two scenarios.
 
