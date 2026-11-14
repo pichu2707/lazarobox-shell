@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-11-14
+
 ### Added
 
 - **Ask for a GitHub star.** After the chat answered on at least five
@@ -2907,7 +2909,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.26.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.27.0...HEAD
+[1.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.23.0...v1.24.0
