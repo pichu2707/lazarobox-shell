@@ -385,6 +385,8 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let (update_tx, update_rx) = mpsc::channel(1);
     let (notified_tx, notified_rx) = mpsc::channel(4);
     let (issue_tx, issue_rx) = mpsc::channel(1);
+    let (star_due_tx, star_due_rx) = mpsc::channel(1);
+    let (starred_tx, starred_rx) = mpsc::channel(1);
     let (open_failed_tx, open_failed_rx) = mpsc::channel(4);
     let (managed_tx, managed_rx) = mpsc::channel(4);
     let (shared_tx, shared_rx) = mpsc::channel(1);
@@ -440,6 +442,26 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         .as_deref()
         .and_then(Path::parent)
         .map(Path::to_owned);
+    // The GitHub star prompt (goal #744): decided once, off the loop, from
+    // the mark next to the chat store, its days of use and the user's `gh`.
+    let star_mark = star::mark_path(
+        env::var_os("XDG_DATA_HOME").as_deref(),
+        env::var_os("HOME").as_deref(),
+    );
+    tokio::spawn({
+        let enabled = app.config().star_notice;
+        let (mark, db, path) = (star_mark.clone(), store_path.clone(), cli_env.path.clone());
+        async move {
+            let places = star::Places {
+                mark: mark.as_deref(),
+                db: db.as_deref(),
+                gh_path: &path,
+            };
+            let now = update::now_secs();
+            let due = star::startup(enabled, places, now, env!("CARGO_PKG_VERSION")).await;
+            let _ = star_due_tx.send(due).await;
+        }
+    });
     let tool_host = tools::ToolHost::from_env();
     // `gh` is found, and runs, on the same login PATH as the engines.
     tool_host.set_gh_path(cli_env.path.clone());
@@ -632,6 +654,38 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         // The Feedback issue: the user's own `gh`, found on the same PATH as
         // the engines, on a task of its own; the answer comes back on its
         // channel. The app sends one at a time.
+        // The GitHub star prompt: `g` stars with the user's own `gh` on a task
+        // of its own, the answer comes back on its channel; the mark is
+        // written first, so the prompt is answered whatever `gh` does.
+        .with_star(
+            Box::new({
+                let (path, mark) = (cli_env.path.clone(), star_mark.clone());
+                move || {
+                    if let Some(mark) = mark.as_deref() {
+                        let _ = star::write_mark(mark, &crate::core::star::Mark::Done);
+                    }
+                    let (path, tx) = (path.clone(), starred_tx.clone());
+                    tokio::spawn(async move {
+                        let _ = tx.send(star::star(&path).await).await;
+                    });
+                }
+            }),
+            Box::new({
+                let mark = star_mark.clone();
+                move |dismissed| {
+                    if let Some(mark) = mark.as_deref() {
+                        let _ = star::write_mark(
+                            mark,
+                            &star::answer_mark(
+                                dismissed,
+                                env!("CARGO_PKG_VERSION"),
+                                update::now_secs(),
+                            ),
+                        );
+                    }
+                }
+            }),
+        )
         .with_issue_sender(Box::new({
             let path = cli_env.path.clone();
             move |issue| {
@@ -790,6 +844,8 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         folder: folder_rx,
         notified: notified_rx,
         issue: issue_rx,
+        star_due: star_due_rx,
+        starred: starred_rx,
         open_failed: open_failed_rx,
         clipboard: clipboard_rx,
         managed: managed_rx,
@@ -1029,6 +1085,10 @@ struct Inbox {
     notified: mpsc::Receiver<String>,
     /// What became of the Feedback issue sent with `gh`.
     issue: mpsc::Receiver<SendReply>,
+    /// What the start-up check of the star prompt decided.
+    star_due: mpsc::Receiver<crate::core::star::Due>,
+    /// What became of the star sent with `gh`.
+    starred: mpsc::Receiver<crate::core::star::StarReply>,
     /// A link the opener failed to open.
     open_failed: mpsc::Receiver<String>,
     /// How a local clipboard copy went: its number and the outcome.
@@ -1087,6 +1147,8 @@ async fn run_loop(
         folder: mut folder_rx,
         notified: mut notified_rx,
         issue: mut issue_rx,
+        star_due: mut star_due_rx,
+        starred: mut starred_rx,
         open_failed: mut open_failed_rx,
         clipboard: mut clipboard_rx,
         managed: mut managed_rx,
@@ -1219,6 +1281,17 @@ async fn run_loop(
             }
             Some(reply) = issue_rx.recv() => {
                 if step(&mut app, AppEvent::IssueSent(reply), panes) {
+                    return Ok(());
+                }
+            }
+            // The check task holds the only sender and may be gone already.
+            Some(due) = star_due_rx.recv() => {
+                if step(&mut app, AppEvent::StarChecked(due), panes) {
+                    return Ok(());
+                }
+            }
+            Some(reply) = starred_rx.recv() => {
+                if step(&mut app, AppEvent::Starred(reply), panes) {
                     return Ok(());
                 }
             }
@@ -1447,6 +1520,11 @@ struct Panes {
     /// answer comes back on its channel. Does nothing unless
     /// `with_issue_sender` installs the production one.
     send_issue: Box<dyn FnMut(Request)>,
+    /// Starts the star with `gh`, without waiting (`Effect::StarRepo`).
+    /// A no-op unless `with_star` installs the production one.
+    star_repo: Box<dyn FnMut()>,
+    /// Writes the star mark (`Effect::StarMark`). A no-op likewise.
+    star_mark: Box<dyn FnMut(bool)>,
     /// Starts the managed llama-server the menu turned on; the outcome comes
     /// back on its channel. A no-op unless `with_manager` installs one.
     manage: Box<ManageFn>,
@@ -1527,6 +1605,8 @@ impl Panes {
             open_url: Box::new(|_| {}),
             copy_local: Box::new(|_, _| {}),
             send_issue: Box::new(|_| {}),
+            star_repo: Box::new(|| {}),
+            star_mark: Box::new(|_| {}),
             manage: Box::new(|_, _| {}),
             set_idle: Box::new(|_| {}),
             check_shared: Box::new(|| {}),
@@ -1717,6 +1797,13 @@ impl Panes {
         self
     }
 
+    /// Sets what stars the repository and what writes the star mark.
+    fn with_star(mut self, repo: Box<dyn FnMut()>, mark: Box<dyn FnMut(bool)>) -> Self {
+        self.star_repo = repo;
+        self.star_mark = mark;
+        self
+    }
+
     /// Sets what sends the Feedback issue.
     fn with_issue_sender(mut self, send: Box<dyn FnMut(Request)>) -> Self {
         self.send_issue = send;
@@ -1880,6 +1967,10 @@ impl Panes {
                 Effect::OpenUrl(url) => (self.open_url)(&url),
                 // Returns at once: `gh` runs on its own task.
                 Effect::SendIssue(issue) => (self.send_issue)(*issue),
+                // Returns at once: `gh` runs on its own task.
+                Effect::StarRepo => (self.star_repo)(),
+                // Synchronous like `SaveProbe`: the mark is tiny.
+                Effect::StarMark { dismissed } => (self.star_mark)(dismissed),
                 // Returns at once: the probes run on their own tasks.
                 Effect::DetectEngines => (self.detect)(false),
                 Effect::RedetectEngines => (self.detect)(true),
@@ -3538,6 +3629,28 @@ mod tests {
         });
         panes.apply(vec![Effect::SendIssue(Box::new(issue.clone()))]);
         assert_eq!(*seen.borrow(), vec![issue]);
+        assert!(panes.host_out.is_empty());
+    }
+
+    // goal #744 S3/S4: the star and the mark are handed to their callbacks,
+    // which return at once; nothing reaches the host terminal.
+    #[test]
+    fn the_star_effects_are_handed_to_their_callbacks() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let starred = Rc::new(RefCell::new(0));
+        let marks: Rc<RefCell<Vec<bool>>> = Rc::default();
+        let (count, log) = (Rc::clone(&starred), Rc::clone(&marks));
+        let mut panes = panes.with_star(
+            Box::new(move || *count.borrow_mut() += 1),
+            Box::new(move |dismissed| log.borrow_mut().push(dismissed)),
+        );
+        panes.apply(vec![
+            Effect::StarRepo,
+            Effect::StarMark { dismissed: true },
+            Effect::StarMark { dismissed: false },
+        ]);
+        assert_eq!(*starred.borrow(), 1);
+        assert_eq!(*marks.borrow(), vec![true, false]);
         assert!(panes.host_out.is_empty());
     }
 

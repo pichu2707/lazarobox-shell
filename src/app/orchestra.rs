@@ -1048,6 +1048,7 @@ impl App {
     pub fn guidance_is_hint(&self, id: PaneId) -> bool {
         let shown = self.chat_guidance(id);
         [
+            self.star_prompt(id).map(str::to_owned),
             self.delegate_line(id),
             self.github_hint(id),
             self.toggle_hint(id),
