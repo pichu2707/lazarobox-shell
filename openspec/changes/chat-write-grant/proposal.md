@@ -15,11 +15,12 @@ So a write asks; when the user grants it in full, later writes of the same conve
 ## Scope
 
 ### In Scope
-- **Grant key in the review:** in a plain chat in `run` mode, the batch review offers a second approving key, `a`: apply this batch and trust the next writes of this conversation. `y` keeps applying only this batch. `a` obeys the same coverage gate and arm delay as `y`.
-- **Applying under the grant:** while the grant is held, a `propose_batch` of that chat applies without opening the review, after the same checks (caps, deny rules, limit asks) and through the same apply step (drift check, atomic writes, rollback). The chat shows one line per applied batch with its paths and line counts.
-- **Batches that still open the review under the grant:** a batch with a build-file change (the files that already carry the visible warning).
-- **End of the grant:** a new conversation, a resumed saved conversation, the approval mode leaving `run`, a change of the chat's folder, tools or the Write family turned off, the pane closing and quitting the app. It is never stored, never sent to an engine, and only a user key can give it.
-- **Marker:** while the grant is held, the chat's ` RUN ` marker reads ` RUN+W `.
+- **Grant key in the review:** in a plain chat in `run` mode, the batch review offers a second approving key, `a`: apply this batch and trust the next writes of this conversation. `y` keeps applying only this batch. `a` obeys the same coverage gate and arm delay as `y`. The grant is held only once that first batch has applied: if it is refused (drift, rollback, any apply failure), no grant is held.
+- **Applying under the grant:** while the grant is held, a `propose_batch` of that chat applies without opening the review, after the same checks (the caps (50 entries, 1 MiB), the path rules (a root inside HOME, no env, secret, `.git` or `node_modules` name) and the env-template overwrite ask) and through the same apply step (drift check, atomic writes, rollback). The chat shows one line per applied batch with its paths and line counts.
+- **Batches that still open the review under the grant:** a batch with a build-file change (the files that already carry the visible warning; provisional, pending open question 2), and a batch that is not reviewable (a truncated diff, shown as too large today): the grant never applies it, so it opens the review as today, where it can only be rejected.
+- **One pane:** the grant belongs to the chat pane that gave it. Another chat pane never inherits it and asks as usual.
+- **End of the grant:** a new conversation, a resumed saved conversation, the approval mode leaving `run`, a change of the chat's folder (`/cd`), tools or the Write family turned off, the pane closing and quitting the app. It is never stored, never sent to an engine, and only a user key can give it.
+- **Marker:** while the grant is held, the chat's ` RUN ` marker reads ` RUN+W ` in red.
 - **Host check:** the host applies a batch only on the user's `y`, or on a new grant decision that it accepts for a pane's own batch and never for a worker's batch. A forged `Unprompted` still writes nothing.
 - **Docs:** README `#### Modo run`, the review footer text, the `[ai.tools] approval` help, CHANGELOG, and a GIF of the grant.
 
@@ -43,9 +44,9 @@ None.
 ## Approach
 
 1. **State:** a `writes_granted` flag on `ChatState` (`src/core/ai/chat/mod.rs`), in memory only, cleared at every end point listed above (`ListOutcome::New` and `on_resumed` in `src/app/history.rs`, the mode toggle in `src/app/tool.rs`, and `end_grants` in `src/app/write.rs` for folder change and tools off).
-2. **Key:** `a` in `on_review_key` (`src/app/review.rs`) beside `y`, shown in the footer only for a plain-chat batch in `run` mode; it runs `approve_batch` and sets the flag after the answer is sent.
-3. **Auto-apply:** in `on_tool_ask` (`src/app/tool.rs`), an `ApprovalAsk::Batch` with no worker, mode `run`, the flag set and no build-file row is answered with the new decision instead of opening the review.
-4. **Host:** a new `Decision` variant (name pinned in design) that `files::answered` (`src/runtime/tools/host/files.rs`) accepts like `Sent` for a pane session only.
+2. **Key:** `a` in `on_review_key` (`src/app/review.rs`) beside `y`, shown in the footer only for a plain-chat batch in `run` mode; it runs `approve_batch` and sets the flag only once the apply reports that the batch was applied, not when the answer is sent.
+3. **Auto-apply:** in `on_tool_ask` (`src/app/tool.rs`), an `ApprovalAsk::Batch` with no worker, mode `run`, the flag set of that pane, a reviewable batch and no build-file row is answered with the new decision instead of opening the review.
+4. **Host:** a new `Decision` variant (name pinned in design) that `files::answered` (`src/runtime/tools/host/files.rs`) accepts like `Sent` for a pane session only, and only on a reviewable batch (the `reviewable` test that `Sent` already passes, `answered`, `src/runtime/tools/host/files.rs:872-873`).
 5. **Lines and marker:** a system line per auto-applied batch; ` RUN+W ` in `src/ui/components/chat.rs`.
 
 ## Affected Areas
@@ -67,7 +68,10 @@ None.
 
 `mcp-connectors` (open question 10) also proposes changing the sentence "There MUST be no "always allow", no per-session or per-tool trust, no configuration that approves automatically" of agent-tools Approval model. Whichever change lands second rebases its delta on the other's text.
 
+`admin-policy-lock` (open PR #672) lists "the full write grant of run mode" as a future lock key in its `tasks.md`. This change is compatible: a lock would only stop `a` from being offered and from setting the flag, and the rest stays as written here.
+
 ## Open Questions
 
 1. **Enter in the review.** The owner said "que lo deje listo para que den al intro". Today the review confirms with `y`, not Enter. Should Enter also approve the batch (same gate and delay), or is `y` enough?
 2. **Build files under the grant.** Proposed: a batch that changes a build file (`Makefile`, `build.rs`, `package.json`…) still opens the review even with the grant, because a build can run it. Accept, or apply those too?
+3. **Audit of auto-applied batches.** Under the grant a batch applies without a review, so its diff is no longer shown. Should an auto-applied batch keep its diff reachable, for example in the history, besides the one chat line with paths and counts?
