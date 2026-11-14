@@ -14,6 +14,7 @@ use super::{
     *,
 };
 use crate::core::ai::chat::engine::ToolStatus;
+use crate::core::ai::chat::leaked_thinking::HOLD_CAP;
 
 /// An SSE reply made of `chunks`, then `[DONE]`.
 fn sse(chunks: &[Value]) -> Step {
@@ -201,6 +202,42 @@ async fn reasoning_leaked_after_a_tool_round_is_split_on_the_openai_wire() {
         "{events:?}"
     );
     assert_eq!(fake.bodies().len(), 2);
+}
+
+// Past `HOLD_CAP` held bytes a post-tool answer streams (#438): the hold ends,
+// so a `</think>` the answer writes later stays in it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_long_post_tool_answer_streams_past_the_hold_cap_and_keeps_a_later_close_tag() {
+    let long = "a".repeat(HOLD_CAP + 1);
+    let fake = fake(vec![
+        sse_call("find_dir", "{\"query\":\"curso\"}", Some("abc")),
+        sse(&[
+            chunk(json!({"content": long}), None),
+            chunk(json!({"content": "Close it with </think>."}), None),
+            chunk(json!({}), Some("stop")),
+        ]),
+    ])
+    .await;
+    let lab = lab(fake.port);
+    let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+    let n = events.len();
+    assert_eq!(
+        events[n - 3..],
+        [
+            StreamEvent::Delta(long),
+            StreamEvent::Delta("Close it with </think>.".into()),
+            done(),
+        ],
+        "{:?}",
+        &events[n - 2..]
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ThinkingDelta(_))),
+        "nothing moves to reasoning"
+    );
 }
 
 // Rejected tools --------------------------------------------------------------
