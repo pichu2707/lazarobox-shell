@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod chat;
 pub mod codex_install;
 pub mod config;
+pub mod eval;
 pub mod gguf;
 pub mod hf;
 pub mod http;

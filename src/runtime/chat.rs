@@ -1260,6 +1260,8 @@ impl Chats {
 #[cfg(test)]
 mod adapter_tests;
 #[cfg(test)]
+mod eval_harness;
+#[cfg(test)]
 mod external_tests;
 #[cfg(test)]
 mod llamacpp_tests;
