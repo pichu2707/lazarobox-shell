@@ -6,8 +6,9 @@
 
 use super::WorkerId;
 use super::changes::GAP_CUT;
+use super::judge::{Agreement, State, Verdict as Said};
 use super::ledger::{FIELD_BYTES, Judgement, NONE, Verdict, cut, one_line};
-use super::rdd::{Basis, Consent, Outcome, Review, Severity};
+use super::rdd::{Basis, Consent, Lens, Outcome, Review, Severity};
 use super::review::Source;
 
 /// The longest list of paths in one line, in bytes.
@@ -184,15 +185,127 @@ fn correction_line(ev: &Evidence) -> String {
     }
 }
 
+/// The judge section (acceptance-judges), in two parts so the cap of one
+/// field never reduces a fault to a count: the lines for `done` (consent,
+/// level, flags, the tests line, each round's agreement and judges, then the
+/// criteria that were not met or unknown, and the `met` ones last) and one
+/// line per fault with its place for `decisions`. Both empty when no judge
+/// was set up for the review.
+fn judge_section(review: &Review) -> (Vec<String>, Vec<String>) {
+    let Some(judging) = review.judging() else {
+        return (Vec::new(), Vec::new());
+    };
+    let granted = judging.granted;
+    let word = if granted {
+        "granted"
+    } else {
+        "declined (not judged)"
+    };
+    let mut lines = vec![format!("judge consent: {word}")];
+    if !granted {
+        return (lines, Vec::new());
+    }
+    let standard = &judging.standard;
+    let criteria: Vec<String> = (standard.criteria.iter())
+        .map(|c| format!("{} {}", c.id, c.text))
+        .collect();
+    lines.push(clip(&judging.level));
+    lines.push(format!("criteria: {}", list(&criteria)));
+    let cut = standard.norms.iter().any(|norm| norm.cut_from.is_some());
+    for (on, text) in [
+        (standard.thin, "criteria: thin".to_owned()),
+        (
+            standard.dropped > 0,
+            format!("criteria: {} not judged (cap 12)", standard.dropped),
+        ),
+        (cut, "norms cut at 8 KB".to_owned()),
+        (!judging.independent, "judges not independent".to_owned()),
+    ] {
+        if on {
+            lines.push(text);
+        }
+    }
+    lines.push("tests: not seen before apply".to_owned());
+    let (mut faults, mut open, mut met) = (Vec::new(), Vec::new(), Vec::new());
+    for (at, round) in review.rounds().iter().enumerate() {
+        let r = at + 1;
+        lines.push(match &round.agreement {
+            Agreement::Pass { clean: true, .. } => format!("round {r} agree: pass"),
+            Agreement::Pass { .. } => format!("round {r} agree: pass, unverified"),
+            Agreement::Fail(_) => format!("round {r} agree: fail"),
+            Agreement::Disagree { missing } => {
+                format!("round {r} disagree, missing: {}", clip(missing))
+            }
+        });
+        if let Agreement::Pass { unverified, .. } = &round.agreement {
+            lines.extend(
+                unverified
+                    .iter()
+                    .map(|(n, why)| format!("unverified: C{n} {}", clip(why))),
+            );
+        }
+        for (i, ruling) in round.rulings.iter().enumerate() {
+            let who = format!("round {r} judge {}", i + 1);
+            let model = judging
+                .models
+                .get(i)
+                .map_or("unknown model", String::as_str);
+            let said = match ruling.verdict {
+                Ok(Said::Pass) => "pass".to_owned(),
+                Ok(Said::Fail) => "fail".to_owned(),
+                Err(why) => format!("no verdict ({})", why.word()),
+            };
+            let count = |want: State| {
+                ruling
+                    .criteria
+                    .iter()
+                    .flatten()
+                    .filter(|(s, _)| *s == want)
+                    .count()
+            };
+            lines.push(format!(
+                "{who} ({}): {said} \u{b7} {} met, {} not met, {} unknown",
+                clip(model),
+                count(State::Met),
+                count(State::NotMet),
+                count(State::Unknown)
+            ));
+            for (n, row) in ruling.criteria.iter().enumerate() {
+                let Some((state, why)) = row else { continue };
+                let (name, rows) = match state {
+                    State::Met => ("met", &mut met),
+                    State::NotMet => ("not met", &mut open),
+                    State::Unknown => ("unknown", &mut open),
+                };
+                rows.push(format!("{who} C{} {name}: {}", n + 1, clip(why)));
+            }
+            for f in &ruling.faults {
+                let at = f.at.as_deref().unwrap_or("unknown");
+                faults.push(format!(
+                    "{who} C{} at: {}: {}",
+                    f.criterion,
+                    clip(at),
+                    clip(&f.text)
+                ));
+            }
+        }
+    }
+    lines.extend(open);
+    lines.extend(met);
+    (lines, faults)
+}
+
 fn done(ev: &Evidence) -> String {
-    fit(vec![
+    let mut lines = vec![
         format!("change: worker {} staged {}", ev.worker.0, list(ev.paths)),
         tier_line(ev),
         format!("consent: {}", consent_word(ev)),
         lenses_line(ev),
         format!("outcome: {}", outcome_word(ev)),
         correction_line(ev),
-    ])
+    ];
+    lines.extend(judge_section(ev.review).0);
+    fit(lines)
 }
 
 fn left(ev: &Evidence) -> String {
@@ -240,37 +353,36 @@ fn left(ev: &Evidence) -> String {
 fn decisions(ev: &Evidence) -> String {
     let review = ev.review;
     let blockers = review.blockers();
-    let lines: Vec<String> = review
-        .findings()
-        .iter()
-        .enumerate()
-        .map(|(at, found)| {
-            let severity = match found.severity {
-                Severity::Severe => "severe",
-                Severity::Minor => "minor",
-            };
-            let cause = if found.caused { "change" } else { "existing" };
-            let basis = match found.basis {
-                Basis::Observed => "observed",
-                Basis::Inferred => "inferred",
-            };
-            let blocked = if blockers.contains(&at) {
-                "blocked"
-            } else {
-                "did not block"
-            };
-            let refuter = if found.blocks() && found.basis == Basis::Inferred {
-                format!("; refuter: {}", review.refuter_word(at))
-            } else {
-                String::new()
-            };
-            format!(
-                "{} {severity} {cause} {basis}: {} ({blocked}{refuter})",
-                found.lens.id(),
-                clip(&found.text)
-            )
-        })
-        .collect();
+    // The judges' faults come first: they keep their places, with the cap.
+    let mut lines = judge_section(review).1;
+    let others = review.findings().iter().enumerate();
+    let others = others.filter(|(_, found)| found.lens != Lens::Judge);
+    lines.extend(others.map(|(at, found)| {
+        let severity = match found.severity {
+            Severity::Severe => "severe",
+            Severity::Minor => "minor",
+        };
+        let cause = if found.caused { "change" } else { "existing" };
+        let basis = match found.basis {
+            Basis::Observed => "observed",
+            Basis::Inferred => "inferred",
+        };
+        let blocked = if blockers.contains(&at) {
+            "blocked"
+        } else {
+            "did not block"
+        };
+        let refuter = if found.blocks() && found.basis == Basis::Inferred {
+            format!("; refuter: {}", review.refuter_word(at))
+        } else {
+            String::new()
+        };
+        format!(
+            "{} {severity} {cause} {basis}: {} ({blocked}{refuter})",
+            found.lens.id(),
+            clip(&found.text)
+        )
+    }));
     if lines.is_empty() {
         NONE.to_owned()
     } else {

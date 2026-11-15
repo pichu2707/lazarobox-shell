@@ -7,6 +7,7 @@
 use super::WorkerKey;
 use super::{
     changes::{Change, ChangeLedger, GAP_CUT, GAP_MISMATCH, StagedDiff},
+    judge::{Agreement, Judging, Round, Ruling, State, Verdict as Said},
     ledger::{REASON_BYTES, cut, one_line as plain_line},
     review::{Assessment, Source},
 };
@@ -420,6 +421,14 @@ pub struct Review {
     /// The corrections the worker's batch had already used when this review
     /// found blockers it was not allowed to correct, for the receipt.
     limit: Option<u32>,
+    /// What the judges were asked and how each round ended, for the receipt.
+    judging: Option<Judging>,
+    rounds: Vec<Round>,
+    /// The judge findings (index, criterion) a correction can target.
+    targets: Vec<(usize, usize)>,
+    /// Findings of a failing judge the other did not back: open, never
+    /// corrected.
+    contested: Vec<usize>,
 }
 
 impl Review {
@@ -437,6 +446,10 @@ impl Review {
             cut_bytes: 0,
             stopped: None,
             limit: None,
+            judging: None,
+            rounds: Vec::new(),
+            targets: Vec::new(),
+            contested: Vec::new(),
         }
     }
 
@@ -450,8 +463,116 @@ impl Review {
         if self.mute() > 0 {
             out.push("a reviewer gave no answer".to_owned());
         }
+        if self.hollow() > 0 {
+            out.push("a judge passed with a fault or nothing verified".to_owned());
+        }
+        if self.undecided() {
+            out.push("the judges gave no agreed verdict".to_owned());
+        }
         out.extend(self.gaps.iter().cloned());
         out
+    }
+
+    /// The judges, as the runtime set them up, for the receipt.
+    pub fn set_judging(&mut self, judging: Judging) {
+        self.judging = Some(judging);
+    }
+
+    pub fn judging(&self) -> Option<&Judging> {
+        self.judging.as_ref()
+    }
+
+    pub fn rounds(&self) -> &[Round] {
+        &self.rounds
+    }
+
+    /// The findings a failing judge named that the other did not back.
+    pub fn contested(&self) -> &[usize] {
+        &self.contested
+    }
+
+    /// The latest round ended in a disagreement or a missing verdict: the
+    /// change is not judged, whatever else is open.
+    fn undecided(&self) -> bool {
+        let last = self.rounds.last();
+        last.is_some_and(|round| matches!(round.agreement, Agreement::Disagree { .. }))
+    }
+
+    /// Passes of the latest round that settle little.
+    fn hollow(&self) -> usize {
+        let last = self.rounds.last().map(|round| round.rulings.iter());
+        last.map_or(0, |rulings| rulings.filter(|r| r.hollow()).count())
+    }
+
+    /// The judges ruled: a failed criterion becomes a severe, caused,
+    /// observed finding (lens `Judge`), so it is a blocker like any other. On
+    /// a disagreement the failing judge's faults are kept as contested:
+    /// open, and never a correction target. Once, after consent and before
+    /// the correction.
+    pub fn judged(&mut self, agreement: &Agreement, rulings: &[Ruling]) -> Result<(), ReviewError> {
+        self.open_for_lenses()?;
+        if !self.rounds.is_empty() {
+            return Err(ReviewError::AlreadyJudged);
+        }
+        let (faults, contested) = match agreement {
+            Agreement::Pass { .. } => (Vec::new(), false),
+            Agreement::Fail(faults) => (faults.clone(), false),
+            Agreement::Disagree { .. } => {
+                let failed = rulings.iter().filter(|r| r.verdict == Ok(Said::Fail));
+                (failed.flat_map(|r| r.faults.clone()).collect(), true)
+            }
+        };
+        for fault in faults {
+            let at = self.findings.len();
+            self.findings.push(Finding {
+                lens: Lens::Judge,
+                severity: Severity::Severe,
+                caused: true,
+                basis: Basis::Observed,
+                text: plain_line(&format!("C{}: {}", fault.criterion, fault.text)),
+                at: fault.at,
+            });
+            self.verdicts.push(None);
+            if contested {
+                self.contested.push(at);
+            } else {
+                self.targets.push((at, fault.criterion));
+            }
+        }
+        self.rounds.push(Round {
+            agreement: agreement.clone(),
+            rulings: rulings.to_vec(),
+        });
+        Ok(())
+    }
+
+    /// The judges that failed ruled again after the correction: returns the
+    /// judge targets still open (their criterion is not `met` in every new
+    /// ruling). The runtime joins them with the validator's open lens targets
+    /// for [`Review::finish_correction`]. The round is kept for the receipt.
+    pub fn rejudged(&mut self, rulings: &[Ruling]) -> Result<Vec<usize>, ReviewError> {
+        let Correction::Running(running) = &self.correction else {
+            return Err(ReviewError::NoCorrection);
+        };
+        let passed = |criterion: usize| {
+            let row = |r: &Ruling| {
+                let at = criterion.checked_sub(1)?;
+                r.criteria.get(at).cloned().flatten()
+            };
+            !rulings.is_empty()
+                && rulings
+                    .iter()
+                    .all(|r| matches!(row(r), Some((State::Met, _))))
+        };
+        let open = (self.targets.iter())
+            .filter(|(at, criterion)| running.contains(at) && !passed(*criterion))
+            .map(|(at, _)| *at)
+            .collect();
+        self.rounds.push(Round {
+            agreement: super::judge::agree(rulings),
+            rulings: rulings.to_vec(),
+        });
+        Ok(open)
     }
 
     /// `bytes` of the diff did not fit a prompt.
@@ -690,7 +811,8 @@ impl Review {
         (0..self.findings.len())
             .filter(|&at| {
                 let found = &self.findings[at];
-                found.blocks()
+                !self.contested.contains(&at)
+                    && found.blocks()
                     && (found.basis == Basis::Observed
                         || self.verdicts[at] == Some(Verdict::Said(Refutation::Upheld)))
             })
@@ -772,6 +894,8 @@ impl Review {
             + self.unanswered()
             + self.unseen()
             + self.mute()
+            + self.hollow()
+            + usize::from(self.undecided())
             + self.gaps.len()
             > 0
         {
@@ -787,7 +911,7 @@ impl Review {
     /// did not clear, and any the correction was not aimed at.
     pub fn open(&self) -> Vec<usize> {
         match &self.correction {
-            Correction::Unused => self.blockers(),
+            Correction::Unused => [self.blockers(), self.contested.clone()].concat(),
             Correction::Running(targets) => targets.clone(),
             Correction::Done { targets, open } => {
                 let mut open = open.clone();
@@ -796,6 +920,7 @@ impl Review {
                         .into_iter()
                         .filter(|at| !targets.contains(at)),
                 );
+                open.extend(self.contested.iter());
                 open
             }
         }

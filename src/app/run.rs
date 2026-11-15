@@ -10,10 +10,10 @@ use crate::core::ai::{
     chat::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
-            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, ISSUE_DRAFT_KEYS, LIMIT_KEYS, LimitFile,
-            MULTI_LINE, NO_CWD, NON_UTF8, OUTSIDE_KEYS, Origin, PANES_KEYS, Press, READ_KEYS,
-            RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS, drive_grant_prompt,
-            exec_notice, grant_prompt, run_sent_line, tool_grant_prompt,
+            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, ISSUE_DRAFT_KEYS, JUDGE_KEYS,
+            LIMIT_KEYS, LimitFile, MULTI_LINE, NO_CWD, NON_UTF8, OUTSIDE_KEYS, Origin, PANES_KEYS,
+            Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS,
+            drive_grant_prompt, exec_notice, grant_prompt, run_sent_line, tool_grant_prompt,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -767,6 +767,15 @@ impl App {
                 armed,
                 why: None,
                 notice: None,
+            }),
+            // The text was made one clean line when asked.
+            ApprovalAsk::JudgeConsent { text, .. } => Some(ApprovalPrompt {
+                target: worker_target(None, "judge this run's changes?"),
+                command: text.clone(),
+                keys: JUDGE_KEYS,
+                armed,
+                why: None,
+                notice: Some("judges read the staged change; none approves it".to_owned()),
             }),
             // Paths and label were made one clean line when asked.
             ApprovalAsk::Limit {

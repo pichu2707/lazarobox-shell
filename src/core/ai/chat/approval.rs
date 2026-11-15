@@ -22,7 +22,7 @@ use crate::core::ai::{
         review_view::ReviewView,
     },
     config::{ApprovalMode, McpApproval, Task, ToolToggle},
-    orchestra::WorkerKey,
+    orchestra::{RunId, WorkerKey},
     sanitize::clean,
     tools::{
         Call, Locality, allow,
@@ -238,6 +238,13 @@ pub enum ApprovalAsk {
         /// Why the change is `high` and which paths it holds, one clean line.
         change: String,
     },
+    /// The acceptance judges of a run that writes (J9): asked once per run,
+    /// by the chat's own host call, never joined with the lens consent of a
+    /// `high` change. `y` lets the judges read each change; anything else
+    /// sends the run's changes on `not judged`. `text` is one clean line
+    /// naming the level rule and the judge models. Never routed by the
+    /// approval mode, and only the user answers it.
+    JudgeConsent { run: RunId, text: String },
     /// A `simple` worker's staged batch holds a file over the 400-line limit,
     /// or one outside its brief (W9, D14, decision K2): the user is asked
     /// before the batch is reviewed or proposed. `y` keeps the batch whole;
@@ -1075,6 +1082,8 @@ pub const FOLDER_KEYS: &str = "y change folder · any other key cancels";
 pub const FOLDER_CHECKING_KEYS: &str = "Esc cancels";
 /// The keys of the consent prompt of a receipt-driven review.
 pub const CONSENT_KEYS: &str = "y review it · n skip the review";
+/// The keys of the judge consent of a run.
+pub const JUDGE_KEYS: &str = "y judge the changes · n skip the judges";
 /// The keys of the limit ask of a `simple` worker (decision K2).
 pub const LIMIT_KEYS: &str = "y keep · n or Esc split";
 /// The keys of that ask when it lists only files outside the brief: there is

@@ -243,6 +243,110 @@ impl Ruling {
         })
         .collect()
     }
+
+    /// A pass that settles little: it carries a fault, or it verified no
+    /// criterion at all. Kept, but never read as clean (J14, S1a verify).
+    pub fn hollow(&self) -> bool {
+        let mut rows = self.criteria.iter().flatten();
+        self.verdict == Ok(Verdict::Pass)
+            && (!self.faults.is_empty() || rows.all(|(state, _)| *state == State::Unknown))
+    }
+}
+
+impl NoVerdict {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Unparseable => "unparseable",
+            Self::Inconsistent => "inconsistent",
+            Self::Unseen => "unseen",
+        }
+    }
+}
+
+/// How the judges of one change ended together (D7).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Agreement {
+    /// Every judge passed. `unverified` is the union of the criteria they
+    /// could not verify (number, reason); `clean` is false when a pass
+    /// settles little (see [`Ruling::hollow`]).
+    Pass {
+        unverified: Vec<(usize, String)>,
+        clean: bool,
+    },
+    /// Every judge failed: the union of their faults, every place kept.
+    Fail(Vec<Fault>),
+    /// A pass against a fail, or a judge with no verdict: nothing is
+    /// corrected. `missing` says who and what.
+    Disagree { missing: String },
+}
+
+/// The judges' agreement over one batch: one judge's verdict decides, two
+/// must say the same, and anything else is a disagreement.
+pub fn agree(rulings: &[Ruling]) -> Agreement {
+    let all = |want: Verdict| rulings.iter().all(|r| r.verdict == Ok(want));
+    if !rulings.is_empty() && all(Verdict::Pass) {
+        let mut unverified: Vec<(usize, String)> = Vec::new();
+        for (at, why) in rulings.iter().flat_map(Ruling::unverified) {
+            if !unverified.iter().any(|(known, _)| *known == at) {
+                unverified.push((at, why.to_owned()));
+            }
+        }
+        let clean = !rulings.iter().any(Ruling::hollow);
+        return Agreement::Pass { unverified, clean };
+    }
+    if !rulings.is_empty() && all(Verdict::Fail) {
+        let mut faults: Vec<Fault> = Vec::new();
+        for fault in rulings.iter().flat_map(|r| &r.faults) {
+            if !faults.contains(fault) {
+                faults.push(fault.clone());
+            }
+        }
+        return Agreement::Fail(faults);
+    }
+    let mut said = Vec::new();
+    for (at, ruling) in rulings.iter().enumerate() {
+        match ruling.verdict {
+            Err(why) => said.push(format!("judge {} gave no verdict ({})", at + 1, why.word())),
+            Ok(Verdict::Fail) => {
+                let ids: Vec<String> = ruling
+                    .faults
+                    .iter()
+                    .map(|f| format!("C{}", f.criterion))
+                    .collect();
+                said.push(format!("judge {} fails {}", at + 1, ids.join(", ")));
+            }
+            Ok(Verdict::Pass) => {}
+        }
+    }
+    let missing = if said.is_empty() {
+        "no judge ruled".to_owned()
+    } else {
+        said.join("; ")
+    };
+    Agreement::Disagree { missing }
+}
+
+/// One time the judges ruled over a change: the first, or after a correction.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Round {
+    pub agreement: Agreement,
+    pub rulings: Vec<Ruling>,
+}
+
+/// What the judges of a change were set up with, for the receipt: the
+/// runtime fills it in; nothing here is a model's text.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Judging {
+    /// The user's judge consent (S2a): declined means no judge ran.
+    pub granted: bool,
+    /// The level line, with its inputs.
+    pub level: String,
+    /// `engine > model` of each judge, in order.
+    pub models: Vec<String>,
+    pub standard: Standard,
+    /// The judges ran on different models (false: both on one model).
+    pub independent: bool,
 }
 
 /// The longest evidence, location or fault text, in characters.
@@ -404,6 +508,72 @@ fn tidy(text: &str) -> String {
     }
     let kept: String = line.chars().take(EVIDENCE_CHARS - 1).collect();
     format!("{}\u{2026}", kept.trim_end())
+}
+
+/// Where a correction changed a file's staged text.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Span {
+    /// Lines `start..=end` of the new text, from 1.
+    Lines(usize, usize),
+    /// The file is new in the batch.
+    Whole,
+    /// It changed, but no range of the new text names it (lines removed).
+    None,
+}
+
+/// What a correction changed, from the staged batch before and after it (D12):
+/// one `(path, span)` per file whose text differs, in the order of `after`,
+/// then the files it dropped. Never the worker's own account.
+pub fn changed(before: &StagedDiff, after: &StagedDiff) -> Vec<(String, Span)> {
+    let mut out = Vec::new();
+    for file in &after.files {
+        let Some(old) = before.files.iter().find(|old| old.path == file.path) else {
+            out.push((file.path.clone(), Span::Whole));
+            continue;
+        };
+        if old.text == file.text {
+            continue;
+        }
+        let (old, new): (Vec<&str>, Vec<&str>) =
+            (old.text.lines().collect(), file.text.lines().collect());
+        let head = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+        let room = old.len().min(new.len()) - head;
+        let tail = old
+            .iter()
+            .rev()
+            .zip(new.iter().rev())
+            .take(room)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let end = new.len() - tail;
+        let span = if end > head {
+            Span::Lines(head + 1, end)
+        } else {
+            Span::None
+        };
+        out.push((file.path.clone(), span));
+    }
+    for old in &before.files {
+        if !after.files.iter().any(|file| file.path == old.path) {
+            out.push((old.path.clone(), Span::None));
+        }
+    }
+    out
+}
+
+/// The text of the run's judge consent (D10): the level rule and the models
+/// that would judge, as one clean line.
+pub fn consent_text(models: &[String]) -> String {
+    let rule = format!(
+        "one judge for a small change, two for several files, a large goal, {} KB or more, \
+         or a medium or high tier",
+        BIG_BYTES / 1024
+    );
+    let models: Vec<String> = models.iter().map(|model| plain_line(model)).collect();
+    if models.is_empty() {
+        return plain_line(&rule);
+    }
+    plain_line(&format!("{} \u{b7} {rule}", models.join(", ")))
 }
 
 /// The prompt of a judge: the criteria and the norms lead the staged change

@@ -869,3 +869,170 @@ fn the_judge_lens_is_outside_the_lens_set() {
     review.consent(Consent::Granted).unwrap();
     assert_eq!(review.pick("judge", "why"), Err(ReviewError::UnknownLens));
 }
+
+// Acceptance judges (S1b): the judge record next to the lens findings.
+mod judges {
+    use super::*;
+    use crate::core::ai::orchestra::judge::{agree, parse_ruling};
+
+    fn judge_review() -> Review {
+        let mut review = Review::new(assess(&[change("src/a.rs")], None));
+        review.consent(Consent::Granted).unwrap();
+        review.no_lenses_needed().unwrap();
+        review
+    }
+
+    fn fail_c2(at: &str) -> crate::core::ai::orchestra::judge::Ruling {
+        let text = format!(
+            "CRITERION C1 met | ok\nCRITERION C2 not met | bad\n\
+             FINDING C2 | at: {at} | the check is missing\nVERDICT fail"
+        );
+        parse_ruling(&text, 2)
+    }
+
+    fn pass() -> crate::core::ai::orchestra::judge::Ruling {
+        parse_ruling(
+            "CRITERION C1 met | a\nCRITERION C2 met | b\nVERDICT pass",
+            2,
+        )
+    }
+
+    #[test]
+    fn failed_criteria_become_severe_caused_observed_blockers_with_a_place() {
+        let mut review = judge_review();
+        let rulings = [fail_c2("src/a.rs:40-52")];
+        review.judged(&agree(&rulings), &rulings).unwrap();
+        let found = &review.findings()[0];
+        assert_eq!(found.lens, Lens::Judge);
+        assert!(found.blocks() && found.basis == Basis::Observed);
+        assert_eq!(found.place(), "at: src/a.rs:40-52");
+        assert!(found.text.contains("C2") && found.text.contains("the check is missing"));
+        assert_eq!(review.blockers(), vec![0]);
+        assert_eq!(review.conclude(), Ok(Outcome::BlockersOpen));
+    }
+
+    #[test]
+    fn a_disagreement_is_open_but_never_a_correction_target() {
+        let mut review = judge_review();
+        let rulings = [pass(), fail_c2("src/a.rs:4")];
+        review.judged(&agree(&rulings), &rulings).unwrap();
+        assert_eq!(review.contested(), [0]);
+        assert!(review.blockers().is_empty());
+        assert_eq!(review.open(), vec![0]);
+        assert_eq!(review.begin_correction(), Err(ReviewError::NoBlockers));
+        assert_eq!(review.conclude(), Ok(Outcome::BlockersOpen));
+    }
+
+    #[test]
+    fn judge_and_lens_blockers_form_one_correction_counted_once() {
+        let mut review = consented(&[Lens::Risk]);
+        let text = "FINDING severe change observed: boom";
+        review.report(Lens::Risk, text).unwrap();
+        let rulings = [fail_c2("src/a.rs:4")];
+        review.judged(&agree(&rulings), &rulings).unwrap();
+        assert_eq!(review.findings().len(), 2);
+        assert_eq!(review.begin_correction(), Ok(vec![0, 1]));
+        assert_eq!(review.begin_correction(), Err(ReviewError::CorrectionUsed));
+    }
+
+    #[test]
+    fn rejudging_clears_only_the_criteria_that_passed_again() {
+        let mut review = judge_review();
+        let text = "CRITERION C1 not met | a\nCRITERION C2 not met | b\n\
+                    FINDING C1 | at: src/a.rs:1 | x\nFINDING C2 | at: src/a.rs:2 | y\n\
+                    VERDICT fail";
+        let rulings = [parse_ruling(text, 2)];
+        review.judged(&agree(&rulings), &rulings).unwrap();
+        assert_eq!(review.begin_correction(), Ok(vec![0, 1]));
+        let again = parse_ruling(
+            "CRITERION C1 met | fixed\nCRITERION C2 not met | still\n\
+             FINDING C2 | at: src/a.rs:2 | y\nVERDICT fail",
+            2,
+        );
+        assert_eq!(review.rejudged(&[again]), Ok(vec![1]));
+        review.finish_correction(&[1]).unwrap();
+        assert_eq!(review.open(), vec![1]);
+        let silent = parse_ruling("nothing useful", 2);
+        let mut other = judge_review();
+        let rulings = [fail_c2("src/a.rs:4")];
+        other.judged(&agree(&rulings), &rulings).unwrap();
+        other.begin_correction().unwrap();
+        assert_eq!(other.rejudged(&[silent]), Ok(vec![0]));
+    }
+
+    #[test]
+    fn judging_needs_consent_once_and_before_the_correction() {
+        let mut review = high();
+        let rulings = [pass()];
+        assert_eq!(
+            review.judged(&agree(&rulings), &rulings),
+            Err(ReviewError::ConsentFirst)
+        );
+        let mut review = judge_review();
+        review.judged(&agree(&rulings), &rulings).unwrap();
+        assert_eq!(
+            review.judged(&agree(&rulings), &rulings),
+            Err(ReviewError::AlreadyJudged)
+        );
+        assert_eq!(review.rejudged(&rulings), Err(ReviewError::NoCorrection));
+    }
+
+    #[test]
+    fn a_hollow_pass_is_never_clean() {
+        let mut review = judge_review();
+        let nothing = [parse_ruling(
+            "CRITERION C1 unknown | a\nCRITERION C2 unknown | b\nVERDICT pass",
+            2,
+        )];
+        review.judged(&agree(&nothing), &nothing).unwrap();
+        assert!(review.findings().is_empty());
+        assert_eq!(review.conclude(), Ok(Outcome::Incomplete));
+        assert!(
+            review
+                .reasons()
+                .iter()
+                .any(|why| why.contains("nothing verified"))
+        );
+        let mut clean = judge_review();
+        clean.judged(&agree(&[pass()]), &[pass()]).unwrap();
+        assert_eq!(clean.conclude(), Ok(Outcome::Clean));
+    }
+
+    #[test]
+    fn a_judge_with_no_verdict_never_concludes_clean() {
+        let silent = parse_ruling("nothing useful", 2);
+        let mut single = judge_review();
+        single
+            .judged(
+                &agree(std::slice::from_ref(&silent)),
+                std::slice::from_ref(&silent),
+            )
+            .unwrap();
+        assert_eq!(single.conclude(), Ok(Outcome::Incomplete));
+        assert!(
+            single
+                .reasons()
+                .iter()
+                .any(|why| why.contains("no agreed verdict"))
+        );
+        let mut split = judge_review();
+        let rulings = [pass(), silent];
+        split.judged(&agree(&rulings), &rulings).unwrap();
+        assert!(split.contested().is_empty());
+        assert_eq!(split.conclude(), Ok(Outcome::Incomplete));
+    }
+
+    #[test]
+    fn a_fault_on_criterion_zero_is_kept_and_never_panics() {
+        use crate::core::ai::orchestra::judge::{Agreement, Fault};
+        let mut review = judge_review();
+        let fault = Fault {
+            criterion: 0,
+            at: None,
+            text: "odd".to_owned(),
+        };
+        review.judged(&Agreement::Fail(vec![fault]), &[]).unwrap();
+        assert_eq!(review.begin_correction(), Ok(vec![0]));
+        assert_eq!(review.rejudged(&[pass()]), Ok(vec![0]));
+    }
+}
