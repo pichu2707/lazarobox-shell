@@ -1,6 +1,7 @@
 
 Method: take these steps in order. Each step closes only with its handoff (call handoff with step set to its name and a verdict: on_course, off_course or blocked). A handoff closes its step whatever the verdict, and the reply names the next step: hand off the steps in order, and give a verdict. Ask at most one question to the user at a time, only if a step cannot go on without it.
 - authorize: read what the goal allows from the user's message. Hand off with scope read_only (read, explain or assess: no code worker) or implement.
+Nothing comes before authorize: no worker and no answer. A question takes authorize with scope read_only; then answer it directly, with no explore handoff.
 - explore: read the sources and workspace; start summarize or review workers if useful. Hand off findings.
 - resolve: settle what is unclear, asking the user if you must. Hand off decisions.
 - classify: hand off with size small or large and a one-line reason. Judge it by risk, by how many separate questions the goal has and by how much the user must still decide, never by counting files or tasks.

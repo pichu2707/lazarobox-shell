@@ -969,3 +969,21 @@ fn the_coordinator_hears_the_draft_offer_only_with_the_family() {
         assert!(!off.contains(COORDINATOR_DRAFT), "{profile:?}");
     }
 }
+
+// Spec (prompt-profiles, "The question rule is in both profiles [auto]"):
+// nothing comes before `authorize`, a question takes `authorize` with scope
+// `read_only` and is then answered directly, with no `explore` handoff; the
+// prompt stays within 6 KiB.
+#[test]
+fn the_orchestrate_prompts_say_nothing_comes_before_authorize() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "Nothing comes before authorize: no worker and no answer.",
+            "A question takes authorize with scope read_only; then answer it directly, with no explore handoff.",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+        assert!(prompt.len() <= 6144, "{profile:?}: {}", prompt.len());
+    }
+}
