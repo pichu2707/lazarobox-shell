@@ -537,10 +537,6 @@ fn ran(call: &Call, report: &RunReport) -> (Outcome, ToolStatus, String, Option<
     (outcome, status, summary, words.system)
 }
 
-/// Runs an approved server tool and returns what the model and the row see:
-/// the result wrapped as untrusted data under `nonce` (D14), which also caps
-/// it. The nonce is needed BEFORE the call: with none there is no wrapper, and
-/// a tool must not run for a result that would be withheld.
 /// Routes the call the user approved, or the server's level let go, to its
 /// server: what was approved must be what is routed.
 async fn routed_external(
@@ -566,6 +562,10 @@ async fn routed_external(
     }
 }
 
+/// Runs an approved server tool and returns what the model and the row see:
+/// the result wrapped as untrusted data under `nonce` (D14), which also caps
+/// it. The nonce is needed BEFORE the call: with none there is no wrapper, and
+/// a tool must not run for a result that would be withheld.
 async fn call_external(
     set: &ExternalSet,
     name: &str,
