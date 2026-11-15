@@ -670,6 +670,58 @@ pub(super) fn dump(scenario: &Scenario, body: &Value, answer: &str, roots: &[&Pa
     text + "\n"
 }
 
+/// The result of running one trivial command (`program args`, allowed by the
+/// run_command table) through `dispatch`, the same path every `run_command` of
+/// a run takes. The live test passes `pytest --version`, so a pytest missing
+/// from the PATH shows too. `Err` names the cause, so a
+/// sandbox that cannot run anything (no Landlock on the kernel, a helper that
+/// fails) stops the live test before any model call instead of scoring every
+/// command as a failed step.
+pub(super) async fn sandbox_probe(
+    dispatch: &dyn Dispatch,
+    program: &str,
+    args: &[&str],
+) -> Result<(), String> {
+    let call = Call::RunCommand {
+        args: json!({"program": program, "args": args}),
+    };
+    let out = dispatch.call(call).await;
+    // A command that ran and failed is not an error outcome: it reads
+    // `exit code N after ...`, which is how a helper that dies shows.
+    if out.is_error || !out.text.starts_with("exit code 0 ") {
+        return Err(format!(
+            "the sandbox helper cannot run a command (is Landlock available on this kernel?): {}",
+            out.text
+        ));
+    }
+    Ok(())
+}
+
+/// A warning when `helper` is older than `exe` (the test binary): `cargo test
+/// --lib` does not rebuild `target/debug/lazarobox`, so the live run would use
+/// a stale sandbox helper. `None` when it is fresh or its age is unknown.
+pub(super) fn helper_age_warning(helper: &Path, exe: &Path) -> Option<String> {
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    (modified(helper)? < modified(exe)?).then(|| {
+        format!(
+            "WARNING: {} is older than the test binary: run `cargo build` or the sandbox helper may be stale",
+            helper.display()
+        )
+    })
+}
+
+/// The live pre-check of the sandbox: a throwaway rig in `Mode::Live` runs one
+/// command. Panics naming the cause. Linux only, like `live_helper`.
+#[cfg(target_os = "linux")]
+pub(super) async fn live_sandbox_check() {
+    let scenario = &scenarios::WRITE_AND_TEST;
+    let folder = Folder::new(&throwaway_root(), scenario);
+    let rig = Rig::new(scenario, &folder, None, Mode::Live);
+    if let Err(why) = sandbox_probe(&*rig.dispatch(), "pytest", &["--version"]).await {
+        panic!("{why}");
+    }
+}
+
 /// Writes one `_DUMP` run as `<scenario>-<model>-<n>.json` in `dir` (created
 /// when missing): `n` is the first free number from 1, claimed with
 /// `create_new`, so a run never overwrites another, even after files were

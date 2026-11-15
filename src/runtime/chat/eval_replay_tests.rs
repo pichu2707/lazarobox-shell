@@ -9,12 +9,14 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::{
-    eval_harness::{Fixture, Folder, Mode, Rig, leaks, proxy, throwaway_root},
+    eval_harness::{
+        Fixture, Folder, Mode, Rig, helper_age_warning, leaks, proxy, sandbox_probe, throwaway_root,
+    },
     ollama_tests::fake,
 };
 use crate::{
     core::ai::{
-        eval::{RunResult, table::Run},
+        eval::{RunResult, Scenario, scenarios, table::Run},
         tools::Call,
     },
     runtime::loopback::Timeouts,
@@ -266,11 +268,20 @@ const STAND_IN: &str =
     "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n";
 
 fn live_rig(folder: &Folder) -> Rig {
+    live_rig_for(&crate::core::ai::eval::scenarios::WRITE_AND_TEST, folder)
+}
+
+/// A helper script `body` in the lab, ready to run.
+fn script(folder: &Folder, body: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let scenario = &crate::core::ai::eval::scenarios::WRITE_AND_TEST;
     let helper = folder.home.parent().unwrap().join("helper");
-    std::fs::write(&helper, STAND_IN).unwrap();
+    std::fs::write(&helper, body).unwrap();
     std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    helper
+}
+
+fn live_rig_for(scenario: &'static Scenario, folder: &Folder) -> Rig {
+    let helper = script(folder, STAND_IN);
     Rig::new(scenario, folder, None, Mode::StandIn(helper))
 }
 
@@ -310,4 +321,140 @@ async fn a_real_failure_in_the_live_rig_is_recorded_and_fails_the_step() {
         {"role": "tool", "content": outcome.text, "tool_name": "git_commit"}]});
     let run = rig.judge.run(&body, "Done.", Duration::ZERO);
     assert!(run.result.missing.contains(&"commit"), "{:?}", run.result);
+}
+
+/// Like [`STAND_IN`], but answers `pytest` itself  with a text only a real helper gives.
+const STAND_IN_PYTEST: &str = "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\ncase \"$1\" in *cargo|*rustup) echo real-helper-ran; exit 0;; esac\nexec \"$@\"\n";
+
+fn pytest() -> Call {
+    Call::RunCommand {
+        args: serde_json::json!({"program": "cargo", "args": ["fmt", "--check"]}),
+    }
+}
+
+fn pytest_rig(scenario: &'static Scenario, folder: &Folder) -> Rig {
+    let helper = script(folder, STAND_IN_PYTEST);
+    Rig::new(scenario, folder, None, Mode::StandIn(helper))
+}
+
+// Hardening: in a live-style rig `run_command` and `git_add` are approved by
+// the Judge (a scenario without them is denied and flagged), and the
+// orchestration tools stay `recorded`.
+#[tokio::test]
+async fn in_the_live_rig_commands_and_git_add_go_through_the_judge() {
+    let write = &scenarios::WRITE_AND_TEST;
+    let folder = Folder::new(&throwaway_root(), write);
+    folder.init_git();
+    let rig = pytest_rig(write, &folder);
+    let out = rig.dispatch().call(pytest()).await;
+    assert!(
+        !out.is_error && out.text.contains("real-helper-ran"),
+        "{out:?}"
+    );
+    assert!(!out.text.starts_with("exit code 0: 1 passed"), "{out:?}");
+    std::fs::write(folder.repo.join("fib.py"), "x = 1\n").unwrap();
+    let add = Call::GitAdd {
+        paths: vec!["fib.py".into()],
+    };
+    let out = rig.dispatch().call(add).await;
+    assert!(!out.is_error && out.text != "staged 2 paths", "{out:?}");
+    let body = serde_json::json!({});
+    assert!(!rig.judge.run(&body, "", Duration::ZERO).unexpected);
+
+    // A scenario with neither step: the same calls reach the Judge and lose.
+    let read = &scenarios::READ_ONLY;
+    let folder = Folder::new(&throwaway_root(), read);
+    folder.init_git();
+    let rig = pytest_rig(read, &folder);
+    assert!(rig.dispatch().call(pytest()).await.is_error);
+    let add = Call::GitAdd {
+        paths: vec!["README.md".into()],
+    };
+    assert!(rig.dispatch().call(add).await.is_error);
+    assert!(rig.judge.run(&body, "", Duration::ZERO).unexpected);
+
+    // Orchestration tools never reach the host, live or not.
+    let folder = Folder::new(&throwaway_root(), &scenarios::COORDINATE);
+    let rig = live_rig_for(&scenarios::COORDINATE, &folder);
+    let cancel = Call::Orchestra(crate::core::ai::orchestra::tools::OrchCall::Cancel {
+        id: crate::core::ai::orchestra::WorkerId(1),
+    });
+    let out = rig.dispatch().call(cancel).await;
+    assert_eq!((out.text.as_str(), out.is_error), ("recorded", false));
+}
+
+// Hardening: a sandbox that cannot run a command (no Landlock) must fail the
+// pre-check naming the cause, not score every run_command as a failed step.
+#[tokio::test]
+async fn the_probe_passes_when_the_helper_runs_a_command() {
+    let scenario = &scenarios::WRITE_AND_TEST;
+    let folder = Folder::new(&throwaway_root(), scenario);
+    let rig = pytest_rig(scenario, &folder);
+    assert_eq!(
+        sandbox_probe(&*rig.dispatch(), "cargo", &["fmt", "--check"]).await,
+        Ok(())
+    );
+}
+
+#[tokio::test]
+async fn the_probe_names_the_cause_when_the_helper_cannot_run_a_command() {
+    let scenario = &scenarios::WRITE_AND_TEST;
+    let folder = Folder::new(&throwaway_root(), scenario);
+    let broken = "#!/bin/sh\necho 'landlock: not supported by this kernel' >&2\nexit 1\n";
+    let helper = script(&folder, broken);
+    let rig = Rig::new(scenario, &folder, None, Mode::StandIn(helper));
+    let why = sandbox_probe(&*rig.dispatch(), "cargo", &["fmt", "--check"])
+        .await
+        .unwrap_err();
+    assert!(why.contains("sandbox"), "{why}");
+    assert!(why.contains("landlock: not supported"), "{why}");
+}
+
+#[tokio::test]
+async fn the_probe_fails_on_any_failing_runner() {
+    struct Failing;
+    impl crate::runtime::mcp::Dispatch for Failing {
+        fn call(
+            &self,
+            _: Call,
+        ) -> futures::future::BoxFuture<'static, crate::runtime::mcp::Outcome> {
+            Box::pin(async {
+                crate::runtime::mcp::Outcome {
+                    text: "sandbox unavailable on this kernel".into(),
+                    is_error: true,
+                }
+            })
+        }
+    }
+    let why = sandbox_probe(&Failing, "cargo", &["fmt", "--check"])
+        .await
+        .unwrap_err();
+    assert!(why.contains("sandbox unavailable on this kernel"), "{why}");
+}
+
+// Hardening: `cargo test --lib` does not rebuild the helper.
+#[test]
+fn a_helper_older_than_the_test_binary_is_warned_about() {
+    use std::{
+        fs::File,
+        time::{Duration, SystemTime},
+    };
+    let folder = Folder::new(&throwaway_root(), &scenarios::READ_ONLY);
+    let dir = folder.home.parent().unwrap();
+    let (helper, exe) = (dir.join("lazarobox"), dir.join("tests-bin"));
+    let now = SystemTime::now();
+    for (path, age) in [(&helper, 60), (&exe, 0)] {
+        let file = File::create(path).unwrap();
+        file.set_modified(now - Duration::from_secs(age)).unwrap();
+    }
+    let warning = helper_age_warning(&helper, &exe).expect("a warning");
+    assert!(warning.contains("cargo build"), "{warning}");
+    File::options()
+        .write(true)
+        .open(&helper)
+        .unwrap()
+        .set_modified(now + Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(helper_age_warning(&helper, &exe), None);
+    assert_eq!(helper_age_warning(&dir.join("missing"), &exe), None);
 }

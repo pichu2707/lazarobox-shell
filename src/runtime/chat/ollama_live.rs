@@ -12,7 +12,11 @@
 //! ```
 //!
 //! Run `cargo build` first: commands and git run through the sandbox helper, the
-//! `lazarobox` binary in `target/debug`.
+//! `lazarobox` binary in `target/debug` (`cargo test --lib` does not rebuild it:
+//! the test prints a warning when it is older than the test binary). Before any
+//! model call the test runs `pytest --version` through that helper and fails
+//! naming the cause when the sandbox cannot run a command (no Landlock, no
+//! pytest on the PATH).
 //!
 //! Environment: `LAZAROBOX_EVAL_MODEL` (comma list, required), `_RUNS` (default
 //! 5), `_TASKS` (comma list of task ids, default all), `_HARDWARE` (text for
@@ -51,7 +55,10 @@ use tokio::{
     time::timeout,
 };
 
-use super::eval_harness::{Folder, Mode, Rig, dump, live_helper, proxy, throwaway_root, write_dump};
+use super::eval_harness::{
+    Folder, Mode, Rig, dump, helper_age_warning, live_helper, live_sandbox_check, proxy,
+    throwaway_root, write_dump,
+};
 use crate::{
     core::ai::eval::{
         Scenario,
@@ -207,7 +214,11 @@ async fn the_chosen_models_run_the_tasks() {
         !tasks.is_empty(),
         "LAZAROBOX_EVAL_TASKS names no known task"
     );
-    live_helper();
+    let helper = live_helper();
+    if let Some(warning) = helper_age_warning(&helper, &std::env::current_exe().unwrap()) {
+        eprintln!("{warning}");
+    }
+    live_sandbox_check().await;
     let version = precheck(&models).await;
     let (port, bodies) = proxy(OLLAMA).await;
     let mut rows = Vec::new();
