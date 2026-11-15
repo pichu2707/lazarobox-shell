@@ -447,3 +447,49 @@ async fn google_naming_a_credentials_folder_is_not_spawned_and_says_so() {
     set.shutdown().await;
     assert!(set.notices().is_empty());
 }
+
+// Spec (mcp-servers, Start line and result marker say the level): the start
+// line names a level that is not `ask`, and at `reads` says so when the server
+// is not the catalog's, since then every call asks.
+#[tokio::test]
+async fn the_start_line_says_a_relaxed_level_and_nothing_extra_at_ask() {
+    use crate::core::ai::config::McpApproval::{All, Ask, Reads};
+    let lab = lab();
+    let at = |mut server: McpServer, level| {
+        server.approval = level;
+        server
+    };
+    let servers = [
+        at(lab.server("plain", "ping", "pong"), Ask),
+        at(lab.server("open", "ping", "pong"), All),
+        at(lab.server("custom", "ping", "pong"), Reads),
+        at(lab.listing("ga4", &["run_report"], "pong", "0"), Reads),
+    ];
+    let refs: Vec<&McpServer> = servers.iter().collect();
+    let mut set = ExternalSet::start(&refs, &lab.home, host_env, timeouts(LONG)).await;
+    fake::declared_with(&mut set, "ga4", "analytics-mcp");
+    assert_eq!(
+        set.announcements(),
+        [
+            "mcp: started plain",
+            "mcp: started open \u{b7} approval: all",
+            "mcp: started custom \u{b7} approval: reads, but every call asks (not the catalog's server)",
+            "mcp: started ga4 \u{b7} approval: reads",
+        ]
+    );
+}
+
+// Spec (mcp-servers, A custom server named like an entry asks at reads, start
+// line half): a catalog name with another command is not the catalog's server.
+#[tokio::test]
+async fn a_catalog_name_with_another_command_says_every_call_asks_at_reads() {
+    use crate::core::ai::config::McpApproval::Reads;
+    let lab = lab();
+    let mut server = lab.listing("ga4", &["run_report"], "pong", "0");
+    server.approval = Reads;
+    let set = ExternalSet::start(&[&server], &lab.home, host_env, timeouts(LONG)).await;
+    assert_eq!(
+        set.announcements(),
+        ["mcp: started ga4 \u{b7} approval: reads, but every call asks (not the catalog's server)"]
+    );
+}

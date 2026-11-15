@@ -50,6 +50,7 @@ use crate::{
             approval::{ApprovalAsk, Reach, UNSHOWABLE, ask_for},
             engine::{Answer, CallId, Decision, ScreenText, StreamEvent, ToolStatus},
         },
+        config::McpApproval,
         orchestra::{
             WorkerKey,
             commands::{Ran, RanEnd},
@@ -450,7 +451,7 @@ enum Unprompted {
     AsIs,
     /// A user tool whose server's own approval level lets it run unasked
     /// (design D30), found by the host from the set it started.
-    Level,
+    Level(McpApproval),
 }
 
 impl Unprompted {
@@ -547,10 +548,19 @@ async fn routed_external(
     name: &str,
     (server, tool): (&str, &str),
     args: serde_json::Value,
+    unasked: Option<McpApproval>,
 ) -> (Outcome, ToolStatus, String) {
     match scope.external.get() {
         Some(set) if set.qualified().raw_of(name) == Some((server, tool)) => {
-            call_external(set, name, args, super::new_nonce()).await
+            let (outcome, status, summary) =
+                call_external(set, name, args, super::new_nonce()).await;
+            // The row says the call ran with no `y`, and at which level
+            // (design D33); the result is wrapped as untrusted all the same.
+            let summary = match unasked {
+                Some(level) => clip(&format!("unasked (approval = {}): {summary}", level.key())),
+                None => summary,
+            };
+            (outcome, status, summary)
         }
         _ => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
     }
@@ -946,7 +956,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     (ask.as_mut(), level)
                 {
                     *unasked = Some(level);
-                    unprompted = Unprompted::Level;
+                    unprompted = Unprompted::Level(level);
                 }
             }
             (valid, locality, _) => ask = ask_for(valid, locality),
@@ -1162,7 +1172,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         tool,
                         args,
                     },
-                ) => routed_external(&scope, &name, (&server, &tool), args).await,
+                ) => routed_external(&scope, &name, (&server, &tool), args, None).await,
                 // The server's level, not the user's `y`: only when this
                 // host's own ask carried it (D30). Never for a worker.
                 (
@@ -1173,8 +1183,8 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         tool,
                         args,
                     },
-                ) if unprompted == Unprompted::Level => {
-                    routed_external(&scope, &name, (&server, &tool), args).await
+                ) if let Unprompted::Level(level) = unprompted => {
+                    routed_external(&scope, &name, (&server, &tool), args, Some(level)).await
                 }
                 // `offers` let it through only with a run manager to go to.
                 (Decision::Sent, Call::Orchestra(call)) => match &scope.orchestra {

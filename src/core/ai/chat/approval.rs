@@ -423,8 +423,10 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             paths: flat(&joined_paths(paths), GIT_ADD_SHOWN).0,
             files: None,
         }),
-        // A user tool always asks, on any engine and in any approval mode:
-        // lazarobox cannot know what it does, and a read-only hint is ignored.
+        // A user tool asks, on any engine and in any approval mode: lazarobox
+        // cannot know what it does, and a read-only hint is ignored. The one
+        // exception is its server's own level, which only the host sets, on
+        // the ask it builds (`unasked`, design D30): this ask never has one.
         Call::External {
             server, tool, args, ..
         } => Some(ApprovalAsk::External {
@@ -890,8 +892,12 @@ fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
 /// denied, as no prompt may approve it. In `ask` and `auto`: a local
 /// read outside the root, which runs free there as it always has; every
 /// other ask prompts. A worker's read outside its run's scope is answered
-/// exactly as the same chat read. A command, a user tool, a batch and the ask
-/// of an edit are never answered here.
+/// exactly as the same chat read. A command, a batch and the ask of an edit
+/// are never answered here, and no mode answers a user tool: the one exception
+/// is the server's own approval level (`McpApproval`, owner decision C13),
+/// which the host carried in the ask as `unasked`. That level answers in every
+/// mode, never for a worker, and never in a conversation that read GitHub text
+/// (`blocked`).
 pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode, blocked: bool) -> Option<Decision> {
     // A user tool is answered by its server's level alone, in every mode: the
     // host set `unasked` from its own start. A blocked conversation asks.

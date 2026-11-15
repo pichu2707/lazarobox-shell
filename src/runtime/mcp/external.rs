@@ -30,7 +30,7 @@ use super::{
 };
 use crate::core::ai::{
     config::{McpApproval, McpServer},
-    mcp_catalog::{admits, gsc, link, unasked},
+    mcp_catalog::{admits, gsc, is_catalog_server, link, unasked},
     mcp_secrets::{Secrets, redact_list, redact_values},
     sanitize::clean,
     tools::servers::{Qualified, qualify},
@@ -190,7 +190,22 @@ impl ExternalSet {
         let started = self
             .clients
             .iter()
-            .map(|(name, _)| format!("mcp: started {name}"));
+            .zip(&self.servers)
+            .map(|((name, _), server)| {
+                let level = match server.approval {
+                    McpApproval::Ask => String::new(),
+                    level => format!(" \u{b7} approval: {}", level.key()),
+                };
+                // `reads` runs only the catalog's own server's read tools: any
+                // other server would otherwise look as if it ran them unasked.
+                let asks = server.approval == McpApproval::Reads && !is_catalog_server(server);
+                let note = if asks {
+                    ", but every call asks (not the catalog's server)"
+                } else {
+                    ""
+                };
+                format!("mcp: started {name}{level}{note}")
+            });
         started.chain(self.notices()).collect()
     }
 

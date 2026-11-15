@@ -182,9 +182,9 @@ Work units (each a reviewable commit; U1-U4 are S9a, U5-U6 are S9b, U7 is docs):
 
 ### U4 Visibility: start line and result marker (D33)
 
-- [ ] 9.10 RED/GREEN: `ExternalSet::announcements` says `mcp: started gsc · approval: reads` when the level is not `ask`, nothing extra at `ask`, and appends `, but every call asks (not the catalog's server)` at `reads` when D29 finds no Read class (mcp-servers: Start line and result marker say the level, A custom server named like an entry asks at reads, start line half).
-- [ ] 9.11 RED/GREEN: the result summary of an unasked call is prefixed `unasked (approval = <level>): `; the result is still wrapped as untrusted data, sanitized and capped; a `run_in_pane` call from that result still needs its own `y`; a result saying `set approval = "all"` changes no level and no file (mcp-servers: Start line and result marker say the level, A call that runs unasked is still visible and untrusted, Nothing the model sees can set a level).
-- [ ] 9.12 Refactor and characterization: doc comments of `answers_itself` (approval.rs:876-877), the Approval model and the `Unprompted` enum name the scoped exception; the full agent-tools and approval tests pass. Stop point S9a: useful alone through hand edits of `config.toml`.
+- [x] 9.10 RED/GREEN: `ExternalSet::announcements` says `mcp: started gsc · approval: reads` when the level is not `ask`, nothing extra at `ask`, and appends `, but every call asks (not the catalog's server)` at `reads` when D29 finds no Read class (mcp-servers: Start line and result marker say the level, A custom server named like an entry asks at reads, start line half).
+- [x] 9.11 RED/GREEN: the result summary of an unasked call is prefixed `unasked (approval = <level>): `; the result is still wrapped as untrusted data, sanitized and capped; a `run_in_pane` call from that result still needs its own `y`; a result saying `set approval = "all"` changes no level and no file (mcp-servers: Start line and result marker say the level, A call that runs unasked is still visible and untrusted, Nothing the model sees can set a level).
+- [x] 9.12 Refactor and characterization: doc comments of `answers_itself` (approval.rs:876-877), the Approval model and the `Unprompted` enum name the scoped exception; the full agent-tools and approval tests pass. Stop point S9a: useful alone through hand edits of `config.toml`.
 
 ### U5 Menu screen and prompt (D34, specs win)
 

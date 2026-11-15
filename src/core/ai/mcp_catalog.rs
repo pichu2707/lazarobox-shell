@@ -218,11 +218,15 @@ pub fn unasked(server: &McpServer, tool: &str) -> bool {
     match server.approval {
         McpApproval::All => true,
         McpApproval::Ask => false,
-        McpApproval::Reads => {
-            entry(&server.name).is_some_and(|e| e.command == server.command)
-                && class(&server.name, tool) == Class::Read
-        }
+        McpApproval::Reads => is_catalog_server(server) && class(&server.name, tool) == Class::Read,
     }
+}
+
+/// Whether `server` is the catalog's own: its name is an entry id AND its
+/// command equals the entry's (design D29). Only then does the catalog's
+/// class of a tool describe what the server runs.
+pub fn is_catalog_server(server: &McpServer) -> bool {
+    entry(&server.name).is_some_and(|e| e.command == server.command)
 }
 
 /// The Gmail tools a declared `google` registers (C9: read and draft only).
