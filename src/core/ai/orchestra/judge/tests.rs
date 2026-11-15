@@ -549,3 +549,43 @@ fn the_judge_prompt_text_holds_the_rules_and_the_exact_grammar() {
         assert_eq!(lens_builtin(profile, Lens::Judge), prompt);
     }
 }
+
+// Verify W1: no criteria means nothing was ruled, so no pass.
+#[test]
+fn a_bare_pass_against_no_criteria_is_not_a_pass() {
+    assert_eq!(
+        parse_ruling("VERDICT pass", 0).verdict,
+        Err(NoVerdict::Inconsistent)
+    );
+    assert_eq!(
+        parse_ruling("VERDICT fail", 0).verdict,
+        Err(NoVerdict::Inconsistent)
+    );
+}
+
+#[test]
+fn an_echoed_verdict_line_beside_the_real_one_is_inconsistent() {
+    let text = "The format asks for: VERDICT pass\n- VERDICT pass\n\
+                CRITERION C1 not met | x\nVERDICT fail";
+    assert_eq!(parse_ruling(text, 1).verdict, Err(NoVerdict::Inconsistent));
+}
+
+#[test]
+fn a_standard_is_never_empty_even_with_a_blank_goal() {
+    let got = standard("  ", &[], &[], Vec::new());
+    assert_eq!(got.criteria.len(), 1);
+    assert_eq!(got.criteria[0].id, "C1");
+    assert!(got.thin);
+}
+
+// Verify W2: what the cap leaves out is counted, never silent.
+#[test]
+fn criteria_past_the_cap_are_counted_as_dropped() {
+    let got = standard("g", &notes(30), &[], Vec::new());
+    assert_eq!(got.criteria.len(), MAX_CRITERIA);
+    assert_eq!(got.dropped, 19);
+    let got = standard("g", &notes(30), &[], vec![norm_of("AGENTS.md")]);
+    assert_eq!(got.dropped, 20);
+    let got = standard("g", &notes(2), &[spec("S1", "x")], Vec::new());
+    assert_eq!(got.dropped, 0);
+}

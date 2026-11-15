@@ -78,6 +78,7 @@ Files: `judge.rs` (`agree`, `changed`, ~90), `rdd.rs` (`Review::judged/rejudged/
 - [ ] 5.6 GREEN: `Review::judged(agreement, rulings)`, `rejudged`, `contested`, `blockers()` and `open()` changes.
 - [ ] 5.7 RED then GREEN: receipt judge section (orchestrator-handoffs): consent granted/declined, level inputs, each judge engine and model and verdict, criteria with id, state and evidence, `criteria: thin`, `unverified: <id> <reason>` (J14), locations or `at: unknown`, agreement outcome, `judges not independent`, `norms cut at 8 KB`, both rounds, `tests: not seen before apply`; a receipt whose text says `approve all` stays wrapped data.
 - [ ] 5.8 RED then GREEN: `ApprovalAsk::JudgeConsent { run, text }` renders as one clean line (no control chars, text names level rule and judge models).
+- [ ] 5.8b RED then GREEN (from S1a verify W2, W4): `Standard.dropped` (criteria past the cap) reaches the receipt (`criteria: <n> not judged (cap 12)`); `agree` and `Review::judged` never let a pass read as clean when it carries a `Fault` on a criterion marked `met`, or when every criterion is `unknown`: such a pass is kept but flagged (`pass, unverified`) in the receipt, and a judge that marks every criterion `unknown` is not counted as a clean pass.
 - [ ] 5.9 Verification: `cargo test`, clippy, fmt; lens-only reviews byte-identical when the level is None (regression); no runtime caller yet.
 
 ## S2a Runtime hook: gate, consent, judges in `conduct`, lines (~340 lines)
@@ -100,6 +101,7 @@ Files: `src/runtime/tools/host/review.rs` (gate `before_batch_with`, ~50), `src/
 - [ ] 7.6 GREEN: judges in `conduct` (judges use the `review` assignment until S3, same not-independent line when both share a model); `Review::judged` after lens reports; refuter only on inferred lens blockers.
 - [ ] 7.7 RED: lines (D11, J14, spec: visible line): level line before any judge; thin-criteria line; per judge `pass · <m> criteria met`, `pass · 2 met, 1 unverified (C3: tests not seen)`, `fail · k of c criteria not met`, `no verdict · <reason>`; one `<id> not met · at: <loc> · <evidence>` per criterion (max 8 per judge then `+k more in the receipt`); `judges agree: pass` (with unverified union), `judges disagree · judge 1 pass, judge 2 fail · missing: ...` with no correction started; `verdict()` adds open judge criteria with locations; batch still waits for `y` after all pass.
 - [ ] 7.8 GREEN: line builders in `judge.rs` and emission through `RunManager::say` (`OrchestraEvent::Review`).
+- [ ] 7.8b RED then GREEN (from S1a verify W2, W4): transcript line when `Standard.dropped > 0` (`judge: <n> criteria not judged (cap 12)`); the pass line (J14) never reads as a clean pass when the ruling carries Faults on met criteria or every criterion is `unknown`: it says `pass, nothing verified` or names the contradiction.
 - [ ] 7.9 Checkpoint: production line count; if over ~380 move task 7.7/7.8 lines to S2b.
 
 ### 8. Verification
@@ -137,6 +139,7 @@ Files: `src/core/ai/config.rs` (`Task::JudgeA/JudgeB`, ids, tables, `ROLES`, `re
 - [ ] 11.6 GREEN: `Run::set_judges`, app roster, `review_notices(.., task)` once per distinct judge task, spawn tasks in `conduct`.
 - [ ] 11.7 RED: norms read (D3 I/O): `AGENTS.md` then `CLAUDE.md` from the run origin; skips a symlink and a missing file; `take(8 KiB)`; once per run kept in `Live`; one cut line `judge: norms cut at 8 KB · <file> is <n> KB`; 3 KB `AGENTS.md` and no `CLAUDE.md` gives no cut line and no error.
 - [ ] 11.8 GREEN: norms read on the blocking pool; standard rebuilt with norms.
+- [ ] 11.9 RED then GREEN (from S1a verify W3): norms notices. (a) The J7 line builder `judge::norms_cut_line(&Norm) -> Option<String>` returning `judge: norms cut at 8 KB · <file> is <size> KB` from `Norm.cut_from`, shown once per run through `RunManager::say` (`OrchestraEvent::Review`) when the standard is built (spec: Long norms are cut with a notice). (b) A visible line for a norm file that is present but empty or import-only (`norm()` returns `None`): `judge: <file> has no norms of its own` , never silent. (c) Consideration: when the staged text is at or above `BIG_BYTES`, cut the norms to fit the prompt (the diff budget is what the norms leave), and say so in the same line.
 
 ### 12. Verification
 

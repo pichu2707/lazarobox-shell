@@ -90,10 +90,15 @@ pub struct Standard {
     pub criteria: Vec<Criterion>,
     pub norms: Vec<Norm>,
     pub thin: bool,
+    /// Criteria past [`MAX_CRITERIA`] that were left out.
+    pub dropped: usize,
 }
 
 /// The repo files a judge reads as norms, in order.
 pub const NORM_FILES: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
+
+/// The criterion of a run that gave no goal text: a standard is never empty.
+const FALLBACK_CRITERION: &str = "the change does what the run asked";
 
 const NORMS_CRITERION: &str = "the change follows the repo norms below";
 
@@ -130,8 +135,13 @@ pub fn standard(goal: &str, notes: &[String], specs: &[Spec], norms: Vec<Norm>) 
         .map(|text| one_line(&text))
         .filter(|text| !text.is_empty())
         .collect();
+    if texts.is_empty() {
+        texts.push(FALLBACK_CRITERION.to_owned());
+    }
     let thin = texts.len() <= 1;
-    texts.truncate(MAX_CRITERIA - usize::from(!norms.is_empty()));
+    let room = MAX_CRITERIA - usize::from(!norms.is_empty());
+    let dropped = texts.len().saturating_sub(room);
+    texts.truncate(room);
     if !norms.is_empty() {
         texts.push(NORMS_CRITERION.to_owned());
     }
@@ -146,6 +156,7 @@ pub fn standard(goal: &str, notes: &[String], specs: &[Spec], norms: Vec<Norm>) 
         criteria,
         norms,
         thin,
+        dropped,
     }
 }
 
@@ -302,7 +313,8 @@ fn consistent(said: Verdict, rows: &[Option<(State, String)>]) -> Result<Verdict
     let failed = rows
         .iter()
         .any(|row| matches!(row, Some((State::NotMet, _))));
-    let whole = rows.iter().all(Option::is_some);
+    // No criteria means nothing was ruled: neither verdict can stand.
+    let whole = !rows.is_empty() && rows.iter().all(Option::is_some);
     match (said, failed) {
         _ if !whole => Err(NoVerdict::Inconsistent),
         (Verdict::Pass, false) | (Verdict::Fail, true) => Ok(said),
