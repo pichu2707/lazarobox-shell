@@ -18,6 +18,11 @@ baseline.
   chat's rules (only with the `issue_draft` switch on), its prompt says to
   draft the issue itself, and the y/n and the filled Feedback form work as in a
   chat. Workers still never get it. (#769)
+- **Other HTTP 400 answers from Ollama are now shown as errors.** Until now
+  any 400 to a request with tools was taken as "this model has no tools" and
+  the turn silently went on as plain text. Only a 400 whose message says the
+  model does not support tools falls back to text, with a notice that does not
+  repeat the server message. llama.cpp is unchanged.
 - **The first-run prefix probe no longer shares one result between terminals
   that only set `TERM=xterm-256color`.** The stored row is now named after
   kitty, WezTerm, Alacritty, Konsole or VTE when their own variable is set,

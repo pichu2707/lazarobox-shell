@@ -97,9 +97,9 @@ Does S1 need splitting? No, not up front. The design counts ~374 (eval.rs 170, s
 
 ## S2 HTTP 400 disambiguation (C6) - ~40-80 lines
 
-- [ ] S2.1 RED: Other 400 is not a tools refusal, Unreadable 400 body (empty, non-JSON, truncated), Long error body capped at 200, Notice does not echo the message (`SECRET-TOKEN-123`), Tools refusal still degrades silently (per turn, nothing remembered), using the fixture `400-no-tools.txt` from 1.3.
-- [ ] S2.2 GREEN: `Profile::rejected` (ollama.rs:115-118) for Ollama: `HTTP 400: ` prefix, JSON `error` contains `does not support tools` (case-insensitive); everything else takes the existing error arm (:254-259); update `OLLAMA_NO_TOOLS_NOTICE` and `REJECTED` docs ("any 400" removed). llama.cpp unchanged.
-- [ ] S2.3 Gate: before/after table not required (no behaviour measured), but the S1 replay guard passes; [manual] one live check with a model that refuses tools.
+- [x] S2.1 RED: Other 400 is not a tools refusal, Unreadable 400 body (empty, non-JSON, truncated), Long error body capped at 200, Notice does not echo the message (`SECRET-TOKEN-123`), Tools refusal still degrades silently (per turn, nothing remembered), using the fixture `400-no-tools.txt` from 1.3.
+- [x] S2.2 GREEN: `Profile::rejected` (ollama.rs:115-118) for Ollama: `HTTP 400: ` prefix, JSON `error` contains `does not support tools` (case-insensitive); everything else takes the existing error arm (:254-259); update `OLLAMA_NO_TOOLS_NOTICE` and `REJECTED` docs ("any 400" removed). llama.cpp unchanged.
+- [ ] S2.3 Gate (S2.1/S2.2 done: the match is case-insensitive `does not support tools` in the JSON `error`; the live wording is still to be confirmed with a real no-tools model, the fixture is inferred): before/after table not required (no behaviour measured), but the S1 replay guard passes; [manual] one live check with a model that refuses tools.
 
 ## S3 Profiles and `think` (C6, C7) - ~220 lines
 

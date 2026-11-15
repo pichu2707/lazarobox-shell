@@ -92,6 +92,9 @@ pub(super) fn text(content: &str) -> Step {
     ])
 }
 
+/// The 400 of a model without tool support (inferred, see the fixture).
+const NO_TOOLS_400: &str = include_str!("../../../tests/fixtures/ollama/400-no-tools.txt");
+
 pub(super) fn status(code: u16, body: &str) -> Step {
     Step::Reply(
         format!(
@@ -531,7 +534,7 @@ async fn a_400_on_a_request_with_tools_retries_once_without_tools() {
 #[tokio::test]
 async fn calls_in_the_reply_to_the_retry_are_not_run() {
     let fake = fake(vec![
-        status(400, "no tools"),
+        status(400, NO_TOOLS_400),
         calls_many(&[
             ("run_in_pane", json!({"command": "ls"})),
             ("read_file", json!({"path": "~/note.txt"})),
@@ -569,7 +572,7 @@ async fn a_400_after_a_round_is_an_error_not_a_retry() {
 
 #[tokio::test]
 async fn the_retry_is_made_once_and_only_for_a_400() {
-    let both = fake(vec![status(400, "nope")]).await;
+    let both = fake(vec![status(400, NO_TOOLS_400)]).await;
     let mut lab_a = lab(both.port);
     lab_a.chats.send(pane(1), 1, ask(&lab_a, true));
     let events = finish(&mut lab_a.rx).await;
@@ -602,7 +605,7 @@ async fn ollama_does_not_retry_a_5xx_that_mentions_tools_and_adds_no_notice_for_
     );
     assert!(!events.iter().any(|e| matches!(e, StreamEvent::Notice(_))));
 
-    let rejected = fake(vec![status(400, "no tools"), text("plain")]).await;
+    let rejected = fake(vec![status(400, NO_TOOLS_400), text("plain")]).await;
     let mut lab_b = lab(rejected.port);
     lab_b.chats.send(pane(1), 1, ask(&lab_b, true));
     let events = finish(&mut lab_b.rx).await;
@@ -614,6 +617,57 @@ async fn ollama_does_not_retry_a_5xx_that_mentions_tools_and_adds_no_notice_for_
             done()
         ]
     );
+}
+
+// C6: only a 400 that says the model has no tools falls back to text.
+#[tokio::test]
+async fn another_400_is_an_error_and_is_not_retried() {
+    for body in [
+        "{\"error\":\"invalid option\"}",
+        "{\"error\":\"\\\"m\\\" does not support chat\"}",
+        "",
+        "not json",
+        "{\"error\":\"does not support tools",
+        "{\"error\":{\"x\":\"does not support tools\"}}",
+    ] {
+        let server = fake(vec![status(400, body), text("plain")]).await;
+        let mut lab = lab(server.port);
+        lab.chats.send(pane(1), 1, ask(&lab, true));
+        let events = finish(&mut lab.rx).await;
+        assert_eq!(server.bodies().len(), 1, "{body}: no retry");
+        assert!(
+            matches!(events.last(), Some(StreamEvent::Error(ChatError::Failed(t))) if t.starts_with("HTTP 400")),
+            "{body}: {events:?}"
+        );
+        assert!(!events.iter().any(|e| matches!(e, StreamEvent::Notice(_))));
+    }
+}
+
+#[tokio::test]
+async fn a_long_400_body_is_capped_at_200() {
+    let body = format!("{{\"error\":\"{}\"}}", "x".repeat(1000));
+    let server = fake(vec![status(400, &body)]).await;
+    let mut lab = lab(server.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    match events.last() {
+        Some(StreamEvent::Error(ChatError::Failed(t))) => assert!(t.chars().count() <= 200),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_tools_notice_does_not_echo_the_server_message() {
+    let body = "{\"error\":\"SECRET-TOKEN-123 does not support tools\"}";
+    let server = fake(vec![status(400, body), text("plain")]).await;
+    let mut lab = lab(server.port);
+    lab.chats.send(pane(1), 1, ask(&lab, true));
+    let events = finish(&mut lab.rx).await;
+    assert!(
+        events.iter().any(|e| matches!(e, StreamEvent::Notice(_))),
+        "{events:?}"
+    );
+    assert!(!format!("{events:?}").contains("SECRET-TOKEN-123"));
 }
 
 // Approvals --------------------------------------------------------------------
