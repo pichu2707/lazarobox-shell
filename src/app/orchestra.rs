@@ -5,6 +5,7 @@
 //! UI.
 
 use super::*;
+use crate::core::ai::tools::registry::Family;
 use crate::core::ai::{
     chat::{
         Entry, GateOffer, OrchAlert, OrchNote,
@@ -1263,8 +1264,12 @@ impl App {
             };
         }
         // The orchestrator session: the read tools, the pane reads and the
-        // orchestration tools, never `run_in_pane`.
+        // orchestration tools, never `run_in_pane`; the issue draft follows
+        // the user's switch as in a plain chat, a worker never gets it (#769).
         request.families = Toolset::Orchestrator.families();
+        if self.offered_families(id).contains(Family::IssueDraft) {
+            request.families = request.families.with(Family::IssueDraft);
+        }
         // A turn sent while a resumed run waits is the user's reply.
         self.reply_started(id);
         // This turn replaces the run: it starts from the menu values, not from

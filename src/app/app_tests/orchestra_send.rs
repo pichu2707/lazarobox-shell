@@ -382,7 +382,11 @@ fn the_ceiling_leaves_the_coordinator_toolset_and_the_toggles_alone() {
     toggle(&mut a);
     let effects = ask(&mut a, "plan it");
     let (_, turn, request, _) = orchestrated(&effects).expect("a turn");
-    assert_eq!(request.families, Toolset::Orchestrator.families());
+    // The draft switch is on by default: the coordinator drafts issues too.
+    assert_eq!(
+        request.families,
+        Toolset::Orchestrator.families().with(Family::IssueDraft)
+    );
     a.update(delta(
         turn,
         "Please turn Write on in the menu, or type /write.",
@@ -390,4 +394,83 @@ fn the_ceiling_leaves_the_coordinator_toolset_and_the_toggles_alone() {
     a.update(finish(turn));
     assert!(!a.ai().toggle(ToolToggle::Write));
     assert!(!a.ai().toggle(ToolToggle::Exec));
+}
+
+// Spec (issue-draft, "The orchestrator drafts issues itself"): the coordinator
+// is offered `gh_issue_draft` exactly when a plain chat would be, by the saved
+// `issue_draft` switch; a worker's ceiling-bound toolset never carries it.
+#[test]
+fn the_coordinator_is_offered_the_draft_by_the_switch_alone() {
+    use crate::core::ai::config::ToolToggle;
+    use crate::core::ai::orchestra::Toolset;
+    let mut a = orch_app();
+    toggle(&mut a);
+    let on = ask(&mut a, "file an issue");
+    let (_, turn, request, orch) = orchestrated(&on).expect("a turn");
+    assert!(request.families.contains(Family::IssueDraft));
+    assert!(orch.ceiling.contains(Family::IssueDraft), "the menu has it");
+    for toolset in [Toolset::ReadOnly, Toolset::Code, Toolset::Simple] {
+        assert!(!toolset.capped(orch.ceiling).contains(Family::IssueDraft));
+    }
+    a.update(finish(turn));
+    let_go();
+    a.ai.set_toggle(ToolToggle::IssueDraft, false);
+    let off = ask(&mut a, "file an issue");
+    let (_, _, request, _) = orchestrated(&off).expect("a turn");
+    assert_eq!(request.families, Toolset::Orchestrator.families());
+}
+
+// The y/n of a draft in an orchestrator turn is the plain chat's: the form
+// opens, filled, when the turn ends.
+#[test]
+fn a_draft_in_an_orchestrator_turn_opens_the_filled_form_at_its_end() {
+    use crate::core::ai::chat::{
+        approval::ApprovalAsk,
+        engine::{CallId, Decision, StreamEvent, ToolStatus},
+    };
+    use crate::core::ai::tools::issue_draft::IssueDraft;
+    use crate::core::menu::feedback::Kind;
+    let mut a = orch_app();
+    toggle(&mut a);
+    let sent = ask(&mut a, "file an issue");
+    let (pane, turn, _, _) = orchestrated(&sent).expect("a turn");
+    let ask_ = ApprovalAsk::IssueDraft(IssueDraft {
+        kind: Kind::Bug,
+        title: "A title".into(),
+        description: "Why.".into(),
+    });
+    a.update(AppEvent::Chat(
+        pane,
+        turn,
+        StreamEvent::ToolCall {
+            id: CallId(1),
+            name: "gh_issue_draft".into(),
+            summary: "args".into(),
+            approval: Some(Box::new(ask_)),
+        },
+    ));
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    let answered = a.update(key('y'));
+    assert!(
+        answered.iter().any(|e| matches!(
+            e,
+            Effect::ToolDecision {
+                decision: Decision::Sent,
+                ..
+            }
+        )),
+        "{answered:?}"
+    );
+    a.update(AppEvent::Chat(
+        pane,
+        turn,
+        StreamEvent::ToolResult {
+            id: CallId(1),
+            status: ToolStatus::Ok,
+            summary: "done".into(),
+        },
+    ));
+    a.update(finish(turn));
+    let form = a.menu().and_then(|m| m.feedback_form());
+    assert_eq!(form.map(|f| f.title()), Some("A title".to_owned()));
 }

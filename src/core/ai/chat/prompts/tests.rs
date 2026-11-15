@@ -951,3 +951,21 @@ fn the_coordinator_tools_block_sends_changes_to_workers_not_to_the_user() {
         assert!(block.contains("Never answer a change"), "{block}");
     }
 }
+
+// Spec (issue-draft, "The orchestrator drafts issues itself"): a coordinator
+// that is offered the draft tool hears the offer and that it drafts itself,
+// never through a worker; one that is not offered it hears neither.
+#[test]
+fn the_coordinator_hears_the_draft_offer_only_with_the_family() {
+    use crate::core::ai::orchestra::Toolset;
+    let on = Toolset::Orchestrator.families().with(Family::IssueDraft);
+    for profile in Profile::ALL {
+        let system = builtin(profile, Task::Orchestrate);
+        let got = with_tools(system, on);
+        assert_eq!(got.matches(DRAFT_OFFER).count(), 1, "{profile:?}");
+        assert!(got.contains(COORDINATOR_DRAFT), "{profile:?}");
+        let off = with_tools(system, Toolset::Orchestrator.families());
+        assert!(!off.contains(DRAFT_OFFER), "{profile:?}");
+        assert!(!off.contains(COORDINATOR_DRAFT), "{profile:?}");
+    }
+}

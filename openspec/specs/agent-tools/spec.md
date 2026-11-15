@@ -537,7 +537,7 @@ Tool arguments, tool results, file contents, paths returned and commands MUST NO
 
 ### Requirement: Tool families
 Every registry entry MUST carry exactly one `Family`: `Read`, `Search`, `Write`, `Exec`, `Git`, `GitWrite`, `Pane` or `Github`. `Git` holds the read verbs (status, diff, log), and `GitWrite` holds add and commit. `Github` holds the three GitHub read tools (see github-tools). The set of tools a session sees MUST be a filter over families. `Toolset::Code` MUST include `Read`, `Search`, `Write`, `Exec`, `Git` and `GitWrite`, and MUST NOT include `Pane`, `Github` or any external tool. A worker session and an orchestrator session MUST NOT see `Github`. The per-family toggles MUST apply as a second filter: a family whose toggle is off is not registered, offered or executed, even when a toolset includes it. `Github` is the one family that a chat can also switch on for itself, through a grant the user gives with `/github` (see github-tools, The chat grant); that grant is part of the filter and never changes the saved toggle.
-`IssueDraft` holds `gh_issue_draft` (see issue-draft). It is on by default (`[ai.tools] issue_draft`), offered only with `[ai.tools] enabled` on, and never given to a worker or the orchestrator turn: `Toolset::families` does not add it.
+`IssueDraft` holds `gh_issue_draft` (see issue-draft). It is on by default (`[ai.tools] issue_draft`), offered only with `[ai.tools] enabled` on, and never given to a worker: `Toolset::families` does not add it. The orchestrator turn gets it from the saved switch, added by the app as in a plain chat (issue-draft, #769).
 (Previously: eight families, with no `IssueDraft`; before that, seven, with no `Github` and no chat grant.)
 
 #### Scenario: Code toolset [auto]

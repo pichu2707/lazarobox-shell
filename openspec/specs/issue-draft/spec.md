@@ -7,7 +7,7 @@ The chat model drafts a GitHub issue about lazarobox (an idea or goal, or a bug)
 ## Requirements
 
 ### Requirement: The tool
-There MUST be one tool, `gh_issue_draft`, in the family `IssueDraft` (see agent-tools, Tool families), on by default with `[ai.tools] issue_draft` while the `[ai.tools]` master switch is on. Workers and the orchestrator turn MUST NOT get it. It has three required arguments: `kind` (`idea` or `bug`), `title` (at most 120 characters) and `description` (at most 2000 characters). The caps are the form's own. An empty field, an unknown kind, a title with a line break or a field over its cap MUST return an error to the model; nothing is cut silently.
+There MUST be one tool, `gh_issue_draft`, in the family `IssueDraft` (see agent-tools, Tool families), on by default with `[ai.tools] issue_draft` while the `[ai.tools]` master switch is on. Workers MUST NOT get it. The orchestrator (coordinator) turn gets it exactly when a plain chat would, by the saved `issue_draft` switch with the master switch on, and the tool's y/n and the filled Feedback form work as in a plain chat (#769). It has three required arguments: `kind` (`idea` or `bug`), `title` (at most 120 characters) and `description` (at most 2000 characters). The caps are the form's own. An empty field, an unknown kind, a title with a line break or a field over its cap MUST return an error to the model; nothing is cut silently.
 
 #### Scenario: A bad draft is the model's to fix [auto]
 - GIVEN a call with an empty title, an unknown kind, a 121-character title or a 2001-character description
@@ -62,12 +62,25 @@ The form MUST open when the turn ends, however it ends (including a failure or a
 - THEN the form does not open, the screen and its footer are as they were, and a system line names the draft's title
 
 ### Requirement: When the model offers a draft
-A turn that offers `gh_issue_draft` MUST end the tools block of its system prompt with one sentence telling the model to call the tool to offer a lazarobox issue only when the user asks for one, when it cannot do what was asked because lazarobox lacks it, or when a lazarobox tool or the chat fails, never for errors in the user's own code or commands, and that the tool's y/n is the user's permission, so it does not ask first (D5). A turn that does not offer the tool (an engine without tools, the master switch or the `issue_draft` toggle off, a worker, the orchestrator turn) MUST NOT carry the sentence.
+A turn that offers `gh_issue_draft` MUST end the tools block of its system prompt with one sentence telling the model to call the tool to offer a lazarobox issue only when the user asks for one, when it cannot do what was asked because lazarobox lacks it, or when a lazarobox tool or the chat fails, never for errors in the user's own code or commands, and that the tool's y/n is the user's permission, so it does not ask first (D5). A turn that does not offer the tool (an engine without tools, the master switch or the `issue_draft` toggle off, a worker) MUST NOT carry the sentence. A coordinator turn that offers the tool also tells the model to call it itself and never to start a worker to report an issue.
 
 #### Scenario: Only with the tool [auto]
-- GIVEN the tools block of a turn with the `IssueDraft` family, and of turns without it (toggle off, master switch off, an engine without tools, a worker, the orchestrator)
+- GIVEN the tools block of a turn with the `IssueDraft` family, and of turns without it (toggle off, master switch off, an engine without tools, a worker)
 - WHEN the system prompt is built
 - THEN only the first has the sentence, once
+
+### Requirement: The orchestrator drafts issues itself
+With ORCH on, the coordinator's tools are its own plus `gh_issue_draft` when the saved `issue_draft` switch is on (and the master switch), under the plain chat's rules; a worker never gets the family, whatever the menu holds. The coordinator's system prompt then carries the draft sentence and says it drafts the issue itself instead of starting a worker.
+
+#### Scenario: A coordinator draft opens the form [auto]
+- GIVEN an orchestrating chat with the `issue_draft` switch on
+- WHEN the coordinator calls `gh_issue_draft`, the user presses `y` and the turn ends
+- THEN the Feedback form opens filled with the draft, and nothing is sent until Ctrl+S
+
+#### Scenario: Switch off, or a worker [auto]
+- GIVEN the `issue_draft` switch off, or any worker toolset under a menu that has it
+- WHEN the toolset and the prompt are built
+- THEN there is no `gh_issue_draft` and no draft sentence
 
 ### Requirement: The `/feedback` hint
 When a plain chat turn does not offer `gh_issue_draft` (an engine without tools, the master switch off, or the `issue_draft` toggle off), a failed turn or a tool result that is an `Error` MUST add the system line `If this looks like a lazarobox problem, type /feedback to report it` (D6), at most once per turn. A `Denied` result, a clean turn, a turn that offers the tool and an orchestrated turn MUST NOT add it. A cancelled turn is not a failed one.

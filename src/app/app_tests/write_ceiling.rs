@@ -151,7 +151,10 @@ fn an_orchestrator_turn_carries_the_menu_plus_the_grant() {
     let effects = ask(&mut a, "plan it");
     let (_, _, request, orch) = orchestrated(&effects).expect("a turn");
     assert_eq!(orch.ceiling, a.ai.families().with(Family::Write));
-    assert_eq!(request.families, Toolset::Orchestrator.families());
+    assert_eq!(
+        request.families,
+        Toolset::Orchestrator.families().with(Family::IssueDraft)
+    );
     assert!(!a.ai.toggle(ToolToggle::Write), "the saved toggle is off");
 }
 

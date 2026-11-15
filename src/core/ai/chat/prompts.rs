@@ -179,6 +179,11 @@ const ABILITIES: [(Family, &str); 3] = [
 /// that the tool's own y/n is the permission. One sentence, ASCII.
 pub(crate) const DRAFT_OFFER: &str = "Call the issue draft tool to offer a lazarobox issue only when the user asks for one, when you cannot do what was asked because lazarobox lacks it, or when a lazarobox tool or this chat fails, never for errors in the user's own code or commands; its yes/no prompt is the user's permission, so do not ask first.";
 
+/// What a coordinator that offers the draft tool is told on top of
+/// [`DRAFT_OFFER`]: it drafts the issue itself, no worker can (#769).
+pub(crate) const COORDINATOR_DRAFT: &str =
+    "You call the issue draft tool yourself; never start a worker to report an issue.";
+
 /// `system` for a turn that offers tools: the built-in "no access" sentence
 /// becomes the tools block. A prompt without that sentence (the user's own
 /// file) gets the block as a last bullet instead. Only a turn with tools calls
@@ -199,7 +204,12 @@ pub fn with_tools(system: &str, families: FamilySet) -> String {
     };
     // Only a turn that offers the draft tool hears when to offer a draft.
     let block = if families.contains(Family::IssueDraft) {
-        format!("{block} {DRAFT_OFFER}")
+        let own = if families.contains(Family::Orchestra) {
+            format!(" {COORDINATOR_DRAFT}")
+        } else {
+            String::new()
+        };
+        format!("{block} {DRAFT_OFFER}{own}")
     } else {
         block
     };
