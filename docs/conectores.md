@@ -594,4 +594,4 @@ Los textos son los que ves en el pie del menú o en el chat. Ninguno contiene un
 
 ## Y ahora, ¿qué?
 
-Abre un chat con **Tools** activado y pide algo sencillo (por ejemplo, «lista mis propiedades de Search Console»). Cada llamada te mostrará servidor, herramienta y argumentos, y esperará tu `y`. Para el modelo de amenazas completo de los servidores MCP propios, consulta la sección [Tus propios servidores MCP](../README.md#tus-propios-servidores-mcp-aimcpservers) del README.
+Abre un chat con **Tools** activado y pide algo sencillo (por ejemplo, «lista mis propiedades de Search Console»). Cada llamada te mostrará servidor, herramienta y argumentos, y esperará tu `y`. Para el modelo de amenazas completo de los servidores MCP propios, consulta la sección [Tus propios servidores MCP](../README.es.md#tus-propios-servidores-mcp-aimcpservers) del README.
