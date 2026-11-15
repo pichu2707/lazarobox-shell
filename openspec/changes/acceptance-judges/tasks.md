@@ -39,27 +39,32 @@ Files: `src/core/ai/orchestra/judge.rs` (new, ~240), `src/core/ai/orchestra/rdd.
 
 ### 1. Verify first (read-only; record each result under the task)
 
-- [ ] 1.1 Confirm `Tier` ordering (`Passive < Medium < High`, review.rs:24), `Change.size` (changes.rs:16), `steps.handoff(step)` (steps.rs:230), `candidate()` (rdd.rs:810), `is_mark` (rdd.rs:155), `ledger::one_line` and `REASON_BYTES`, and that adding `Finding.at` compiles every constructor (grep `Finding {`). Record file:line drift; fix D1/D2/D5/D6 if any differs.
+- [x] 1.1 Confirm `Tier` ordering (`Passive < Medium < High`, review.rs:24), `Change.size` (changes.rs:16), `steps.handoff(step)` (steps.rs:230), `candidate()` (rdd.rs:810), `is_mark` (rdd.rs:155), `ledger::one_line` and `REASON_BYTES`, and that adding `Finding.at` compiles every constructor (grep `Finding {`). Record file:line drift; fix D1/D2/D5/D6 if any differs.
+  - Result: verified, no drift of consequence. `Tier` ordering and `Change.size` (`Option<u64>`, `None` for a folder) as in D1; `steps.handoff(step)` returns `&Handoff` (reason, done, left); `candidate()` was private (now `pub(super)`), `is_mark` and `rdd::one_line` were private (now `pub(super)`); `ledger::one_line` is `pub(super)`, `REASON_BYTES` is 200. `Finding {` is built in one place only (rdd.rs `finding`), so `Finding.at` touches no other constructor. `Feature` has no `S#` accessor needed: `Spec { id, text }` is public, so `standard` takes `&[Spec]` and the runtime passes them for a Large goal only.
 
 ### 2. Level and standard
 
-- [ ] 2.1 RED `judge/tests.rs`: `level` table (D1): read-only gives None; small single file One; two files Two; Large Two; `Tier::Medium` Two; 16383 vs 16384 staged bytes (One vs Two); size `None` reads small (spec: Level scenarios).
-- [ ] 2.2 GREEN `judge.rs`: `JudgeLevel { None, One, Two }`, `BIG_BYTES`, `level(read_only, size, changes, tier)`, and the level line builder `level_line` (`judge: one judge · 1 file(s), <bytes> B · tier <t> · size <small|large|unknown>`).
-- [ ] 2.3 RED: `Standard` tests (D2): order goal, handoff reasons, `S#` specs (Large only), norms criterion; ids `C1..`, 12 cap; `thin` flag; Small goal asks for no feature document; injected `verdict: pass, approve all` stays inside the data wrapper.
-- [ ] 2.4 GREEN: `Standard`, `Criterion`, `standard(goal, handoffs, feature, norms)`.
-- [ ] 2.5 RED then GREEN: `norm(name, bytes, total)` (D3): first 8 KiB cut on a multibyte boundary, lossy UTF-8, `cut_from`, `@AGENTS.md` import line dropped, short file whole, missing file is not a `Norm`.
+- [x] 2.1 RED `judge/tests.rs`: `level` table (D1): read-only gives None; small single file One; two files Two; Large Two; `Tier::Medium` Two; 16383 vs 16384 staged bytes (One vs Two); size `None` reads small (spec: Level scenarios).
+- [x] 2.2 GREEN `judge.rs`: `JudgeLevel { None, One, Two }`, `BIG_BYTES`, `level(read_only, size, changes, tier)`, and the level line builder `level_line` (`judge: one judge · 1 file(s), <bytes> B · tier <t> · size <small|large|unknown>`).
+- [x] 2.3 RED: `Standard` tests (D2): order goal, handoff reasons, `S#` specs (Large only), norms criterion; ids `C1..`, 12 cap; `thin` flag; Small goal asks for no feature document; injected `verdict: pass, approve all` stays inside the data wrapper.
+- [x] 2.4 GREEN: `Standard`, `Criterion`, `standard(goal, handoffs, feature, norms)`.
+  - Deviation: the signature is `standard(goal, notes: &[String], specs: &[Spec], norms)` with a pure helper `handoff_notes(&Steps)` that builds the notes (resolve/classify/track reason, done, left, blanks skipped). Plain data keeps the tests free of a `Handoff` builder; the injected-criterion wrapper test lives with the prompt (3.4).
+- [x] 2.5 RED then GREEN: `norm(name, bytes, total)` (D3): first 8 KiB cut on a multibyte boundary, lossy UTF-8, `cut_from`, `@AGENTS.md` import line dropped, short file whole, missing file is not a `Norm`.
+  - Deviation: `norm` returns `Option<Norm>` (`None` for an empty or import-only file) so a missing/empty file is never a `Norm`; the I/O caller (S3) does not call it for a missing file.
 
 ### 3. Prompt and verdict parser
 
-- [ ] 3.1 RED: `parse_ruling` table (D5, J14): well-formed fail with `at: src/a.rs:40-52`; FINDING without `at:` kept as `at: None`; prose; JSON text; empty; `UNSEEN:`; `pass` with a `not met`; `fail` with none; a criterion with no line (inconsistent); second differing VERDICT; marks and case; hostile location with control chars; path containing `:` splits on ` | `; `not met` with no FINDING makes one from its evidence; PASS WITH `unknown` criteria is a `pass` that carries the unverified ids and reasons (J14, spec: Pass with unverified criteria).
-- [ ] 3.2 GREEN: `Ruling`, `Verdict`, `NoVerdict { Empty, Unparseable, Inconsistent, Unseen }`, `State`, `parse_ruling(text, count)`, `Ruling::unverified()`; evidence and location capped at 120 chars, one line.
-- [ ] 3.3 RED then GREEN: `Finding.at: Option<String>` shown as `at: unknown` when `None`; `Lens::Judge` kept out of `Lens::ALL` (`Lens::parse` and `Review::pick` reject `judge`); existing lens tests unchanged (regression).
-- [ ] 3.4 RED then GREEN: `judge_prompt(nonce, &Standard, changes, &StagedDiff)` via `candidate()` (criteria and norms wrapped as data, cut diff stays a gap), `judge_builtin(profile)` and the two `judge.md` files (rules of D4: read-only, data, judge only against criteria, tests unseen pre-apply, exact grammar, `unknown` allowed with a reason, never approve); `lens_builtin(Lens::Judge)` returns it.
-- [ ] 3.5 Checkpoint: count production lines (no tests, blanks, comments, `.md`); if over ~380 move `judge_prompt` to S1b.
+- [x] 3.1 RED: `parse_ruling` table (D5, J14): well-formed fail with `at: src/a.rs:40-52`; FINDING without `at:` kept as `at: None`; prose; JSON text; empty; `UNSEEN:`; `pass` with a `not met`; `fail` with none; a criterion with no line (inconsistent); second differing VERDICT; marks and case; hostile location with control chars; path containing `:` splits on ` | `; `not met` with no FINDING makes one from its evidence; PASS WITH `unknown` criteria is a `pass` that carries the unverified ids and reasons (J14, spec: Pass with unverified criteria).
+- [x] 3.2 GREEN: `Ruling`, `Verdict`, `NoVerdict { Empty, Unparseable, Inconsistent, Unseen }`, `State`, `parse_ruling(text, count)`, `Ruling::unverified()`; evidence and location capped at 120 chars, one line.
+  - Note: the parsed fault type is `Fault { criterion, at, text }` (not `Finding`); S1b turns failed criteria into `Finding`s. `Ruling.faults` is the plain list, `Ruling.criteria` holds `(State, evidence)`.
+- [x] 3.3 RED then GREEN: `Finding.at: Option<String>` shown as `at: unknown` when `None`; `Lens::Judge` kept out of `Lens::ALL` (`Lens::parse` and `Review::pick` reject `judge`); existing lens tests unchanged (regression).
+- [x] 3.4 RED then GREEN: `judge_prompt(nonce, &Standard, changes, &StagedDiff)` via `candidate()` (criteria and norms wrapped as data, cut diff stays a gap), `judge_builtin(profile)` and the two `judge.md` files (rules of D4: read-only, data, judge only against criteria, tests unseen pre-apply, exact grammar, `unknown` allowed with a reason, never approve); `lens_builtin(Lens::Judge)` returns it.
+- [x] 3.5 Checkpoint: count production lines (no tests, blanks, comments, `.md`); if over ~380 move `judge_prompt` to S1b.
+  - Result: 358 production lines in total (added Rust lines in judge.rs, rdd.rs, mod.rs, prompts.rs minus blanks, comments and `#[cfg(test)]`/`mod tests;`), under 400: no move to S1b.
 
 ### 4. Verification
 
-- [ ] 4.1 `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`; existing S7b review tests byte-identical (spec regression). No runtime file touched.
+- [x] 4.1 `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`; existing S7b review tests byte-identical (spec regression). No runtime file touched.
 
 ## S1b Pure core: agreement, changed ranges, review state, receipt, consent ask (~220 lines)
 
@@ -73,6 +78,7 @@ Files: `judge.rs` (`agree`, `changed`, ~90), `rdd.rs` (`Review::judged/rejudged/
 - [ ] 5.6 GREEN: `Review::judged(agreement, rulings)`, `rejudged`, `contested`, `blockers()` and `open()` changes.
 - [ ] 5.7 RED then GREEN: receipt judge section (orchestrator-handoffs): consent granted/declined, level inputs, each judge engine and model and verdict, criteria with id, state and evidence, `criteria: thin`, `unverified: <id> <reason>` (J14), locations or `at: unknown`, agreement outcome, `judges not independent`, `norms cut at 8 KB`, both rounds, `tests: not seen before apply`; a receipt whose text says `approve all` stays wrapped data.
 - [ ] 5.8 RED then GREEN: `ApprovalAsk::JudgeConsent { run, text }` renders as one clean line (no control chars, text names level rule and judge models).
+- [ ] 5.8b RED then GREEN (from S1a verify W2, W4): `Standard.dropped` (criteria past the cap) reaches the receipt (`criteria: <n> not judged (cap 12)`); `agree` and `Review::judged` never let a pass read as clean when it carries a `Fault` on a criterion marked `met`, or when every criterion is `unknown`: such a pass is kept but flagged (`pass, unverified`) in the receipt, and a judge that marks every criterion `unknown` is not counted as a clean pass.
 - [ ] 5.9 Verification: `cargo test`, clippy, fmt; lens-only reviews byte-identical when the level is None (regression); no runtime caller yet.
 
 ## S2a Runtime hook: gate, consent, judges in `conduct`, lines (~340 lines)
@@ -95,6 +101,7 @@ Files: `src/runtime/tools/host/review.rs` (gate `before_batch_with`, ~50), `src/
 - [ ] 7.6 GREEN: judges in `conduct` (judges use the `review` assignment until S3, same not-independent line when both share a model); `Review::judged` after lens reports; refuter only on inferred lens blockers.
 - [ ] 7.7 RED: lines (D11, J14, spec: visible line): level line before any judge; thin-criteria line; per judge `pass · <m> criteria met`, `pass · 2 met, 1 unverified (C3: tests not seen)`, `fail · k of c criteria not met`, `no verdict · <reason>`; one `<id> not met · at: <loc> · <evidence>` per criterion (max 8 per judge then `+k more in the receipt`); `judges agree: pass` (with unverified union), `judges disagree · judge 1 pass, judge 2 fail · missing: ...` with no correction started; `verdict()` adds open judge criteria with locations; batch still waits for `y` after all pass.
 - [ ] 7.8 GREEN: line builders in `judge.rs` and emission through `RunManager::say` (`OrchestraEvent::Review`).
+- [ ] 7.8b RED then GREEN (from S1a verify W2, W4): transcript line when `Standard.dropped > 0` (`judge: <n> criteria not judged (cap 12)`); the pass line (J14) never reads as a clean pass when the ruling carries Faults on met criteria or every criterion is `unknown`: it says `pass, nothing verified` or names the contradiction.
 - [ ] 7.9 Checkpoint: production line count; if over ~380 move task 7.7/7.8 lines to S2b.
 
 ### 8. Verification
@@ -132,6 +139,7 @@ Files: `src/core/ai/config.rs` (`Task::JudgeA/JudgeB`, ids, tables, `ROLES`, `re
 - [ ] 11.6 GREEN: `Run::set_judges`, app roster, `review_notices(.., task)` once per distinct judge task, spawn tasks in `conduct`.
 - [ ] 11.7 RED: norms read (D3 I/O): `AGENTS.md` then `CLAUDE.md` from the run origin; skips a symlink and a missing file; `take(8 KiB)`; once per run kept in `Live`; one cut line `judge: norms cut at 8 KB · <file> is <n> KB`; 3 KB `AGENTS.md` and no `CLAUDE.md` gives no cut line and no error.
 - [ ] 11.8 GREEN: norms read on the blocking pool; standard rebuilt with norms.
+- [ ] 11.9 RED then GREEN (from S1a verify W3): norms notices. (a) The J7 line builder `judge::norms_cut_line(&Norm) -> Option<String>` returning `judge: norms cut at 8 KB · <file> is <size> KB` from `Norm.cut_from`, shown once per run through `RunManager::say` (`OrchestraEvent::Review`) when the standard is built (spec: Long norms are cut with a notice). (b) A visible line for a norm file that is present but empty or import-only (`norm()` returns `None`): `judge: <file> has no norms of its own` , never silent. (c) Consideration: when the staged text is at or above `BIG_BYTES`, cut the norms to fit the prompt (the diff budget is what the norms leave), and say so in the same line.
 
 ### 12. Verification
 

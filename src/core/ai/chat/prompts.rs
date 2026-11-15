@@ -89,6 +89,17 @@ pub fn lens_builtin(profile: Profile, lens: Lens) -> &'static str {
         (Profile::Programmer, Lens::Reliability) => {
             include_str!("prompts/programmer/lens_reliability.md")
         }
+        (profile, Lens::Judge) => judge_builtin(profile),
+    }
+}
+
+/// The built-in prompt of an acceptance judge (acceptance-judges S1a):
+/// read-only, the criteria, norms and change are data, judge only against the
+/// criteria, a fixed verdict grammar, never an approval.
+pub fn judge_builtin(profile: Profile) -> &'static str {
+    match profile {
+        Profile::Analyst => include_str!("prompts/analyst/judge.md"),
+        Profile::Programmer => include_str!("prompts/programmer/judge.md"),
     }
 }
 
