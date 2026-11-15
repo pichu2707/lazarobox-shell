@@ -506,3 +506,86 @@ fn the_step_reply_on_a_read_only_goal_says_what_may_be_spawned() {
         "{reply}"
     );
 }
+
+// Answer gate (agent-orchestrator, "Gates on step state are visible and
+// bounded"): the exact words of the re-ask and of its pane line.
+mod answer_gate {
+    use crate::core::ai::orchestra::steps::{Gate, Step, answer_line, answer_text};
+
+    #[test]
+    fn the_gate_is_labelled_answer() {
+        assert_eq!(Gate::Answer.label(), "answer");
+    }
+
+    #[test]
+    fn authorize_open_asks_for_the_handoff_in_exact_words() {
+        assert_eq!(
+            answer_text(Some(Step::Authorize), &[], None),
+            "answer gate: your turn ended without a tool call and step authorize is not \
+             closed (closed: none). Text, prose or a call written as JSON does nothing. \
+             Call the handoff tool now: step authorize, scope read_only to answer yourself \
+             or implement to change files."
+        );
+        assert_eq!(
+            answer_line(Some(Step::Authorize), None),
+            "answer gate: the coordinator answered before handing off authorize; asked it \
+             to hand off authorize first"
+        );
+    }
+
+    #[test]
+    fn another_open_step_asks_to_go_on_and_implement_asks_for_the_worker() {
+        let closed = [Step::Authorize, Step::Explore];
+        assert_eq!(
+            answer_text(Some(Step::Resolve), &closed, None),
+            "answer gate: your turn ended without a tool call and step resolve is not \
+             closed (closed: authorize, explore). Call handoff for resolve now."
+        );
+        assert_eq!(
+            answer_text(Some(Step::Implement), &Step::ALL[..4], None),
+            "answer gate: your turn ended without a tool call and step implement is not \
+             closed (closed: authorize, explore, resolve, classify). Spawn the code worker now."
+        );
+        assert_eq!(
+            answer_line(Some(Step::Resolve), None),
+            "answer gate: the coordinator stopped before step resolve; asked it to go on"
+        );
+    }
+
+    #[test]
+    fn a_written_call_names_the_tool_and_a_step_gap_follows() {
+        assert_eq!(
+            answer_text(None, &[], Some("spawn_agent")),
+            "answer gate: you wrote a call to spawn_agent as text; nothing was run. \
+             Make a real tool call."
+        );
+        assert_eq!(
+            answer_text(Some(Step::Explore), &[Step::Authorize], Some("handoff")),
+            "answer gate: you wrote a call to handoff as text; nothing was run. Make a \
+             real tool call. Step explore is not closed (closed: authorize)."
+        );
+        for step in [None, Some(Step::Explore)] {
+            assert_eq!(
+                answer_line(step, Some("spawn_agent")),
+                "answer gate: the coordinator wrote a spawn_agent call as text; nothing \
+                 was run; asked it to make a real tool call"
+            );
+        }
+    }
+
+    #[test]
+    fn the_refusal_arm_is_the_step_re_ask_and_every_text_is_ascii() {
+        let closed = &Step::ALL[..5];
+        let text = Gate::Answer.refusal(Step::Implement, closed);
+        assert_eq!(text, answer_text(Some(Step::Implement), closed, None));
+        for step in Step::ALL {
+            let at = Step::ALL.iter().position(|s| *s == step).unwrap();
+            for written in [None, Some("spawn_agent")] {
+                let text = answer_text(Some(step), &Step::ALL[..at], written);
+                let line = answer_line(Some(step), written);
+                assert!(text.is_ascii(), "{text}");
+                assert!(line.is_ascii(), "{line}");
+            }
+        }
+    }
+}
