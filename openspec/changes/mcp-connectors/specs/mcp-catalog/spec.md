@@ -2,7 +2,7 @@
 
 ## Purpose
 
-A curated catalog of existing MCP servers (C2: no home-grown connectors, lazarobox does not reimplement any Google or Microsoft API) that tells the user exactly what to declare in `config.toml` (C4, C5), which values go to `secrets.toml` (C6), how to install and log in, and the read/write class of each tool (C11). The catalog never declares a server by itself: a server is active only when the user's `[[ai.mcp.servers]]` entry declares it (see mcp-servers). Entries follow the order of C8: `clarity`, `ga4`, then `gsc`, then the Workspace entries `google` and `apps-script`. Slice tags: [S2] catalog core and the Clarity and GA4 entries, [S3] probe, [S5] GSC, [S6c] Workspace entries, filters and catalog fixes, [S6b1] the GSC OAuth way's login and chat-start check (the former tag [S6] is split into S6a-S6d on 2026-11-11). Upstream facts marked V were verified on 2026-11-11 (proposal, "Upstream facts re-verified on 2026-11-11"). Scenario tags: [auto] = `cargo test` (pure data, fake server child); [manual] = real service account. Items marked "assumption" are proposals, not user decisions; binary names are all verified as of 2026-11-11 (no U remains on them).
+A curated catalog of existing MCP servers (C2: no home-grown connectors, lazarobox does not reimplement any Google or Microsoft API) that tells the user exactly what to declare in `config.toml` (C4, C5), which values go to `secrets.toml` (C6), how to install and log in, and the read/write class of each tool (C11). The catalog never declares a server by itself: a server is active only when the user's `[[ai.mcp.servers]]` entry declares it (see mcp-servers). Entries follow the order of C8: `clarity`, `ga4`, then `gsc`, then the Workspace entries `google` and `apps-script`. Slice tags: [S2] catalog core and the Clarity and GA4 entries, [S3] probe, [S5] GSC, [S6c] Workspace entries, filters and catalog fixes, [S6b1] the GSC OAuth way's login and chat-start check, [S9] the class read by a server's `reads` approval level (C13, owner decision 2026-11-14) (the former tag [S6] is split into S6a-S6d on 2026-11-11). Upstream facts marked V were verified on 2026-11-11 (proposal, "Upstream facts re-verified on 2026-11-11"). Scenario tags: [auto] = `cargo test` (pure data, fake server child); [manual] = real service account. Items marked "assumption" are proposals, not user decisions; binary names are all verified as of 2026-11-11 (no U remains on them).
 
 Terms: "entry" = one catalog entry. "Declared" = a `[[ai.mcp.servers]]` entry whose `name` equals the entry id. "Class" = `read` or `write`.
 
@@ -34,11 +34,12 @@ A user server MUST be treated as a catalog entry when its `name` equals the entr
 - WHEN its tools are registered
 - THEN no catalog rule applies and the server's command is unchanged
 
-### Requirement: Read/write class is recorded only [S2]
-Each known tool of an entry MUST have a class, `read` or `write` (C11). A tool the server lists that the catalog does not know MUST get class `write` (assumption: the safe default). The class MUST NOT change approval: every call to a tool of a declared entry MUST need the user's `y`, in `ask`, `auto` and `run`, whatever its class and whatever the server's `readOnlyHint` says (C11; see mcp-servers, Every call needs approval, and agent-tools, Approval model). A later change decides how classes meet the `run` mode of chat-auto-permissions.
+### Requirement: Read/write class [S2][S9]
+Each known tool of an entry MUST have a class, `read` or `write` (C11). A tool the server lists that the catalog does not know MUST get class `write` (assumption: the safe default), and so MUST every tool of a server that is not a catalog entry (`Entry::class`, src/core/ai/mcp_catalog.rs:186-191; `class(server, tool)`, :205-207). [S9] The class changes approval only through the server's approval level (C13; see mcp-servers, Approval level per server): at `reads`, a tool of class `read` runs unasked and every other tool asks, but only when the declared server's `command` equals the entry's command (owner decision 2026-11-15, design D29; the comparison the area already makes): a server named like an entry but declared with another command has no `read` tool, so every call asks at `reads`; at `ask` (the default) and at `all` the class changes nothing. Whatever the level, the server's own `readOnlyHint` MUST NOT be read for this decision, and in `ask`, `auto` and `run` alike a tool of a server at level `ask` needs the user's `y` whatever its class (C11; see mcp-servers, Every call needs approval, and agent-tools, Approval model).
+(Previously: "Read/write class is recorded only": the class never changed approval; a later change was to decide how classes meet `run`.)
 
-#### Scenario: Read tool still asks [auto]
-- GIVEN declared `ga4` and its `run_report` of class `read`, annotated `readOnlyHint` by the server, in a chat with approval `auto`, and in another run `run`
+#### Scenario: Read tool still asks at the default level [auto]
+- GIVEN declared `ga4` with no `approval` key and its `run_report` of class `read`, annotated `readOnlyHint` by the server, in a chat with approval `auto`, and in another run `run`
 - WHEN the model calls it
 - THEN a confirm is shown and the server is not contacted before `y`
 
@@ -46,6 +47,21 @@ Each known tool of an entry MUST have a class, `read` or `write` (C11). A tool t
 - GIVEN declared `clarity` listing a tool `new_tool` the catalog does not know
 - WHEN the class is looked up
 - THEN it is `write`
+
+#### Scenario: A server that is not an entry has only write tools [auto]
+- GIVEN a declared server `fs` (not a catalog entry) at level `reads` listing `read_text`
+- WHEN the class is looked up and the model calls it
+- THEN the class is `write` and a confirm is shown before the server is contacted
+
+#### Scenario: Another command voids the classes at reads [auto]
+- GIVEN a server declared as `gsc` with a `command` that is not the catalog entry's, at level `reads`
+- WHEN the model calls a tool the catalog classes `read` for `gsc`
+- THEN a confirm is shown, and at level `all` the same call runs unasked
+
+#### Scenario: Class decides at reads [auto]
+- GIVEN declared `ga4` at level `reads` with the catalog's command, its `run_report` of class `read` and another listed tool the catalog classes `write`
+- WHEN the model calls each
+- THEN `run_report` runs with no confirm and the write tool shows a confirm and is not contacted before `y`
 
 ### Requirement: Pre-installed binary [S2]
 The run command of every entry MUST be an installed binary (installed by `uv tool install`, `pipx install` or `npm i -g`), never a first-run download such as `uvx`, `npx` or `pipx run`, which could exceed the 20-second handshake.
@@ -249,7 +265,12 @@ For a declared `google` server, lazarobox MUST register a Gmail tool (a tool who
 #### Scenario: Other servers untouched [auto]
 - GIVEN a declared server `mail` listing `send_gmail_message` and `start_google_auth`
 - WHEN the registry is built
-- THEN `mail__send_gmail_message` and `mail__start_google_auth` are registered and still need `y` on every call
+- THEN `mail__send_gmail_message` and `mail__start_google_auth` are registered and, at the default level, still need `y` on every call
+
+#### Scenario: The filters hold at every approval level [S9, auto]
+- GIVEN a declared `google` at level `all`, and in another run at `reads`, and a fake server listing `search_gmail_messages`, `send_gmail_message` and `start_google_auth`
+- WHEN the registry is built and the model calls `google__send_gmail_message`
+- THEN neither `send_gmail_message` nor `start_google_auth` is registered, the call is refused as an unknown tool and the server is never contacted
 
 ### Requirement: Apps Script entry [S6c]
 Updated on 2026-11-11 with clasp 3.4.1 (V).

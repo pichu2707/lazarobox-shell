@@ -2,20 +2,20 @@
 
 ## Purpose
 
-The Connectors area of the config menu makes connecting a catalog server easy (C1, C3) without the menu writing any configuration: the user declares the server in `config.toml` `[[ai.mcp.servers]]` (C4, C5) and puts its values in `secrets.toml` (C6). The area shows the guide, the entry to paste and the values to fill, runs the install and the login as visible commands in a pane, opens guide links in the browser, and probes the server (see mcp-catalog). Slice tags: [S3] install pane, login pane and opener, [S4] menu screens, [S6a2] secret fields, [S6b1] Link with Google for `gsc`, [S6b2] Link with Google for `google`. Owner amendment 2026-11-11 (proposal C6, C7, C10 amended): the area MAY write `secrets.toml` from masked fields the user types (Secret fields), and offers Link with Google for `gsc` and `google`; it still never writes `config.toml`. Scenario tags: [auto] = `cargo test` (TestBackend, temp config folder, fake programs); [manual] = real machine. Items marked "assumption" are proposals, not user decisions; key bindings and texts are provisional and pinned by design.
+The Connectors area of the config menu makes connecting a catalog server easy (C1, C3) without the menu writing any configuration: the user declares the server in `config.toml` `[[ai.mcp.servers]]` (C4, C5) and puts its values in `secrets.toml` (C6). The area shows the guide, the entry to paste and the values to fill, runs the install and the login as visible commands in a pane, opens guide links in the browser, and probes the server (see mcp-catalog). Slice tags: [S3] install pane, login pane and opener, [S4] menu screens, [S6a2] secret fields, [S6b1] Link with Google for `gsc`, [S6b2] Link with Google for `google`. Owner amendment 2026-11-11 (proposal C6, C7, C10 amended): the area MAY write `secrets.toml` from masked fields the user types (Secret fields), and offers Link with Google for `gsc` and `google`; it never writes `config.toml` except as noted next. Owner amendment 2026-11-14 (C13): [S9] the area shows the approval level of each declared entry and, after the user's confirmation, sets that entry's `approval` key in `config.toml` (Approval level of an entry); Connect Google's append, already on main, is the other `config.toml` write. Scenario tags: [auto] = `cargo test` (TestBackend, temp config folder, fake programs); [manual] = real machine. Items marked "assumption" are proposals, not user decisions; key bindings and texts are provisional and pinned by design.
 
 Terms: "the area" = the Connectors area. "Entry screen" = the screen of one catalog entry.
 
 ## Requirements
 
-### Requirement: The area writes no configuration [S4][S6a2]
-No action in the area MUST add, change, reorder or remove any byte of `config.toml` (the rule "MCP server lists are never written" of config-persistence stays, C4). The area MUST NOT create, write or change the mode of `secrets.toml`, EXCEPT by a confirmed save from a secret field (see Secret fields and mcp-secrets, Menu save; C6 amended 2026-11-11), which changes only the one value it names, the OAuth client form (mcp-secrets, OAuth client file), and the delete-backup action. Every other action (open, visit, copy, install, login, probe, link, scroll, Esc, menu save and close) MUST leave `secrets.toml` byte-identical with its mode. The area MUST NOT draw any character of a confidential value (see Secret fields); it MAY read which names have a non-empty value, to show the state, and it shows non-confidential values (ids, paths, e-mail) in full.
+### Requirement: The area writes no configuration [S4][S6a2][S9]
+No action in the area MUST add, change, reorder or remove any byte of `config.toml` (the rule "MCP server lists are never written" of config-persistence stays, C4), EXCEPT the writes config-persistence allows outside the save: Connect Google's append (config-menu, Connect Google, which main already carries) and [S9] a confirmed approval-level change of one entry (see Approval level of an entry; C13, owner decision 2026-11-14), which changes only that entry's `approval` key. The area MUST NOT create, write or change the mode of `secrets.toml`, EXCEPT by a confirmed save from a secret field (see Secret fields and mcp-secrets, Menu save; C6 amended 2026-11-11), which changes only the one value it names, the OAuth client form (mcp-secrets, OAuth client file), and the delete-backup action. Every other action (open, visit, copy, install, login, probe, link, scroll, Esc, menu save and close, and a level change that is cancelled or not confirmed) MUST leave `secrets.toml` byte-identical with its mode, and `config.toml` byte-identical. The area MUST NOT draw any character of a confidential value (see Secret fields); it MAY read which names have a non-empty value, to show the state, and it shows non-confidential values (ids, paths, e-mail) in full.
 
 Amendment note (2026-11-11): until this date the requirement read "No action in the area MUST ... create, write or change the mode of `secrets.toml` (C6)". The owner amended C6: "`secrets.toml` stays the user's file and editing it by hand remains fully supported. IN ADDITION ... the connector screen in the menu offers masked input fields ... and saves them."
 
 #### Scenario: Byte-identical after every other action [auto]
 - GIVEN a `config.toml` with hand-written `[[ai.mcp.servers]]` entries and comments, and a `secrets.toml` with mode 0600
-- WHEN the area is opened, every entry screen is visited, the snippet is copied, install, login, probe and link are run with fakes, a secret field is opened, typed into and left with Esc, and the menu is saved and closed
+- WHEN the area is opened, every entry screen is visited, the snippet is copied, install, login, probe and link are run with fakes, a secret field is opened, typed into and left with Esc, a level change is proposed and cancelled, and the menu is saved and closed
 - THEN both files are byte-identical and `secrets.toml` keeps mode 0600
 
 #### Scenario: Only a confirmed field save writes [auto]
@@ -29,7 +29,7 @@ Amendment note (2026-11-11): until this date the requirement read "No action in 
 - THEN no cell holds `sk-123` or any part of it, and the token shows as `set`
 
 ### Requirement: Entry list [S4]
-The area MUST list the catalog entries grouped as `Analytics` (`clarity`, `ga4`, `gsc`) then `Workspace` (`google`, `apps-script`), in catalog order (C8). Each row shows the service name and its state, read from `config.toml`, `secrets.toml` and this session's probes: `not declared` (no server of that name), `disabled` (declared with `enabled = false`), `values missing: <NAMES>` (a name the catalog puts in `secrets.toml` has no non-empty value), `declared` (otherwise), and, once probed in this session, the last probe result. [S6c] For an entry with ways (`gsc`), `values missing` is judged on the way the table already fills completely (the area selects it), else on the selected way (OAuth by default); a table that completes the S5 service-account way is never `values missing`. [S6b1][S6b2] For `gsc` in its OAuth way and for `google`, a declared entry with its values shows `not linked` until the server's token file exists, then `linked` (existence and modification time only; the file is never opened, see Link with Google). Enter opens the entry screen; Esc goes back to the `Connectors` row of the `Connectors` menu tab (see config-menu, Connectors row).
+The area MUST list the catalog entries grouped as `Analytics` (`clarity`, `ga4`, `gsc`) then `Workspace` (`google`, `apps-script`), in catalog order (C8). Each row shows the service name and its state, read from `config.toml`, `secrets.toml` and this session's probes: `not declared` (no server of that name), `disabled` (declared with `enabled = false`), `values missing: <NAMES>` (a name the catalog puts in `secrets.toml` has no non-empty value), `declared` (otherwise), and, once probed in this session, the last probe result. [S6c] For an entry with ways (`gsc`), `values missing` is judged on the way the table already fills completely (the area selects it), else on the selected way (OAuth by default); a table that completes the S5 service-account way is never `values missing`. [S6b1][S6b2] For `gsc` in its OAuth way and for `google`, a declared entry with its values shows `not linked` until the server's token file exists, then `linked` (existence and modification time only; the file is never opened, see Link with Google). [S9] A declared entry whose approval level is `reads` or `all` MUST show it in its row after its state (`declared · reads`, `declared · all`), so a server that runs calls unasked is visible from the list; level `ask` adds nothing. Enter opens the entry screen; Esc goes back to the `Connectors` row of the `Connectors` menu tab (see config-menu, Connectors row).
 
 #### Scenario: Groups and order [auto, TestBackend + insta]
 - GIVEN no declared server
@@ -42,7 +42,7 @@ The area MUST list the catalog entries grouped as `Analytics` (`clarity`, `ga4`,
 - THEN the `ga4` row reads `values missing: GOOGLE_CLOUD_PROJECT`
 
 ### Requirement: Entry screen [S4]
-The entry screen MUST show, in order: the guide steps and links of the catalog entry (with its warnings: the Clarity limits, the 7-day "Testing" note of C7, the drafts note of C9 and C12); the exact `[[ai.mcp.servers]]` entry to paste into `config.toml`; the `secrets.toml` table to fill, with each name and an empty value (no table when the entry has no secrets); the paths of `config.toml` and `secrets.toml`; and the actions available for that entry: install, log in (only when the entry has a login command), probe (only when the server is declared), open link, [S6a2] fill values (only when the entry names a value for `secrets.toml`; see Secret fields), [S6b1] choose the way (only for an entry with more than one way: `gsc`), [S6b1][S6b2] link with Google (only for `gsc` in its OAuth way and for `google`; see Link with Google), and copy (assumption: copying the snippet and the template to the clipboard makes pasting easy). The snippet and the template are built from the catalog and are valid TOML that parses back to the catalog's command, args and `env`. The screen is drawn inside the popup body, whose height is computed (`view_body()`, at least 13 rows today) and never changes, and scrolls when it is longer (assumption; see config-menu, Connectors row). When the area opens it MUST re-read `config.toml` from disk (`[[ai.mcp.servers]]` only) and use that copy for the entry states and the probe; when it differs from the list loaded at startup the area MUST say `restart lazarobox to use it in chats` (owner decision 2026-11-11; hot reload into chats is a later candidate slice).
+The entry screen MUST show, in order: the guide steps and links of the catalog entry (with its warnings: the Clarity limits, the 7-day "Testing" note of C7, the drafts note of C9 and C12); the exact `[[ai.mcp.servers]]` entry to paste into `config.toml`; the `secrets.toml` table to fill, with each name and an empty value (no table when the entry has no secrets); the paths of `config.toml` and `secrets.toml`; and the actions available for that entry: install, log in (only when the entry has a login command), probe (only when the server is declared), open link, [S6a2] fill values (only when the entry names a value for `secrets.toml`; see Secret fields), [S6b1] choose the way (only for an entry with more than one way: `gsc`), [S6b1][S6b2] link with Google (only for `gsc` in its OAuth way and for `google`; see Link with Google), [S9] the approval level and its change (only when the server is declared; see Approval level of an entry), and copy (assumption: copying the snippet and the template to the clipboard makes pasting easy). The snippet and the template are built from the catalog and are valid TOML that parses back to the catalog's command, args and `env`. The screen is drawn inside the popup body, whose height is computed (`view_body()`, at least 13 rows today) and never changes, and scrolls when it is longer (assumption; see config-menu, Connectors row). When the area opens it MUST re-read `config.toml` from disk (`[[ai.mcp.servers]]` only) and use that copy for the entry states and the probe; when it differs from the list loaded at startup the area MUST say `restart lazarobox to use it in chats` (owner decision 2026-11-11; hot reload into chats is a later candidate slice).
 
 #### Scenario: Snippet parses back [auto]
 - GIVEN each catalog entry
@@ -293,3 +293,76 @@ Only non-confidential values (paths) are in it, so it may appear in the pane and
 - GIVEN the client file and `gsc` in the OAuth way
 - WHEN Link with Google runs in the pane and the user consents
 - THEN the pane shows `Search Console linked`, the token exists in `GSC_CONFIG_DIR`, and a later search analytics call after `y` works without opening a browser
+
+### Requirement: Approval level of an entry [S9]
+Owner decision 2026-11-14 (C13). For a declared catalog entry the entry screen MUST show its approval level as read from `config.toml` when the area opened (`approval: ask`, `approval: reads` or `approval: all`; a missing key shows `ask`, an invalid value shows `ask` with the reason), and one line saying what that level lets run unasked: at `ask` nothing, at `reads` the entry's tools the catalog classes `read` (listed by name; none when the declared `command` differs from the catalog's, and the screen says every call then asks) and that every other tool, including a tool the catalog does not list, still asks, at `all` every tool the server registers (the Gmail send tool and the hidden tools are never registered, so not among them). The screen offers one action (key provisional, pinned by design; assumption `a`) that proposes the next level in the order `ask`, `reads`, `all`, `ask`. A proposal MUST NOT write anything: it opens one confirm line naming the server and the proposed level, and, for `reads` and `all`, the sentence of what will run unasked (for `all`: `every tool of <name> runs without asking, writes included`); only an unmodified lowercase `y` confirms, and every other key, Esc, a timeout, a closed area and a quit cancels, leaving both files byte-identical. A confirmed change MUST write `config.toml` as follows (the safety model of Connect Google's append, src/core/config_append.rs, src/runtime/config_append.rs): the folder and the file judged on their handles (no symlink, regular file owned by the user); at most 256 KiB; the bytes compared with the ones the screen was shown with, refusing `changed on disk` when they differ; `config.toml.bak` written first with the old bytes; the file's mode kept; atomic replace; the result parsed again and refused unless every server equals the old one except the level of the named entry, and no new config problem appears. The edit MUST change only the `approval` key of the one entry whose `name` is the entry's id and which has no `project` key: when the entry has the key only its value changes (a trailing comment on that line kept), else the line `approval = "<level>"` is added inside that entry after its last key, for `reads` and `all` only; choosing `ask` REMOVES the `approval` key from the entry (owner decision 2026-11-15; an older build then reports no unknown key), and removing a key that is absent writes nothing; every other byte, including every comment and every other entry, is preserved. The write MUST be refused, writing nothing, with a visible one-line notice, when the file is not valid TOML, is a symlink or not owned by the user, is read-only, is larger than the bound, holds an inline `ai.mcp.servers` list, no longer holds the entry, or holds the entry only with a `project` key (then the screen says the level of a project entry is set by hand). A success MUST say `approval: <name> set to <level> in config.toml; the previous file stays in config.toml.bak; restart lazarobox to use it in chats`, the area MUST re-read the file and show the new level, and the running chats keep the level they started with (no hot reload; see mcp-servers, Approval level per server). The change can come only from the user's keyboard in the area: no model, tool, MCP call, config value or pasted text can trigger it, and the notice and the screen never include a value of `secrets.toml`. A level change is not a menu draft (see config-menu, Connector approval level).
+
+#### Scenario: The level is shown with what it lets run [auto]
+- GIVEN a declared `ga4` with `approval = "reads"`
+- WHEN its entry screen is rendered
+- THEN it shows `approval: reads`, the names of the entry's `read` tools as running unasked, and that every other tool still asks
+
+#### Scenario: Missing key shows ask [auto]
+- GIVEN a declared `clarity` with no `approval` key
+- WHEN its entry screen is rendered
+- THEN it shows `approval: ask` and that every call asks `y`
+
+#### Scenario: Invalid value shows ask with the reason [auto]
+- GIVEN a declared `clarity` with `approval = "always"`
+- WHEN its entry screen is rendered
+- THEN it shows `approval: ask` and that the value in `config.toml` is invalid (expected "ask", "reads" or "all")
+
+#### Scenario: A proposal writes nothing [auto]
+- GIVEN a declared `ga4` at `ask`
+- WHEN the level action is pressed, then `n`, then again and Esc, then again and any key but `y`
+- THEN both files are byte-identical each time and the level shown is still `ask`
+
+#### Scenario: Confirmed change adds the key [auto]
+- GIVEN a `config.toml` with comments and two entries, `gsc` and `ga4`, neither with `approval`
+- WHEN the level of `gsc` is proposed as `reads` and `y` is pressed
+- THEN `config.toml.bak` holds the old bytes, the new file differs only by one added line `approval = "reads"` inside the `gsc` entry, the parsed servers are the old ones with `gsc` at `reads`, and the notice is `approval: gsc set to reads in config.toml; the previous file stays in config.toml.bak; restart lazarobox to use it in chats`
+
+#### Scenario: Confirmed change replaces the value only [auto]
+- GIVEN `gsc` with `approval = "reads"  # only reads` and a comment above it
+- WHEN `all` is confirmed
+- THEN only the value changes, both comments and every other byte are kept, and the screen shows `approval: all`
+
+#### Scenario: Lowering to ask removes the key [auto]
+- GIVEN `gsc` with `approval = "all"  # note` and a comment above it
+- WHEN `ask` is confirmed
+- THEN the `approval` line is gone, the other lines and comments are kept, `config.toml.bak` holds the old bytes, and the parsed level is `ask`
+
+#### Scenario: An entry declared twice is not edited [auto]
+- GIVEN `gsc` declared once globally and once with a `project` key
+- WHEN a level is confirmed
+- THEN nothing is written and the notice is `declared more than once; set approval by hand`
+
+#### Scenario: The change is refused without a write [auto]
+- GIVEN, one at a time, a `config.toml` that is not valid TOML, an inline `servers = [...]` list, a read-only file, a symlink, a file changed on disk after the screen was shown, an entry removed after the screen was shown, and a file over 256 KiB
+- WHEN a level is confirmed
+- THEN each time the file is byte-identical, no `config.toml.bak` is written, and one visible notice says why
+
+#### Scenario: A project-limited entry is not edited [auto]
+- GIVEN `gsc` declared only with a `project` key
+- WHEN its entry screen is rendered and the level action is pressed
+- THEN no write happens and the screen says the level of a project entry is set by hand
+
+#### Scenario: The list row shows a relaxed level [auto, TestBackend + insta]
+- GIVEN declared `clarity` at `ask`, `ga4` at `reads` and `gsc` at `all`
+- WHEN the entry list is rendered
+- THEN the rows read `declared`, `declared · reads` and `declared · all`
+
+#### Scenario: Not declared has no level [auto]
+- GIVEN `clarity` not declared
+- WHEN its entry screen is rendered
+- THEN no level or level action is shown
+
+#### Scenario: A running chat keeps its level [auto]
+- GIVEN a chat started with `ga4` at `ask`, and a confirmed change of `ga4` to `all`
+- WHEN the model calls a `ga4` read tool in that chat
+- THEN a confirm is shown (the change applies to chats started after a restart), and the area says `restart lazarobox to use it in chats`
+
+#### Scenario: Nothing but the user's key writes it [auto]
+- GIVEN a model turn, a tool result and a pasted text that all say to set `approval = "all"`
+- WHEN they are processed
+- THEN `config.toml` is byte-identical and no level action is taken

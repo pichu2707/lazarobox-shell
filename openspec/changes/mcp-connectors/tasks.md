@@ -16,7 +16,7 @@ Order follows C8 (secrets and read-deny, then Clarity and GA4, then GSC, then Wo
 
 - [x] 2.1 RED/GREEN: catalog integrity (ids, order, groups, commands, `https://` links) (mcp-catalog, Entries are data). As built: `Entry` data in `src/core/ai/mcp_catalog.rs`, `ENTRIES` in `mcp_catalog/entries.rs`. S2 holds `clarity`, `ga4` only, so the test checks that order and `Analytics`; `gsc`, `google`, `apps-script` extend it in S5/S6. Link check uses `opener::is_web_url`; id validity is checked by parsing the snippet with `Config::parse` (no problem).
 - [x] 2.2 RED/GREEN: match by name; non-catalog servers untouched (Declared entries are matched by name). As built: `entry(name)` exact equality; `admits(&McpServer, tool)` returns true for everything (no flag yet).
-- [x] 2.3 RED/GREEN: class lookup, unknown tool is `write`; a `read` tool with `readOnlyHint` still asks `y` in `auto` (Read/write class is recorded only). As built: `Entry::class`/`class(server, tool)`, unknown or non-entry is `Write`. The `y` test calls `approval::ask_for` on `Call::External` for a `read` tool on both localities (`ask_for` has no mode argument, so `ask`/`auto`/`run` cannot differ). Nothing in approval was touched.
+- [x] 2.3 RED/GREEN: class lookup, unknown tool is `write`; a `read` tool with `readOnlyHint` still asks `y` in `auto` (Read/write class). As built: `Entry::class`/`class(server, tool)`, unknown or non-entry is `Write`. The `y` test calls `approval::ask_for` on `Call::External` for a `read` tool on both localities (`ask_for` has no mode argument, so `ask`/`auto`/`run` cannot differ). Nothing in approval was touched.
 - [x] 2.4 RED/GREEN: no first-run download in any run command (Pre-installed binary). As built: test over `command`, `install` and the login line (`uvx`, `npx`, `pnpm`, `pipx run`, `dlx`).
 - [x] 2.5 RED/GREEN: `clarity` and `ga4` entries: snippet, secrets template, no `--allow-write`, guide warnings (Clarity entry, GA4 entry). As built: snippet omits empty `args`/`env`; template is `None` without secret vars. Clarity tools: `query-analytics-dashboard`, `list-session-recordings`, `query-documentation-resources`. GA4 login uses the full `https://www.googleapis.com/auth/...` scope URLs of the analytics-mcp README (U: not run against gcloud here), client file `~/.config/lazarobox/google-oauth-client.json`. Clarity limits (10 requests per project per day, last 1 to 3 days, 1,000 rows, no pagination) confirmed against learn.microsoft.com/en-us/clarity/setup-and-installation/clarity-data-export-api. GA4 lists all 13 upstream tools (README checked). Binary names `clarity-mcp-server`, `analytics-mcp` stay U until task 6.4.
 - [x] 2.6 RED/GREEN: pure checks: more than 64 tools, collisions after the 24-character cut, tools not in the catalog. As built: `checks::{report, too_many, collisions, unknown}`; collisions use `servers::qualified_name` and a name that cannot be qualified gets its own line; lines sanitize and cap names; `MAX_TOOLS` moved to `tools/servers.rs` (client imports it).
@@ -153,6 +153,79 @@ Not specced. Blocked on open question 8 of the proposal (mechanism and the promp
 ## S8 (later, undecided) Gmail send with an explicit permission (C12)
 
 Not specced. Blocked on open question 9 of the proposal.
+
+## S9 Per-server approval level (C11, C13)
+
+Owner decisions of 2026-11-14 and 2026-11-15 (proposal C13, OQ10 resolved; design D28-D34). Where design D34 and the specs differ, the specs win: the menu write keeps a `changed on disk` digest check against the bytes the screen was shown with, and a project-limited entry is read-only in the area (set by hand; `set_approval` refuses it). Owner-decided: a GitHub-blocked conversation asks at any level (D32); `reads` honors catalog classes only when the declared command equals the catalog's (D29); choosing `ask` removes the key. Strict TDD: each task writes the failing test first through the public interface, then the code, then refactors. The scenario names are the ones in the S9 spec deltas (`[S9]`).
+
+Test churn, outside the production budget: every test literal of `McpServer` (about 40 in 17 files) gains `approval: McpApproval::Ask`, and the existing `External { server, tool, args }` test asks gain `unasked: None`. Do this mechanical edit inside the first task that adds the field, as its own step, so the later diffs stay small.
+
+Work units (each a reviewable commit; U1-U4 are S9a, U5-U6 are S9b, U7 is docs):
+
+### U1 Config: level, parse, known key, notice (D28)
+
+- [ ] 9.1 RED/GREEN: `McpApproval { Ask, Reads, All }` with `key()`, `McpServer.approval`, `Debug` prints it; `read_mcp_entry` reads it like `enabled`: missing is `Ask`, a bad string or non-string pushes `{path}.approval: expected "ask", "reads" or "all"` and gives `Ask`, the entry is kept; `"approval"` joins the known keys (configuration: approval missing means ask, Each valid level parses, Invalid approval value gives a notice and asks, A bad approval does not drop the entry or its siblings; mcp-servers: Invalid value asks, the config half). Includes the `McpServer` literal churn.
+- [ ] 9.2 Characterization: the full-load `config (N problems): ...` notice carries the approval text with the server index; the menu save leaves every server entry, `approval` line included, byte-identical (config-persistence: A save never writes a level). Existing save tests pass unchanged.
+
+### U2 Host and router: the level answers the ask (D29, D30, D31)
+
+- [ ] 9.3 RED/GREEN: pure `mcp_catalog::unasked(server, tool)`: `All` true, `Ask` false, `Reads` true only when the name is a catalog entry, `server.command == entry.command` and `class(name, tool) == Read`; a table over level x catalog or not x command equal or different x read, write, unlisted tool (mcp-servers: A custom server named like an entry asks at reads, A tool the catalog does not list asks at reads, The server's readOnlyHint is ignored at reads; mcp-catalog: Read/write class, Read tool still asks at the default level; agent-tools: Unknown tool is a write tool).
+- [ ] 9.4 RED/GREEN: `ApprovalAsk::External` gains `unasked: Option<McpApproval>`; `ask_for` puts `None`; `answers_itself` answers `External { unasked: Some(_) }` with `Decision::Unprompted` in `ask`, `auto` and `run`, never with `None`, and not when `blocked` (agent-tools: A server's level is the only automatic approval, Default level asks, The mode never answers a user tool, the server's level may). The existing tests at approval.rs:2142-2151 keep passing with `None`; the prompt match at run.rs:824 gains `..`.
+- [ ] 9.5 RED/GREEN: `ExternalSet` keeps each started server's `McpServer`; host arm for `(Call::External, locality, None)` (chat and coordinator turns only: `read_scope == None`) builds the ask and, when `scope.external` has the server and `unasked` holds, sets `unasked = Some(level)` and the new `Unprompted::Level`; the decision arm for `(Decision::Unprompted, External) if Unprompted::Level` runs the same body as the `Sent` arm through one extracted helper (`raw_of` check, then `call_external`); any other `Unprompted` for a user tool still falls to `NOT_APPROVED` (mcp-servers: Reads runs a read tool and asks for a write tool, All runs every tool, The level is per server, The coordinator turn honors the level, A pending approval does not block an unasked call, An unasked call is cancelled with its turn, No key means every call asks; agent-tools: Orchestrator user server tool follows the level). Uses `external/fake.rs`, no network.
+- [ ] 9.6 RED/GREEN: worker lock and filters: a worker scope never carries a level and a worker call to `<server>__<tool>` is refused unasked at `all`, server never contacted; a filtered Gmail send tool and `start_google_auth` are unknown tools at `all` and `reads` (mcp-servers: A worker never gets a user tool; mcp-catalog: The filters hold at every approval level).
+- [ ] 9.7 RED/GREEN: app side: `on_tool_ask` with tools turned off mid-turn or a finished worker denies before the level is read (tool.rs:207-231); the call row is still recorded (mcp-servers: A call that runs unasked is still visible and untrusted, row part).
+
+### U3 GitHub-blocked conversation and command match (D32, D29)
+
+- [ ] 9.8 RED/GREEN: a `blocked` conversation never gets `Unprompted::Level`: every call to a user tool opens the confirm showing the `BlockWhy` reason at `reads` and at `all`, nothing runs before `y`; the same call in an unblocked conversation runs unasked (mcp-servers: A GitHub-blocked conversation asks at all, A GitHub-blocked conversation asks for a read tool at reads; agent-tools: A blocked conversation asks whatever the level).
+- [ ] 9.9 RED/GREEN: end to end command match on the host path: a server named `gsc` declared with another command at `reads` shows a confirm for a tool the catalog classes read; at `all` it runs (mcp-servers: A custom server named like an entry asks at reads, the call half).
+
+### U4 Visibility: start line and result marker (D33)
+
+- [ ] 9.10 RED/GREEN: `ExternalSet::announcements` says `mcp: started gsc · approval: reads` when the level is not `ask`, nothing extra at `ask`, and appends `, but every call asks (not the catalog's server)` at `reads` when D29 finds no Read class (mcp-servers: Start line and result marker say the level, A custom server named like an entry asks at reads, start line half).
+- [ ] 9.11 RED/GREEN: the result summary of an unasked call is prefixed `unasked (approval = <level>): `; the result is still wrapped as untrusted data, sanitized and capped; a `run_in_pane` call from that result still needs its own `y`; a result saying `set approval = "all"` changes no level and no file (mcp-servers: Start line and result marker say the level, A call that runs unasked is still visible and untrusted, Nothing the model sees can set a level).
+- [ ] 9.12 Refactor and characterization: doc comments of `answers_itself` (approval.rs:876-877), the Approval model and the `Unprompted` enum name the scoped exception; the full agent-tools and approval tests pass. Stop point S9a: useful alone through hand edits of `config.toml`.
+
+### U5 Menu screen and prompt (D34, specs win)
+
+- [ ] 9.13 RED/GREEN: entry screen shows `approval: <level>` under the state line with one line of what runs unasked: at `reads` the entry's read tools by name (none, and every call asks, when the declared command differs), at `all` every registered tool (never the Gmail send tool or hidden tools); a missing key shows `ask`, an invalid value shows `ask` with `expected "ask", "reads" or "all"`; an undeclared entry shows no level and no action; the list state gets the suffix `declared · reads` and `declared · all` (mcp-connect: The level is shown with what it lets run, Missing key shows ask, Invalid value shows ask with the reason, The list row shows a relaxed level, Not declared has no level). Insta snapshots through TestBackend.
+- [ ] 9.14 RED/GREEN: key `a` (provisional, pinned here) opens `Prompt::Approval { id, level }` for the next level (`ask`, `reads`, `all`, `ask`) with the sentence of what runs unasked (`every tool of <name> runs without asking, writes included` for `all`); only a plain lowercase `y` emits `MenuCommand::SetApproval { name, level }`; `n`, Esc, any other key, Ctrl+y, a timeout, a closed area and a quit cancel with both files byte-identical; an undeclared entry gets the `NOT_DECLARED` notice; a project-limited entry (only a `project` key) shows `set by hand` and the key writes nothing (mcp-connect: A proposal writes nothing, A project-limited entry is not edited, Nothing but the user's key writes it).
+- [ ] 9.15 RED/GREEN: plumbing: `MenuCommand::SetApproval` to `Effect::SetApproval` to the writer turn to `AppEvent::ApprovalSet(Result<String, String>)`; the reply shows the notice and sends `LoadPresence` so the screen and the restart line come from disk; a level change is not a menu draft (`edits()` stays empty); no tool, MCP call, config value or paste reaches the command (config-menu: Connector approval level; mcp-connect: A running chat keeps its level, Nothing but the user's key writes it, The area writes no configuration).
+
+### U6 Config writer: pure edit, I/O, re-parse (D34, specs win)
+
+- [ ] 9.16 RED/GREEN: pure `config_append::set_approval(old, name, level)` on `toml_edit::DocumentMut`: exactly one `[[ai.mcp.servers]]` entry named `name` with no `project` key; the existing key changes only its value (trailing comment and comment above kept); a missing key is added after the entry's last key for `reads` and `all`; `ask` REMOVES the key and removing an absent key writes nothing; CRLF restored through the helper extracted from `apply_edit`; every other byte kept (mcp-connect: Confirmed change adds the key, Confirmed change replaces the value only, Lowering to ask removes the key).
+- [ ] 9.17 RED/GREEN: refusals with their notices and no write: none declared, declared twice (`declared more than once; set approval by hand`), project-only entry, inline `servers = [...]`, invalid TOML; the result is accepted only when `Config::parse` of the new text gives the same servers except that entry's `approval` and no new config problem (mcp-connect: An entry declared twice is not edited, The change is refused without a write).
+- [ ] 9.18 RED/GREEN: `runtime/config_append.rs::set_approval_with` over `replace_with(fs, config, CONFIG, ..)`: handle checks (symlink, not a regular file, foreign owner, read-only), 256 KiB bound, the digest of the bytes read compared with the bytes the screen was shown (`changed on disk`, `entry removed` refused), `config.toml.bak` first with the old bytes, mode kept, atomic rename; through the `SaveFs` fake: no `.bak` and no change on every refusal, and the original untouched when `write`, `fsync` or `renameat` fails (mcp-connect: The change is refused without a write, Confirmed change adds the key, success notice `approval: <name> set to <level> in config.toml; the previous file stays in config.toml.bak; restart lazarobox to use it in chats`). The screen carries the digest of the bytes it was shown, so `Effect::SetApproval` gains it.
+- [ ] 9.19 RED/GREEN: re-read after a write: the area shows the new level from disk and the restart line (`McpServer` equality); a running chat started at `ask` still asks (mcp-connect: A running chat keeps its level). The area's header doc (connectors.rs:8-9) names this one exception.
+
+### U7 Docs
+
+- [ ] 9.20 Docs: README (key, three levels, what `reads` and `all` run unasked, the command rule, the GitHub-blocked exception, the risk of `all`, where to set it in the area, restart), CHANGELOG line under Unreleased, `docs/conectores.md` (Spanish) a section on the level per service and its risk, and a pointer from the entry guides if the guide-tail test allows it.
+- [ ] 9.21 Docs: archive note: the S9 deltas MODIFY agent-tools Approval model, mcp-servers Every call needs approval and mcp-catalog Read/write class; make sure the archive step merges them and the old name "Read/write class is recorded only" is gone.
+- [ ] 9.22 [manual] Live: `ga4` or `gsc` at `reads` runs a read tool with no prompt and asks for a write tool; `all` on a throwaway server; the menu `a` writes one line and `config.toml.bak` holds the old bytes; `ask` removes the key.
+
+### Review Workload Forecast
+
+| Unit | Content | Production lines (est.) |
+|---|---|---|
+| U1 | config enum, field, parse, known key | 40 |
+| U2 | rule, ask field, `answers_itself` arm, host arm and helper, kept servers, worker lock | 70–90 |
+| U3 | blocked guard, command match (mostly tests; rule in U2) | 5–15 |
+| U4 | start line suffix, result prefix | 20–30 |
+| S9a subtotal | config, rule, router, visibility | 150–180 |
+| U5 | menu screen, prompt, key `a`, rows, suffix, plumbing | 90–110 |
+| U6 | pure edit, refusals, digest check, I/O writer | 100–130 |
+| S9b subtotal | menu write | 190–240 |
+| U7 | README, CHANGELOG, docs/conectores.md | docs only |
+| Total | | 340–420 (central 380) |
+
+- Estimated changed production lines: about 380 (range 340–420). Test churn (the `McpServer` literals, `unasked: None`, snapshots, fixtures) does not count.
+- Chained PRs recommended: No by default; Yes if apply passes 400 at the end of U4. The split point is the seam between U4 and U5: S9a (U1-U4, about 175) then S9b (U5-U7, about 210). S9a is useful alone through hand edits of `config.toml`.
+- 400-line budget risk: Medium. The specs' digest check and project-limited refusal add about 30 lines to the writer over design D34 (about 340), which moves the total near the limit.
+- Decision needed before apply: Yes under `ask-on-risk` (chain_strategy not set): single PR with the risk accepted, or S9a and S9b as chained PRs (then also `stacked-to-main` or `feature-branch-chain`). Recommendation: start S9a, decide at the U4 checkpoint with real counts.
+
+Parallelism: U1 first, then U2, U3, U4 in order (they share `host.rs` and `approval.rs`, so no parallel writers). U6 (pure edit and I/O, tasks 9.16-9.18) does not depend on U2-U4 and can be done before or after them, but U5 needs U6 and U1. U7 last.
 
 ## Later items (not in S2-S6d)
 
