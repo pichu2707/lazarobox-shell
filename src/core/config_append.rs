@@ -47,6 +47,10 @@ pub enum AppendRefusal {
     Twice,
     /// `ai.mcp.servers` is an inline list, which is not edited.
     Inline,
+    /// The entry's `approval` is a dotted key or a table, not a plain value.
+    NotPlain(String),
+    /// The result would read with a config problem the old text did not have.
+    WouldProblem(String),
     /// The change would leave the text as it is.
     Unchanged,
     /// A check or a step of the write (the secrets writer's refusals).
@@ -74,6 +78,12 @@ impl AppendRefusal {
             Self::Twice => "declared more than once; set approval by hand".to_owned(),
             Self::Inline => {
                 format!("{FILE}: ai.mcp.servers is an inline list; set approval by hand")
+            }
+            Self::NotPlain(name) => {
+                format!("approval of {name} is not a plain value; set it by hand")
+            }
+            Self::WouldProblem(problem) => {
+                format!("the edit would add a config problem: {problem}; nothing was written")
             }
             Self::Unchanged => "the approval is already that; nothing was written".to_owned(),
             Self::File(Refusal::TooLarge) => {

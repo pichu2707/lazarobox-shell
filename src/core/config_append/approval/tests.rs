@@ -168,3 +168,51 @@ fn a_result_that_does_not_read_back_is_refused() {
         Err(AppendRefusal::ServersDiffer)
     );
 }
+
+// A dotted key or a sub-table named `approval` is valid TOML but not a plain
+// value: refused by name, not as invalid TOML.
+#[test]
+fn a_dotted_or_table_approval_is_refused_as_not_plain() {
+    let dotted = "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"g\"\napproval.x = 1\n";
+    let table =
+        "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"g\"\n[ai.mcp.servers.approval]\nx = 1\n";
+    for old in [dotted, table] {
+        assert_eq!(
+            edit_approval(old, "gsc", All),
+            Err(AppendRefusal::NotPlain("gsc".into())),
+            "{old:?}"
+        );
+    }
+    assert_eq!(
+        AppendRefusal::NotPlain("gsc".into()).notice(),
+        "approval of gsc is not a plain value; set it by hand"
+    );
+    assert_eq!(
+        AppendRefusal::WouldProblem("x: bad".into()).notice(),
+        "the edit would add a config problem: x: bad; nothing was written"
+    );
+}
+
+// An `approval` key of the entry's `env` sub-table is not the entry's key.
+#[test]
+fn an_approval_key_of_a_sub_table_is_ignored() {
+    let old = "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"g\"\n\n[ai.mcp.servers.other]\napproval = \"x\"\n";
+    let out = edit_approval(old, "gsc", Reads).unwrap();
+    assert_eq!(
+        out,
+        "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"g\"\napproval = \"reads\"\n\n[ai.mcp.servers.other]\napproval = \"x\"\n"
+    );
+}
+
+#[test]
+fn ask_removes_an_invalid_value() {
+    let bad = TWO.replace("args = [\"x\"]\n", "args = [\"x\"]\napproval = 3\n");
+    assert_eq!(edit_approval(&bad, "gsc", Ask).unwrap(), TWO);
+    assert_eq!(
+        level_of(
+            &TWO.replace("\"x\"]\n", "\"x\"]\napproval = \"nope\"\n"),
+            "gsc"
+        ),
+        Ask
+    );
+}

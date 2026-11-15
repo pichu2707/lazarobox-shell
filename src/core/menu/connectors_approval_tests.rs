@@ -238,3 +238,35 @@ fn the_re_read_shows_the_new_level_and_the_restart_line() {
         "{all}"
     );
 }
+
+// An unreadable or not yet read config.toml has no digest to compare: the
+// proposal says so instead of failing later with `changed on disk`.
+#[test]
+fn an_unread_config_says_so_instead_of_changed_on_disk() {
+    let startup = vec![crate::core::ai::config::McpServer {
+        name: "ga4".to_owned(),
+        command: "x".to_owned(),
+        args: Vec::new(),
+        env: Vec::new(),
+        project: None,
+        enabled: true,
+        approval: McpApproval::Ask,
+    }];
+    let mut m = entry(startup, 1);
+    assert_eq!(press(&mut m, 'a'), MenuCommand::None);
+    assert_eq!(
+        m.notice.as_deref(),
+        Some("config.toml is not read yet; try again")
+    );
+    let unreadable = crate::core::ai::mcp_catalog::presence::Presence::read(
+        Err(std::io::Error::other("too large")),
+        &crate::core::ai::mcp_secrets::Loaded::default(),
+    );
+    m.presence_reply(unreadable);
+    assert_eq!(press(&mut m, 'a'), MenuCommand::None);
+    assert_eq!(
+        m.notice.as_deref(),
+        Some("config.toml could not be read (unreadable or over 256 KiB); set approval by hand")
+    );
+    assert!(!texts(&m).concat().contains("(y/n)"));
+}

@@ -55,7 +55,7 @@ pub fn edit_approval(old: &str, name: &str, level: McpApproval) -> Result<String
     let edited = match entry.get_key_value("approval") {
         Some((key, item)) => {
             let (Some(k), Some(v), true) = (key.span(), item.span(), item.is_value()) else {
-                return Err(AppendRefusal::NotToml(1));
+                return Err(AppendRefusal::NotPlain(name.to_owned()));
             };
             if level == McpApproval::Ask {
                 let start = body[..k.start].rfind('\n').map_or(0, |i| i + 1);
@@ -98,8 +98,12 @@ pub fn edit_approval(old: &str, name: &str, level: McpApproval) -> Result<String
     }
     let (before, after) = match (Config::parse(body), Config::parse(&edited)) {
         (Ok(before), Ok(after)) => (before, after),
-        _ => return Err(AppendRefusal::NotToml(1)),
+        (Err(_), _) => return Err(AppendRefusal::NotToml(1)),
+        (_, Err(_)) => return Err(AppendRefusal::WouldProblem("it does not parse".to_owned())),
     };
+    if let Some(problem) = after.problems.iter().find(|p| !before.problems.contains(p)) {
+        return Err(AppendRefusal::WouldProblem(problem.clone()));
+    }
     let same = |old: &McpServer, new: &McpServer| {
         let own = old.name == name && old.project.is_none();
         let want = McpServer {
@@ -111,8 +115,7 @@ pub fn edit_approval(old: &str, name: &str, level: McpApproval) -> Result<String
     let (a, b) = (before.ai.mcp_servers(), after.ai.mcp_servers());
     let kept = a.len() == b.len()
         && a.iter().zip(b).all(|(x, y)| same(x, y))
-        && b.iter().any(|s| s.name == name && s.approval == level)
-        && after.problems.iter().all(|p| before.problems.contains(p));
+        && b.iter().any(|s| s.name == name && s.approval == level);
     if kept {
         Ok(new)
     } else {

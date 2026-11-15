@@ -649,7 +649,17 @@ impl Connectors {
             McpApproval::Reads => McpApproval::All,
             McpApproval::All => McpApproval::Ask,
         };
-        let expected = self.presence.as_ref().and_then(|p| p.config_digest);
+        let Some(presence) = &self.presence else {
+            self.notice = Some("config.toml is not read yet; try again");
+            return;
+        };
+        if presence.servers.is_none() {
+            self.notice = Some(
+                "config.toml could not be read (unreadable or over 256 KiB); set approval by hand",
+            );
+            return;
+        }
+        let expected = presence.config_digest;
         self.ask(
             Prompt::Approval {
                 id: entry.id,
