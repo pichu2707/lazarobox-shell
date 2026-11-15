@@ -10,7 +10,11 @@ use std::{
 
 use futures::{FutureExt, future::BoxFuture};
 use serde_json::{Map, Value, json};
-use tokio::sync::mpsc;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::mpsc,
+};
 
 use super::{
     PaneId, TURN_CHANNEL,
@@ -402,6 +406,9 @@ impl Rig {
                 match event {
                     StreamEvent::ToolCall { .. } => answer.clear(),
                     StreamEvent::Delta(text) => answer.push_str(&text),
+                    StreamEvent::Error(error) => {
+                        eprintln!("the turn ended with an error: {error:?}")
+                    }
                     _ => {}
                 }
             }
@@ -543,6 +550,89 @@ pub(super) fn leaks(text: &str, home: &str, user: &str) -> Vec<&'static str> {
         .filter(|(_, hit)| *hit)
         .map(|(kind, _)| kind)
         .collect()
+}
+
+/// A run in the fixture format, raw material for a hand-curated fixture: the
+/// assistant side of the last request body plus the final answer, with every
+/// `roots` path replaced by `.`.
+pub(super) fn dump(scenario: &Scenario, body: &Value, answer: &str, roots: &[&Path]) -> String {
+    let messages = body["messages"].as_array().map_or(&[][..], Vec::as_slice);
+    let mut replies: Vec<Value> = (messages.iter())
+        .filter(|m| m["role"] == "assistant")
+        .map(|m| {
+            let calls = m["tool_calls"].as_array().map_or(&[][..], Vec::as_slice);
+            let calls: Vec<Value> = (calls.iter())
+                .map(|c| json!({"name": c["function"]["name"], "arguments": c["function"]["arguments"]}))
+                .collect();
+            json!({"text": m["content"], "calls": calls})
+        })
+        .collect();
+    replies.push(json!({"text": answer, "calls": []}));
+    let mut text =
+        serde_json::to_string_pretty(&json!({"scenario": scenario.id, "replies": replies}))
+            .unwrap_or_default();
+    for root in roots {
+        text = text.replace(&*root.to_string_lossy(), ".");
+    }
+    text + "\n"
+}
+
+/// A proxy that records the body of every request and forwards it to Ollama,
+/// so the exchanges of a run can be read from its last request.
+pub(super) async fn proxy(upstream: &'static str) -> (u16, Arc<Mutex<Vec<Value>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let bodies = Arc::new(Mutex::new(Vec::new()));
+    let seen = bodies.clone();
+    tokio::spawn(async move {
+        while let Ok((client, _)) = listener.accept().await {
+            tokio::spawn(forward(client, upstream, seen.clone()));
+        }
+    });
+    (port, bodies)
+}
+
+async fn forward(mut client: TcpStream, upstream: &str, bodies: Arc<Mutex<Vec<Value>>>) {
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 8192];
+    let (end, length) = loop {
+        if let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&raw[..end]).to_lowercase();
+            let length = (head.lines())
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            break (end + 4, length);
+        }
+        match client.read(&mut buf).await {
+            Ok(0) | Err(_) => return,
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+        }
+    };
+    while raw.len() < end + length {
+        match client.read(&mut buf).await {
+            Ok(0) | Err(_) => return,
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+        }
+    }
+    if let Ok(body) = serde_json::from_slice(&raw[end..end + length]) {
+        bodies.lock().unwrap().push(body);
+    }
+    // The upstream closes after its reply only when asked to.
+    let head = String::from_utf8_lossy(&raw[..end]);
+    let kept = head
+        .lines()
+        .filter(|l| !l.is_empty() && !l.to_lowercase().starts_with("connection:"));
+    let mut request = kept.collect::<Vec<_>>().join("\r\n").into_bytes();
+    request.extend_from_slice(b"\r\nConnection: close\r\n\r\n");
+    request.extend_from_slice(&raw[end..end + length]);
+    let Ok(mut server) = TcpStream::connect(upstream).await else {
+        return;
+    };
+    if server.write_all(&request).await.is_ok() {
+        let _ = tokio::io::copy(&mut server, &mut client).await;
+    }
+    let _ = client.shutdown().await;
 }
 
 /// Every text the host or the loop gives a call that did not run must be one
@@ -702,4 +792,22 @@ fn live_tests_are_ignored_and_no_workflow_runs_ignored_tests() {
             assert!(lines[i + 1].starts_with("#[ignore"), "{line} at {i}");
         }
     }
+}
+
+// Task 6.6: a dump is a fixture with no path of the machine in it.
+#[test]
+fn a_dump_is_a_fixture_with_the_repo_root_replaced() {
+    let home = Path::new("/home/u/target/olive/r1/home");
+    let repo = home.join("repo");
+    let body = json!({"messages": [
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "read_file", "arguments": {"path": "/home/u/target/olive/r1/home/repo/a.py"}}}]},
+        {"role": "tool", "content": "x", "tool_name": "read_file"}]});
+    let text = dump(&scenarios::READ_ONLY, &body, "It does x.", &[&repo, home]);
+    assert!(!text.contains("/home/u"), "{text}");
+    let fixture = Fixture::parse(&text).unwrap();
+    assert_eq!(fixture.scenario().id, "read-only");
+    assert_eq!(fixture.steps().len(), 2);
+    assert!(text.contains("\"path\": \"./a.py\""), "{text}");
 }

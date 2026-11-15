@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::{
-    eval_harness::{Fixture, Folder, Rig, leaks, throwaway_root},
+    eval_harness::{Fixture, Folder, Rig, leaks, proxy, throwaway_root},
     ollama_tests::fake,
 };
 use crate::{
@@ -228,4 +228,30 @@ fn a_fixture_with_a_field_outside_the_format_does_not_parse() {
         Fixture::parse(r#"{"scenario": "x", "replies": [{"text": "", "calls": [{"name": "n"}]}]}"#)
             .is_err()
     );
+}
+
+// The live harness reads its exchanges through this proxy: it must record the
+// bodies and pass the replies through byte for byte.
+#[tokio::test]
+async fn a_run_through_the_recording_proxy_scores_like_a_direct_run() {
+    let fixture = Fixture::parse(GOOD).unwrap();
+    let scenario = fixture.scenario();
+    let server = fake(fixture.steps()).await;
+    let upstream: &'static str = Box::leak(format!("127.0.0.1:{}", server.port).into_boxed_str());
+    let (port, bodies) = proxy(upstream).await;
+    let folder = Folder::new(&throwaway_root(), scenario);
+    let rig = Rig::new(scenario, &folder, None);
+    let judge = rig.judge.clone();
+    let answer = rig.drive(port, &Timeouts::SERVER).await;
+    let last = bodies
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .expect("a recorded body");
+    assert_eq!(bodies.lock().unwrap().len(), server.bodies().len());
+    assert_eq!(last, *server.bodies().last().unwrap());
+    let run = judge.run(&last, &answer, Duration::ZERO);
+    assert!(run.passed(), "{:?}", run.result);
+    assert!(answer.starts_with("Done"), "{answer}");
 }

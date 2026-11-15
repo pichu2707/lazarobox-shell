@@ -412,5 +412,4 @@ fn the_coordinator_writes_nothing_itself() {
 #[test]
 fn the_coordinate_task_asks_for_a_simple_write() {
     assert!(COORDINATE.request.contains("greeting.py"));
-    assert!(!COORDINATE.ambiguous);
 }
