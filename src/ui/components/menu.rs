@@ -2178,6 +2178,27 @@ mod tests {
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &connectors_entry(0))));
     }
 
+    // Spec (mcp-connect, Approval level of an entry): the level and its
+    // proposal, drawn in the popup.
+    #[test]
+    fn snapshot_the_connectors_approval_screen_and_proposal() {
+        let ga4 = format!(
+            "{}approval = \"reads\"\n",
+            crate::core::ai::mcp_catalog::snippet(
+                crate::core::ai::mcp_catalog::entry("ga4").unwrap()
+            )
+        );
+        let mut menu = connectors_entry(1);
+        menu.presence_reply(crate::core::ai::mcp_catalog::presence::Presence::read(
+            Ok(ga4),
+            &crate::core::ai::mcp_secrets::Secrets::parse(b""),
+        ));
+        let shown = text(&draw(62, POPUP_H, &menu));
+        press(&mut menu, &[KeyCode::Char('a')]);
+        let asking = text(&draw(62, POPUP_H, &menu));
+        insta::assert_snapshot!(format!("{shown}\n{asking}"));
+    }
+
     // Spec: a long screen scrolls inside the body.
     #[test]
     fn snapshot_the_connectors_entry_screen_scrolled() {

@@ -22,16 +22,16 @@ use std::{
 
 use tokio::sync::mpsc;
 
-use super::config_append::connect_with;
+use super::config_append::{approval_notice, connect_with, edit_approval_with};
 use crate::{
     app::AppEvent,
     core::{
-        ai::mcp_catalog::connect::Ask,
         ai::mcp_secrets::{
             BACKUP, CACHE_FILE, CLIENT_BACKUP, CLIENT_FILE, CLIENT_MAX, FILE, MAX_BYTES, Refusal,
             SecretText, client_json, edit, edit_all, line_of,
         },
-        config_append::{Connect, Connected},
+        ai::{config::McpApproval, mcp_catalog::connect::Ask},
+        config_append::{Connect, Connected, FILE as CONFIG_FILE},
     },
 };
 
@@ -370,6 +370,28 @@ impl Writer {
                 )
             });
             let _ = events.send(AppEvent::GoogleConnected(reply)).await;
+        });
+    }
+
+    /// One entry's approval level (`Effect::EditApproval`): `config.toml` next
+    /// to `secrets.toml`, in the writer's turn; the answer is one
+    /// `AppEvent::ApprovalSet`.
+    pub fn edit_approval(&self, name: String, level: McpApproval, expected: Option<[u8; 32]>) {
+        let (secrets, events) = (self.secrets.clone(), self.events.clone());
+        let turn = Arc::clone(&self.turn);
+        tokio::spawn(async move {
+            let done = tokio::task::spawn_blocking(move || {
+                let _turn = turn.lock().unwrap_or_else(PoisonError::into_inner);
+                let config = secrets.map(|path| path.with_file_name(CONFIG_FILE));
+                let done =
+                    edit_approval_with(&RealFs, config.as_deref(), expected.as_ref(), &name, level);
+                approval_notice(&name, level, done)
+            })
+            .await;
+            let reply = done.unwrap_or_else(|_| {
+                Err("approval: nothing was written (the task failed)".to_owned())
+            });
+            let _ = events.send(AppEvent::ApprovalSet(reply)).await;
         });
     }
 

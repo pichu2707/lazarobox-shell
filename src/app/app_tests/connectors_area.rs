@@ -818,3 +818,51 @@ fn connect_google_installs_both_servers_in_one_tab_after_y() {
     );
     assert_eq!(writes(&typed), [(id, format!("{line}\r").into_bytes())]);
 }
+
+// Spec (mcp-connect, Approval level of an entry): the level is an effect only
+// after the user's `y`, and carries the digest of the file the screen showed.
+#[test]
+fn a_level_change_is_an_effect_only_after_y_and_a_paste_never_reaches_it() {
+    use crate::core::{ai::config::McpApproval, config_append::digest};
+    let mut a = on_entry();
+    let present = Presence::read(Ok(CLARITY.to_owned()), &Loaded::default());
+    tap(&mut a, AppEvent::McpPresence(present));
+    assert_eq!(tap(&mut a, key('a')), []);
+    // Text that says to set a level goes nowhere while the line is open.
+    let said = "approval = \"all\"".to_owned();
+    assert_eq!(tap(&mut a, AppEvent::Paste(said)), []);
+    assert_eq!(
+        tap(&mut a, key('y')),
+        [Effect::EditApproval {
+            name: "clarity".to_owned(),
+            level: McpApproval::Reads,
+            expected: Some(digest(CLARITY.as_bytes())),
+        }]
+    );
+    // A cancelled proposal is no effect.
+    tap(&mut a, key('a'));
+    assert_eq!(tap(&mut a, key('n')), []);
+}
+
+#[test]
+fn the_reply_of_a_level_change_is_said_and_the_files_are_read_again() {
+    let mut a = on_entry();
+    let done = "approval: clarity set to reads in config.toml; the previous file stays in config.toml.bak; restart lazarobox to use it in chats".to_owned();
+    assert_eq!(
+        tap(&mut a, AppEvent::ApprovalSet(Ok(done.clone()))),
+        [Effect::LoadPresence]
+    );
+    assert_eq!(footer(&a), done);
+    let refusal =
+        "approval: nothing was written: config.toml changed on disk; nothing was saved, try again"
+            .to_owned();
+    assert_eq!(
+        tap(&mut a, AppEvent::ApprovalSet(Err(refusal.clone()))),
+        [Effect::LoadPresence]
+    );
+    assert_eq!(footer(&a), refusal);
+    // With the menu closed the reply is still said.
+    let mut a = launched(80, 25);
+    assert_eq!(tap(&mut a, AppEvent::ApprovalSet(Ok("x".to_owned()))), []);
+    assert_eq!(a.notice.as_deref(), Some("x"));
+}

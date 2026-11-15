@@ -2473,6 +2473,15 @@ impl Panes {
                         writer.connect(write);
                     }
                 }
+                Effect::EditApproval {
+                    name,
+                    level,
+                    expected,
+                } => {
+                    if let Some(writer) = self.secrets.as_ref() {
+                        writer.edit_approval(name, level, expected);
+                    }
+                }
                 Effect::PlanGoogle(ask) => {
                     if let Some(writer) = self.secrets.as_ref() {
                         writer.plan(ask);

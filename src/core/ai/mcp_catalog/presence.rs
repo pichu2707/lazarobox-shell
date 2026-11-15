@@ -13,8 +13,27 @@ use super::{entries, gsc, link};
 use crate::core::{
     ai::{config::McpServer, mcp_secrets::Loaded},
     config::Config,
-    config_append::declared_names,
+    config_append::{declared_names, digest},
 };
+
+/// The name of every entry of `raw` whose `approval` is not a valid level.
+fn bad_approval(raw: &toml::Table) -> Vec<String> {
+    let entries = raw
+        .get("ai")
+        .and_then(|ai| ai.get("mcp"))
+        .and_then(|mcp| mcp.get("servers"))
+        .and_then(toml::Value::as_array);
+    entries
+        .into_iter()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .get("approval")
+                .is_some_and(|v| !matches!(v.as_str(), Some("ask" | "reads" | "all")))
+        })
+        .filter_map(|entry| entry.get("name")?.as_str().map(str::to_owned))
+        .collect()
+}
 
 /// The disk copy of the declared servers and the names that have a value.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -44,6 +63,13 @@ pub struct Presence {
     /// What made `secrets.toml` unused or partly unused: one line each, naming
     /// a table, a key or a path at most, never a value.
     pub problems: Vec<String>,
+    /// The digest of the `config.toml` text this copy was read from; `None`
+    /// when it was missing or unread. A level change is written only while
+    /// the file still has these bytes.
+    pub config_digest: Option<[u8; 32]>,
+    /// The `[[ai.mcp.servers]]` names whose `approval` is not `ask`, `reads`
+    /// or `all` (the parsed level is then `ask`).
+    pub bad_approval: Vec<String>,
 }
 
 impl std::fmt::Debug for Presence {
@@ -62,6 +88,13 @@ impl Presence {
     /// nothing) and the parsed `secrets.toml`. Only the secret names of the
     /// catalog are looked up.
     pub fn read(config: io::Result<String>, loaded: &Loaded) -> Self {
+        let config_digest = config.as_ref().ok().map(|text| digest(text.as_bytes()));
+        let bad_approval = config
+            .as_ref()
+            .ok()
+            .and_then(|text| text.parse::<toml::Table>().ok())
+            .map(|raw| bad_approval(&raw))
+            .unwrap_or_default();
         let (servers, names) = match config {
             Ok(text) => (
                 Config::parse(&text)
@@ -113,6 +146,8 @@ impl Presence {
             linked: None,
             google: None,
             problems: loaded.problems.clone(),
+            config_digest,
+            bad_approval,
         }
     }
 

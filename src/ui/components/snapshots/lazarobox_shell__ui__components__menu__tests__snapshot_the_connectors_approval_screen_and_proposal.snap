@@ -1,0 +1,40 @@
+---
+source: src/ui/components/menu.rs
+expression: "format!(\"{shown}\\n{asking}\")"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
+│ GA4 · googleanalytics/google-analytics-mcp (Apache-2.0)    │
+│ State: values missing: GOOGLE_CLOUD_PROJECT                │
+│ restart lazarobox to use it in chats                       │
+│ approval: reads                                            │
+│   runs unasked: get_account_summaries,                     │
+│   get_property_details, list_google_ads_links,             │
+│   list_property_annotations,                               │
+│   get_custom_dimensions_and_metrics, run_report,           │
+│   run_funnel_report, run_realtime_report, list_key_events, │
+│   run_conversions_report                                   │
+│   every other tool asks y                                  │
+│ Guide                                                      │
+│   1. In your own Google Cloud project, enable the Google   │
+│                                                            │
+│ j/k scroll · i install · l login · p probe · f fill · Esc  │
+└────────────────────────────────────────────────────────────┘
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
+│ set ga4 to all? (y/n)                                      │
+│ every tool of ga4 runs without asking, writes included     │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ y yes · any other key cancels                              │
+└────────────────────────────────────────────────────────────┘

@@ -334,6 +334,8 @@ pub enum AppEvent {
     SecretSaved(Result<String, String>),
     /// What became of `Effect::DeleteBackup`.
     BackupDeleted(Result<String, String>),
+    /// What became of `Effect::EditApproval`: its one-line notice.
+    ApprovalSet(Result<String, String>),
     /// What became of `Effect::ConnectGoogle`: its one-line notice, which
     /// never holds a value.
     GoogleConnected(crate::core::config_append::Connected),
@@ -447,6 +449,14 @@ pub enum Effect {
     /// `google-connect`): the values in `secrets.toml`, then the entries
     /// appended to `config.toml`. The answer is one `AppEvent::GoogleConnected`.
     ConnectGoogle(Box<crate::core::config_append::Connect>),
+    /// Set the `approval` key of one declared entry after the user's `y`,
+    /// while `config.toml` still has the bytes of digest `expected`. The
+    /// answer is one `AppEvent::ApprovalSet`.
+    EditApproval {
+        name: String,
+        level: crate::core::ai::config::McpApproval,
+        expected: Option<[u8; 32]>,
+    },
     /// Read the client file, `config.toml` and `secrets.toml` with the
     /// writer's checks and plan Connect Google (nothing is written); the
     /// answer is one `AppEvent::GooglePlan`.
@@ -2361,6 +2371,19 @@ impl App {
             }
             AppEvent::SecretSaved(reply) => self.on_secret_reply(reply, true),
             AppEvent::BackupDeleted(reply) => self.on_secret_reply(reply, false),
+            AppEvent::ApprovalSet(reply) => {
+                self.dirty = true;
+                match self.menu.as_mut() {
+                    Some(menu) => {
+                        let command = menu.approval_reply(reply);
+                        self.on_menu_command(command)
+                    }
+                    None => {
+                        self.notice = Some(reply.unwrap_or_else(|notice| notice));
+                        Vec::new()
+                    }
+                }
+            }
             AppEvent::GoogleConnected(done) => {
                 self.dirty = true;
                 match self.menu.as_mut() {
@@ -2725,6 +2748,15 @@ impl App {
             MenuCommand::Connector(line) => self.start_connector(line),
             MenuCommand::PlanGoogle(ask) => vec![Effect::PlanGoogle(ask)],
             MenuCommand::ConnectGoogle(write) => vec![Effect::ConnectGoogle(write)],
+            MenuCommand::EditApproval {
+                name,
+                level,
+                expected,
+            } => vec![Effect::EditApproval {
+                name,
+                level,
+                expected,
+            }],
             MenuCommand::None => Vec::new(),
         }
     }

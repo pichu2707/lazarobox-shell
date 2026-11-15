@@ -6,7 +6,8 @@
 //! Google (`connect`): the values it lists in `secrets.toml`, and the catalog
 //! entries of the services not declared appended at the end of `config.toml`
 //! (with `config.toml.bak`). No entry the user declared is ever changed or
-//! removed.
+//! removed, with one exception: the user's confirmed change of one entry's
+//! `approval` key (key `a`), which touches that one line and nothing else.
 
 use std::{borrow::Cow, collections::HashMap, path::PathBuf};
 
@@ -15,9 +16,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use self::fields::{ClientPending, Field, HINT_FIELDS, Pending};
 use super::{MenuCommand, Row, VIEW_BODY};
 use crate::core::ai::{
-    config::McpServer,
+    config::{McpApproval, McpServer},
     mcp_catalog::{
-        self, Entry, Group, Link,
+        self, Class, Entry, Group, Link,
         checks::Probed,
         checks::Verdict,
         gsc,
@@ -28,6 +29,7 @@ use crate::core::ai::{
     mcp_secrets::{BACKUP, CLIENT_FILE, FILE as SECRETS_FILE, PROJECT_NUMBER},
     sanitize::clean,
 };
+use crate::core::config_append::AppendRefusal;
 
 mod connect;
 mod fields;
@@ -38,7 +40,7 @@ const CANCELLED: &str = "cancelled";
 const WIDEN: &str = "widen the terminal to read the command";
 pub(super) const RESTART: &str = "restart lazarobox to use it in chats";
 const UNREAD: &str = "config.toml could not be read; showing the list loaded at startup";
-const NOT_DECLARED: &str = "not declared: paste the entry into config.toml first";
+pub(super) const NOT_DECLARED: &str = "not declared: paste the entry into config.toml first";
 const HINT_LIST: &str = "j/k move · Enter open · Esc back";
 const HINT_ENTRY: &str = "j/k scroll · i install · l login · p probe · f fill · Esc";
 const HINT_ENTRY_WAYS: &str = "j/k · i install · p probe · f fill · w way · g link · Esc";
@@ -92,6 +94,13 @@ enum Prompt {
     Client(ClientPending),
     /// `d`: delete `secrets.toml.bak`.
     DeleteBackup,
+    /// `a`: set the approval level of a declared entry; `expected` is the
+    /// digest of the `config.toml` the screen was shown.
+    Approval {
+        id: &'static str,
+        level: McpApproval,
+        expected: Option<[u8; 32]>,
+    },
 }
 
 /// The area's state; it lives as long as the menu.
@@ -246,6 +255,23 @@ fn prompt_rows(prompt: &Prompt, room: usize) -> Option<Vec<Row>> {
         Prompt::DeleteBackup => vec![title(format!(
             "delete {BACKUP}? It holds your previous values (y/n)"
         ))],
+        Prompt::Approval { id, level, .. } => {
+            let mut rows = vec![title(format!("set {id} to {}? (y/n)", level.key()))];
+            rows.extend(wrap(
+                &match level {
+                    McpApproval::Ask => format!("every call of {id} asks y (the default)"),
+                    McpApproval::Reads => format!(
+                        "the tools the catalog classes read run without asking; the rest of {id} still asks"
+                    ),
+                    McpApproval::All => {
+                        format!("every tool of {id} runs without asking, writes included")
+                    }
+                },
+                "",
+                room,
+            ));
+            rows
+        }
     };
     (rows.len() <= VIEW_BODY).then(|| {
         rows.shrink_to_fit();
@@ -382,11 +408,16 @@ impl Connectors {
             "google" => p.google_linked(),
             _ => None,
         });
+        let level = match server.approval {
+            McpApproval::Ask => String::new(),
+            level => format!(" · {}", level.key()),
+        };
         let link = match linked {
             Some(true) => " · linked",
             Some(false) => " · not linked",
             None => "",
         };
+        let link = format!("{link}{level}");
         match self.probes.get(entry.id).map(|p| p.verdict) {
             Some(Verdict::Started) => format!("declared{link} · probe: started"),
             Some(Verdict::Failed) => format!("declared{link} · probe: failed"),
@@ -479,6 +510,7 @@ impl Connectors {
     fn entry_content(&self, entry: &Entry, room: usize) -> Vec<Row> {
         let mut rows = vec![text(format!("State: {}", self.state(entry)))];
         self.notes(&mut rows, room);
+        rows.extend(self.approval_rows(entry, room));
         if let Some(probe) = self.probes.get(entry.id) {
             rows.push(title("Last probe"));
             for line in probe.lines.iter().chain(&probe.problems) {
@@ -530,6 +562,9 @@ impl Connectors {
         }
         if self.server(entry.id).is_some() {
             rows.push(text("  p probe"));
+            if !self.limited(entry) {
+                rows.push(text("  a approval: the next level (ask, reads, all)"));
+            }
         } else {
             rows.extend(wrap(NOT_DECLARED, "  ", room));
         }
@@ -546,6 +581,83 @@ impl Connectors {
             rows.push(text("  t copy the secrets.toml table"));
         }
         rows
+    }
+
+    /// Every entry named `entry` is limited to a project: not edited here.
+    fn limited(&self, entry: &Entry) -> bool {
+        let mut named = self.servers().iter().filter(|s| s.name == entry.id);
+        named.all(|s| s.project.is_some())
+    }
+
+    /// The level of a declared entry and what it lets run unasked.
+    fn approval_rows(&self, entry: &Entry, room: usize) -> Vec<Row> {
+        let Some(server) = self.server(entry.id) else {
+            return Vec::new();
+        };
+        let level = server.approval.key();
+        if self.limited(entry) {
+            let said = format!("approval: {level} (project entry: set it by hand in config.toml)");
+            return wrap(&said, "", room);
+        }
+        let mut rows = vec![text(format!("approval: {level}"))];
+        let bad = self
+            .presence
+            .as_ref()
+            .is_some_and(|p| p.bad_approval.iter().any(|name| name == entry.id));
+        if bad {
+            rows.extend(wrap("config.toml: approval is invalid", "  ", room));
+            rows.extend(wrap("expected \"ask\", \"reads\" or \"all\"", "  ", room));
+        }
+        let reads: Vec<&str> = entry
+            .tools
+            .iter()
+            .filter(|(_, class)| *class == Class::Read)
+            .map(|(name, _)| *name)
+            .collect();
+        let lines = match server.approval {
+            McpApproval::Ask => vec!["every call asks y".to_owned()],
+            McpApproval::Reads if !mcp_catalog::is_catalog_server(server) => {
+                vec!["not the catalog's server: every call asks y".to_owned()]
+            }
+            McpApproval::Reads => vec![
+                format!("runs unasked: {}", reads.join(", ")),
+                "every other tool asks y".to_owned(),
+            ],
+            McpApproval::All => {
+                vec!["every tool the server registers runs unasked, writes included".to_owned()]
+            }
+        };
+        for line in lines {
+            rows.extend(wrap(&line, "  ", room));
+        }
+        rows
+    }
+
+    /// `a`: proposes the next level of a declared entry; nothing is written
+    /// until the user's `y`.
+    fn ask_approval(&mut self, entry: &'static Entry, room: usize) {
+        let Some(server) = self.server(entry.id) else {
+            self.notice = Some(NOT_DECLARED);
+            return;
+        };
+        if self.limited(entry) {
+            self.said = Some(AppendRefusal::Limited(entry.id.to_owned()).notice());
+            return;
+        }
+        let level = match server.approval {
+            McpApproval::Ask => McpApproval::Reads,
+            McpApproval::Reads => McpApproval::All,
+            McpApproval::All => McpApproval::Ask,
+        };
+        let expected = self.presence.as_ref().and_then(|p| p.config_digest);
+        self.ask(
+            Prompt::Approval {
+                id: entry.id,
+                level,
+                expected,
+            },
+            room,
+        );
     }
 
     pub(super) fn hint(&self) -> Cow<'static, str> {
@@ -613,6 +725,18 @@ impl Connectors {
                 (true, Prompt::Replace(pending)) => pending.into_command(),
                 (true, Prompt::Client(pending)) => pending.into_command(),
                 (true, Prompt::DeleteBackup) => MenuCommand::DeleteBackup,
+                (
+                    true,
+                    Prompt::Approval {
+                        id,
+                        level,
+                        expected,
+                    },
+                ) => MenuCommand::EditApproval {
+                    name: id.to_owned(),
+                    level,
+                    expected,
+                },
                 (false, Prompt::Command(_)) => {
                     self.notice = Some("not saved");
                     MenuCommand::None
@@ -715,6 +839,7 @@ impl Connectors {
                 None => self.notice = Some("this entry has no login"),
             },
             KeyCode::Char('p') => return self.ask_probe(entry, room),
+            KeyCode::Char('a') => self.ask_approval(entry, room),
             KeyCode::Char('f') => self.open_fields(entry, at),
             KeyCode::Char('w') => self.choose_way(entry),
             KeyCode::Char('c') => return MenuCommand::Copy(snippet(entry)),
