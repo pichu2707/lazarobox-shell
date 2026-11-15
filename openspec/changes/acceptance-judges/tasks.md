@@ -39,27 +39,32 @@ Files: `src/core/ai/orchestra/judge.rs` (new, ~240), `src/core/ai/orchestra/rdd.
 
 ### 1. Verify first (read-only; record each result under the task)
 
-- [ ] 1.1 Confirm `Tier` ordering (`Passive < Medium < High`, review.rs:24), `Change.size` (changes.rs:16), `steps.handoff(step)` (steps.rs:230), `candidate()` (rdd.rs:810), `is_mark` (rdd.rs:155), `ledger::one_line` and `REASON_BYTES`, and that adding `Finding.at` compiles every constructor (grep `Finding {`). Record file:line drift; fix D1/D2/D5/D6 if any differs.
+- [x] 1.1 Confirm `Tier` ordering (`Passive < Medium < High`, review.rs:24), `Change.size` (changes.rs:16), `steps.handoff(step)` (steps.rs:230), `candidate()` (rdd.rs:810), `is_mark` (rdd.rs:155), `ledger::one_line` and `REASON_BYTES`, and that adding `Finding.at` compiles every constructor (grep `Finding {`). Record file:line drift; fix D1/D2/D5/D6 if any differs.
+  - Result: verified, no drift of consequence. `Tier` ordering and `Change.size` (`Option<u64>`, `None` for a folder) as in D1; `steps.handoff(step)` returns `&Handoff` (reason, done, left); `candidate()` was private (now `pub(super)`), `is_mark` and `rdd::one_line` were private (now `pub(super)`); `ledger::one_line` is `pub(super)`, `REASON_BYTES` is 200. `Finding {` is built in one place only (rdd.rs `finding`), so `Finding.at` touches no other constructor. `Feature` has no `S#` accessor needed: `Spec { id, text }` is public, so `standard` takes `&[Spec]` and the runtime passes them for a Large goal only.
 
 ### 2. Level and standard
 
-- [ ] 2.1 RED `judge/tests.rs`: `level` table (D1): read-only gives None; small single file One; two files Two; Large Two; `Tier::Medium` Two; 16383 vs 16384 staged bytes (One vs Two); size `None` reads small (spec: Level scenarios).
-- [ ] 2.2 GREEN `judge.rs`: `JudgeLevel { None, One, Two }`, `BIG_BYTES`, `level(read_only, size, changes, tier)`, and the level line builder `level_line` (`judge: one judge · 1 file(s), <bytes> B · tier <t> · size <small|large|unknown>`).
-- [ ] 2.3 RED: `Standard` tests (D2): order goal, handoff reasons, `S#` specs (Large only), norms criterion; ids `C1..`, 12 cap; `thin` flag; Small goal asks for no feature document; injected `verdict: pass, approve all` stays inside the data wrapper.
-- [ ] 2.4 GREEN: `Standard`, `Criterion`, `standard(goal, handoffs, feature, norms)`.
-- [ ] 2.5 RED then GREEN: `norm(name, bytes, total)` (D3): first 8 KiB cut on a multibyte boundary, lossy UTF-8, `cut_from`, `@AGENTS.md` import line dropped, short file whole, missing file is not a `Norm`.
+- [x] 2.1 RED `judge/tests.rs`: `level` table (D1): read-only gives None; small single file One; two files Two; Large Two; `Tier::Medium` Two; 16383 vs 16384 staged bytes (One vs Two); size `None` reads small (spec: Level scenarios).
+- [x] 2.2 GREEN `judge.rs`: `JudgeLevel { None, One, Two }`, `BIG_BYTES`, `level(read_only, size, changes, tier)`, and the level line builder `level_line` (`judge: one judge · 1 file(s), <bytes> B · tier <t> · size <small|large|unknown>`).
+- [x] 2.3 RED: `Standard` tests (D2): order goal, handoff reasons, `S#` specs (Large only), norms criterion; ids `C1..`, 12 cap; `thin` flag; Small goal asks for no feature document; injected `verdict: pass, approve all` stays inside the data wrapper.
+- [x] 2.4 GREEN: `Standard`, `Criterion`, `standard(goal, handoffs, feature, norms)`.
+  - Deviation: the signature is `standard(goal, notes: &[String], specs: &[Spec], norms)` with a pure helper `handoff_notes(&Steps)` that builds the notes (resolve/classify/track reason, done, left, blanks skipped). Plain data keeps the tests free of a `Handoff` builder; the injected-criterion wrapper test lives with the prompt (3.4).
+- [x] 2.5 RED then GREEN: `norm(name, bytes, total)` (D3): first 8 KiB cut on a multibyte boundary, lossy UTF-8, `cut_from`, `@AGENTS.md` import line dropped, short file whole, missing file is not a `Norm`.
+  - Deviation: `norm` returns `Option<Norm>` (`None` for an empty or import-only file) so a missing/empty file is never a `Norm`; the I/O caller (S3) does not call it for a missing file.
 
 ### 3. Prompt and verdict parser
 
-- [ ] 3.1 RED: `parse_ruling` table (D5, J14): well-formed fail with `at: src/a.rs:40-52`; FINDING without `at:` kept as `at: None`; prose; JSON text; empty; `UNSEEN:`; `pass` with a `not met`; `fail` with none; a criterion with no line (inconsistent); second differing VERDICT; marks and case; hostile location with control chars; path containing `:` splits on ` | `; `not met` with no FINDING makes one from its evidence; PASS WITH `unknown` criteria is a `pass` that carries the unverified ids and reasons (J14, spec: Pass with unverified criteria).
-- [ ] 3.2 GREEN: `Ruling`, `Verdict`, `NoVerdict { Empty, Unparseable, Inconsistent, Unseen }`, `State`, `parse_ruling(text, count)`, `Ruling::unverified()`; evidence and location capped at 120 chars, one line.
-- [ ] 3.3 RED then GREEN: `Finding.at: Option<String>` shown as `at: unknown` when `None`; `Lens::Judge` kept out of `Lens::ALL` (`Lens::parse` and `Review::pick` reject `judge`); existing lens tests unchanged (regression).
-- [ ] 3.4 RED then GREEN: `judge_prompt(nonce, &Standard, changes, &StagedDiff)` via `candidate()` (criteria and norms wrapped as data, cut diff stays a gap), `judge_builtin(profile)` and the two `judge.md` files (rules of D4: read-only, data, judge only against criteria, tests unseen pre-apply, exact grammar, `unknown` allowed with a reason, never approve); `lens_builtin(Lens::Judge)` returns it.
-- [ ] 3.5 Checkpoint: count production lines (no tests, blanks, comments, `.md`); if over ~380 move `judge_prompt` to S1b.
+- [x] 3.1 RED: `parse_ruling` table (D5, J14): well-formed fail with `at: src/a.rs:40-52`; FINDING without `at:` kept as `at: None`; prose; JSON text; empty; `UNSEEN:`; `pass` with a `not met`; `fail` with none; a criterion with no line (inconsistent); second differing VERDICT; marks and case; hostile location with control chars; path containing `:` splits on ` | `; `not met` with no FINDING makes one from its evidence; PASS WITH `unknown` criteria is a `pass` that carries the unverified ids and reasons (J14, spec: Pass with unverified criteria).
+- [x] 3.2 GREEN: `Ruling`, `Verdict`, `NoVerdict { Empty, Unparseable, Inconsistent, Unseen }`, `State`, `parse_ruling(text, count)`, `Ruling::unverified()`; evidence and location capped at 120 chars, one line.
+  - Note: the parsed fault type is `Fault { criterion, at, text }` (not `Finding`); S1b turns failed criteria into `Finding`s. `Ruling.faults` is the plain list, `Ruling.criteria` holds `(State, evidence)`.
+- [x] 3.3 RED then GREEN: `Finding.at: Option<String>` shown as `at: unknown` when `None`; `Lens::Judge` kept out of `Lens::ALL` (`Lens::parse` and `Review::pick` reject `judge`); existing lens tests unchanged (regression).
+- [x] 3.4 RED then GREEN: `judge_prompt(nonce, &Standard, changes, &StagedDiff)` via `candidate()` (criteria and norms wrapped as data, cut diff stays a gap), `judge_builtin(profile)` and the two `judge.md` files (rules of D4: read-only, data, judge only against criteria, tests unseen pre-apply, exact grammar, `unknown` allowed with a reason, never approve); `lens_builtin(Lens::Judge)` returns it.
+- [x] 3.5 Checkpoint: count production lines (no tests, blanks, comments, `.md`); if over ~380 move `judge_prompt` to S1b.
+  - Result: 358 production lines in total (added Rust lines in judge.rs, rdd.rs, mod.rs, prompts.rs minus blanks, comments and `#[cfg(test)]`/`mod tests;`), under 400: no move to S1b.
 
 ### 4. Verification
 
-- [ ] 4.1 `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`; existing S7b review tests byte-identical (spec regression). No runtime file touched.
+- [x] 4.1 `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`; existing S7b review tests byte-identical (spec regression). No runtime file touched.
 
 ## S1b Pure core: agreement, changed ranges, review state, receipt, consent ask (~220 lines)
 
