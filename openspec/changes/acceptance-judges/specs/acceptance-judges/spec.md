@@ -79,7 +79,7 @@ The norms sent to a judge MUST be at most the first 8 KB of each of `AGENTS.md` 
 - THEN all 3 KB reach the judge, no cut line is shown and no error is raised
 
 ### Requirement: Verdict format with evidence and location [S1]
-A judge MUST end with a verdict that holds: the verdict `pass` or `fail`; for each criterion of the standard its state `met`, `not met` or `unknown` with a one-line piece of evidence (a quote or a place in the diff, not an opinion); and for each failed criterion the findings, each with a required `at:` field naming where the fault is (`<file>:<line>`, `<file>:<start>-<end>` or a function name). The parser MUST be a pure function. A finding with no parsable `at:` MUST be kept and shown as `at: unknown`, never dropped. A `pass` verdict that lists a criterion as `not met`, or a `fail` verdict that lists none, MUST be treated as `no verdict` (inconsistent). A verdict that cannot be parsed, an empty answer, or a judge that ended `failed`, `timed_out` or `cancelled` MUST be `no verdict` and MUST NEVER count as a pass. `Finding` (the S7b finding) MUST gain the location as a field, and an S7b lens finding with no location MUST show `at: unknown` in the same way.
+A judge MUST end with a verdict that holds: the verdict `pass` or `fail`; for each criterion of the standard its state `met`, `not met` or `unknown` with a one-line piece of evidence (a quote or a place in the diff, not an opinion); and for each failed criterion the findings, each with a required `at:` field naming where the fault is (`<file>:<line>`, `<file>:<start>-<end>` or a function name). The parser MUST be a pure function. A finding with no parsable `at:` MUST be kept and shown as `at: unknown`, never dropped. A `pass` verdict that lists a criterion as `not met`, or a `fail` verdict that lists none, MUST be treated as `no verdict` (inconsistent). A `pass` MAY list criteria as `unknown` (J14): a change passes with criteria the judge could not verify, as long as none is `not met`, and every such criterion MUST be named in the pass line with its reason (see Every verdict and failed criterion is a visible line) and kept in the receipt. A criterion with no line at all is still `inconsistent`, not `unknown`. A verdict that cannot be parsed, an empty answer, or a judge that ended `failed`, `timed_out` or `cancelled` MUST be `no verdict` and MUST NEVER count as a pass. `Finding` (the S7b finding) MUST gain the location as a field, and an S7b lens finding with no location MUST show `at: unknown` in the same way.
 
 #### Scenario: A well-formed fail [S1, auto]
 - GIVEN judge output `fail`, criterion `C2` `not met` with evidence, and a finding `at: src/a.rs:40-52`
@@ -100,6 +100,11 @@ A judge MUST end with a verdict that holds: the verdict `pass` or `fail`; for ea
 - GIVEN a `pass` verdict that marks `C1` as `not met`
 - WHEN it is parsed
 - THEN it is `no verdict`
+
+#### Scenario: Pass with unverified criteria [S1, auto]
+- GIVEN a `pass` verdict with `C1` and `C2` `met` and `C3` `unknown` with evidence `tests not seen`
+- WHEN it is parsed
+- THEN the verdict is `pass`, and `C3` is carried as unverified with its reason (J14)
 
 ### Requirement: Judge mode inside the S7b review [S2]
 Acceptance judging MUST be a mode of the existing receipt-driven review at the batch proposal (one review system), reusing its staged diff, its correction worker, its guard, its correction bound, its receipt and its reviewer notices; no second review system MUST exist. Each judge MUST be a read-only worker over the staged change, wrapped as untrusted data, with no write tool and no `run_command`. A judge MUST NOT run any command or test. Before the batch review opens, the judges (and, for a `high` change, the lenses) MUST have ended in a verdict, a `no verdict` line or an exhausted-rounds line. On a `high` change, the lenses (code quality) and the judges (the agreed standard) MUST both run, because they check different things, and their blockers and failed criteria MUST feed one shared correction round run by one correction worker, so two correctors never edit the same change.
@@ -189,7 +194,7 @@ The judges MUST ask the user for consent once, inline, when the run starts, and 
 
 ### Requirement: Every verdict and failed criterion is a visible line [S2]
 Every judge result MUST be a transcript line shown through the review event, in these forms (`<i>/<n>` is the judge's place among the judges of the change):
-- `judge <i>/<n>: pass · <m> criteria met`
+- `judge <i>/<n>: pass · <m> criteria met`, or, when some criteria were unverified (J14), `judge <i>/<n>: pass · <m> met, <u> unverified (<id>: <reason>, ...)`, for example `judge 1/1: pass · 2 met, 1 unverified (C3: tests not seen)`; for two judges the `judges agree: pass` line carries the union of the unverified criteria in the same form
 - `judge <i>/<n>: fail · <k> of <c> criteria not met`
 - `judge <i>/<n>: no verdict · <reason>`
 - for each criterion not met, one line: `judge <i>/<n> · <id> not met · at: <location> · <evidence>`, where `<location>` is `<file>:<line>`, `<file>:<start>-<end>`, a function name or `unknown`, and `<evidence>` is one line, capped at 120 characters and cleaned of control characters.
@@ -204,6 +209,11 @@ No verdict, failed criterion or location MUST be hidden or reduced to a count al
 - GIVEN a judge that passes 3 criteria
 - WHEN it ends
 - THEN the transcript shows `judge 1/1: pass · 3 criteria met`
+
+#### Scenario: A pass names what it could not verify [S2, auto]
+- GIVEN a judge that passes with `C1` and `C2` met and `C3` unknown (`tests not seen`)
+- WHEN it ends
+- THEN the transcript shows `judge 1/1: pass · 2 met, 1 unverified (C3: tests not seen)`, no correction starts, and the receipt lists `C3` as unverified
 
 ### Requirement: Corrections say what they change [S2]
 A judge MAY lead to a correction, never directly: failed criteria feed the existing bounded correction flow (one `code` correction worker per round, scoped to the failed criteria and their locations, validated against those criteria only, bounded by the existing correction limit shared with the lens corrections of that worker's batches). Before the correction worker starts, a line MUST name what it will fix: `correction <r>/3 · fixes <id> · at: <location>`. When the correction ends, a line MUST name what it changed: `correction <r>/3 done · changes: <file> <start>-<end>` (one per file, or `changes: <file> · <function>` when only a function is known). The `changes:` part MUST be computed by lazarobox from the staged change (before and after the correction), not copied from the worker's text; when a range cannot be computed it MUST say `changes: <file>` alone, and a correction that changed nothing MUST say `changes: none`. After a correction, the judge or judges that failed it MUST judge the corrected change again, and each shows its own verdict lines.
@@ -273,6 +283,7 @@ The reviewer notices of the receipt-driven review (same model as the author, loc
 
 ### Requirement: Tests evidence before the run closes [S4]
 Before a run that applied at least one change closes (the `close` step ends and the run would end by itself), lazarobox MUST read the post-apply command records the run already keeps (user-approved `run_command` results) and decide whether a test command ran after the last applied batch and passed. A command counts as a test command when it matches a fixed list pinned by design. The judge MUST NOT run anything: this is a read of records. Outcomes:
+- every applied file is documentation (J15; a pure predicate over the applied paths: Markdown, `.txt`, `.rst`, `.adoc`, or any file under a `docs/` or `doc/` folder): the wait does not apply, the line `tests: no tests needed (docs only)` is shown and the run closes; one non-documentation applied file makes the check apply as below;
 - a test command ran after the last apply and exited 0: a line `tests: <command> passed` and the run closes;
 - no test command ran after the last apply: the run MUST NOT close; it MUST wait and show `no tests ran · Enter to finish anyway · Esc to keep working`;
 - the last test command after the last apply failed: the run MUST wait and show `tests failed · <command> · exit <n> · Enter to finish anyway · Esc to keep working`.
@@ -307,6 +318,16 @@ Enter MUST close the run, the choice MUST be recorded in the `close` report and 
 - GIVEN a passing test command recorded before the last applied batch
 - WHEN the run would close
 - THEN it counts as no test run after apply and the run waits
+
+#### Scenario: Docs-only change is not held [S4, auto]
+- GIVEN a run whose applied files are `README.md` and `docs/guide.md` and no test command recorded
+- WHEN the run would close
+- THEN `tests: no tests needed (docs only)` is shown, the run is not held and it closes
+
+#### Scenario: One code file lifts the docs-only exemption [S4, auto]
+- GIVEN applied files `README.md` and `src/a.rs` and no test command recorded
+- WHEN the run would close
+- THEN the run waits and shows `no tests ran · Enter to finish anyway · Esc to keep working`
 
 #### Scenario: Nothing applied, nothing held [S4, auto]
 - GIVEN a run whose batch the user rejected

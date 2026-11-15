@@ -79,6 +79,11 @@ Existing scenarios stay unchanged. Added scenarios:
 - WHEN the run would end
 - THEN it does not end, shows `no tests ran · Enter to finish anyway · Esc to keep working`, and Ctrl+O is not yet available
 
+#### Scenario: Docs-only change does not hold the run [S4, auto]
+- GIVEN one applied batch whose files are all documentation and no test command recorded
+- WHEN the run would end
+- THEN it ends by itself with `tests: no tests needed (docs only)` and no prompt
+
 #### Scenario: Enter ends the held run [S4, auto]
 - GIVEN the held run
 - WHEN Enter is pressed
