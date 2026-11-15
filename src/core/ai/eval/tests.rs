@@ -43,7 +43,15 @@ fn pytest() -> ToolExchange {
     ex(
         "run_command",
         json!({"program": "pytest", "args": []}),
-        "exit code 0",
+        "exit code 0 after 0.4s\n1 passed",
+    )
+}
+
+fn pytest_ending(result: &str) -> ToolExchange {
+    ex(
+        "run_command",
+        json!({"program": "pytest", "args": []}),
+        result,
     )
 }
 
@@ -412,4 +420,59 @@ fn the_coordinator_writes_nothing_itself() {
 #[test]
 fn the_coordinate_task_asks_for_a_simple_write() {
     assert!(COORDINATE.request.contains("greeting.py"));
+}
+
+// Hardening: a test step is completed only by a command that exited 0. The
+// command ran, so its result is not a refusal, but it did not pass.
+#[test]
+fn a_test_run_that_exits_nonzero_is_failed_not_missing() {
+    let mut list = good();
+    list[3] = pytest_ending("exit code 1 after 0.4s\n1 failed");
+    let result = run(&list);
+    assert_eq!(result.failed, ["pytest"], "{result:?}");
+    assert!(result.missing.is_empty() && result.out_of_order.is_empty());
+    assert!(!result.completed.contains(&"pytest") && !result.passed());
+}
+
+#[test]
+fn a_passing_rerun_after_a_failed_run_completes_the_step() {
+    let mut list = good();
+    list.insert(3, pytest_ending("exit code 1 after 0.4s\n1 failed"));
+    let result = run(&list);
+    assert!(result.failed.is_empty() && result.passed(), "{result:?}");
+}
+
+// The prefix is the one `RunOutcome::facts` writes: pinned with real outcomes.
+#[test]
+fn only_a_real_exit_zero_outcome_starts_with_the_success_prefix() {
+    use crate::core::ai::tools::run::{Capture, Ended, RunOutcome};
+    use std::time::Duration;
+    let ended = |ended: Ended| {
+        let outcome = RunOutcome::new(vec![], ended, &Capture::new(), Duration::from_millis(400));
+        outcome.facts().starts_with(super::COMMAND_OK)
+    };
+    let none = Ended::default();
+    assert!(ended(Ended {
+        exit: Some(0),
+        ..none
+    }));
+    assert!(!ended(Ended {
+        exit: Some(1),
+        ..none
+    }));
+    assert!(!ended(Ended {
+        exit: Some(0),
+        timed_out: true,
+        ..none
+    }));
+    assert!(!ended(Ended {
+        exit: Some(0),
+        cancelled: true,
+        ..none
+    }));
+    assert!(!ended(Ended {
+        signal: Some(9),
+        ..none
+    }));
+    assert!(!ended(none));
 }

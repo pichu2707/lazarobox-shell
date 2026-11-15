@@ -103,6 +103,7 @@ Does S1 need splitting? No, not up front. The design counts ~374 (eval.rs 170, s
 - [x] H4 Offline test: in a live-style rig (StandIn helper) `run_command` and `git_add` go through the `Judge`; orchestration tools stay `recorded`.
 - [x] H5 `table::accept` refuses with `nothing rose` instead of an empty list (the only production change).
 - [x] H6 `_DUMP` files are `<scenario>-<model>-<n>.json`, `n` claimed with `create_new` (`write_dump`), so a run never overwrites another.
+- [x] H7 A test step means the test passes: `eval::COMMAND_OK` (`exit code 0 `, pinned against real `RunOutcome::facts`) is required to complete a `run_command` step; a command that ran and did not exit 0 (nonzero, timeout, signal, cancel) is `RunResult.failed`, shown as `failed:pytest` in the table, distinct from `missing:pytest`. Spec text updated ("run and pass"); replay fixture `fib-pytest-fails.json` (canned pytest exits 1). Production: `eval.rs` and `table.rs`.
 
 ## S2 HTTP 400 disambiguation (C6) - ~40-80 lines
 

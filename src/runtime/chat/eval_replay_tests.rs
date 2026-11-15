@@ -10,7 +10,8 @@ use serde_json::Value;
 
 use super::{
     eval_harness::{
-        Fixture, Folder, Mode, Rig, helper_age_warning, leaks, proxy, sandbox_probe, throwaway_root,
+        EXIT_NONZERO, Fixture, Folder, Mode, Rig, helper_age_warning, leaks, proxy, sandbox_probe,
+        throwaway_root,
     },
     ollama_tests::fake,
 };
@@ -30,6 +31,8 @@ const COMMIT_FIRST: &str =
     include_str!("../../../tests/fixtures/ollama/eval/fib-commit-first.json");
 const READ_ONLY_BATCH: &str =
     include_str!("../../../tests/fixtures/ollama/eval/read-only-batch.json");
+const PYTEST_FAILS: &str =
+    include_str!("../../../tests/fixtures/ollama/eval/fib-pytest-fails.json");
 const COORDINATE_GOOD: &str =
     include_str!("../../../tests/fixtures/ollama/eval/coordinate-good.json");
 const COORDINATE_PROSE: &str =
@@ -62,6 +65,7 @@ async fn replay(raw: &str, fail: Option<&'static str>) -> Replayed {
 /// Nothing failed but what the test names.
 fn only(result: &RunResult, missing: &[&str], order: &[(&str, &str)], ignored: &[&str]) {
     assert_eq!(result.missing, missing, "{result:?}");
+    assert!(result.failed.is_empty(), "{result:?}");
     assert_eq!(result.out_of_order, order, "{result:?}");
     assert_eq!(result.ignored, ignored, "{result:?}");
     assert!(
@@ -107,6 +111,19 @@ async fn a_commit_before_the_batch_fails_for_the_order_only() {
     assert!(!replayed.run.passed());
     let pairs = [("batch", "commit"), ("pytest", "commit")];
     only(&replayed.run.result, &[], &pairs, &[]);
+    assert!(!replayed.run.unexpected);
+}
+
+// Hardening: the same transcript as the good run, but pytest exits 1: the run
+// fails because the step did not pass (`failed`), not because it was skipped.
+#[tokio::test]
+async fn a_test_run_that_exits_nonzero_fails_for_that_step_only() {
+    let replayed = replay(PYTEST_FAILS, Some(EXIT_NONZERO)).await;
+    assert!(!replayed.run.passed());
+    let result = &replayed.run.result;
+    assert_eq!(result.failed, ["pytest"], "{result:?}");
+    assert!(result.missing.is_empty() && result.out_of_order.is_empty());
+    assert!(result.ignored.is_empty() && result.forbidden.is_empty());
     assert!(!replayed.run.unexpected);
 }
 
@@ -351,7 +368,7 @@ async fn in_the_live_rig_commands_and_git_add_go_through_the_judge() {
         !out.is_error && out.text.contains("real-helper-ran"),
         "{out:?}"
     );
-    assert!(!out.text.starts_with("exit code 0: 1 passed"), "{out:?}");
+    assert!(!out.text.contains("1 passed"), "{out:?}");
     std::fs::write(folder.repo.join("fib.py"), "x = 1\n").unwrap();
     let add = Call::GitAdd {
         paths: vec!["fib.py".into()],

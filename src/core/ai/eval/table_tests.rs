@@ -18,7 +18,11 @@ fn ex(name: &str, arguments: serde_json::Value) -> ToolExchange {
         id: None,
         index: None,
         arguments,
-        result: "ok".to_owned(),
+        result: match name {
+            "run_command" => "exit code 0 after 0.4s\n1 passed",
+            _ => "ok",
+        }
+        .to_owned(),
     }
 }
 
@@ -321,4 +325,19 @@ fn the_header_fields_are_cleaned() {
         1
     );
     assert!(table.contains("16 GiB"), "{table}");
+}
+
+// Hardening: a command that ran and failed is `failed:pytest`, not `missing`.
+#[test]
+fn a_failed_command_step_is_its_own_failure_kind() {
+    let mut list = good_list();
+    list[3].result = "exit code 1 after 0.4s\n1 failed".to_owned();
+    let run = Run::new(
+        score(&WRITE_AND_TEST, &list, "Done."),
+        Duration::from_secs(1),
+    );
+    let row = Row::new("qwen3:14b", &WRITE_AND_TEST, vec![run]);
+    let table = render(&header(), &[row]);
+    assert!(table.contains("failed:pytest x1"), "{table}");
+    assert!(!table.contains("missing:pytest"), "{table}");
 }

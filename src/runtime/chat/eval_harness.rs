@@ -89,6 +89,10 @@ pub(super) fn exchanges_from_body(body: &Value) -> Vec<ToolExchange> {
     list
 }
 
+/// A `fail` value for [`Rig::new`]: the canned `run_command` exits 1 (a
+/// result, not an error), the way a failing pytest does.
+pub(super) const EXIT_NONZERO: &str = "run_command exits 1";
+
 /// One call that reached the dispatch, in order, and whether it failed.
 pub(super) struct Done {
     pub(super) name: String,
@@ -234,7 +238,7 @@ impl Dispatch for Canned {
         let fixed = match &call {
             Call::Orchestra(_) => Some(("", "recorded")),
             _ if self.live => None,
-            Call::RunCommand { .. } => Some(("run_command", "exit code 0: 1 passed")),
+            Call::RunCommand { .. } => Some(("run_command", "exit code 0 after 0.4s\n1 passed")),
             Call::GitAdd { .. } => Some(("git_commit", "staged 2 paths")),
             Call::GitCommit { .. } => Some(("git_commit", "committed abc1234")),
             git if git.uses_git() => Some(("", "nothing to report")),
@@ -253,6 +257,11 @@ impl Dispatch for Canned {
             Outcome {
                 text: format!("denied: {NOT_IN_SCENARIO}"),
                 is_error: true,
+            }
+        } else if self.fail == Some(EXIT_NONZERO) && call.name() == "run_command" {
+            Outcome {
+                text: "exit code 1 after 0.4s\n1 failed".to_owned(),
+                is_error: false,
             }
         } else if self.fail == Some(call.name()) {
             Outcome {

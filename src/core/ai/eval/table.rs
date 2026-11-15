@@ -43,6 +43,7 @@ impl Run {
     fn reasons(&self) -> Vec<(&'static str, String)> {
         let r = &self.result;
         let mut list: Vec<_> = r.missing.iter().map(|l| ("missing", (*l).into())).collect();
+        list.extend(r.failed.iter().map(|l| ("failed", (*l).into())));
         let pairs = r
             .out_of_order
             .iter()
@@ -89,8 +90,8 @@ impl Row {
         for run in self.runs.iter().filter(|run| !run.passed()) {
             let mut seen: Vec<String> = Vec::new();
             for (kind, detail) in run.reasons() {
-                let name = if kind == "missing" {
-                    format!("missing:{detail}")
+                let name = if kind == "missing" || kind == "failed" {
+                    format!("{kind}:{detail}")
                 } else {
                     kind.to_owned()
                 };
