@@ -164,8 +164,8 @@ Work units (each a reviewable commit; U1-U4 are S9a, U5-U6 are S9b, U7 is docs):
 
 ### U1 Config: level, parse, known key, notice (D28)
 
-- [ ] 9.1 RED/GREEN: `McpApproval { Ask, Reads, All }` with `key()`, `McpServer.approval`, `Debug` prints it; `read_mcp_entry` reads it like `enabled`: missing is `Ask`, a bad string or non-string pushes `{path}.approval: expected "ask", "reads" or "all"` and gives `Ask`, the entry is kept; `"approval"` joins the known keys (configuration: approval missing means ask, Each valid level parses, Invalid approval value gives a notice and asks, A bad approval does not drop the entry or its siblings; mcp-servers: Invalid value asks, the config half). Includes the `McpServer` literal churn.
-- [ ] 9.2 Characterization: the full-load `config (N problems): ...` notice carries the approval text with the server index; the menu save leaves every server entry, `approval` line included, byte-identical (config-persistence: A save never writes a level). Existing save tests pass unchanged.
+- [x] 9.1 RED/GREEN: `McpApproval { Ask, Reads, All }` with `key()`, `McpServer.approval`, `Debug` prints it; `read_mcp_entry` reads it like `enabled`: missing is `Ask`, a bad string or non-string pushes `{path}.approval: expected "ask", "reads" or "all"` and gives `Ask`, the entry is kept; `"approval"` joins the known keys (configuration: approval missing means ask, Each valid level parses, Invalid approval value gives a notice and asks, A bad approval does not drop the entry or its siblings; mcp-servers: Invalid value asks, the config half). Includes the `McpServer` literal churn.
+- [x] 9.2 Characterization: the full-load `config (N problems): ...` notice carries the approval text with the server index; the menu save leaves every server entry, `approval` line included, byte-identical (config-persistence: A save never writes a level). Existing save tests pass unchanged.
 
 ### U2 Host and router: the level answers the ask (D29, D30, D31)
 

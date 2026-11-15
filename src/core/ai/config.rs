@@ -384,6 +384,29 @@ impl Default for OrchestratorConfig {
     }
 }
 
+/// How much of a user MCP server runs without a `y` in a chat (design D28,
+/// owner decision C13): `Ask` (the default) asks on every call, `Reads` runs
+/// the tools the catalog classes as read unasked (only for the catalog's own
+/// command), `All` runs every tool unasked. Never applies to workers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum McpApproval {
+    #[default]
+    Ask,
+    Reads,
+    All,
+}
+
+impl McpApproval {
+    /// The value written in `config.toml`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Reads => "reads",
+            Self::All => "all",
+        }
+    }
+}
+
 /// One user MCP server from `[[ai.mcp.servers]]` (design D16). `env` holds
 /// variable NAMES only: when the server starts, each takes its value from the
 /// server's table in `secrets.toml`, else from lazarobox's own environment
@@ -397,6 +420,7 @@ pub struct McpServer {
     pub env: Vec<String>,
     pub project: Option<PathBuf>,
     pub enabled: bool,
+    pub approval: McpApproval,
 }
 
 /// Prints the name, the project, the flag and the counts, never the command,
@@ -407,6 +431,7 @@ impl std::fmt::Debug for McpServer {
             .field("name", &self.name)
             .field("project", &self.project)
             .field("enabled", &self.enabled)
+            .field("approval", &self.approval)
             .field("args", &self.args.len())
             .field("env", &self.env.len())
             .finish_non_exhaustive()
@@ -1231,6 +1256,20 @@ fn read_mcp_entry(entry: &Table, path: &str, problems: &mut Vec<String>) -> Opti
             true
         }
     };
+    // A bad level asks and keeps the entry: dropping it would lose a working
+    // server (design D28).
+    let approval = match entry.get("approval") {
+        None => McpApproval::Ask,
+        Some(Value::String(level)) if level == "ask" => McpApproval::Ask,
+        Some(Value::String(level)) if level == "reads" => McpApproval::Reads,
+        Some(Value::String(level)) if level == "all" => McpApproval::All,
+        Some(_) => {
+            problems.push(format!(
+                "{path}.approval: expected \"ask\", \"reads\" or \"all\""
+            ));
+            McpApproval::Ask
+        }
+    };
     // An unreadable project must skip the entry: reading it as global would
     // widen where the server runs.
     let project = match entry.get("project") {
@@ -1249,6 +1288,7 @@ fn read_mcp_entry(entry: &Table, path: &str, problems: &mut Vec<String>) -> Opti
         env,
         project,
         enabled,
+        approval,
     })
 }
 
@@ -1591,7 +1631,9 @@ pub fn note_unknown_ai_keys(table: &Table, problems: &mut Vec<String>) {
     if let Some(mcp) = child(ai, "mcp") {
         note_unknown_keys(mcp, "ai.mcp", &["servers"], problems);
         if let Some(Value::Array(entries)) = mcp.get("servers") {
-            let known = ["name", "command", "args", "env", "enabled", "project"];
+            let known = [
+                "name", "command", "args", "env", "enabled", "project", "approval",
+            ];
             for (index, entry) in entries.iter().enumerate() {
                 if let Value::Table(entry) = entry {
                     let path = format!("ai.mcp.servers[{index}]");
@@ -3374,6 +3416,7 @@ mod tests {
             env: Vec::new(),
             project: None,
             enabled: true,
+            approval: McpApproval::Ask,
         }
     }
 
@@ -3530,6 +3573,80 @@ mod tests {
             problems,
             vec!["ai.mcp.servers[0].enabled: expected a boolean".to_owned()]
         );
+    }
+
+    // Spec (configuration, MCP server lists): approval missing means ask,
+    // each valid level parses.
+    #[test]
+    fn approval_missing_means_ask_and_each_valid_level_parses() {
+        let (servers, problems) = mcp_of("[[ai.mcp.servers]]\nname = \"a\"\ncommand = \"x\"\n");
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(servers[0].approval, McpApproval::Ask);
+        for (value, level) in [
+            ("ask", McpApproval::Ask),
+            ("reads", McpApproval::Reads),
+            ("all", McpApproval::All),
+        ] {
+            let text = format!(
+                "[[ai.mcp.servers]]\nname = \"a\"\ncommand = \"x\"\napproval = \"{value}\"\n"
+            );
+            let (servers, problems) = mcp_of(&text);
+            assert_eq!(problems, Vec::<String>::new(), "{value}");
+            assert_eq!(servers[0].approval, level, "{value}");
+            assert_eq!(level.key(), value);
+        }
+    }
+
+    // Spec (configuration): an invalid approval value gives a notice and
+    // asks; a bad approval does not drop the entry or its siblings.
+    #[test]
+    fn an_invalid_approval_asks_with_a_notice_and_keeps_the_entry_and_its_siblings() {
+        for bad in ["\"sometimes\"", "\"ALL\"", "\"\"", "true", "3", "[\"all\"]"] {
+            let text = format!(
+                "[[ai.mcp.servers]]\nname = \"a\"\ncommand = \"x\"\napproval = {bad}\n\n\
+                [[ai.mcp.servers]]\nname = \"b\"\ncommand = \"y\"\napproval = \"all\"\n"
+            );
+            let (servers, problems) = mcp_of(&text);
+            assert_eq!(
+                problems,
+                vec![
+                    "ai.mcp.servers[0].approval: expected \"ask\", \"reads\" or \"all\"".to_owned()
+                ],
+                "{bad}"
+            );
+            assert_eq!(servers.len(), 2, "{bad}");
+            assert_eq!(servers[0].approval, McpApproval::Ask, "{bad}");
+            assert_eq!(servers[1].approval, McpApproval::All, "{bad}");
+        }
+    }
+
+    // Spec (configuration): `approval` is a known key, so the full load adds
+    // no unknown-key notice; a bad value reaches the load notice with the
+    // server index.
+    #[test]
+    fn approval_is_a_known_key_and_its_problem_reaches_the_load_notice() {
+        let ok = "[[ai.mcp.servers]]\nname = \"a\"\ncommand = \"x\"\napproval = \"reads\"\n";
+        assert_eq!(full_load(ok), (Vec::new(), None));
+        let bad = "[[ai.mcp.servers]]\nname = \"a\"\ncommand = \"x\"\n\n\
+            [[ai.mcp.servers]]\nname = \"b\"\ncommand = \"y\"\napproval = 1\n";
+        let (problems, notice) = full_load(bad);
+        assert_eq!(
+            problems,
+            ["ai.mcp.servers[1].approval: expected \"ask\", \"reads\" or \"all\""]
+        );
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: ai.mcp.servers[1].approval: expected \"ask\", \"reads\" or \"all\"")
+        );
+    }
+
+    #[test]
+    fn the_debug_of_a_server_prints_its_approval_and_still_no_command() {
+        let mut one = server("a", "secret-cmd");
+        one.approval = McpApproval::All;
+        let text = format!("{one:?}");
+        assert!(text.contains("approval: All"), "{text}");
+        assert!(!text.contains("secret-cmd"), "{text}");
     }
 
     #[test]

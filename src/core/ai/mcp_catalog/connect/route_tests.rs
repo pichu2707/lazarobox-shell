@@ -163,6 +163,7 @@ fn a_declared_gsc_is_left_alone_and_a_held_value_is_kept() {
         env: Vec::new(),
         project: None,
         enabled: true,
+        approval: crate::core::ai::config::McpApproval::Ask,
     }];
     let plan_declared = plan(&input(
         ClientRoute::Lazarobox,

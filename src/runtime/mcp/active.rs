@@ -75,6 +75,7 @@ mod tests {
             env: Vec::new(),
             project: project.map(Path::to_path_buf),
             enabled,
+            approval: crate::core::ai::config::McpApproval::Ask,
         }
     }
 

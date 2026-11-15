@@ -1589,6 +1589,23 @@ other = 1
         assert!(out.contains("mcp = 3"), "{out:?}");
     }
 
+    // Spec (config-persistence): a save never writes a level. An entry with
+    // an `approval` line, valid or not, stays byte-identical.
+    #[test]
+    fn a_save_keeps_every_approval_line_byte_for_byte() {
+        let mcp = "[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"mcp-gsc\"\napproval = \"reads\" # my choice\n\n\
+            [[ai.mcp.servers]]\nname = \"b\"\ncommand = \"b\"\napproval = \"sometimes\"\n";
+        let existing = format!("[statusline]\nposition = \"top\"\n\n{mcp}");
+        let edits = [
+            ConfigEdit::tools_flag(false),
+            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Auto),
+            edit("statusline", "bottom"),
+        ];
+        let out = apply_edit(Some(&existing), &edits).unwrap();
+        assert!(out.contains(mcp), "{out:?}");
+        assert!(out.contains("position = \"bottom\""), "{out:?}");
+    }
+
     // The server ports are never edited by the menu: every save keeps them
     // byte for byte and never adds the table.
     #[test]

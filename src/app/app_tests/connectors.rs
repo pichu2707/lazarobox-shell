@@ -141,6 +141,7 @@ fn a_probe_command_becomes_an_effect_and_esc_a_cancel() {
         env: Vec::new(),
         project: None,
         enabled: true,
+        approval: crate::core::ai::config::McpApproval::Ask,
     };
     let effects = a.on_menu_command(MenuCommand::Probe(Box::new(server.clone())));
     assert_eq!(effects, [Effect::McpProbe(1, Box::new(server))]);
@@ -179,6 +180,7 @@ fn ask_probe(a: &mut App) -> Vec<Effect> {
         env: Vec::new(),
         project: None,
         enabled: true,
+        approval: crate::core::ai::config::McpApproval::Ask,
     };
     a.on_menu_command(MenuCommand::Probe(Box::new(server)))
 }

@@ -15,6 +15,7 @@ fn declared(name: &str) -> McpServer {
         env: Vec::new(),
         project: None,
         enabled: true,
+        approval: crate::core::ai::config::McpApproval::Ask,
     }
 }
 
