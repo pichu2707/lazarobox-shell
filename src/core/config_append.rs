@@ -8,6 +8,9 @@
 use sha2::{Digest, Sha256};
 use toml::Value;
 
+mod approval;
+pub use approval::edit_approval;
+
 use crate::core::{
     ai::{
         mcp_catalog::connect::Plan,
@@ -36,6 +39,16 @@ pub enum AppendRefusal {
     Declared(String),
     /// The parsed servers would not be the old ones followed by the new.
     ServersDiffer,
+    /// No `[[ai.mcp.servers]]` entry has this name.
+    NotDeclared(String),
+    /// The only entry of this name carries a `project` key: set by hand.
+    Limited(String),
+    /// Two or more entries carry this name.
+    Twice,
+    /// `ai.mcp.servers` is an inline list, which is not edited.
+    Inline,
+    /// The change would leave the text as it is.
+    Unchanged,
     /// A check or a step of the write (the secrets writer's refusals).
     File(Refusal),
 }
@@ -56,6 +69,13 @@ impl AppendRefusal {
             ),
             Self::Declared(name) => format!("{FILE} already declares {name}"),
             Self::ServersDiffer => format!("{FILE}: the append would change its server list"),
+            Self::NotDeclared(name) => format!("{name} is not declared in {FILE}"),
+            Self::Limited(name) => format!("{name} is limited to a project; set approval by hand"),
+            Self::Twice => "declared more than once; set approval by hand".to_owned(),
+            Self::Inline => {
+                format!("{FILE}: ai.mcp.servers is an inline list; set approval by hand")
+            }
+            Self::Unchanged => "the approval is already that; nothing was written".to_owned(),
             Self::File(Refusal::TooLarge) => {
                 format!("{FILE}: larger than {} KiB", MAX_BYTES / 1024)
             }
