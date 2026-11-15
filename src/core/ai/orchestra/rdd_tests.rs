@@ -5,7 +5,7 @@ use super::changes::{
     Change, GAP_CUT, GAP_MISMATCH, GAP_UNAVAILABLE, GAP_UNREADABLE, StagedDiff, StagedText,
 };
 use super::rdd::{
-    Basis, Consent, Lens, Outcome, Refutation, Review, ReviewError, Severity, consent_ask,
+    Basis, Consent, Finding, Lens, Outcome, Refutation, Review, ReviewError, Severity, consent_ask,
     correction_prompt, lens_prompt, parse_report, parse_verdicts, refuter_prompt,
     validation_prompt,
 };
@@ -839,4 +839,33 @@ fn a_mandatory_review_runs_as_a_granted_one_and_is_recorded_as_mandatory() {
     review.pick("risk", "a cheap author").unwrap();
     review.report(Lens::Risk, "NONE").unwrap();
     assert_eq!(review.conclude(), Ok(Outcome::Clean));
+}
+
+// Spec (acceptance-judges, Verdict format): a finding has a location field,
+// and a lens finding with none shows `at: unknown`.
+#[test]
+fn a_lens_finding_has_no_location_and_says_unknown() {
+    let got = parse_report(
+        Lens::Risk,
+        "FINDING severe change observed: a.rs drops the error",
+    );
+    let first = &got.findings[0];
+    assert_eq!(first.at, None);
+    assert_eq!(first.place(), "at: unknown");
+    let located = Finding {
+        at: Some("src/a.rs:40-52".to_owned()),
+        ..first.clone()
+    };
+    assert_eq!(located.place(), "at: src/a.rs:40-52");
+}
+
+// Design D6: the judge's own lens never comes from the orchestrator.
+#[test]
+fn the_judge_lens_is_outside_the_lens_set() {
+    assert_eq!(Lens::Judge.id(), "judge");
+    assert!(!Lens::ALL.contains(&Lens::Judge));
+    assert_eq!(Lens::parse("judge"), None);
+    let mut review = high();
+    review.consent(Consent::Granted).unwrap();
+    assert_eq!(review.pick("judge", "why"), Err(ReviewError::UnknownLens));
 }

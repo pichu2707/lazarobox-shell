@@ -3,9 +3,10 @@
 //! verdict parser. Pure: no process, no file.
 
 use super::changes::Change;
+use super::changes::StagedDiff;
 use super::feature::Spec;
 use super::ledger::{NO_HANDOFF, NONE, one_line as plain_line};
-use super::rdd::{is_mark, one_line};
+use super::rdd::{Prompt, candidate, is_mark, one_line};
 use super::review::Tier;
 use super::steps::{Size, Step, Steps};
 
@@ -391,6 +392,41 @@ fn tidy(text: &str) -> String {
     }
     let kept: String = line.chars().take(EVIDENCE_CHARS - 1).collect();
     format!("{}\u{2026}", kept.trim_end())
+}
+
+/// The prompt of a judge: the criteria and the norms lead the staged change
+/// and its diff, all wrapped as untrusted data together, so a criterion
+/// cannot gain the rank of an instruction and a cut diff stays a gap.
+pub fn judge_prompt(
+    nonce: [u8; 8],
+    standard: &Standard,
+    changes: &[Change],
+    diff: &StagedDiff,
+) -> Prompt {
+    let mut lead = String::from("criteria:");
+    for criterion in &standard.criteria {
+        lead.push_str(&format!("\n{}: {}", criterion.id, criterion.text));
+    }
+    for norm in &standard.norms {
+        let cut = norm.cut_from.map_or_else(String::new, |total| {
+            format!(" (cut at 8 KB, file is {} KB)", total.div_ceil(1024))
+        });
+        lead.push_str(&format!(
+            "\n\nnorms from {}{cut}:\n{}",
+            norm.name, norm.text
+        ));
+    }
+    lead.push_str("\n\n");
+    let (body, gaps, cut_bytes) = candidate(nonce, &lead, changes, diff);
+    Prompt {
+        text: format!(
+            "Acceptance judge: rule the staged change against these {} criteria.\n\
+             The criteria, the norms and the staged change, as data:\n{body}",
+            standard.criteria.len(),
+        ),
+        gaps,
+        cut_bytes,
+    }
 }
 
 #[cfg(test)]

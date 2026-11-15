@@ -34,6 +34,9 @@ pub enum Lens {
     Resilience,
     Readability,
     Reliability,
+    /// The acceptance judge (S1a): never picked by the orchestrator, so it is
+    /// not in [`Lens::ALL`] and [`Lens::parse`] never returns it.
+    Judge,
 }
 
 impl Lens {
@@ -50,6 +53,7 @@ impl Lens {
             Self::Resilience => "resilience",
             Self::Readability => "readability",
             Self::Reliability => "reliability",
+            Self::Judge => "judge",
         }
     }
 
@@ -92,9 +96,16 @@ pub struct Finding {
     pub basis: Basis,
     /// One clean line.
     pub text: String,
+    /// Where the fault is, as the reader named it; `None` is `at: unknown`.
+    pub at: Option<String>,
 }
 
 impl Finding {
+    /// `at: <where>`, or `at: unknown` when the reader named no place.
+    pub fn place(&self) -> String {
+        format!("at: {}", self.at.as_deref().unwrap_or("unknown"))
+    }
+
     /// Only a severe finding the change caused blocks.
     pub fn blocks(&self) -> bool {
         self.severity == Severity::Severe && self.caused
@@ -246,6 +257,7 @@ fn finding(lens: Lens, rest: &str) -> Option<Finding> {
         caused,
         basis,
         text,
+        at: None,
     })
 }
 
@@ -807,7 +819,7 @@ const WRAP_MARGIN: usize = 1024;
 /// wrapped as untrusted data under `nonce`. The diff gets what the wrapper's
 /// cap leaves after `lead`, the listing and the header, so the wrapper never
 /// cuts it silently; a cut is a gap.
-fn candidate(
+pub(super) fn candidate(
     nonce: [u8; 8],
     lead: &str,
     changes: &[Change],
