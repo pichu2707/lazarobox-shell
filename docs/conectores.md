@@ -39,6 +39,7 @@ Los detalles, en [Conectar Google en un paso](#conectar-google-en-un-paso). Para
 - [Search Console](#search-console)
 - [Google Workspace: Gmail, Docs y Hojas](#google-workspace-gmail-docs-y-hojas)
 - [Apps Script](#apps-script)
+- [Cuántas llamadas piden confirmación (`approval`)](#cuántas-llamadas-piden-confirmación-approval)
 - [Riesgos de un vistazo](#riesgos-de-un-vistazo)
 - [Cómo desconectar un servicio](#cómo-desconectar-un-servicio)
 - [Apéndice: las teclas del área Connectors](#apéndice-las-teclas-del-área-connectors) (con el estado de cada servicio y cómo se rellena un valor)
@@ -367,6 +368,25 @@ lazarobox solo acepta un enlace de `accounts.google.com` que lleve **tu** id de 
 4. Pulsa `l` (`clasp login`), confirma con `y` y completa el navegador. No hay `env`, así que no hay `f` ni tabla en `secrets.toml`.
 5. Pulsa `p`: `mcp: started apps-script (5 tools)`.
 
+## Cuántas llamadas piden confirmación (`approval`)
+
+Por defecto cada llamada a una herramienta de un servicio pide tu `y`. Si un servicio de solo lectura te interrumpe demasiado, puedes relajarlo servidor por servidor con la clave `approval` de su entrada en `config.toml` (por ahora se edita a mano):
+
+```toml
+[[ai.mcp.servers]]
+name = "gsc"
+command = "mcp-search-console"
+args = ["..."]
+approval = "reads"
+```
+
+- `"ask"` (por defecto): pide `y` en cada llamada. Una clave que falta equivale a `"ask"`.
+- `"reads"`: las herramientas que el catálogo marca como de lectura (por ejemplo `run_report` en `ga4`) se ejecutan sin preguntar; las de escritura y las que el catálogo no conoce siguen pidiendo `y`. Solo vale para el servidor del catálogo: el `name` debe ser el de la entrada y el `command` debe ser el mismo; un servidor propio que se llama `gsc` pero lanza otro comando siempre pregunta. La indicación `readOnlyHint` del propio servidor se ignora. Al arrancar, la línea `mcp: started gsc · approval: reads` lo confirma (y añade `, but every call asks (not the catalog's server)` si no es el del catálogo).
+- `"all"`: todas las herramientas de ese servidor se ejecutan sin preguntar, **también las que escriben o borran**. Úsalo solo en un servidor de pruebas o en uno en el que confíes del todo: un texto malicioso en un resultado (un correo, una página) podría dirigir al modelo a llamar una herramienta de escritura sin que lo veas antes.
+- Un valor inválido (`approval = "siempre"`) avisa al arrancar y equivale a `"ask"`; la entrada y las demás se mantienen.
+
+Qué no cambia: los _workers_ nunca reciben las herramientas de tus servidores; una conversación que ya leyó texto de GitHub sigue pidiendo `y` en cada llamada, sea cual sea el nivel; el filtro que oculta las herramientas de enviar de Gmail y `start_google_auth` sigue activo; el resultado llega al modelo como dato no fiable y un comando que sugiera sigue necesitando su propio `y`. Cada llamada sin pregunta queda en la transcripción, con la fila `unasked (approval = reads): ...`. El nivel se lee al arrancar el chat: reinicia lazarobox tras editar `config.toml`.
+
 ## Riesgos de un vistazo
 
 | Servicio | Lo que debes saber |
@@ -376,7 +396,7 @@ lazarobox solo acepta un enlace de `accounts.google.com` que lleve **tu** id de 
 | GSC | Con `name = "gsc"`. Las herramientas de escritura (sitemaps) piden `y`; añadir y borrar propiedades está desactivado. Un token caducado puede colgar una llamada hasta Esc: enlaza de nuevo. |
 | Google Workspace | Con `name = "google"`. Lista de 8 herramientas de Gmail, solo borradores. `gmail.compose` puede enviar a nivel de API. `drive.readonly` lee todo el Drive. Tokens en texto plano. |
 | Apps Script | Cuatro herramientas de escritura. `push_files` ejecuta código con los permisos del script. |
-| Todos | Cada llamada pide `y`, también en modo `auto`. Los resultados llegan al modelo como datos no fiables. |
+| Todos | Por defecto cada llamada pide `y`, también en modo `auto` (con `approval = "reads"` o `"all"` en `config.toml` un servicio puede relajarlo: ver la sección anterior). Los resultados llegan al modelo como datos no fiables. |
 
 ## Cómo desconectar un servicio
 

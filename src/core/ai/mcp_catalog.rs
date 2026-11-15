@@ -10,10 +10,11 @@
 //! `runtime::secrets_write` and `runtime::config_append`; nothing here
 //! writes a file.
 //!
-//! The read/write class of a tool is recorded here and read by nobody in
-//! approval: every call to a connector tool still needs the user's `y` (C11).
+//! The read/write class of a tool is read only by [`unasked`], under a
+//! server's own `reads` approval level (C13); at the default level every call
+//! to a connector tool still needs the user's `y` (C11).
 
-use crate::core::ai::config::McpServer;
+use crate::core::ai::config::{McpApproval, McpServer};
 
 pub mod checks;
 pub mod connect;
@@ -204,6 +205,28 @@ fn unset(vars: &'static [Var], has: &impl Fn(&str) -> bool) -> Vec<&'static str>
 /// not an entry or the tool is unknown.
 pub fn class(server: &str, tool: &str) -> Class {
     entry(server).map_or(Class::Write, |e| e.class(tool))
+}
+
+/// Whether a call to `tool` of the declared `server` runs without a `y` at the
+/// server's own approval level (design D29, owner decision C13). `All` runs
+/// every tool and `Ask` none. `Reads` runs only a tool the catalog classes
+/// `Read`, and only for the catalog's own server: the declared name is an
+/// entry id AND the declared command equals the entry's, so a custom server
+/// that borrows a catalog name gets no Read class. The server's own
+/// `readOnlyHint` is never consulted.
+pub fn unasked(server: &McpServer, tool: &str) -> bool {
+    match server.approval {
+        McpApproval::All => true,
+        McpApproval::Ask => false,
+        McpApproval::Reads => is_catalog_server(server) && class(&server.name, tool) == Class::Read,
+    }
+}
+
+/// Whether `server` is the catalog's own: its name is an entry id AND its
+/// command equals the entry's (design D29). Only then does the catalog's
+/// class of a tool describe what the server runs.
+pub fn is_catalog_server(server: &McpServer) -> bool {
+    entry(&server.name).is_some_and(|e| e.command == server.command)
 }
 
 /// The Gmail tools a declared `google` registers (C9: read and draft only).

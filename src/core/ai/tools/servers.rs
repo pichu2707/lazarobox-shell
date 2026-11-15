@@ -183,6 +183,7 @@ mod tests {
             env: Vec::new(),
             project: project.map(Into::into),
             enabled: true,
+            approval: crate::core::ai::config::McpApproval::Ask,
         }
     }
 

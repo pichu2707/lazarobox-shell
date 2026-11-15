@@ -126,6 +126,7 @@ fn server(env: &[&str]) -> McpServer {
         env: env.iter().map(|n| (*n).to_owned()).collect(),
         project: None,
         enabled: true,
+        approval: crate::core::ai::config::McpApproval::Ask,
     }
 }
 

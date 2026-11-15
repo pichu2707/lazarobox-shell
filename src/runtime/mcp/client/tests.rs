@@ -192,6 +192,7 @@ async fn the_gmail_filter_and_hidden_tools_of_a_declared_google_run_before_the_c
         env: Vec::new(),
         project: None,
         enabled: true,
+        approval: crate::core::ai::config::McpApproval::Ask,
     };
     let mut names = vec![
         "send_gmail_message".to_owned(),

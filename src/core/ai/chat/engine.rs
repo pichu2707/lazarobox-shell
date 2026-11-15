@@ -216,8 +216,9 @@ pub enum Decision {
     Busy(usize),
     /// Why nothing was done; short, and it goes back to the model.
     Denied(&'static str),
-    /// Allowed by the chat's approval mode, with no prompt: a read or a search
-    /// that `run` lets go (`approval::answers_itself`). Never the user's `y`:
+    /// Allowed with no prompt: by the chat's approval mode, a read or a search
+    /// that `run` lets go, or by a user server's own level, a call the host
+    /// marked `unasked` (`approval::answers_itself`). Never the user's `y`:
     /// it allows nothing else in the turn, and the host takes it only where
     /// its own ask allowed it, keeping a read in the root as it opens the file.
     Unprompted,

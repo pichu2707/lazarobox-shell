@@ -2,7 +2,7 @@
 
 ## Base of this delta
 
-This delta targets the owning spec `openspec/specs/config-menu/spec.md` as it stands on f7d6b6f4. The old `AI` tab no longer exists: ai-menu-tabs (archived 2026-11-02) split it into the menu tabs `Settings`, `Models`, `Tools`, `Connectors`, `Chat`, and reserved `Connectors` for MCP ("it has none today, so it MUST NOT be drawn ... and MUST appear, in its table position between `Tools` and `Chat`, as soon as a row is declared for it (MCP, agent-tools 4a)", config-menu spec:760; `sections: &[]`, src/core/menu.rs:772-778). `Hugging Face` is now the last row of the Models tab. So the row this change adds goes to the `Connectors` tab (assumption: the reserved tab; the earlier plan put it after `Hugging Face` in the `AI` tab), and the tab stops being hidden. The MODIFIED blocks are full copies of "Sections and items are data" (config-menu spec:44-65), "Menu tabs" (:759-805) and "Jump keys" (:1625-1661) where only the sentences and scenarios that assumed an empty `Connectors` tab change; a scenario that needs Connectors hidden now runs on a test table, as the code already does (`TEST_TABS`, src/core/menu.rs:789-802). The other requirements stay as they are; their scenarios that say "Connectors hidden" run on such a test table. The rule that the menu never writes `ai.mcp.*` stays (config-persistence, openspec/specs/config-persistence/spec.md:494; C4).
+This delta targets the owning spec `openspec/specs/config-menu/spec.md` as it stands on f7d6b6f4. The old `AI` tab no longer exists: ai-menu-tabs (archived 2026-11-02) split it into the menu tabs `Settings`, `Models`, `Tools`, `Connectors`, `Chat`, and reserved `Connectors` for MCP ("it has none today, so it MUST NOT be drawn ... and MUST appear, in its table position between `Tools` and `Chat`, as soon as a row is declared for it (MCP, agent-tools 4a)", config-menu spec:760; `sections: &[]`, src/core/menu.rs:772-778). `Hugging Face` is now the last row of the Models tab. So the row this change adds goes to the `Connectors` tab (assumption: the reserved tab; the earlier plan put it after `Hugging Face` in the `AI` tab), and the tab stops being hidden. The MODIFIED blocks are full copies of "Sections and items are data" (config-menu spec:44-65), "Menu tabs" (:759-805) and "Jump keys" (:1625-1661) where only the sentences and scenarios that assumed an empty `Connectors` tab change; a scenario that needs Connectors hidden now runs on a test table, as the code already does (`TEST_TABS`, src/core/menu.rs:789-802). The other requirements stay as they are; their scenarios that say "Connectors hidden" run on such a test table. The rule that the menu never writes `ai.mcp.*` stays for the save (config-persistence, openspec/specs/config-persistence/spec.md:494; C4); amendment 2026-11-14 (S9, C13, owner decision): the area also sets the optional `approval` key of one declared entry after the user's confirmation, the same kind of write outside the save as Connect Google's append (config-menu, Connect Google, openspec/specs/config-menu/spec.md:1836; src/core/config_append.rs, src/runtime/config_append.rs), see ADDED "Connector approval level" below and mcp-connect, Approval level of an entry.
 
 Traceability: C1, C2 (a menu wizard), C4 (the menu writes no `ai.mcp.*`), C6 as amended on 2026-11-11 (the menu writes `secrets.toml` only through a confirmed secret field of the area, see mcp-connect, Secret fields, and mcp-secrets, Menu save; until that date C6 read "the menu writes no `secrets.toml`"), proposal scope items 8 and 11. Slice tags: [S4], [S6a2].
 
@@ -45,6 +45,29 @@ The `Connectors` menu tab MUST hold one static row, `Connectors` (no key path), 
 - GIVEN a normal terminal
 - WHEN the Settings tab, the Connectors tab, the area's entry list, the `google` entry screen, its field list with a field open, and its link waiting screen are rendered
 - THEN the popup has the same height in all six
+
+### Requirement: Connector approval level [S9]
+Owner decision 2026-11-14 (C13). The Connectors area MUST show, per declared catalog entry, the approval level of that server (`ask`, `reads` or `all`) and let the user change it (see mcp-connect, Entry list and Approval level of an entry); this is the menu's only way to write the `approval` key of `[[ai.mcp.servers]]`. A level change is not a menu draft: it is written when the user confirms it on its own confirm line, `s` neither writes nor repeats it, Esc of the menu does not revert it, and the unsaved-changes hint does not count it. While the confirm line is open, every key goes to it (no tab switch, jump key or `s`): only an unmodified lowercase `y` confirms, and every other key cancels. A `s` save with a pending, unconfirmed proposal MUST leave `config.toml` without any `approval` change. The write goes through the area's writer, not through the menu's save, so the save's rule that `ai.mcp.*` is never touched (config-persistence) holds unchanged, and the draft and its dirty state never include a level. The menu MUST say, after a confirmed change, that it takes effect after a restart (`restart lazarobox to use it in chats`).
+
+#### Scenario: A level change is not a draft [auto]
+- GIVEN the area with `ga4` changed from `ask` to `reads` and confirmed, and no other change
+- WHEN the area and the menu are closed with Esc
+- THEN the menu reports no unsaved change, no config edit is emitted by the menu save, and `config.toml` keeps `approval = "reads"` for `ga4` (choosing `ask` later removes the key)
+
+#### Scenario: Save does not repeat or write a level [auto]
+- GIVEN a level proposal open on `gsc` but not confirmed, and a changed statusline position
+- WHEN `s` is pressed
+- THEN the key goes to the confirm line and cancels it, nothing is saved, and in a second run with the proposal closed `s` saves only the position and every `ai.mcp.*` byte is identical
+
+#### Scenario: Keys go to the open confirm line [auto]
+- GIVEN a level confirm line open on `ga4`
+- WHEN `4`, Tab, `s` and `q` are pressed
+- THEN none changes the tab or saves, each cancels the proposal, and `config.toml` is byte-identical
+
+#### Scenario: The popup keeps its size with a level shown [auto, TestBackend + insta]
+- GIVEN a normal terminal
+- WHEN the entry list with a relaxed level and the `ga4` entry screen with its level confirm line are rendered
+- THEN the popup has the same height as the Settings tab
 
 ## MODIFIED Requirements
 

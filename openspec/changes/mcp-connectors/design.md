@@ -27,7 +27,7 @@ Pure rules and data in `src/core/ai/` (catalog, class, filter predicate, probe c
 |---|---|---|---|---|
 | D1 | C2, C5 | Catalog form | `src/core/ai/mcp_catalog.rs` (types, lookups, snippet builders) + `mcp_catalog/entries.rs` (static `ENTRIES: &[Entry]`) + `mcp_catalog/checks.rs` (pure checks). `catalog.rs` and `CATALOG` (src/core/ai/mod.rs:7, 91) are taken | An embedded TOML or user-extendable catalog: a parser and errors for data the user never edits. One file: entries plus logic would pass 600 lines by S6 |
 | D2 | C5 | Match | `mcp_catalog::entry(name) -> Option<&'static Entry>`, exact equality of `McpServer.name` and `Entry.id` | A new key (C5 forbids; it would also trip `config: unknown key`, src/core/ai/config.rs:1594). Matching by `command`: a user can wrap the binary in a script |
-| D3 | C11 | Class | `enum Class { Read, Write }`; `Entry::class(tool)` returns the listed class or `Write`. NO caller in approval: `route`/`answers_itself` (src/core/ai/chat/approval.rs:808, 878) are not touched. S9 (C13) is the first consumer | Wiring a read class to skip the prompt: forbidden by C11 and by agent-tools Approval model until S9 is approved |
+| D3 | C11 | Class | `enum Class { Read, Write }`; `Entry::class(tool)` returns the listed class or `Write`. NO caller in approval through S6: `route`/`answers_itself` (src/core/ai/chat/approval.rs:808, 878) are not touched. S9 (C13) is the first consumer, and only under a server's `reads` level: see D28-D34 (`route` stays untouched; `answers_itself` gains one arm, D30) | Wiring a read class to skip the prompt without a per-server level: forbidden by C11; C13 (owner, 2026-11-14) is the scoped exception |
 | D4 | — | One source for the cap and the cut | `MAX_TOOLS` moves from `src/runtime/mcp/client.rs:51` to `src/core/ai/tools/servers.rs` next to `MAX_PART`; the client imports it. The collision check calls `servers::qualified_name` | A copy of the constant or of the mapping in the catalog: the probe would drift from what a chat really keeps |
 | D5 | C9 | Gmail filter | `mcp_catalog::admits(server, tool) -> bool`: true unless the server's entry has `gmail_only_listed` and the tool name contains `gmail` (ASCII case-insensitive) and is not in the entry's tool list. Applied in `McpClient::list_tools_with(keep)` BEFORE `take(MAX_TOOLS)`; `external::connect` passes `\|t\| admits(&server.name, t)`. S3 adds the predicate (every entry admits all); S6 only sets the flag on `google` | Filtering in `qualify` or the registry: the cap (client.rs:191) would already have cut tools, so a send tool could take a read tool's place. Case-sensitive match: a server renaming to `Send_Gmail` would slip through |
 | D6 | C2 | Probe path | `pub(crate) async fn connect` in external.rs (today private, :67-81) becomes the shared start; new `src/runtime/mcp/probe.rs::probe(server, home, host, secrets_path, timeouts, cancel)`: load secrets (shared helper extracted from `set_for`), `connect` under `select!` with `cancel`, build the report with pure `checks::report`, then `client.shutdown()` (3 s bound, group kill). One probe at a time; the runtime holds its cancel sender | A second spawn path for the probe: two sets of env rules to keep equal. Running the probe through `ExternalSet::start_with`: its `mcp: started <name>` has no tool count and its tools are already capped |
@@ -115,7 +115,7 @@ No test runs `npm`, `pipx`, `uv`, `gcloud` or `clasp`, or opens a socket beyond 
 
 ## Migration / Rollout
 
-No migration. Each slice reverts alone; no config key is added (C5). S4 makes the `Connectors` tab visible.
+No migration. Each slice reverts alone; no config key is added (C5) through S6. S4 makes the `Connectors` tab visible. S9 adds the optional `approval` key per `[[ai.mcp.servers]]` entry (owner, 2026-11-14; see "S9 amendment").
 
 ## Risks
 
@@ -154,7 +154,7 @@ Not edited in the source artifacts: the proposal states its line numbers are tho
 
 ## Open questions for the owner
 
-None. Q1-Q3 of the first draft are D18-D20 (decided 2026-11-11).
+None for D1-D20. Q1-Q3 of the first draft are D18-D20 (decided 2026-11-11). S9 has none left: D29 (catalog classes only with the catalog's command), D32 (a GitHub-blocked conversation asks at any level) and D34's `ask` removing the key were decided by the owner on 2026-11-15, with D34's digest check and read-only project entries.
 
 ## S6 amendment (owner decisions of 2026-11-11, revised after review)
 
@@ -181,3 +181,66 @@ The owner amended C6, C7 and C10 (proposal, dated notes) and added C14. S6 is re
 | S6b1 | `src/runtime/mcp/uv_check.rs` (new: `uv tool dir`/`uv tool list` with timeouts), `src/core/ai/mcp_catalog/login_line.rs` (new, pure: quoting and the line), `src/core/menu/connectors.rs` (key `g` and `w` for `gsc`, `linked` state), `src/runtime/chat/external.rs` (not-linked refusal), `src/core/ai/tools/paths.rs` (macOS path) | 200–290 |
 | S6b2 | `src/runtime/mcp/link.rs` (new), `src/core/ai/mcp_catalog/link.rs` (new, pure: `sign_in_url`), `src/core/menu/connectors.rs` (waiting screen), `src/app.rs` | 260–360 |
 | S6d | `docs/conectores.md` (new), `README.md`, guide strings in `entries.rs` | docs; under 30 production lines |
+
+## S9 amendment: per-server approval level (C13; owner decisions of 2026-11-14)
+
+Evidence on `origin/main` 3b9548c2. Binding: a scoped exception to the Approval model, only for user-configured MCP servers, per server: `ask` (default, `y` on every call), `reads` (catalog-Read tools unasked, Write and unlisted tools ask, the server's `readOnlyHint` ignored), `all` (every tool unasked). Never workers; chat and coordinator turns alike; the C9 Gmail filter holds at every level. Key `approval = "ask" | "reads" | "all"` in each `[[ai.mcp.servers]]` entry, default `ask`, a known key; an invalid value is a visible notice and means `ask`; the Connectors area shows and writes it. D21-D27 are taken (S6), so S9 starts at D28.
+
+| # | Topic | Decision | Rejected alternatives |
+|---|---|---|---|
+| D28 | Config | `pub enum McpApproval { Ask, Reads, All }` (with `key()`) and `McpServer.approval` in src/core/ai/config.rs (struct :393, `Debug` :404 prints it). The config is read by hand from a `toml::Table`, not serde [R]: `read_mcp_entry` (:1188-1253) reads `approval` exactly as `enabled` (:1226-1233): missing = `Ask`; a string other than the three, or a non-string, pushes `{path}.approval: expected "ask", "reads" or "all"` and gives `Ask`; the entry is KEPT (a bad level must not drop a server). `"approval"` joins the known list (:1594). The problem reaches the user through the existing `config (N problems): ...` notice (tests :3419-3420) [R]. Because `McpServer` derives `PartialEq`, a level change makes `set_for` restart the chat's set (src/runtime/chat/external.rs:142) and the area's `restart()` (src/core/menu/connectors.rs:355-365) say `restart lazarobox to use it in chats` with no new code [R] | serde `#[serde(default)]`: the parser is not serde. Skipping the entry on a bad value: drops a working server; `enabled` already falls back |
+| D29 | Pure rule | `mcp_catalog::unasked(server: &McpServer, tool: &str) -> bool` in core: `All` -> true; `Ask` -> false; `Reads` -> `entry(&server.name)` exists AND `server.command == entry.command` (the comparison fields.rs:175 already makes) AND `class(&server.name, tool) == Read` (mcp_catalog.rs:205). A server not in the catalog, or one under a catalog name with another command, has no Read tool: under `reads` every call asks; under `all` every call runs. The command check: decided (owner, 2026-11-15) | Name only (D2): a custom server named `gsc` would inherit `gsc`'s Read classes. A server's `readOnlyHint`: ignored (C11, C13). Only `command` is compared, not `args`: a declared `google` without `--disabled-tools` still gets Read classes at `reads`, and the Gmail allowlist filter (`admits`) still hides the send tools; accepted |
+| D30 | Where the ask is skipped | The read pattern, reused: the HOST computes the fact and carries it in the ask, the APP answers from the ask, the host accepts only what its own fact allowed. (1) `ApprovalAsk::External` (approval.rs:130-134) gains `unasked: Option<McpApproval>`; `ask_for` (:422-430) puts `None`. (2) A new host arm before the catch-all (src/runtime/tools/host.rs:920) for `(Call::External { server, tool, .. }, locality, None)` (the `None` is `read_scope`: a chat or coordinator turn) builds the ask and, when `scope.external.get()` has the server and `unasked` holds, sets `unasked = Some(level)` and `unprompted = Unprompted::Level` (new variant of the enum at :439-451). (3) `answers_itself` (approval.rs:878) gets one arm: `External { unasked: Some(_), .. }` -> `Some(Decision::Unprompted)` unless `blocked` (D32), in every approval mode; its doc (:876-877) changes. (4) The host's decision match gets `(Decision::Unprompted, Call::External { .. }) if unprompted == Unprompted::Level`, which runs the SAME body as the `Sent` arm (:1125-1139, extracted to one helper: the `raw_of` check, then `call_external`). Any other `Unprompted` for a user tool still falls to `NOT_APPROVED` (:1200). `route` (:808) is not touched | Host-only (no ask, `None => Decision::Sent`, as a local `list_panes`, :890-893): skips the app's checks at tool.rs:207-231 (tools turned off mid-turn, worker over). App-only (levels in `answers_itself`): the app holds no `ExternalSet` or catalog match, and the host would have to trust any `Unprompted` |
+| D31 | Workers | Three locks, one new: a worker's `TurnScope.external` is `Slot::default()` (src/runtime/orchestra.rs:1874) and its hub session gets an empty slot (:1911-1913), so a user tool is an unknown tool at parse (src/core/ai/tools/mod.rs:1261) [R]; the new host arm matches `read_scope == None` only. The coordinator uses the chat's scope (src/runtime/chat.rs:971-989, `orchestra: Some`, `read_scope: None`), so the level applies to it as to a chat [R] | — |
+| D32 | GitHub-blocked conversation | Decided (owner, 2026-11-15): a conversation that read GitHub text (`blocked`, app/tool.rs:237-238) asks for a user tool whatever the level, as it already asks for every cloud read; the prompt shows the block reason | Honoring `all` there: injected text could steer a write tool with no prompt |
+| D33 | Never silent | (a) The start line says the level when it is not `ask`: `mcp: started gsc · approval: reads` (`ExternalSet::announcements`, src/runtime/mcp/external.rs:174-180; the set keeps each started server's `McpServer`), plus `, but every call asks (not the catalog's server)` when D29 finds no Read class. (b) An unasked call keeps its transcript row: `StreamEvent::ToolCall` is announced for every call (host.rs:957-967) and recorded by `tool_call` whatever its approval (src/core/ai/chat/mod.rs:1923-1927) [R]; the result summary of the D30 arm is prefixed `unasked (approval = reads): ` | A notice per call: noise in a busy turn; the row already is one line per call |
+| D34 | Menu | Shown: the entry screen gets `Approval: <level>` under `State` (connectors.rs:480) and the list state a ` · reads`/` · all` suffix (`state`, :368-396). A project-limited entry (with `project`) is read-only in the area: its row says `Approval: <level> (project entry: set it by hand in config.toml)` and `a` shows that as a notice, no prompt. Written (a global entry only): key `a` on a declared entry's screen opens `Prompt::Approval { id, level }` for the next level (ask -> reads -> all -> ask), whose text says what it means (`all`: "every tool of <id> runs without asking, writes included"); `y` emits `MenuCommand::SetApproval { name, level, expected }`, any other key cancels (HINT_PROMPT, :48); an undeclared entry gets `NOT_DECLARED` (:41). Effect path as Connect Google (src/app.rs:449, 2727; runtime.rs:2471; secrets_write.rs:358-374): `Effect::SetApproval` -> the writer's turn -> `AppEvent::ApprovalSet(Result<String, String>)` -> notice and `LoadPresence`, so the state and the restart line come from disk. Pure edit `config_append::set_approval(old, name, level) -> Result<String, AppendRefusal>` on `toml_edit::DocumentMut`: exactly one GLOBAL `[[ai.mcp.servers]]` entry (no `project` key) named `name` (none, and no project entry: `not declared`; only project entries: `limited to a project; set approval by hand`; two or more global ones: `declared more than once; set approval by hand`; an inline `servers = [...]`: refused); a project entry is never edited; `ask` REMOVES the key (owner, 2026-11-15) (an older build then reports no unknown key), the others set it, keeping the key's decor as `config_edit::set_key` does (src/core/config_edit.rs:92-112); CRLF restored by the helper extracted from `apply_edit` (:72-86). Accepted only when `Config::parse` of the new text gives the same servers except that entry's `approval`, and no new problem. I/O: `runtime/config_append.rs::set_approval_with` over `replace_with(fs, config, CONFIG, ..)` (:27-45 pattern): handle checks, size bound, `config.toml.bak`, mode kept, atomic rename. Changed-on-disk check (owner, 2026-11-15), as Connect Google's append (:35-37): `Presence` gains `config_digest: Option<[u8; 32]>`, the `config_append::digest` of the text the area read on open (src/runtime/mcp/presence.rs:49-65; `None` when unread or missing); the prompt carries it as `expected`, and the writer compares it with the digest of the bytes read under its turn and refuses with `Refusal::Changed` (notice `config.toml changed on disk; nothing was saved, try again`, via `notice_of`, src/core/ai/mcp_secrets/save.rs:105-107, 128-130) when they differ; the reply's `LoadPresence` then shows the new disk state. The area's header doc (connectors.rs:8-9, "no entry the user declared is ever changed") gains this one exception | `config_write`/`apply_edit`: `ConfigEdit` addresses `&'static str` table paths and cannot reach an array-of-tables element (`walk_to_table` :188-224 fails on it). Listing non-catalog servers in the area: a larger screen change; they are set by hand |
+
+### S9 data flow
+
+    config.toml ──read_mcp_entry──> McpServer.approval ──set_for──> ExternalSet (keeps each McpServer)
+    model call ──parse (registry)──> Call::External{server,tool} ──host arm (chat/coordinator only)──>
+        unasked(server, tool)? ──yes──> ApprovalAsk::External{unasked: Some} + Unprompted::Level
+    app on_tool_ask ──checks (tools on, worker over)──> answers_itself ──Unprompted──> host ──call_external
+        (no / blocked) ──> prompt as today
+    menu `a` ──y──> SetApproval ──writer turn──> config_append::set_approval ──> config.toml (+ .bak)
+
+### S9 file plan (production lines; tests excluded)
+
+| File | Change | Lines |
+|---|---|---|
+| `src/core/ai/config.rs` | `McpApproval`, field, `Debug`, parse, known key | ~40 |
+| `src/core/ai/mcp_catalog.rs` | `unasked` | ~15 |
+| `src/runtime/mcp/external.rs` | keep servers, `unasked` lookup, start line suffix | ~30 |
+| `src/core/ai/chat/approval.rs`, `src/app/run.rs` | ask field, `answers_itself` arm, docs; `..` in the prompt match (run.rs:824) | ~15 |
+| `src/runtime/tools/host.rs` | `Unprompted::Level`, External arm, decision arm, shared helper, summary prefix | ~35 |
+| `src/core/config_append.rs`, `src/core/config_edit.rs` | `set_approval` (global entry only, project refusal), refusals and texts; CRLF helper extracted | ~75 |
+| `src/runtime/config_append.rs`, `src/runtime/secrets_write.rs` | `set_approval_with` with the digest check; writer method | ~45 |
+| `src/core/ai/mcp_catalog/presence.rs` | `config_digest` set from the text read | ~8 |
+| `src/app.rs`, `src/runtime.rs`, `src/core/menu.rs` | effect, event, command (with `expected`), reply | ~40 |
+| `src/core/menu/connectors.rs` | prompt, key `a`, rows, suffix, project read-only row and notice, hints, doc | ~62 |
+| `README.md`, `CHANGELOG.md` | key, levels, risk of `all` | docs |
+
+Total ~360 (range 310-395): one PR under 400, Medium-High risk. If apply passes 400, split at the seam: S9a (config, rule, router, visibility; ~175, useful alone through hand edits) then S9b (menu write; ~185). Test churn, outside the budget: every test literal of `McpServer` (about 40 in 17 files) gains `approval`, and the existing `External { server, tool, args }` test asks gain `unasked: None`.
+
+### S9 testing (strict TDD, `cargo test`, no network)
+
+| Layer | What |
+|---|---|
+| Config | Each value; missing = `ask`; `"yes"` and `1` give the problem and `ask`, entry kept; no `unknown key` for `approval`; full-load notice text |
+| Rule | Table over level x catalog/non-catalog x command equal/different x Read/Write/unlisted tool |
+| Router | `answers_itself` answers `External{unasked: Some}` in `ask`/`auto`/`run`, not when `blocked`, never with `None` (existing tests at approval.rs:2142-2151 keep passing with `None`) |
+| Host | With the fake server (`external/fake.rs`): `reads` + Read tool runs on `Unprompted`; Write and unlisted tools carry `None` and an `Unprompted` reply is denied; `all` runs everything; a worker scope never carries a level; a filtered Gmail send tool is an unknown tool at `all`; result summary prefix |
+| App | `on_tool_ask` with tools off denies before the level (tool.rs:207); the row is recorded |
+| Writer | Byte identity outside the one line; comments kept; `ask` removes; CRLF; none/two global/inline refused; a project-only entry refused and a project copy next to the global one left byte-identical; re-parse check; bytes changed since the screen read -> `changed on disk`, nothing written; `.bak` and mode through the `SaveFs` fake |
+| Menu | `a` -> prompt -> `y` -> command carrying the presence digest; other key cancels; undeclared notice; a project entry shows the set-by-hand row and `a` gives the notice, no prompt; list suffix and entry row (TestBackend + insta) |
+
+### S9 risks
+
+| Risk | Mitigation |
+|---|---|
+| `all` on `google` lets the model draft and read mail with no prompt; injected mail text can steer it | User choice per server; prompt text for `all` names writes; C9 filter still removes send tools; D32 keeps the prompt in a GitHub-blocked conversation |
+| A catalog class is wrong (a write tool listed Read) | Classes are reviewed per entry (D17); unlisted = Write; the class table test lists each Read tool by name |
+| An older lazarobox reads a file with `approval` | It reports `unknown key` and asks every call (fail-safe); writing `ask` removes the key |
+| Level change needs a new set | `PartialEq` restarts the set at the next turn; the area says `restart lazarobox to use it in chats` (D20) |
+| Spec conflict: agent-tools Approval model (spec.md:228) and mcp-servers (spec.md:101) forbid auto-approval | The S9 spec deltas MODIFY both as the scoped exception (owner, 2026-11-14) |

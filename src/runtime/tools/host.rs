@@ -50,6 +50,7 @@ use crate::{
             approval::{ApprovalAsk, Reach, UNSHOWABLE, ask_for},
             engine::{Answer, CallId, Decision, ScreenText, StreamEvent, ToolStatus},
         },
+        config::McpApproval,
         orchestra::{
             WorkerKey,
             commands::{Ran, RanEnd},
@@ -448,9 +449,20 @@ enum Unprompted {
     /// A local read outside the root, which runs free in `ask` and `auto`
     /// as it always has, or the search of a concrete root: run as it is.
     AsIs,
+    /// A user tool whose server's own approval level lets it run unasked
+    /// (design D30), found by the host from the set it started.
+    Level(McpApproval),
 }
 
 impl Unprompted {
+    /// The server's approval level this answer carries, if any.
+    fn level(self) -> Option<McpApproval> {
+        match self {
+            Self::Level(level) => Some(level),
+            _ => None,
+        }
+    }
+
     fn of_read(reach: Reach, cloud: bool) -> Self {
         match (reach, cloud) {
             (Reach::Root, true) => Self::InRoot,
@@ -531,6 +543,31 @@ fn ran(call: &Call, report: &RunReport) -> (Outcome, ToolStatus, String, Option<
     let words = report::words(command, report, super::new_nonce().as_deref());
     let (outcome, status, summary) = ended(ToolStatus::Ok, words.text, &words.row);
     (outcome, status, summary, words.system)
+}
+
+/// Routes the call the user approved, or the server's level let go, to its
+/// server: what was approved must be what is routed.
+async fn routed_external(
+    scope: &TurnScope,
+    name: &str,
+    (server, tool): (&str, &str),
+    args: serde_json::Value,
+    unasked: Option<McpApproval>,
+) -> (Outcome, ToolStatus, String) {
+    match scope.external.get() {
+        Some(set) if set.qualified().raw_of(name) == Some((server, tool)) => {
+            let (outcome, status, summary) =
+                call_external(set, name, args, super::new_nonce()).await;
+            // The row says the call ran with no `y`, and at which level
+            // (design D33); the result is wrapped as untrusted all the same.
+            let summary = match unasked {
+                Some(level) => clip(&format!("unasked (approval = {}): {summary}", level.key())),
+                None => summary,
+            };
+            (outcome, status, summary)
+        }
+        _ => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
+    }
 }
 
 /// Runs an approved server tool and returns what the model and the row see:
@@ -917,6 +954,19 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     ask = ask_for(valid, locality);
                 }
             }
+            // A user tool of a chat or coordinator turn: the ask carries its
+            // server's level when that level lets the call run unasked (D30).
+            // A worker (`Some` scope) never gets one: its set is empty (D31).
+            (Call::External { name, .. }, locality, None) => {
+                ask = ask_for(valid, locality);
+                let level = scope.external.get().and_then(|set| set.unasked_level(name));
+                if let (Some(ApprovalAsk::External { unasked, .. }), Some(level)) =
+                    (ask.as_mut(), level)
+                {
+                    *unasked = Some(level);
+                    unprompted = Unprompted::Level(level);
+                }
+            }
             (valid, locality, _) => ask = ask_for(valid, locality),
         }
     }
@@ -1130,13 +1180,20 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         tool,
                         args,
                     },
-                ) => match scope.external.get() {
-                    // What the user approved must be what is routed.
-                    Some(set) if set.qualified().raw_of(&name) == Some((&server, &tool)) => {
-                        call_external(set, &name, args, super::new_nonce()).await
-                    }
-                    _ => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
-                },
+                ) => routed_external(&scope, &name, (&server, &tool), args, None).await,
+                // The server's level, not the user's `y`: only when this
+                // host's own ask carried it (D30). Never for a worker.
+                (
+                    Decision::Unprompted,
+                    Call::External {
+                        name,
+                        server,
+                        tool,
+                        args,
+                    },
+                ) if unprompted.level().is_some() => {
+                    routed_external(&scope, &name, (&server, &tool), args, unprompted.level()).await
+                }
                 // `offers` let it through only with a run manager to go to.
                 (Decision::Sent, Call::Orchestra(call)) => match &scope.orchestra {
                     Some(handle) => orchestrate(handle, call).await,

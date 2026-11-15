@@ -130,6 +130,7 @@ fn every_service_declared_is_nothing_to_write() {
         env: Vec::new(),
         project: None,
         enabled: true,
+        approval: crate::core::ai::config::McpApproval::Ask,
     };
     let servers = [server("gsc"), server("google")];
     assert_eq!(

@@ -821,12 +821,15 @@ impl App {
             }),
             // Server, tool and arguments are sanitized and capped when the ask
             // is made; `y` approves exactly this.
-            ApprovalAsk::External { server, tool, args } => Some(ApprovalPrompt {
+            ApprovalAsk::External {
+                server, tool, args, ..
+            } => Some(ApprovalPrompt {
                 target: format!("call a tool of the MCP server {server}"),
                 command: format!("{server} {tool} {args}"),
                 keys: EXTERNAL_KEYS,
                 armed,
-                why: None,
+                // Set only for a blocked conversation (design D32).
+                why,
                 notice: None,
             }),
         }
