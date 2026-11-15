@@ -853,9 +853,7 @@ fn the_reply_of_a_level_change_is_said_and_the_files_are_read_again() {
         [Effect::LoadPresence]
     );
     assert_eq!(footer(&a), done);
-    let refusal =
-        "approval: nothing was written: config.toml changed on disk; nothing was saved, try again"
-            .to_owned();
+    let refusal = "approval: changed on disk \u{b7} nothing written".to_owned();
     assert_eq!(
         tap(&mut a, AppEvent::ApprovalSet(Err(refusal.clone()))),
         [Effect::LoadPresence]

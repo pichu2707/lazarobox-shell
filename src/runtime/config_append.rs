@@ -82,10 +82,7 @@ pub fn approval_notice(
             "approval: {name} → {} · restart · {BACKUP}",
             level.key()
         )),
-        Err(refusal) => Err(format!(
-            "approval: nothing was written: {}",
-            refusal.notice()
-        )),
+        Err(refusal) => Err(refusal.approval_notice(name, level.key())),
     }
 }
 

@@ -205,8 +205,7 @@ fn the_reply_says_its_notice_and_reads_the_files_again() {
         MenuCommand::LoadPresence
     );
     assert_eq!(m.notice.as_deref(), Some(done));
-    let refused =
-        "approval: nothing was written: config.toml changed on disk; nothing was saved, try again";
+    let refused = "approval: changed on disk \u{b7} nothing written";
     assert_eq!(
         m.approval_reply(Err(refused.to_owned())),
         MenuCommand::LoadPresence
