@@ -186,3 +186,5 @@ mod steps_tests;
 mod tests;
 #[cfg(test)]
 mod textcall_tests;
+#[cfg(test)]
+mod tools_tests;

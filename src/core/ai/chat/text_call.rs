@@ -13,7 +13,7 @@ pub const TEXT_CALL_NOTICE: &str =
 const MAX_STARTS: usize = 64;
 
 /// The name of the first offered tool that `text` writes a call to: a JSON
-/// object, bare or fenced, with that `name` and an `arguments` (or
+/// object, bare or fenced, with that `name` (or `tool`) and an `arguments` (or
 /// `parameters`) object. `None` for an answer that only names a tool.
 pub fn written_call(text: &str, offered: &[String]) -> Option<String> {
     text.match_indices('{')
@@ -29,7 +29,7 @@ pub fn written_call(text: &str, offered: &[String]) -> Option<String> {
 }
 
 fn call_name(value: &Value, offered: &[String]) -> Option<String> {
-    let name = value.get("name")?.as_str()?;
+    let name = value.get("name").or_else(|| value.get("tool"))?.as_str()?;
     let arguments = value.get("arguments").or_else(|| value.get("parameters"))?;
     (arguments.is_object() && offered.iter().any(|tool| tool == name)).then(|| name.to_owned())
 }
@@ -69,6 +69,21 @@ mod tests {
             r#"{"name": "rm_rf", "arguments": {"path": "/"}}"#,
             "{ not json",
             "",
+        ] {
+            assert_eq!(written_call(text, &offered()), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_tool_key_is_read_like_the_name_key() {
+        let call = r#"{"tool": "list_dir", "arguments": {"path": "."}}"#;
+        assert_eq!(written_call(call, &offered()), Some("list_dir".into()));
+        let fenced = "```json\n{\"tool\": \"edit_file\", \"parameters\": {}}\n```";
+        assert_eq!(written_call(fenced, &offered()), Some("edit_file".into()));
+        for text in [
+            r#"{"tool": "rm_rf", "arguments": {}}"#,
+            r#"{"tool": "list_dir", "arguments": "."}"#,
+            r#"{"tool": "list_dir"}"#,
         ] {
             assert_eq!(written_call(text, &offered()), None, "{text}");
         }
