@@ -3470,7 +3470,10 @@ async fn a_step_handoff_is_acked_sent_to_the_app_and_kept_in_order() {
     let ack = handle
         .call(step_call(Step::Authorize, Mark::Grant(Grant::Implement)))
         .await;
-    assert_eq!(ack, fine("step authorize: on_course"));
+    assert_eq!(
+        ack,
+        fine("step authorize closed; verdict on_course; next: explore")
+    );
     let sent = handoffs(&lab.sent());
     assert_eq!(sent.len(), 1);
     assert_eq!(
@@ -3515,7 +3518,8 @@ async fn the_feature_document_closes_track_and_a_correction_rewrites_one_spec() 
     assert_eq!(
         handle.call(build).await,
         fine(&format!(
-            "feature document: 2 specs, 1 tasks, key orchestra/{}/feature",
+            "step track closed; verdict on_course; next: implement (the spawn gate is open); \
+             feature document: 2 specs, 1 tasks, key orchestra/{}/feature",
             run.0
         ))
     );

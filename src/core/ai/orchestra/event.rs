@@ -251,7 +251,12 @@ pub enum OrchestraEvent {
     /// orchestrator [W3], option B). `step` is the open step the gate named.
     /// The user's next message in the pane attaches to this run. Never sent
     /// to a model.
-    Waits { run: RunId, step: Step },
+    Waits {
+        run: RunId,
+        step: Step,
+        /// The steps already closed, so the notice says nothing was lost.
+        closed: Vec<Step>,
+    },
     /// The run is over: cancelled, replaced by a new run of the pane, or
     /// ended by quitting. Its last rows came before; nothing of it follows.
     Ended { run: RunId },

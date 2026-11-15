@@ -433,3 +433,76 @@ fn the_handoff_tool_takes_a_step_or_a_worker_never_both() {
         Ok(OrchCall::Handoff { .. })
     ));
 }
+
+// Spec (orchestrator-handoffs, A step handoff says what closed): the run's own
+// step state names what is closed and what comes next; `track` is skipped for a
+// small goal and named for a large one.
+#[test]
+fn the_steps_name_what_is_closed_and_what_comes_next() {
+    let mut run = run();
+    assert_eq!(run.steps().closed_steps(), Vec::<Step>::new());
+    assert_eq!(run.steps().next_open(), Some(Step::Authorize));
+    close_all(&mut run, &[Step::Authorize, Step::Explore]);
+    assert_eq!(run.steps().closed_steps(), [Step::Authorize, Step::Explore]);
+    assert_eq!(run.steps().next_open(), Some(Step::Resolve));
+    close_all(&mut run, &[Step::Resolve, Step::Classify]);
+    assert_eq!(run.steps().next_open(), Some(Step::Implement));
+    close_all(&mut run, &[Step::Implement, Step::Close]);
+    assert_eq!(run.steps().next_open(), None);
+
+    let mut large = self::run();
+    close_all(&mut large, &[Step::Authorize, Step::Explore, Step::Resolve]);
+    let mark = Mark::Size(Size::Large);
+    large
+        .handoff_step(Step::Classify, mark, note("x"))
+        .expect("closed");
+    assert_eq!(large.steps().next_open(), Some(Step::Track));
+}
+
+// A handoff closes its step whatever the verdict, and the reply says so; a
+// missing verdict says how to give it.
+#[test]
+fn the_step_reply_says_closed_the_verdict_and_the_next_step() {
+    let mut run = run();
+    close_all(&mut run, &[Step::Authorize]);
+    let reply = run.steps().reply(Step::Authorize, Verdict::OnCourse);
+    assert_eq!(
+        reply,
+        "step authorize closed; verdict on_course; next: explore"
+    );
+    let reply = run.steps().reply(Step::Authorize, Verdict::Unknown);
+    assert_eq!(
+        reply,
+        "step authorize closed; verdict unknown (give verdict: on_course, off_course or \
+         blocked); next: explore"
+    );
+    close_all(&mut run, &[Step::Explore, Step::Resolve, Step::Classify]);
+    let reply = run.steps().reply(Step::Classify, Verdict::Blocked);
+    assert!(
+        reply.ends_with("next: implement (the spawn gate is open)"),
+        "{reply}"
+    );
+    close_all(&mut run, &[Step::Implement, Step::Close]);
+    let reply = run.steps().reply(Step::Close, Verdict::OnCourse);
+    assert!(reply.ends_with("all steps closed"), "{reply}");
+    assert!(reply.is_ascii());
+}
+
+// A read-only goal still refuses code workers, so the reply says what may be
+// spawned instead of calling the spawn open.
+#[test]
+fn the_step_reply_on_a_read_only_goal_says_what_may_be_spawned() {
+    let mut run = run();
+    run.handoff_step(Step::Authorize, Mark::Grant(Grant::ReadOnly), note("x"))
+        .expect("closed");
+    close_all(&mut run, &[Step::Explore, Step::Resolve, Step::Classify]);
+    let reply = run.steps().reply(Step::Classify, Verdict::OnCourse);
+    assert!(
+        reply.ends_with("next: implement (read-only: a simple worker with no files to write)"),
+        "{reply}"
+    );
+    assert!(
+        !reply.contains("spawn gate is open") && reply.is_ascii(),
+        "{reply}"
+    );
+}

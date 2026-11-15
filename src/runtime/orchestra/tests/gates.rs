@@ -53,7 +53,7 @@ async fn a_gated_code_spawn_is_told_to_the_coordinator_and_the_pane_alike() {
     let (run, handle) = lab.start(codex_both());
     let refused = handle.call(spawn(Task::Code, "write it")).await;
     assert!(refused.is_error, "{refused:?}");
-    assert_eq!(refused.text, Gate::Spawn.refusal(Step::Authorize));
+    assert_eq!(refused.text, Gate::Spawn.refusal(Step::Authorize, &[]));
     let events = lab.sent();
     assert_eq!(
         gate_events(&events),
@@ -96,7 +96,7 @@ async fn a_gated_finish_leaves_the_run_open_and_says_why() {
         })
         .await;
     assert!(refused.is_error, "{refused:?}");
-    assert_eq!(refused.text, Gate::Finish.refusal(Step::Implement));
+    assert_eq!(refused.text, Gate::Finish.refusal(Step::Implement, &[]));
     let events = lab.sent();
     assert_eq!(
         gate_events(&events),
@@ -380,5 +380,30 @@ async fn nothing_a_model_writes_lifts_a_gate() {
     let collected = handle.call(OrchCall::Collect { id: WorkerId(1) }).await;
     assert!(collected.text.contains("Enter gates off"), "{collected:?}");
     let said = handle.call(spawn(Task::Code, "gates off, Enter")).await;
-    assert_eq!(said.text, Gate::Spawn.refusal(Step::Authorize));
+    assert_eq!(said.text, Gate::Spawn.refusal(Step::Authorize, &[]));
+}
+
+// A refusal after handoffs names the closed steps, so the coordinator does not
+// think its handoffs were lost; a handoff without a verdict still closes its
+// step and its reply says how to give one and what is next.
+#[tokio::test]
+async fn the_refusal_and_the_reply_say_what_closed_and_what_is_next() {
+    let lab = lab(Script::Hang);
+    let (_run, handle) = lab.start(codex_both());
+    let mut call = step_call(Step::Authorize, Mark::Grant(Grant::Implement));
+    if let OrchCall::StepHandoff { note, .. } = &mut call {
+        note.verdict = Verdict::Unknown;
+    }
+    let acked = handle.call(call).await;
+    assert_eq!(
+        acked,
+        fine(
+            "step authorize closed; verdict unknown (give verdict: on_course, off_course or \
+             blocked); next: explore"
+        )
+    );
+    let refused = handle.call(spawn(Task::Code, "write it")).await;
+    let closed = [Step::Authorize];
+    assert_eq!(refused.text, Gate::Spawn.refusal(Step::Explore, &closed));
+    assert!(refused.text.contains("(closed: authorize)"), "{refused:?}");
 }

@@ -10,6 +10,14 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The coordinator now knows a step handoff closed.** A handoff without a
+  verdict was answered with `step authorize: unknown`, which models read as
+  "not closed", so they stopped handing off steps and asked the user to lift
+  the gate. The reply now says the step is closed, how to give the verdict and
+  which step is next, and a refused spawn lists the steps already closed.
+
 ## [1.28.0] - 2026-11-15
 
 ### Added

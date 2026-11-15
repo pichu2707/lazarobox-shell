@@ -4,7 +4,7 @@
 
 use super::WorkerId;
 use super::feature::FeatureError;
-use super::ledger::Handoff;
+use super::ledger::{Handoff, Verdict};
 
 /// The ODD steps, in the order a run takes them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -90,14 +90,17 @@ impl Gate {
     /// What the coordinator and the pane both read when `self` refused at
     /// `step`: the gate, the step and what to do. A run whose code worker
     /// cannot start (Write off, worker cap) ends here too, so the finish text
-    /// says to tell the user. Under `ERROR_CAP` for every step.
-    pub fn refusal(self, step: Step) -> String {
+    /// says to tell the user. `closed` names the steps already handed off, so
+    /// a coordinator cannot think its handoffs were lost. Under `ERROR_CAP`
+    /// for every step.
+    pub fn refusal(self, step: Step, closed: &[Step]) -> String {
         let step = step.label();
         match self {
             Self::Spawn => format!(
-                "spawn gate: step {step} is not closed. Hand off that step, and the ones before \
-                 it, in order; spawn again only after it is handed off. Only the user can lift \
-                 the gate (Enter gates off)"
+                "spawn gate: step {step} is not closed ({}). Hand off {step}; spawn again \
+                 only after it is handed off. Only the user can lift the gate (Enter \
+                 gates off)",
+                closed_text(closed)
             ),
             Self::Finish => format!(
                 "finish gate: step {step} was granted but no code worker ran. Spawn one, or tell \
@@ -105,6 +108,15 @@ impl Gate {
                  gate (Enter gates off)"
             ),
         }
+    }
+}
+
+/// The closed steps as one list: `closed: authorize, explore`, or `closed: none`.
+pub fn closed_text(closed: &[Step]) -> String {
+    let names: Vec<&str> = closed.iter().map(|step| step.label()).collect();
+    match names.is_empty() {
+        true => "closed: none".to_owned(),
+        false => format!("closed: {}", names.join(", ")),
     }
 }
 
@@ -217,6 +229,41 @@ impl Steps {
 
     pub fn handoff(&self, step: Step) -> Option<&Handoff> {
         self.handoffs[step.at()].as_ref()
+    }
+
+    /// The closed steps, in the order a run takes them.
+    pub fn closed_steps(&self) -> Vec<Step> {
+        Step::ALL
+            .into_iter()
+            .filter(|step| self.is_closed(*step))
+            .collect()
+    }
+
+    /// The first step still open, skipping `track` for a goal found small;
+    /// `None` once every step is closed.
+    pub fn next_open(&self) -> Option<Step> {
+        let small = self.size() == Some(Size::Small);
+        Step::ALL
+            .into_iter()
+            .find(|step| !(self.is_closed(*step) || *step == Step::Track && small))
+    }
+
+    /// What the coordinator reads after a step handoff: the step is closed
+    /// whatever the verdict, the verdict (and how to give a missing one) and
+    /// the next open step. ASCII, one line.
+    pub fn reply(&self, step: Step, verdict: Verdict) -> String {
+        let mut text = format!("step {} closed; verdict {}", step.label(), verdict.label());
+        if verdict == Verdict::Unknown {
+            text.push_str(" (give verdict: on_course, off_course or blocked)");
+        }
+        match self.next_open() {
+            Some(Step::Implement) if self.read_only => text
+                .push_str("; next: implement (read-only: a simple worker with no files to write)"),
+            Some(Step::Implement) => text.push_str("; next: implement (the spawn gate is open)"),
+            Some(next) => text.push_str(&format!("; next: {}", next.label())),
+            None => text.push_str("; all steps closed"),
+        }
+        text
     }
 
     /// Whether `step` may be closed now: every step before it is, except

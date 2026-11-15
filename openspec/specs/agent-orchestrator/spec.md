@@ -764,7 +764,7 @@ The run MUST gate worker spawn and `finish` on the ODD step state. Every gate re
 #### Scenario: A standing spawn refusal keeps the run waiting for the reply [W3, auto]
 - GIVEN an orchestrator turn that ends with a spawn gate refusal standing (no gate passed since), no worker queued or running and no failure waiting
 - WHEN the turn ends
-- THEN the run does not end: it stays open and the pane says `run waits for your reply: step <step> is not closed (Enter gates off)`
+- THEN the run does not end: it stays open and the pane says `run waits for your reply: step <step> is not closed; closed: <steps or none> (Enter gates off)`
 - AND the gate offer (Enter gates off) stays available
 - AND the wait counts as an orchestrator turn against `max_turns`
 

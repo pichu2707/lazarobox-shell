@@ -12,7 +12,7 @@ fn waits_of(events: &[OrchestraEvent]) -> Vec<(RunId, Step)> {
     events
         .iter()
         .filter_map(|event| match event {
-            OrchestraEvent::Waits { run, step } => Some((*run, *step)),
+            OrchestraEvent::Waits { run, step, .. } => Some((*run, *step)),
             _ => None,
         })
         .collect()
