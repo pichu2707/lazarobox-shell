@@ -16,6 +16,9 @@ Slice B, `feat/run-step-trail` (stacked on A):
 - [x] Trail keyed by run id; steps of a fresh goal's turn wait until an event
       names its run (not the run the pane had before); a run with no worker
       still gets its store row; only the coordinator's turn feeds the trail.
+- [x] Steps of a turn that has not named its run are held per turn, so a
+      coordinator-only run ending after the next goal keeps its steps and goal.
+      Limit: if a run never exists, the next new run takes the held steps.
 - [x] Show the trail on stop (turn cap, timeout, cancel) and on interrupted runs.
 - [x] Failed run save says the step trail may be missing; steps of a run that
       never started are not dropped silently.

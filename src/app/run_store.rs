@@ -78,7 +78,7 @@ pub(super) struct RunKeep {
     /// The steps of each run (#771), until its end.
     trails: HashMap<RunId, Trail>,
     /// The steps taken before the pane's run is known, until it is.
-    pending: HashMap<PaneId, Trail>,
+    pending: HashMap<PaneId, Vec<Held>>,
     /// The latest coordinator turn of each pane and the run it belongs to.
     turns: HashMap<PaneId, TurnRun>,
     /// The runs a restart found interrupted and nobody answered yet, newest
@@ -106,6 +106,14 @@ pub(super) struct RunKeep {
     pub(super) read: RunsRead,
     save_failure_said: bool,
     read_failure_said: bool,
+}
+
+/// The steps of a coordinator turn that has not named its run yet.
+struct Held {
+    turn: u64,
+    trail: Trail,
+    /// The turn's goal, once a later goal replaced it.
+    goal: Option<String>,
 }
 
 /// The coordinator turn whose steps feed a trail.
@@ -163,24 +171,10 @@ impl App {
     }
 
     /// A fresh run of pane `id` starts from `goal`: the user's words, which
-    /// the store keeps sanitized and cut. Steps of an earlier turn that never
-    /// named a run are dropped, and said.
+    /// the store keeps sanitized and cut.
     pub(super) fn keep_goal(&mut self, id: PaneId, goal: &str) {
         self.run_keep.resume_of.remove(&id);
         self.run_keep.goals.insert(id, RunRecord::stored_goal(goal));
-        let lost = self
-            .run_keep
-            .pending
-            .remove(&id)
-            .map_or(0, |t| t.lines().len());
-        if lost > 0
-            && let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
-        {
-            let noun = if lost == 1 { "step" } else { "steps" };
-            chat.push_system_line(format!(
-                "step trail of the unstarted run discarded ({lost} {noun})"
-            ));
-        }
     }
 
     /// Coordinator turn `turn` of pane `id` starts: a continuation belongs to
@@ -189,6 +183,30 @@ impl App {
     pub(super) fn begin_turn(&mut self, id: PaneId, turn: u64, attach: Option<RunId>) {
         let prev =
             (self.panes.get(&id).and_then(PaneState::chat_state)).and_then(ChatState::orch_run);
+        // The steps of the turn this one follows wait for their run, which
+        // may be named after this turn began (a run with no worker ends after
+        // the next goal was typed): they keep that turn's goal. Older ones
+        // are dropped, and said.
+        let before = self.run_keep.turns.get(&id).map(|t| t.turn);
+        let goal = self.run_keep.goals.get(&id).cloned();
+        let held = self.run_keep.pending.entry(id).or_default();
+        let mut lost = 0;
+        held.retain(|h| {
+            let keep = Some(h.turn) == before;
+            lost += if keep { 0 } else { h.trail.lines().len() };
+            keep
+        });
+        if let Some(h) = held.first_mut() {
+            h.goal = goal;
+        }
+        if lost > 0
+            && let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+        {
+            let noun = if lost == 1 { "step" } else { "steps" };
+            chat.push_system_line(format!(
+                "step trail of the unstarted run discarded ({lost} {noun})"
+            ));
+        }
         self.run_keep.turns.insert(
             id,
             TurnRun {
@@ -231,7 +249,18 @@ impl App {
                 self.ensure_kept(id, run);
                 self.run_keep.trails.entry(run).or_default()
             }
-            None => self.run_keep.pending.entry(id).or_default(),
+            None => {
+                let held = self.run_keep.pending.entry(id).or_default();
+                let at = held.iter().position(|h| h.turn == turn).unwrap_or_else(|| {
+                    held.push(Held {
+                        turn,
+                        trail: Trail::default(),
+                        goal: None,
+                    });
+                    held.len() - 1
+                });
+                &mut held[at].trail
+            }
         };
         match step {
             // A worker's ask shows in the pane's chat too: not the coordinator's.
@@ -278,17 +307,38 @@ impl App {
     /// turn's run: the steps taken so far join it, and it gets its row in the
     /// store even with no worker.
     pub(super) fn adopt_trail(&mut self, id: PaneId, run: RunId) -> Vec<Effect> {
+        let known =
+            self.run_keep.runs.contains_key(&run) || self.run_keep.trails.contains_key(&run);
         let Some(turn) = self.run_keep.turns.get_mut(&id) else {
             return Vec::new();
         };
-        if self.ended_runs.contains(&run) || turn.run.is_some() || turn.prev == Some(run) {
+        if self.ended_runs.contains(&run) || known {
             return Vec::new();
         }
-        turn.run = Some(run);
-        let Some(early) = self.run_keep.pending.remove(&id) else {
+        let held = self.run_keep.pending.entry(id).or_default();
+        // The oldest turn that is waiting for a run takes the first new one.
+        let older = held.first().filter(|h| h.turn != turn.turn).is_some();
+        let early = if older {
+            Some(held.remove(0))
+        } else if turn.run.is_none() && turn.prev != Some(run) {
+            turn.run = Some(run);
+            held.iter()
+                .position(|h| h.turn == turn.turn)
+                .map(|at| held.remove(at))
+        } else {
+            None
+        };
+        let Some(early) = early else {
             return Vec::new();
         };
-        self.run_keep.trails.entry(run).or_default().absorb(early);
+        self.run_keep
+            .trails
+            .entry(run)
+            .or_default()
+            .absorb(early.trail);
+        if let Some(goal) = early.goal {
+            self.make_kept(id, run, goal, None);
+        }
         self.save_trail(id, run)
     }
 
@@ -299,7 +349,10 @@ impl App {
         }
         let text = self.run_keep.trails.get(&run).map(Trail::to_text);
         let kept = self.ensure_kept(id, run);
-        let record = kept.record(run, RunPhase::Live, Vec::new(), text);
+        let mut record = kept.record(run, RunPhase::Live, Vec::new(), text);
+        // A resumed run's first save closes the run it resumes (a no-op
+        // when that is done), like the first worker save does.
+        record.supersedes = kept.supersedes;
         vec![Effect::Store(StoreCmd::SaveRun {
             pane: id,
             run: record,
@@ -364,17 +417,10 @@ impl App {
 
     /// The store's view of `run` of pane `id`, made on first use.
     fn ensure_kept(&mut self, id: PaneId, run: RunId) -> &mut Kept {
-        let folder = (self.panes.get(&id).and_then(PaneState::chat_state))
-            .and_then(ChatState::origin_cwd)
-            .map(Path::to_path_buf);
-        let keep = &mut self.run_keep;
-        keep.runs.entry(run).or_insert_with(|| Kept {
-            pane: id,
-            goal: keep.goals.remove(&id).unwrap_or_default(),
-            workers: BTreeMap::new(),
-            resend: false,
-            folder,
-            supersedes: keep
+        if !self.run_keep.runs.contains_key(&run) {
+            let keep = &mut self.run_keep;
+            let goal = keep.goals.remove(&id).unwrap_or_default();
+            let supersedes = keep
                 .resuming
                 .remove(&id)
                 .map(|run| run.id)
@@ -383,8 +429,29 @@ impl App {
                     let late = keep.resume_of.remove(&id)?;
                     keep.interrupted.retain(|run| run.id != late);
                     Some(late)
-                }),
-        })
+                });
+            self.make_kept(id, run, goal, supersedes);
+        }
+        self.run_keep
+            .runs
+            .entry(run)
+            .or_insert_with(|| unreachable!())
+    }
+
+    /// The store's view of `run`, made if there is none, with the goal it
+    /// started from and the interrupted run it resumes.
+    fn make_kept(&mut self, id: PaneId, run: RunId, goal: String, supersedes: Option<u64>) {
+        let folder = (self.panes.get(&id).and_then(PaneState::chat_state))
+            .and_then(ChatState::origin_cwd)
+            .map(Path::to_path_buf);
+        self.run_keep.runs.entry(run).or_insert_with(|| Kept {
+            pane: id,
+            goal,
+            workers: BTreeMap::new(),
+            resend: false,
+            folder,
+            supersedes,
+        });
     }
 
     /// Run `run` is over: its record is closed and nothing more is saved.

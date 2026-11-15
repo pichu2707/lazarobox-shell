@@ -117,7 +117,7 @@ fn steps_before_the_first_worker_join_the_first_save() {
     call(&mut a, turn, 1, "list_panes", "");
     result(&mut a, turn, 1, ToolStatus::Ok, "");
     let first = a.update(event(row(RUN, 1, WorkerStatus::Running)));
-    let [saved] = saves(&first).try_into().unwrap();
+    let saved = saves(&first).pop().expect("a save");
     assert_eq!(saved.trail.as_deref(), Some("cut 0\nlist_panes -> ok"));
 }
 
@@ -304,12 +304,67 @@ fn steps_of_a_run_that_never_started_are_not_dropped_silently() {
         turn,
         StreamEvent::Done(Finish::Stop),
     ));
-    ask(&mut a, "another goal");
+    let second = next_turn_of(&ask(&mut a, "another goal"));
+    assert!(
+        !system(&a).iter().any(|l| l.contains("discarded")),
+        "held for its run"
+    );
+    a.update(AppEvent::Chat(
+        chat_id(),
+        second,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    ask(&mut a, "a third goal");
     assert!(
         system(&a)
             .iter()
             .any(|l| l == "step trail of the unstarted run discarded (1 step)"),
         "{:?}",
         system(&a)
+    );
+}
+
+// Done, a new goal, and only then the end of the coordinator-only run: its
+// steps and its goal are its own.
+#[test]
+fn the_end_of_a_run_after_the_next_goal_keeps_its_steps_and_goal() {
+    let (mut a, turn) = running();
+    call(&mut a, turn, 1, "wait", "a_step");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    ask(&mut a, "second goal");
+    let ended = a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let stored = saves(&ended);
+    let last = stored.iter().rfind(|r| r.id == RUN.0).expect("stored");
+    assert_eq!(last.goal, "plan it", "{last:?}");
+    assert!(
+        last.trail.as_deref().unwrap_or("").contains("a_step"),
+        "{last:?}"
+    );
+    assert!(
+        !system(&a).iter().any(|l| l.contains("discarded")),
+        "{:?}",
+        system(&a)
+    );
+}
+
+// A worker row of a run adopts the steps and both saves reach the store.
+#[test]
+fn a_worker_row_that_adopts_steps_saves_the_trail_and_the_worker() {
+    let (mut a, turn) = running();
+    call(&mut a, turn, 1, "list_panes", "");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    let effects = a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    let stored = saves(&effects);
+    assert!(stored.iter().any(|r| !r.workers.is_empty()), "{stored:?}");
+    assert!(
+        stored
+            .iter()
+            .any(|r| r.trail.as_deref().unwrap_or("").contains("list_panes")),
+        "{stored:?}"
     );
 }

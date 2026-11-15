@@ -322,7 +322,7 @@ impl App {
                 });
                 row.inherited = unassigned && !row.overridden;
                 chat.worker_row(row.clone());
-                kept = self.keep_worker(id, &row);
+                kept.extend(self.keep_worker(id, &row));
             }
             OrchestraEvent::Halted {
                 run,
@@ -1331,10 +1331,10 @@ impl App {
                     .unwrap_or_default()
             }),
         };
+        self.begin_turn(id, turn, attach);
         if attach.is_none() {
             self.keep_goal(id, &goal);
         }
-        self.begin_turn(id, turn, attach);
         let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut);
         let profile = chat
             .as_ref()
