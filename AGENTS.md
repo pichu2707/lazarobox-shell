@@ -10,6 +10,7 @@ Read the skill's `SKILL.md` before acting when its trigger matches.
 | Skill | Trigger |
 |---|---|
 | [`report-lazarobox-issue`](skills/report-lazarobox-issue/SKILL.md) | lazarobox crashes, hangs, prints an error or behaves against its README while you work: offer to report it on GitHub, with the user's consent, after searching open and closed issues. |
+| [`run-lazarobox`](skills/run-lazarobox/SKILL.md) | running, launching or driving lazarobox, or doing a manual or live check of a change on the real binary: use an isolated home and tmux session, never the user's config. |
 
 ## Worktrees and build folders
 
