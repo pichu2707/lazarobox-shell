@@ -21,9 +21,11 @@ pub mod review;
 pub mod rounds;
 pub mod run;
 pub mod scope;
+pub mod scrub;
 pub mod steps;
 pub mod textcall;
 pub mod tools;
+pub mod trail;
 pub mod worker;
 
 use super::config::Task;
