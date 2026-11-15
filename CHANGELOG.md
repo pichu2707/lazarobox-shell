@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.28.2] - 2026-11-15
+
 ### Fixed
 
 - **With ORCH on, the coordinator drafts an issue itself.** `gh_issue_draft`
@@ -2983,7 +2985,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.28.1...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.28.2...HEAD
+[1.28.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.28.1...v1.28.2
 [1.28.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.28.0...v1.28.1
 [1.28.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.26.0...v1.27.0
