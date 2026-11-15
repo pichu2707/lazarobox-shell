@@ -1,0 +1,81 @@
+{
+  "scenario": "write-and-test",
+  "replies": [
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "fib.py",
+            "content": "def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "test_fib.py",
+            "content": "from fib import fib\n\n\ndef test_fib():\n    assert [fib(n) for n in range(6)] == [0, 1, 1, 2, 3, 5]\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "propose_batch",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "program": "pytest",
+            "args": [
+              "-q"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "git_add",
+          "arguments": {
+            "paths": [
+              "fib.py",
+              "test_fib.py"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "git_commit",
+          "arguments": {
+            "message": "add fibonacci"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Done: fib.py and test_fib.py are written, the test passes and the change is committed.",
+      "calls": []
+    }
+  ]
+}
