@@ -288,6 +288,16 @@ fn the_ollama_profile_takes_only_the_no_tools_400_and_has_its_own_notice() {
     );
     assert!(Profile::Ollama.rejected("HTTP 400: {\"error\":\"Does Not Support TOOLS\"}"));
     assert!(!Profile::Ollama.rejected("HTTP 400: nope"));
+    // Several missing capabilities come joined by a newline (Ollama
+    // images.go): tools first still falls back; a model that cannot chat
+    // at all does not.
+    assert!(
+        Profile::Ollama.rejected(r#"HTTP 400: {"error":"m does not support tools\nthinking"}"#)
+    );
+    assert!(
+        !Profile::Ollama.rejected(r#"HTTP 400: {"error":"m does not support completion\ntools"}"#)
+    );
+    assert!(Profile::Ollama.rejected(r#"HTTP 400: {"x":1,"error":"m does not support tools"}"#));
     assert!(!Profile::Ollama.rejected("HTTP 400"));
     assert!(!Profile::Ollama.rejected("HTTP 400: {\"error\":\"does not support chat\"}"));
     assert!(!Profile::Ollama.rejected("HTTP 500: {\"error\":\"does not support tools\"}"));
