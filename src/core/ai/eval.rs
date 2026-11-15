@@ -23,6 +23,8 @@ pub enum Category {
     WriteAndTest,
     EditExisting,
     ReadOnly,
+    /// Directing workers instead of doing the work.
+    Coordinate,
 }
 
 impl Category {
@@ -32,6 +34,7 @@ impl Category {
             Self::WriteAndTest => "write-and-test",
             Self::EditExisting => "edit-existing",
             Self::ReadOnly => "read-only",
+            Self::Coordinate => "coordinate",
         }
     }
 }

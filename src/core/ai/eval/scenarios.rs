@@ -1,5 +1,5 @@
-//! The three tasks of the baseline (openspec `local-multistep`, C2): plain
-//! data, engine-neutral.
+//! The tasks of the baseline (openspec `local-multistep`, C2): plain data,
+//! engine-neutral.
 
 use serde_json::Value;
 
@@ -126,5 +126,66 @@ pub const READ_ONLY: Scenario = Scenario {
     ambiguous: false,
 };
 
+/// A `handoff` that closes the step `name`.
+fn closes(args: &Value, name: &str) -> bool {
+    args["step"] == name
+}
+
+/// (d) A coordinator that must CALL the orchestration tools: close the steps,
+/// then spawn a simple worker with a file to write. Describing the calls in
+/// prose, or writing them as text, completes nothing.
+pub const COORDINATE: Scenario = Scenario {
+    id: "coordinate",
+    category: Category::Coordinate,
+    request: "Create greeting.py with a function greet(name) that returns \"Hello, \" followed by the name.",
+    seed: &[("README.md", "# Sample project\n")],
+    steps: &[
+        Expect {
+            label: "authorize",
+            tool: "handoff",
+            args: |a| closes(a, "authorize") && a["scope"] == "implement",
+        },
+        Expect {
+            label: "explore",
+            tool: "handoff",
+            args: |a| closes(a, "explore"),
+        },
+        Expect {
+            label: "resolve",
+            tool: "handoff",
+            args: |a| closes(a, "resolve"),
+        },
+        Expect {
+            label: "classify",
+            tool: "handoff",
+            args: |a| closes(a, "classify") && a["size"] == "small",
+        },
+        Expect {
+            label: "spawn",
+            tool: "spawn_agent",
+            args: |a| {
+                a["kind"] == "simple" && a["outputs"].as_array().is_some_and(|o| !o.is_empty())
+            },
+        },
+    ],
+    order: &[
+        ("authorize", "explore"),
+        ("explore", "resolve"),
+        ("resolve", "classify"),
+        ("classify", "spawn"),
+    ],
+    literals: &[],
+    forbid: &[
+        "write_file",
+        "edit_file",
+        "create_dir",
+        "propose_batch",
+        "run_command",
+        "git_add",
+        "git_commit",
+    ],
+    ambiguous: false,
+};
+
 /// Every task, in the order the table lists them.
-pub const ALL: [&Scenario; 3] = [&WRITE_AND_TEST, &EDIT_EXISTING, &READ_ONLY];
+pub const ALL: [&Scenario; 4] = [&WRITE_AND_TEST, &EDIT_EXISTING, &READ_ONLY, &COORDINATE];
