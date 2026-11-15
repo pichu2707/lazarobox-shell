@@ -1,0 +1,223 @@
+//! A best-effort scrubber for the one-line summaries of the step trail:
+//! values that follow a secret-looking name become `***`. It reads JSON
+//! `"name": value`, `name=value` (also in URL queries), `--name value`,
+//! `Name: value` headers, `curl -u user:pass`, `sshpass -p value` and
+//! `mysql -pVALUE`; a quoted value is one unit. A name is secret when one of
+//! its segments (split on `_`, `-`, `.`) is a known word, so `api_key` is and
+//! `keyboard` is not. A heuristic over free text, not a guarantee: a secret
+//! under an ordinary name passes. The trail also goes through `redact_tokens`.
+
+/// What replaces a value.
+const MASK: &str = "***";
+
+/// Name segments that mark a value as secret, lowercase.
+const SECRET: [&str; 12] = [
+    "pass",
+    "passwd",
+    "password",
+    "passphrase",
+    "pwd",
+    "token",
+    "secret",
+    "key",
+    "apikey",
+    "auth",
+    "authorization",
+    "credential",
+];
+
+fn sensitive(name: &str) -> bool {
+    let name = name.to_lowercase();
+    (name.split(|c: char| !c.is_alphanumeric()))
+        .any(|part| SECRET.contains(&part) || part == "credentials")
+}
+
+/// `text` with the values of secret-looking names masked.
+pub fn scrub(text: &str) -> String {
+    words(&json(text))
+        .iter()
+        .fold(State::default(), |state, word| state.word(word))
+        .out
+        .join(" ")
+}
+
+/// The words of `text`: split on spaces outside quotes.
+fn words(text: &str) -> Vec<&str> {
+    let (mut out, mut start, mut quote) = (Vec::new(), 0, None);
+    for (at, c) in text.char_indices() {
+        match (quote, c) {
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            (None, ' ') => {
+                out.push(&text[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&text[start..]);
+    out
+}
+
+/// What the words so far ask of the next one.
+#[derive(Default)]
+struct State {
+    out: Vec<String>,
+    /// The next word is a value to mask (a flag or header named a secret).
+    mask: bool,
+    /// The masked value may be a scheme (`Bearer`) before the credential.
+    scheme: bool,
+    /// The next word is `user:pass` (after `-u`).
+    user: bool,
+    /// The next word is a password (after `sshpass -p`).
+    sshpass_value: bool,
+    /// Inside a `mysql` or `sshpass` command, until `&&`, `;`, `|`.
+    mysql: bool,
+    sshpass: bool,
+}
+
+impl State {
+    fn push(mut self, text: impl Into<String>) -> Self {
+        self.out.push(text.into());
+        self
+    }
+
+    fn word(mut self, word: &str) -> Self {
+        let bare = word.trim_matches(['\'', '"']);
+        if self.mask && !word.is_empty() {
+            self.mask = false;
+            if bare.starts_with('-') {
+                return self.push(word);
+            }
+            let scheme = ["bearer", "basic", "digest"].contains(&bare.to_lowercase().as_str());
+            self.mask = std::mem::take(&mut self.scheme) && scheme;
+            return self.push(MASK);
+        }
+        if std::mem::take(&mut self.sshpass_value) {
+            return self.push(MASK);
+        }
+        if std::mem::take(&mut self.user)
+            && let Some((name, _)) = word.split_once(':')
+        {
+            return self.push(format!("{name}:{MASK}"));
+        }
+        if matches!(word, "&&" | ";" | "|" | "||" | "&") || word.ends_with(';') {
+            (self.mysql, self.sshpass) = (false, false);
+            return self.push(word);
+        }
+        let command = word.rsplit('/').next().unwrap_or(word);
+        self.mysql |= command.starts_with("mysql");
+        self.sshpass |= command == "sshpass";
+        if (self.mysql || self.sshpass) && word.len() > 2 && word.starts_with("-p") {
+            return self.push(format!("-p{MASK}"));
+        }
+        if self.sshpass && word == "-p" {
+            self.sshpass_value = true;
+        }
+        self.user = matches!(word, "-u" | "--user");
+        // A header in one quoted unit: `"X-Api-Key: abcd"`.
+        let quoted = word.len() > 1
+            && word.starts_with(['\'', '"'])
+            && word.ends_with(word.as_bytes()[0] as char);
+        if quoted {
+            let q = &word[..1];
+            return self.push(format!("{q}{}{q}", scrub(bare)));
+        }
+        if let Some(name) = word
+            .strip_suffix(':')
+            .filter(|n| sensitive(n) && !n.contains('"'))
+        {
+            self.mask = true;
+            self.scheme = name.to_lowercase().contains("auth");
+            return self.push(word);
+        }
+        if let Some((name, value)) = word.split_once(':')
+            && !name.contains('"')
+            && !value.starts_with("//")
+            && !value.contains(MASK)
+            && sensitive(name)
+            && !value.is_empty()
+        {
+            let scheme = ["bearer", "basic"].contains(&value.to_lowercase().as_str());
+            self.mask = scheme;
+            return self.push(format!("{name}:{MASK}"));
+        }
+        if word.starts_with('-') && !word.contains('=') && sensitive(word) {
+            self.mask = true;
+        }
+        self.push(pairs(word))
+    }
+}
+
+/// A word whose `name=value` segments (split on `?` and `&`) are masked; a
+/// quoted value goes whole.
+fn pairs(word: &str) -> String {
+    let mut out = String::with_capacity(word.len());
+    let mut rest = word;
+    while !rest.is_empty() {
+        let quoted = rest
+            .split_once('=')
+            .is_some_and(|(_, v)| v.starts_with(['\'', '"']));
+        let end = if quoted {
+            rest.len()
+        } else {
+            rest.find(['?', '&']).map_or(rest.len(), |i| i + 1)
+        };
+        let (segment, tail) = rest.split_at(end);
+        let body = segment.trim_end_matches(['?', '&']);
+        match body.split_once('=') {
+            Some((name, value)) if !value.is_empty() && sensitive(name) => {
+                out.push_str(&format!("{name}={MASK}"));
+                out.push_str(&segment[body.len()..]);
+            }
+            _ => out.push_str(segment),
+        }
+        rest = tail;
+    }
+    out
+}
+
+/// `text` with the values of JSON members named like a secret masked: a
+/// string value inside its quotes, any other value up to its end.
+fn json(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('"') {
+        let (head, after) = rest.split_at(open + 1);
+        out.push_str(head);
+        let Some(close) = after.find('"') else { break };
+        let (name, tail) = after.split_at(close + 1);
+        out.push_str(name);
+        rest = tail;
+        let colon = tail.trim_start().strip_prefix(':');
+        let Some(value) = colon.filter(|_| sensitive(&name[..close])) else {
+            continue;
+        };
+        let gap = tail.len() - value.len();
+        out.push_str(&tail[..gap]);
+        let lead = value.len() - value.trim_start().len();
+        out.push_str(&value[..lead]);
+        let value = &value[lead..];
+        let end = if let Some(string) = value.strip_prefix('"') {
+            // The closing quote, past escaped ones.
+            let mut skip = false;
+            let at = string.char_indices().find(|(_, c)| {
+                let end = *c == '"' && !skip;
+                skip = *c == '\\' && !skip;
+                end
+            });
+            at.map_or(value.len(), |(i, _)| i + 2)
+        } else {
+            value.find([',', '}', ']', ' ']).unwrap_or(value.len())
+        };
+        let quote = if value.starts_with('"') { "\"" } else { "" };
+        out.push_str(&format!("{quote}{MASK}{quote}"));
+        rest = &value[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+#[path = "scrub_tests.rs"]
+mod tests;
