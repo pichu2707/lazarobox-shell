@@ -18,7 +18,7 @@ pub const MAX_FINDINGS: usize = 12;
 /// The first line of untrusted `text`, cleaned by the shared sanitiser and
 /// cut like a handoff reason. A line cut short ends in `…`, so a reader
 /// knows it is not whole.
-fn one_line(text: &str) -> String {
+pub(super) fn one_line(text: &str) -> String {
     let clean = plain_line(text);
     if clean.len() <= REASON_BYTES {
         return clean;
