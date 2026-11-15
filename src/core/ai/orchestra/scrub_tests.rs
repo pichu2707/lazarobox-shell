@@ -176,3 +176,41 @@ fn a_flag_that_names_no_value_does_not_take_the_next_word() {
     assert_eq!(scrub("cmd --no-auth host"), "cmd --no-auth host");
     assert_eq!(scrub("cmd --key-file a.pem"), "cmd --key-file a.pem");
 }
+
+#[test]
+fn an_object_or_array_value_runs_to_its_matching_close() {
+    assert_eq!(
+        scrub(r#"{"secret":{"a":"x","b":"y"},"n":1}"#),
+        r#"{"secret":***,"n":1}"#
+    );
+    assert_eq!(
+        scrub(r#"{"password":["a]b","c"],"x":1}"#),
+        r#"{"password":***,"x":1}"#
+    );
+    // Clipped: the value runs to the end.
+    assert_eq!(scrub(r#"{"secret":{"a":"x","b"#), r#"{"secret":***"#);
+}
+
+#[test]
+fn json_escaped_inside_a_shell_string_is_masked() {
+    assert_eq!(
+        scrub(r#"curl -d '{\"password\":\"p w\"}' url"#),
+        r#"curl -d '{\"password\":\"***\"}' url"#
+    );
+}
+
+#[test]
+fn a_key_with_no_value_adds_nothing() {
+    assert_eq!(scrub(r#"{"x":1,"password":"#), r#"{"x":1,"password":"#);
+    assert_eq!(scrub(r#"{"password" :"#), r#"{"password" :"#);
+}
+
+#[test]
+fn camel_case_names_count_as_segments() {
+    for name in ["accessToken", "clientSecret", "privateKey", "bearer"] {
+        assert_eq!(scrub(&format!("{name}=v")), format!("{name}=***"), "{name}");
+    }
+    for name in ["keyboard", "monkey", "author", "myAuthor1"] {
+        assert_eq!(scrub(&format!("{name}=v")), format!("{name}=v"), "{name}");
+    }
+}

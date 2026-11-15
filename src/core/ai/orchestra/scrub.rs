@@ -14,7 +14,7 @@
 const MASK: &str = "***";
 
 /// Name segments that mark a value as secret, lowercase.
-const SECRET: [&str; 12] = [
+const SECRET: [&str; 13] = [
     "pass",
     "passwd",
     "password",
@@ -27,12 +27,26 @@ const SECRET: [&str; 12] = [
     "auth",
     "authorization",
     "credential",
+    "bearer",
 ];
 
 fn sensitive(name: &str) -> bool {
-    let name = name.to_lowercase();
-    (name.split(|c: char| !c.is_alphanumeric()))
-        .any(|part| SECRET.contains(&part) || part == "credentials")
+    let (mut part, mut prev) = (String::new(), ' ');
+    let mut parts = Vec::new();
+    for c in name.chars() {
+        // A segment ends at a separator and at a lower-to-upper step.
+        if !c.is_alphanumeric() || (prev.is_lowercase() && c.is_uppercase()) {
+            parts.push(std::mem::take(&mut part));
+        }
+        if c.is_alphanumeric() {
+            part.extend(c.to_lowercase());
+        }
+        prev = c;
+    }
+    parts.push(part);
+    parts
+        .iter()
+        .any(|p| SECRET.contains(&p.as_str()) || p == "credentials")
 }
 
 /// `text` with the values of secret-looking names masked.
@@ -206,6 +220,10 @@ fn json(text: &str) -> String {
         let value = &text[colon + 1..];
         let lead = value.len() - value.trim_start().len();
         let start = colon + 1 + lead;
+        // A key with no value (clipped text) has nothing to mask.
+        if start >= text.len() {
+            continue;
+        }
         let (len, quote) = value_len(&text[start..]);
         out.push_str(&text[done..start]);
         out.push_str(&format!("{quote}{MASK}{quote}"));
@@ -216,22 +234,51 @@ fn json(text: &str) -> String {
 }
 
 /// The bytes a JSON value takes at the start of `value`, and the quote that
-/// wraps it in the output: a string with its quotes (to the end when it is
-/// cut), an array whole, anything else up to a separator.
+/// wraps it in the output: a string with its quotes, an object or array to
+/// its matching close (string-aware), anything else up to a separator; all to
+/// the end of the text when it is cut. In a shell string the JSON quotes are
+/// `\"`.
 fn value_len(value: &str) -> (usize, &'static str) {
-    if let Some(string) = value.strip_prefix('"') {
-        let mut skip = false;
-        let end = string.char_indices().find(|(_, c)| {
-            let end = *c == '"' && !skip;
-            skip = *c == '\\' && !skip;
-            end
-        });
-        return (end.map_or(value.len(), |(i, _)| i + 2), "\"");
+    let shell = ["\\\"", "{\\\"", "[\\\""]
+        .iter()
+        .any(|p| value.starts_with(p));
+    let (mut depth, mut string, mut skip) = (0usize, false, false);
+    let mut chars = value.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        let quote = if shell {
+            c == '\\' && chars.peek().is_some_and(|(_, n)| *n == '"')
+        } else {
+            c == '"' && !skip
+        };
+        if quote {
+            if shell {
+                chars.next();
+            }
+            string = !string;
+            // A string value ends at its closing quote.
+            if !string && depth == 0 {
+                let (len, wrap) = if shell {
+                    (at + 2, "\\\"")
+                } else {
+                    (at + 1, "\"")
+                };
+                return (len, wrap);
+            }
+            continue;
+        }
+        skip = !shell && string && c == '\\' && !skip;
+        if string {
+            continue;
+        }
+        match c {
+            '{' | '[' => depth += 1,
+            '}' | ']' if depth > 1 => depth -= 1,
+            '}' | ']' if depth == 1 => return (at + 1, ""),
+            ',' | '}' | ']' | ' ' if depth == 0 => return (at, ""),
+            _ => {}
+        }
     }
-    if value.starts_with('[') {
-        return (value.find(']').map_or(value.len(), |i| i + 1), "");
-    }
-    (value.find([',', '}', ']', ' ']).unwrap_or(value.len()), "")
+    (value.len(), "")
 }
 
 #[cfg(test)]
