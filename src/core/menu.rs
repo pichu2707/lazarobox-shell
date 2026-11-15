@@ -1099,6 +1099,15 @@ pub enum MenuCommand {
     /// `google-connect`). The answer comes back through
     /// [`MenuState::google_connected`].
     ConnectGoogle(Box<crate::core::config_append::Connect>),
+    /// `y` on the proposal of a new approval level for a declared catalog
+    /// entry: write that one `approval` key in `config.toml`, while the file
+    /// still has the bytes of digest `expected` (those the screen was shown).
+    /// The answer comes back through [`MenuState::approval_reply`].
+    EditApproval {
+        name: String,
+        level: crate::core::ai::config::McpApproval,
+        expected: Option<[u8; 32]>,
+    },
     /// Send this Feedback request with `gh` (find similar issues, create,
     /// or comment); the answer comes back through
     /// [`MenuState::feedback_reply`].
@@ -1421,6 +1430,14 @@ impl MenuState {
         } else {
             MenuCommand::None
         }
+    }
+
+    /// What the write of an approval level answered: the notice either way,
+    /// and the files read again so the screen and the restart line follow the
+    /// disk (a refusal such as `changed on disk` shows the new state).
+    pub fn approval_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
+        self.notice = Some(reply.unwrap_or_else(|notice| notice));
+        MenuCommand::LoadPresence
     }
 
     /// This menu started a link session that has not ended.
@@ -3730,6 +3747,8 @@ mod descriptor_tests;
 #[cfg(test)]
 mod feedback_menu_tests;
 
+#[cfg(test)]
+mod connectors_approval_tests;
 #[cfg(test)]
 mod connectors_client_tests;
 #[cfg(test)]

@@ -40,6 +40,7 @@ Los detalles, en [Conectar Google en un paso](#conectar-google-en-un-paso). Para
 - [Google Workspace: Gmail, Docs y Hojas](#google-workspace-gmail-docs-y-hojas)
 - [Apps Script](#apps-script)
 - [Cuántas llamadas piden confirmación (`approval`)](#cuántas-llamadas-piden-confirmación-approval)
+- [Nivel de aprobación por servicio (`a`)](#nivel-de-aprobación-por-servicio-a)
 - [Riesgos de un vistazo](#riesgos-de-un-vistazo)
 - [Cómo desconectar un servicio](#cómo-desconectar-un-servicio)
 - [Apéndice: las teclas del área Connectors](#apéndice-las-teclas-del-área-connectors) (con el estado de cada servicio y cómo se rellena un valor)
@@ -370,7 +371,7 @@ lazarobox solo acepta un enlace de `accounts.google.com` que lleve **tu** id de 
 
 ## Cuántas llamadas piden confirmación (`approval`)
 
-Por defecto cada llamada a una herramienta de un servicio pide tu `y`. Si un servicio de solo lectura te interrumpe demasiado, puedes relajarlo servidor por servidor con la clave `approval` de su entrada en `config.toml` (por ahora se edita a mano):
+Por defecto cada llamada a una herramienta de un servicio pide tu `y`. Si un servicio de solo lectura te interrumpe demasiado, puedes relajarlo servidor por servidor con la clave `approval` de su entrada en `config.toml` (a mano, o con la tecla `a` del área Connectors: ver más abajo):
 
 ```toml
 [[ai.mcp.servers]]
@@ -386,6 +387,20 @@ approval = "reads"
 - Un valor inválido (`approval = "siempre"`) avisa al arrancar y equivale a `"ask"`; la entrada y las demás se mantienen.
 
 Qué no cambia: los _workers_ nunca reciben las herramientas de tus servidores; una conversación que ya leyó texto de GitHub sigue pidiendo `y` en cada llamada, sea cual sea el nivel; el filtro que oculta las herramientas de enviar de Gmail y `start_google_auth` sigue activo; el resultado llega al modelo como dato no fiable y un comando que sugiera sigue necesitando su propio `y`. Cada llamada sin pregunta queda en la transcripción, con la fila `unasked (approval = reads): ...`. El nivel se lee al arrancar el chat: reinicia lazarobox tras editar `config.toml`.
+
+### Verlo y cambiarlo desde el menú (`a`)
+
+En lugar de editar `config.toml` a mano, el área Connectors muestra el nivel de cada servicio declarado y lo cambia con la tecla `a`. Los tres niveles son los de arriba.
+
+Cómo se usa:
+
+1. Abre el servicio (Enter) y mira la línea `approval:` bajo el estado: dice el nivel y qué deja correr sin preguntar. Sin la clave se muestra `ask`; un valor inválido también muestra `ask`, con `expected "ask", "reads" or "all"`. En la lista, un nivel relajado aparece como `declared · reads` o `declared · all`.
+2. Pulsa `a`: propone el siguiente nivel (`ask`, `reads`, `all`, `ask`) y **no escribe nada**. Solo una `y` suelta confirma; `n`, Esc, `Ctrl+y` o cualquier otra tecla cancelan.
+3. Con `y`, lazarobox cambia solo la línea `approval` de esa entrada en `config.toml` (si no existía, la añade tras la última clave de la entrada; elegir `ask` la quita), guarda el archivo anterior como `config.toml.bak` y avisa. Los chats que ya estaban abiertos conservan su nivel: reinicia lazarobox para usarlo.
+
+Antes de subir el nivel, recuerda lo que `all` ejecuta sin preguntar (ver arriba): el resultado de cada llamada se marca `unasked (approval = <nivel>)`, pero ya se ejecutó.
+
+- El menú se niega, con un aviso y sin escribir, si `config.toml` cambió desde que viste la pantalla (`changed on disk`), no es TOML válido, es un enlace simbólico o de solo lectura, pasa de 256 KiB, declara `ai.mcp.servers` en línea, ya no tiene la entrada o la declara dos veces (`declared more than once; set approval by hand`). Una entrada limitada a un proyecto (`project`) tampoco se edita desde el menú: ponle `approval` a mano.
 
 ## Riesgos de un vistazo
 
@@ -439,6 +454,7 @@ El área tiene cuatro pantallas: la lista de servicios (con la fila **Connect Go
 | Servicio | `l` | Iniciar sesión (solo GA4 y Apps Script). |
 | Servicio | `g` | **Link with Google** (solo GSC con OAuth y Google Workspace). |
 | Servicio | `p` | Probar: arranca el servidor, pide su lista de herramientas y lo detiene. |
+| Servicio | `a` | Proponer el siguiente nivel de aprobación (`ask`, `reads`, `all`): no escribe hasta tu `y`. Una entrada limitada a un proyecto se cambia a mano. |
 | Servicio | `f` | Abrir la lista de valores para rellenarlos. |
 | Servicio | `w` | Elegir la vía (solo GSC: OAuth o cuenta de servicio). También funciona dentro de `f`. |
 | Servicio | `c` | Copiar la entrada de `config.toml`. |
@@ -460,6 +476,7 @@ Dos detalles de las confirmaciones: solo una `y` suelta confirma (`Ctrl+y` o `Al
 | `disabled` | La entrada tiene `enabled = false`. |
 | `values missing: <NOMBRES>` | Falta algún valor en `secrets.toml`. |
 | `declared` | Declarado y con sus valores. |
+| `declared · reads` / `declared · all` | El servidor tiene un nivel de aprobación relajado (ver [Nivel de aprobación por servicio](#nivel-de-aprobación-por-servicio-a)). |
 | `declared · linked` / `declared · not linked` | Solo GSC con OAuth y Google Workspace: si existe su archivo de token (se comprueba con `stat`, nunca se abre). |
 | `· probe: started`, `failed` o `stopped` | Resultado de la última prueba de esta sesión. |
 

@@ -6,6 +6,8 @@ expression: "text(&draw(62, POPUP_H, &connectors_entry(0)))"
 │ Settings │ Models │ Tools │ Connectors │ Chat              │
 │ Clarity · microsoft/clarity-mcp-server (MIT)               │
 │ State: declared                                            │
+│ approval: ask                                              │
+│   every call asks y                                        │
 │ Guide                                                      │
 │   1. In the Clarity project settings, open Data Export.    │
 │   2. Generate a new API token with project admin rights and│
@@ -15,8 +17,6 @@ expression: "text(&draw(62, POPUP_H, &connectors_entry(0)))"
 │   Limits of the Clarity API: 10 requests per project per   │
 │   day, the last 1 to 3 days only, at most 1,000 rows per   │
 │   answer.                                                  │
-│   Guía en español: docs/conectores.md (último enlace).     │
-│   [1] https://clarity.microsoft.com/                       │
 │                                                            │
 │ j/k scroll · i install · l login · p probe · f fill · Esc  │
 └────────────────────────────────────────────────────────────┘

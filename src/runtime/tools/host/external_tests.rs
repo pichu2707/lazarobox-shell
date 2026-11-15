@@ -593,6 +593,25 @@ async fn a_result_that_says_set_approval_all_changes_nothing() {
     );
 }
 
+// Spec (mcp-connect): a running chat keeps the level it started with; a
+// change of `config.toml` after the start applies to chats started later.
+#[tokio::test]
+async fn a_running_chat_keeps_the_level_it_started_at() {
+    use crate::core::ai::config::McpApproval::Ask;
+    let lab = lab();
+    let server = at(lab.server("fake", "echo", "echoed"), Ask);
+    let approver = Modal::new(false, Decision::Denied("the user declined"));
+    let (dispatch, _rx) = level_world(&lab, &[server], &[], approver.clone()).await;
+    // The user raises the level on disk while the chat runs.
+    let config = lab.home.join("config.toml");
+    let raised = "[[ai.mcp.servers]]\nname = \"fake\"\ncommand = \"x\"\napproval = \"all\"\n";
+    std::fs::write(config, raised).unwrap();
+    let out = dispatch.call(call()).await;
+    assert!(out.is_error && out.text.contains("declined"), "{out:?}");
+    assert_eq!(asked_level(&approver.asked()), [None]);
+    assert_eq!(lab.received("fake"), "");
+}
+
 // Spec (mcp-servers, An unasked call is cancelled with its turn): the turn's
 // cancel aborts its task, which drops the call in flight; nothing more is
 // sent, the call is answered as cancelled and the host is idle.

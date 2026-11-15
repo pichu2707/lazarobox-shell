@@ -309,7 +309,7 @@ pub(super) fn entry(servers: Vec<McpServer>, at: usize) -> MenuState {
 /// Every row of the entry screen, whatever the scroll.
 pub(super) fn whole(m: &mut MenuState) -> Vec<String> {
     let mut seen = texts(m);
-    for _ in 0..60 {
+    for _ in 0..90 {
         press(m, 'j');
         for line in texts(m) {
             if !seen.contains(&line) {
