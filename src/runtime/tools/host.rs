@@ -285,6 +285,25 @@ impl ToolHost {
         })
     }
 
+    /// A host whose commands and git go through `helper`, the binary that
+    /// serves `__jail-exec`, for the in-crate local-model evaluation. With
+    /// `stand_in` the jail is taken as available (the helper is a script that
+    /// does not sandbox); otherwise the real probe decides.
+    #[cfg(test)]
+    pub(crate) fn with_helper(home: OsString, helper: PathBuf, stand_in: bool) -> Arc<Self> {
+        use crate::core::ai::jail::{Backend, JailSupport};
+        let mut host = Self::new(Some(home), None, None, Limits::default());
+        let exec = &mut Arc::get_mut(&mut host).expect("a new host").exec;
+        exec.helper = Some(helper);
+        if stand_in {
+            exec.jail = Box::new(|| JailSupport::Available {
+                backend: Backend::Landlock,
+                abi: 3,
+            });
+        }
+        host
+    }
+
     /// Makes every call of this host see `drives` as the WSL drives.
     #[cfg(test)]
     pub(crate) fn set_drives(&self, drives: WinDrives) {

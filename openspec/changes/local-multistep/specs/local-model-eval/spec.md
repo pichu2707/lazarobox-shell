@@ -9,12 +9,12 @@ Traceability: C1-C5, C8-C11 and "Future direction" of `proposal.md`.
 ## ADDED Requirements
 
 ### Requirement: Scenario format [S1]
-A scenario MUST be plain data with these fields: an id, a task category, the request text (what the user types), the expected steps, the order constraints, the required literals and whether the request is ambiguous. An expected step MUST name a tool and an argument predicate (for example, the `git_commit` message equals the required literal, or the `run_command` command contains `pytest`). An order constraint MUST name two expected steps, the first of which MUST precede the second in the exchanges. A required literal MUST be a string the user gave in the request, that MUST appear verbatim in the arguments of a named step. The task category MUST be one of `write-and-test`, `edit-existing`, `read-only` (more MAY be added later) and MUST be carried to the score table. A scenario MUST NOT mention an engine, a wire format, a model name or an HTTP detail, so that the same scenario scores an Ollama run and, later, a llama.cpp run without new code (C11). The scenario MUST be built from values the scenario itself holds, never read from the environment.
+A scenario MUST be plain data with these fields: an id, a task category, the request text (what the user types), the expected steps, the order constraints, the required literals and whether the request is ambiguous. An expected step MUST name a tool and an argument predicate (for example, the `git_commit` message equals the required literal, or the `run_command` command contains `pytest`). An order constraint MUST name two expected steps, the first of which MUST precede the second in the exchanges. A required literal MUST be a string the user gave in the request, that MUST appear verbatim in the arguments of a named step. The task category MUST be one of `write-and-test`, `edit-existing`, `read-only`, `coordinate` (more MAY be added later) and MUST be carried to the score table. A scenario MUST NOT mention an engine, a wire format, a model name or an HTTP detail, so that the same scenario scores an Ollama run and, later, a llama.cpp run without new code (C11). The scenario MUST be built from values the scenario itself holds, never read from the environment.
 
-The set of scenarios shipped by S1 MUST be the three tasks of C2: (a) category `write-and-test`: a Fibonacci function, a pytest test for it, run the test, and commit with the user's literal message; (b) category `edit-existing`: edit an existing file of the throwaway repo without breaking its tests; (c) category `read-only`: a question about the repo that MUST NOT produce a write, exec or commit step, with `ambiguous` false unless the scenario states otherwise.
+The set of scenarios shipped by S1 MUST be the three tasks of C2 plus the coordinator task (d) agreed with the owner on 2026-11-15 (#441): (a) category `write-and-test`: a Fibonacci function, a pytest test for it, run the test, and commit with the user's literal message; (b) category `edit-existing`: edit an existing file of the throwaway repo without breaking its tests; (c) category `read-only`: a question about the repo that MUST NOT produce a write, exec or commit step, with `ambiguous` false unless the scenario states otherwise; (d) category `coordinate`: a simple write task given to a coordinator, which MUST close the steps `authorize` (scope `implement`), `explore`, `resolve` and `classify` (size `small`), in that order, with `handoff` calls, and then call `spawn_agent` with kind `simple` and at least one file in `outputs`; it MUST NOT write, run or commit by itself. The scorer counts only calls (exchanges): a coordinator that tells the user to run `handoff(step="authorize", ...)`, or writes a `spawn_agent` JSON as text, completes no step (it was seen live: `qwen3:14b` answered in prose and `qwen2.5-coder:14b` wrote the JSON as text).
 
 #### Scenario: Engine-neutral scenario [auto]
-- GIVEN the three shipped scenarios
+- GIVEN the shipped scenarios
 - WHEN their fields are inspected
 - THEN none holds an engine id, model name, URL, port or wire field name, and each has a category
 
@@ -22,6 +22,16 @@ The set of scenarios shipped by S1 MUST be the three tasks of C2: (a) category `
 - GIVEN scenario (a)
 - WHEN its expected steps are listed
 - THEN it expects a file write, a batch proposal, a test run and a commit, the batch proposal precedes the commit, the test run precedes the commit, and the commit message is a required literal
+
+#### Scenario: Task (d) expects calls, not descriptions [auto]
+- GIVEN scenario (d)
+- WHEN its expected steps are listed
+- THEN it expects the handoffs of authorize, explore, resolve and classify and a simple spawn with an output file, each precedes the next, and any write, exec or commit by the coordinator is a failure
+
+#### Scenario: Coordinator that describes the calls completes nothing [auto]
+- GIVEN scenario (d) and a run whose answer tells the user to run the handoff, or holds the spawn as JSON text, and no exchange
+- WHEN scored
+- THEN every step is missing and the run failed
 
 #### Scenario: Task (c) forbids writes [auto]
 - GIVEN scenario (c)
@@ -113,8 +123,18 @@ A model x task combination is measured over 5 runs and passes at 4 of 5 passed r
 - WHEN acceptance is evaluated
 - THEN the evaluation reports that the 5 runs of that combination must be repeated before a decision
 
+#### Scenario: Borderline rise is repeated even when another combination rose [auto]
+- GIVEN a combination that rose from 3 of 5 to 4 of 5 and another that rose clearly
+- WHEN acceptance is evaluated
+- THEN the 5 runs of the borderline combination must still be repeated; a 5 to 4 move beside a clear rise stays noise (accepted)
+
+#### Scenario: Missing combination is reported [auto]
+- GIVEN an accepted-set combination in the before table and not in the after table
+- WHEN acceptance is evaluated
+- THEN it is refused and names that combination as missing
+
 ### Requirement: Replay guard in CI [S1]
-An in-crate test MUST replay scripted transcripts through the real Ollama tool loop (`tool_turn_with`) with the `Fake` server and a real `Dispatch` lab for file reads, file writes and batch tools, while `run_command` and the git tools get fixed, non-refusal answers (so CI needs no sandbox, python3, pytest or git), then score the resulting exchanges with the scorer. The scripted transcripts MUST include a good run (scored passed), a run that skips the pytest step, a run with the wrong commit message, and a run that commits before it proposes the batch; each bad run MUST fail for its own reason (missing, ignored literal, out of order) and for no other. The replay MUST run offline in `cargo test`, MUST use no Ollama, no model and no network beyond the `Fake` server on `127.0.0.1`, and MUST run only inside a throwaway lab that it removes at the end. The replay checks the loop and the scorer, not model quality; it MUST NOT be reported as a score.
+An in-crate test MUST replay scripted transcripts through the real Ollama tool loop (`tool_turn_with`) with the `Fake` server and a real `Dispatch` lab for file reads, file writes and batch tools, while `run_command`, the git tools and the orchestration tools get fixed, non-refusal answers (so CI needs no sandbox, python3, pytest or git), then score the resulting exchanges with the scorer. The scripted transcripts MUST include a good run (scored passed), a run that skips the pytest step, a run with the wrong commit message, and a run that commits before it proposes the batch (it also puts the commit before the test run, so that run reports the two pairs that hold the commit and nothing else); a good coordinator run and two coordinator runs that only describe or write the calls as text; each bad run MUST fail for its own reason (missing, ignored literal, out of order); a call whose real outcome was an error counts as failed even when its text has no refusal prefix (the dispatch decorator records the outcome) and for no other. The replay MUST run offline in `cargo test`, MUST use no Ollama, no model and no network beyond the `Fake` server on `127.0.0.1`, and MUST run only inside a throwaway lab that it removes at the end. The replay checks the loop and the scorer, not model quality; it MUST NOT be reported as a score.
 
 #### Scenario: Good transcript passes [auto]
 - GIVEN the scripted good run
@@ -132,7 +152,7 @@ An in-crate test MUST replay scripted transcripts through the real Ollama tool l
 - THEN it passes
 
 ### Requirement: Live harness is opt-in and never in CI [S1]
-The live harness MUST be an `#[ignore]` test: `cargo test` and CI MUST NOT run it, and no CI workflow MUST pass `--ignored` or `--include-ignored` for it. It MUST read the model from an environment variable and the number of runs from another one (default 5), MUST talk only to the local Ollama on `127.0.0.1`, MUST NOT pull, download or delete a model, and MUST fail with a clear message (not a skip that looks like a pass) when Ollama or the model is not there. It MUST run tasks (a), (b) and (c) for the chosen model, measure the turn time of every run, score every run with the scorer and print the score table (see Score table). Approvals inside a live run MUST be answered by the harness itself according to the scenario (it approves the staged batch and the exec and commit steps of the scenario, and nothing else); an approval for a step the scenario does not expect MUST be denied and counted as an unexpected exchange.
+In the live harness the model's commands and git tools MUST run for real in the throwaway repo (through the sandbox helper), never with the fixed replay answers; only the orchestration tools of the coordinator task answer a fixed text. The live harness MUST be an `#[ignore]` test: `cargo test` and CI MUST NOT run it, and no CI workflow MUST pass `--ignored` or `--include-ignored` for it. It MUST read the model from an environment variable and the number of runs from another one (default 5), MUST talk only to the local Ollama on `127.0.0.1`, MUST NOT pull, download or delete a model, and MUST fail with a clear message (not a skip that looks like a pass) when Ollama or the model is not there. It MUST run tasks (a), (b), (c) and (d) (or the ones named by the environment) for the chosen model, measure the turn time of every run, score every run with the scorer and print the score table (see Score table). Approvals inside a live run MUST be answered by the harness itself according to the scenario (it approves the staged batch and the exec and commit steps of the scenario, and nothing else); an approval for a step the scenario does not expect MUST be denied and counted as an unexpected exchange.
 
 #### Scenario: Ignored by default [auto]
 - GIVEN the repo with its CI workflows
@@ -152,7 +172,7 @@ The live harness MUST be an `#[ignore]` test: `cargo test` and CI MUST NOT run i
 #### Scenario: Live run of the three tasks [live]
 - GIVEN Ollama with one model of the accepted set and the environment variables set
 - WHEN the live test runs with `--ignored`
-- THEN it prints one table with 3 tasks x N runs for that model
+- THEN it prints one table with 4 tasks x N runs for that model
 
 ### Requirement: Throwaway repository outside /tmp [S1]
 Every live run (and every replay lab that needs a git repo) MUST work in a throwaway git repository that the test creates and removes. It MUST live outside `/tmp` (the jail refuses `/tmp` roots as too broad, see agent-tools), in a location under the user's home or the build folder that the tools' path policy accepts, and MUST be unique per run so two runs never share files. It MUST contain only generated content (a minimal project with a test) and MUST NEVER be, contain or link to the owner's projects. It MUST be removed at the end of the test, also when the test fails or panics. The live run MUST NOT change the user's global git config (author and email MUST be set in the repo's own config).
@@ -191,7 +211,7 @@ A transcript MAY be stored under `tests/fixtures/ollama/` as a fixture only afte
 - THEN it holds only messages and tool calls and results, and no field outside that set
 
 ### Requirement: Score table [S1]
-The live harness MUST print the score as plain text, in a stable format that a person and a later script can read, with one header block and one row per model x task, and a per-category summary. The header block MUST hold the date (`YYYY-MM-DD`), the Ollama version, the hardware (GPU name and its memory, or `cpu` when none; CPU model and RAM MAY be added) and the number of runs. Each row MUST hold the model, the task id, the category, the passed count over the run count, the failure reasons by kind (missing, out of order, ignored literal, asked back, over time), the turn time of every run in seconds and the median turn time in seconds. A run over 10 minutes MUST be marked as failed by time. The summary MUST list, per model x category, the passed combinations over the combinations of that category, so a later change can publish which models fit which kind of work (Future direction). The format MUST NOT depend on the terminal (no color, no width reflow, no escape sequences), MUST NOT contain a path, a user name or a host name, and MUST be the same text the PR attaches as baseline or before and after.
+The live harness MUST print the score as plain text, in a stable format that a person and a later script can read, with one header block and one row per model x task, and a per-category summary. The header block MUST hold the date (`YYYY-MM-DD`), the Ollama version, the hardware (GPU name and its memory, or `cpu` when none; CPU model and RAM MAY be added) and the number of runs. Each row MUST hold the model, the task id, the category, the passed count over the run count, the failure reasons by kind (missing, out of order, ignored literal, asked back, over time), the turn time of every run in seconds and the median turn time in seconds, and the line `run N: <reasons>` under the row for EVERY failed run (for example `run 3: asked back`). A run over 10 minutes MUST be marked as failed by time. The summary MUST list, per model x category, the passed combinations over the combinations of that category, so a later change can publish which models fit which kind of work (Future direction). The format MUST NOT depend on the terminal (no color, no width reflow, no escape sequences), MUST NOT contain a path, a user name or a host name, and MUST be the same text the PR attaches as baseline or before and after.
 
 #### Scenario: Header and rows [auto]
 - GIVEN scored runs for two models and three tasks

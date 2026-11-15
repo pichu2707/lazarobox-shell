@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use super::{
     Category, Expect, RunResult, Scenario, asked_back, refused, scenarios,
-    scenarios::{EDIT_EXISTING, READ_ONLY, WRITE_AND_TEST},
+    scenarios::{COORDINATE, EDIT_EXISTING, READ_ONLY, WRITE_AND_TEST},
     score,
 };
 use crate::core::ai::chat::adapters::ToolExchange;
@@ -317,7 +317,8 @@ fn every_scenario_has_its_category_key() {
     assert_eq!(WRITE_AND_TEST.category.key(), "write-and-test");
     assert_eq!(EDIT_EXISTING.category.key(), "edit-existing");
     assert_eq!(READ_ONLY.category.key(), "read-only");
-    assert_eq!(scenarios::ALL.len(), 3);
+    assert_eq!(COORDINATE.category.key(), "coordinate");
+    assert_eq!(scenarios::ALL.len(), 4);
     assert!(scenarios::ALL.iter().all(|s| !s.ambiguous));
     assert_eq!(Category::ReadOnly.key(), "read-only");
 }
@@ -333,4 +334,82 @@ fn task_b_is_a_good_run_when_it_edits_proposes_and_tests() {
     assert!(result.passed(), "{result:?}");
     let no_edit = score(&EDIT_EXISTING, &[batch(), pytest()], "Done.");
     assert_eq!(no_edit.missing, ["edit"]);
+}
+
+fn handoff(step: &str, extra: Value) -> ToolExchange {
+    let mut arguments = json!({"step": step, "verdict": "on_course"});
+    arguments
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    ex("handoff", arguments, "step closed")
+}
+
+fn spawn(kind: &str, outputs: Value) -> ToolExchange {
+    let arguments = json!({"kind": kind, "goal": "write greeting.py", "inputs": [],
+        "outputs": outputs, "done_when": "greet works", "out_of_scope": "nothing else"});
+    ex("spawn_agent", arguments, "worker 1 started")
+}
+
+fn coordinated() -> Vec<ToolExchange> {
+    vec![
+        handoff("authorize", json!({"scope": "implement"})),
+        handoff("explore", json!({})),
+        handoff("resolve", json!({})),
+        handoff("classify", json!({"size": "small", "reason": "one file"})),
+        spawn("simple", json!(["greeting.py"])),
+    ]
+}
+
+#[test]
+fn a_coordinator_that_calls_the_steps_and_spawns_a_simple_worker_passes() {
+    let result = score(&COORDINATE, &coordinated(), "Worker 1 is writing it.");
+    assert!(result.passed(), "{result:?}");
+    assert_eq!(result.completed.len(), 5);
+}
+
+#[test]
+fn a_coordinator_that_describes_the_calls_instead_of_making_them_fails() {
+    let prose = "Run handoff(step=\"authorize\", scope=\"implement\") and then spawn it.";
+    let result = score(&COORDINATE, &[], prose);
+    assert_eq!(
+        result.missing,
+        ["authorize", "explore", "resolve", "classify", "spawn"]
+    );
+    assert!(!result.passed());
+    let text = r#"{"name": "spawn_agent", "arguments": {"kind": "simple"}}"#;
+    assert!(!score(&COORDINATE, &[], text).passed());
+}
+
+#[test]
+fn spawning_before_the_steps_or_the_wrong_kind_does_not_complete_the_task() {
+    let mut early = coordinated();
+    early.rotate_right(1);
+    let result = score(&COORDINATE, &early, "Done.");
+    assert_eq!(result.out_of_order, [("classify", "spawn")]);
+    let mut wrong = coordinated();
+    wrong[4] = spawn("code", json!(["greeting.py"]));
+    assert_eq!(score(&COORDINATE, &wrong, "Done.").missing, ["spawn"]);
+    wrong[4] = spawn("simple", json!([]));
+    assert_eq!(score(&COORDINATE, &wrong, "Done.").missing, ["spawn"]);
+    let mut read_only = coordinated();
+    read_only[0] = handoff("authorize", json!({"scope": "read_only"}));
+    assert_eq!(
+        score(&COORDINATE, &read_only, "Done.").missing,
+        ["authorize"]
+    );
+}
+
+#[test]
+fn the_coordinator_writes_nothing_itself() {
+    let mut run = coordinated();
+    run.push(write());
+    let result = score(&COORDINATE, &run, "Done.");
+    assert_eq!(result.forbidden, ["write_file"]);
+    assert!(!result.passed());
+}
+
+#[test]
+fn the_coordinate_task_asks_for_a_simple_write() {
+    assert!(COORDINATE.request.contains("greeting.py"));
 }

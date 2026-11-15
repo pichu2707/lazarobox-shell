@@ -1262,10 +1262,14 @@ mod adapter_tests;
 #[cfg(test)]
 mod eval_harness;
 #[cfg(test)]
+mod eval_replay_tests;
+#[cfg(test)]
 mod external_tests;
 #[cfg(test)]
 mod llamacpp_tests;
 mod ollama;
+#[cfg(all(test, target_os = "linux"))]
+mod ollama_live;
 #[cfg(test)]
 mod ollama_tests;
 #[cfg(test)]

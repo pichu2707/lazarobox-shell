@@ -1,0 +1,41 @@
+{
+  "scenario": "read-only",
+  "replies": [
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "text_utils.py"
+          }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "extra.py",
+            "content": "print('extra')\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "propose_batch",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "text": "The function turns a text into a slug: trimmed, lower case, spaces as dashes.",
+      "calls": []
+    }
+  ]
+}

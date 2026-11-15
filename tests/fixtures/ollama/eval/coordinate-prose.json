@@ -1,0 +1,9 @@
+{
+  "scenario": "coordinate",
+  "replies": [
+    {
+      "text": "To start, run handoff(step=\"authorize\", scope=\"implement\") to close the first step, then spawn_agent(kind=\"simple\") with a brief for greeting.py.",
+      "calls": []
+    }
+  ]
+}

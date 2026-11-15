@@ -1,0 +1,9 @@
+{
+  "scenario": "coordinate",
+  "replies": [
+    {
+      "text": "{\"name\": \"spawn_agent\", \"arguments\": {\"kind\": \"simple\", \"goal\": \"Create greeting.py\", \"outputs\": [\"greeting.py\"]}}",
+      "calls": []
+    }
+  ]
+}

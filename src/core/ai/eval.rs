@@ -10,7 +10,10 @@ use serde_json::Value;
 use super::chat::adapters::ToolExchange;
 
 pub mod scenarios;
+pub mod table;
 
+#[cfg(test)]
+mod table_tests;
 #[cfg(test)]
 mod tests;
 
@@ -20,6 +23,8 @@ pub enum Category {
     WriteAndTest,
     EditExisting,
     ReadOnly,
+    /// Directing workers instead of doing the work.
+    Coordinate,
 }
 
 impl Category {
@@ -29,6 +34,7 @@ impl Category {
             Self::WriteAndTest => "write-and-test",
             Self::EditExisting => "edit-existing",
             Self::ReadOnly => "read-only",
+            Self::Coordinate => "coordinate",
         }
     }
 }

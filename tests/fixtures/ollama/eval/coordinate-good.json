@@ -1,0 +1,81 @@
+{
+  "scenario": "coordinate",
+  "replies": [
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "handoff",
+          "arguments": {
+            "step": "authorize",
+            "scope": "implement",
+            "verdict": "on_course",
+            "reason": "the user asked for a new file"
+          }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "handoff",
+          "arguments": {
+            "step": "explore",
+            "verdict": "on_course",
+            "reason": "the repo holds a README only"
+          }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "handoff",
+          "arguments": {
+            "step": "resolve",
+            "verdict": "on_course",
+            "reason": "nothing is unclear"
+          }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "handoff",
+          "arguments": {
+            "step": "classify",
+            "size": "small",
+            "verdict": "on_course",
+            "reason": "one new file"
+          }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "calls": [
+        {
+          "name": "spawn_agent",
+          "arguments": {
+            "kind": "simple",
+            "goal": "Create greeting.py with greet(name)",
+            "inputs": [],
+            "outputs": [
+              "greeting.py"
+            ],
+            "done_when": "greet('Ana') returns 'Hello, Ana'",
+            "out_of_scope": "any other file"
+          }
+        }
+      ]
+    },
+    {
+      "text": "A simple worker is writing greeting.py.",
+      "calls": []
+    }
+  ]
+}
