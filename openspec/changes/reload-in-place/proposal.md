@@ -52,7 +52,8 @@ Out of scope:
 | S2 | Scope 1: the reload key, prompt, teardown, `exec`, `__adopt`, new-binary probe | 300-380 |
 | S3 | Screen snapshot core (pure: encoder, alternate-screen capture, restore) | 250-350 |
 | S4 | PTY freeze and adoption (reader with a stop pipe, adopted handle, `FD_CLOEXEC`) | 280-380 |
-| S5 | Scope 2 wiring: busy check, watcher, terminal state, adoption in the new process | 300-400 |
+| S5a | Scope 2 busy check (chats, runs, run store, connector lines, menu draft) and watcher teardown | 200-280 |
+| S5b | Scope 2 adoption in the new process (two passes), nudge, platforms | 200-300 |
 | S6 | Fallbacks: per-pane fallback, old-binary fallback on Linux, notices, docs | 150-250 |
 
 S1 and S2 ship scope 1 on their own (Open question 5). Each later slice keeps scope 1 working.
@@ -68,3 +69,5 @@ S1 and S2 ship scope 1 on their own (Open question 5). Each later slice keeps sc
 ## Open questions
 
 See design.md, "Open questions": the key and where it appears, the screen state method, what counts as busy (and whether an idle chat reloads without a prompt), the platforms for scope 2, and whether scope 1 ships first. Each has options, tradeoffs and a recommendation.
+
+Still open, not decided by this change: **is reload-in-place scope 2 (with the old-binary fallback) Linux-only for 1.0, leaving macOS on scope 1?** The fallback needs `/proc/self/exe` and `execveat`; without it a failed adoption on macOS loses every pane (design section 4, risk 1). Tasks 5.5 and 6.7 wait for the answer.
