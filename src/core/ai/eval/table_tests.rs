@@ -103,7 +103,16 @@ fn acceptance_needs_a_rise_and_no_fall_below_passing() {
         accept(&before, &fell),
         Verdict::Refused(vec!["qwen3:14b write-and-test".to_owned()])
     );
-    assert_eq!(accept(&before, &before), Verdict::Refused(Vec::new()));
+}
+
+// Hardening: a refusal always says why; nothing rose is not an empty list.
+#[test]
+fn a_change_where_nothing_rose_is_refused_with_its_reason() {
+    let before = [row("qwen2.5:7b", 2, 5), row("qwen3:14b", 5, 5)];
+    assert_eq!(
+        accept(&before, &before),
+        Verdict::Refused(vec!["nothing rose".to_owned()])
+    );
 }
 
 #[test]
