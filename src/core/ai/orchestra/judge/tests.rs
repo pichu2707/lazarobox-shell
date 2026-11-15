@@ -589,3 +589,188 @@ fn criteria_past_the_cap_are_counted_as_dropped() {
     let got = standard("g", &notes(2), &[spec("S1", "x")], Vec::new());
     assert_eq!(got.dropped, 0);
 }
+
+// Spec (Agreement of two judges, Pass with unverified criteria).
+fn pass_with(rows: &[(State, &str)]) -> Ruling {
+    let text: String = rows
+        .iter()
+        .enumerate()
+        .map(|(at, (state, why))| {
+            let state = match state {
+                State::Met => "met",
+                State::NotMet => "not met",
+                State::Unknown => "unknown",
+            };
+            format!("CRITERION C{} {state} | {why}\n", at + 1)
+        })
+        .collect();
+    parse_ruling(&format!("{text}VERDICT pass"), rows.len())
+}
+
+fn fail_at(criterion: usize, at: &str) -> Ruling {
+    let rows: String = (1..=2)
+        .map(|n| match n == criterion {
+            true => format!("CRITERION C{n} not met | bad\n"),
+            false => format!("CRITERION C{n} met | fine\n"),
+        })
+        .collect();
+    let text = format!("{rows}FINDING C{criterion} | at: {at} | broken\nVERDICT fail");
+    parse_ruling(&text, 2)
+}
+
+fn clean_pass() -> Ruling {
+    pass_with(&[(State::Met, "a"), (State::Met, "b")])
+}
+
+fn no_verdict() -> Ruling {
+    parse_ruling("I think it is fine", 2)
+}
+
+#[test]
+fn one_judge_decides_and_no_verdict_leaves_the_batch_to_the_user() {
+    assert_eq!(
+        agree(&[clean_pass()]),
+        Agreement::Pass {
+            unverified: vec![],
+            clean: true
+        }
+    );
+    let failed = fail_at(2, "src/a.rs:4");
+    assert_eq!(
+        agree(&[failed.clone()]),
+        Agreement::Fail(failed.faults.clone())
+    );
+    let Agreement::Disagree { missing } = agree(&[no_verdict()]) else {
+        panic!("one judge without a verdict decides nothing");
+    };
+    assert!(missing.contains("judge 1") && missing.contains("unparseable"));
+}
+
+#[test]
+fn two_passes_agree_and_carry_the_union_of_unverified_criteria() {
+    let a = pass_with(&[(State::Met, "a"), (State::Unknown, "tests not seen")]);
+    let b = pass_with(&[
+        (State::Unknown, "no file"),
+        (State::Unknown, "tests not seen"),
+    ]);
+    let got = agree(&[a, b]);
+    assert_eq!(
+        got,
+        Agreement::Pass {
+            unverified: vec![(2, "tests not seen".to_owned()), (1, "no file".to_owned())],
+            clean: false,
+        }
+    );
+}
+
+#[test]
+fn two_fails_give_the_union_by_criterion_with_every_location() {
+    let (a, b) = (fail_at(1, "src/a.rs:4"), fail_at(2, "src/b.rs:9"));
+    let both = fail_at(1, "src/c.rs:1");
+    let Agreement::Fail(faults) = agree(&[a.clone(), b.clone()]) else {
+        panic!("two fails agree");
+    };
+    assert_eq!(faults.len(), 2);
+    let Agreement::Fail(faults) = agree(&[a.clone(), both]) else {
+        panic!("two fails agree");
+    };
+    assert_eq!(faults.len(), 2, "same criterion, two places: both kept");
+    let Agreement::Fail(faults) = agree(&[a.clone(), a]) else {
+        panic!("two fails agree");
+    };
+    assert_eq!(faults.len(), 1, "the same fault twice is one");
+}
+
+#[test]
+fn a_pass_against_a_fail_or_a_missing_verdict_is_a_disagreement_naming_the_judge() {
+    let Agreement::Disagree { missing } = agree(&[clean_pass(), fail_at(2, "src/a.rs:4")]) else {
+        panic!("pass against fail disagrees");
+    };
+    assert!(
+        missing.contains("C2") && missing.contains("judge 2"),
+        "{missing}"
+    );
+    let Agreement::Disagree { missing } = agree(&[clean_pass(), no_verdict()]) else {
+        panic!("a missing verdict disagrees");
+    };
+    assert!(
+        missing.contains("judge 2") && !missing.contains("judge 1"),
+        "{missing}"
+    );
+}
+
+// From the S1a verify (W2, W4): a pass never reads as clean when it hides a fault.
+#[test]
+fn a_pass_with_a_fault_on_a_met_criterion_or_nothing_verified_is_not_clean() {
+    let text = "CRITERION C1 met | ok\nCRITERION C2 met | ok\n\
+                FINDING C2 | at: src/a.rs:3 | but wrong\nVERDICT pass";
+    let contradiction = parse_ruling(text, 2);
+    let nothing = pass_with(&[(State::Unknown, "a"), (State::Unknown, "b")]);
+    for ruling in [contradiction, nothing] {
+        assert!(ruling.hollow());
+        let Agreement::Pass { clean, .. } = agree(&[ruling, clean_pass()]) else {
+            panic!("both passed");
+        };
+        assert!(!clean);
+    }
+    assert!(!clean_pass().hollow());
+}
+
+// Spec (Corrections say what they change; Worker claim is not trusted).
+fn staged(files: &[(&str, Option<&str>, &str)]) -> StagedDiff {
+    StagedDiff {
+        files: files
+            .iter()
+            .map(|(path, base, text)| StagedText {
+                path: (*path).to_owned(),
+                base: base.map(str::to_owned),
+                text: (*text).to_owned(),
+            })
+            .collect(),
+        ..StagedDiff::default()
+    }
+}
+
+#[test]
+fn the_same_text_changed_nothing() {
+    let diff = staged(&[("src/a.rs", Some("x\n"), "a\nb\nc\n")]);
+    assert_eq!(changed(&diff, &diff.clone()), []);
+}
+
+#[test]
+fn a_middle_edit_gives_the_lines_between_the_common_prefix_and_suffix() {
+    let before = staged(&[("src/a.rs", None, "1\n2\n3\n4\n5\n6\n")]);
+    let after = staged(&[("src/a.rs", None, "1\n2\nX\nY\n5\n6\n")]);
+    assert_eq!(
+        changed(&before, &after),
+        [("src/a.rs".to_owned(), Span::Lines(3, 4))]
+    );
+    let grown = staged(&[("src/a.rs", None, "1\n2\nX\nY\nZ\n3\n4\n5\n6\n")]);
+    assert_eq!(
+        changed(&before, &grown),
+        [("src/a.rs".to_owned(), Span::Lines(3, 5))]
+    );
+}
+
+#[test]
+fn a_new_file_is_whole_and_a_pure_deletion_has_no_range() {
+    let before = staged(&[("src/a.rs", None, "1\n2\n3\n")]);
+    let after = staged(&[("src/a.rs", None, "1\n3\n"), ("src/b.rs", None, "new\n")]);
+    assert_eq!(
+        changed(&before, &after),
+        [
+            ("src/a.rs".to_owned(), Span::None),
+            ("src/b.rs".to_owned(), Span::Whole)
+        ]
+    );
+}
+
+#[test]
+fn only_the_two_staged_texts_count_never_a_claim() {
+    // The input holds nothing but the two diffs: a worker saying it touched
+    // src/b.rs cannot show up, and an untouched file stays out.
+    let before = staged(&[("src/a.rs", None, "1\n"), ("src/b.rs", None, "k\n")]);
+    let after = staged(&[("src/a.rs", None, "2\n"), ("src/b.rs", None, "k\n")]);
+    let got = changed(&before, &after);
+    assert_eq!(got, [("src/a.rs".to_owned(), Span::Lines(1, 1))]);
+}
