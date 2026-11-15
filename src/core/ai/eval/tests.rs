@@ -27,6 +27,14 @@ fn write() -> ToolExchange {
     )
 }
 
+fn write_test() -> ToolExchange {
+    ex(
+        "write_file",
+        json!({"path": "tests/test_fib.py", "content": "def test_fib():\n    pass\n"}),
+        "staged test_fib.py",
+    )
+}
+
 fn batch() -> ToolExchange {
     ex("propose_batch", json!({}), "the batch was applied")
 }
@@ -50,7 +58,7 @@ fn commit(message: &str) -> ToolExchange {
 const LITERAL: &str = "add fibonacci";
 
 fn good() -> Vec<ToolExchange> {
-    vec![write(), batch(), pytest(), commit(LITERAL)]
+    vec![write(), write_test(), batch(), pytest(), commit(LITERAL)]
 }
 
 fn run(exchanges: &[ToolExchange]) -> RunResult {
@@ -68,28 +76,62 @@ fn complete_run_passes() {
 
 #[test]
 fn a_missing_step_fails_the_run() {
-    let result = run(&[write(), batch(), commit(LITERAL)]);
+    let result = run(&[write(), write_test(), batch(), commit(LITERAL)]);
     assert_eq!(result.missing, ["pytest"]);
     assert!(!result.passed());
 }
 
 #[test]
 fn a_commit_before_the_batch_is_out_of_order() {
-    let result = run(&[write(), pytest(), commit(LITERAL), batch()]);
-    assert_eq!(result.out_of_order, [("batch", "commit")]);
+    let result = run(&[write(), write_test(), commit(LITERAL), batch(), pytest()]);
+    assert!(
+        result.out_of_order.contains(&("batch", "commit")),
+        "{result:?}"
+    );
     assert!(result.missing.is_empty() && result.ignored.is_empty());
     assert!(!result.passed());
 }
 
 #[test]
 fn a_test_run_after_the_commit_is_out_of_order() {
-    let result = run(&[write(), batch(), commit(LITERAL), pytest()]);
+    let result = run(&[write(), write_test(), batch(), commit(LITERAL), pytest()]);
     assert_eq!(result.out_of_order, [("pytest", "commit")]);
 }
 
 #[test]
+fn a_test_run_before_the_batch_is_out_of_order() {
+    let result = run(&[write(), write_test(), pytest(), batch(), commit(LITERAL)]);
+    assert_eq!(result.out_of_order, [("batch", "pytest")]);
+}
+
+#[test]
+fn each_of_the_two_files_must_be_written_by_its_exact_name() {
+    let only_test = run(&[write_test(), batch(), pytest(), commit(LITERAL)]);
+    assert_eq!(only_test.missing, ["write"]);
+    let only_code = run(&[write(), batch(), pytest(), commit(LITERAL)]);
+    assert_eq!(only_code.missing, ["write-test"]);
+}
+
+#[test]
+fn a_failed_git_commit_without_a_refusal_prefix_is_not_covered() {
+    // Known limit (tasks S1b): the exchange holds the result text only, with
+    // no status, so these host failures score as completed until the replay
+    // guard closes it. The texts that ARE covered are pinned in `refused`.
+    for text in ["nothing is staged", "git failed", "could not run git"] {
+        assert!(!refused(text), "{text}");
+    }
+    assert!(refused("denied: the user did not approve it"));
+}
+
+#[test]
 fn a_different_commit_message_is_an_ignored_literal() {
-    let result = run(&[write(), batch(), pytest(), commit("fibonacci")]);
+    let result = run(&[
+        write(),
+        write_test(),
+        batch(),
+        pytest(),
+        commit("fibonacci"),
+    ]);
     assert_eq!(result.ignored, [LITERAL]);
     assert!(result.missing.is_empty() && result.out_of_order.is_empty());
     assert!(!result.passed());
@@ -99,7 +141,7 @@ fn a_different_commit_message_is_an_ignored_literal() {
 fn a_refused_exchange_is_not_completed() {
     for text in ["denied: the user did not approve it", "the tool failed"] {
         let mut list = good();
-        list[3].result = text.to_owned();
+        list[4].result = text.to_owned();
         let result = run(&list);
         assert_eq!(result.missing, ["commit"], "{text}");
         assert!(!result.passed());
@@ -109,7 +151,11 @@ fn a_refused_exchange_is_not_completed() {
 #[test]
 fn a_call_in_the_answer_text_does_not_count() {
     let answer = r#"{"name": "git_commit", "arguments": {"message": "add fibonacci"}}"#;
-    let result = score(&WRITE_AND_TEST, &[write(), batch(), pytest()], answer);
+    let result = score(
+        &WRITE_AND_TEST,
+        &[write(), write_test(), batch(), pytest()],
+        answer,
+    );
     assert_eq!(result.missing, ["commit"]);
 }
 
@@ -117,7 +163,7 @@ fn a_call_in_the_answer_text_does_not_count() {
 fn asking_back_with_every_detail_given_fails() {
     let result = score(
         &WRITE_AND_TEST,
-        &[write(), batch(), pytest()],
+        &[write(), write_test(), batch(), pytest()],
         "Please provide a commit message",
     );
     assert!(result.asked_back);
@@ -225,15 +271,25 @@ fn the_scenarios_are_engine_neutral() {
 }
 
 #[test]
-fn task_a_expects_the_four_steps_in_order() {
+fn task_a_expects_its_five_steps_in_order() {
     let tools: Vec<_> = WRITE_AND_TEST.steps.iter().map(|s| s.tool).collect();
     assert_eq!(
         tools,
-        ["write_file", "propose_batch", "run_command", "git_commit"]
+        [
+            "write_file",
+            "write_file",
+            "propose_batch",
+            "run_command",
+            "git_commit"
+        ]
     );
     assert_eq!(
         WRITE_AND_TEST.order,
-        [("batch", "commit"), ("pytest", "commit")]
+        [
+            ("batch", "pytest"),
+            ("batch", "commit"),
+            ("pytest", "commit")
+        ]
     );
     assert_eq!(WRITE_AND_TEST.literals.len(), 1);
     assert_eq!(WRITE_AND_TEST.literals[0].step, "commit");

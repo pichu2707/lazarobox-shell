@@ -5,9 +5,11 @@ use serde_json::Value;
 
 use super::{Category, Expect, Literal, Scenario};
 
-/// A string argument that ends with `suffix`.
-fn path_ends(args: &Value, suffix: &str) -> bool {
-    args["path"].as_str().is_some_and(|p| p.ends_with(suffix))
+/// A `path` argument whose last segment is exactly `name`.
+fn path_ends(args: &Value, name: &str) -> bool {
+    args["path"]
+        .as_str()
+        .is_some_and(|p| p.rsplit('/').next() == Some(name))
 }
 
 /// A `run_command` that runs pytest.
@@ -43,6 +45,11 @@ pub const WRITE_AND_TEST: Scenario = Scenario {
             tool: "write_file",
             args: |a| path_ends(a, "fib.py"),
         },
+        Expect {
+            label: "write-test",
+            tool: "write_file",
+            args: |a| path_ends(a, "test_fib.py"),
+        },
         BATCH,
         PYTEST,
         Expect {
@@ -51,7 +58,11 @@ pub const WRITE_AND_TEST: Scenario = Scenario {
             args: ANY,
         },
     ],
-    order: &[("batch", "commit"), ("pytest", "commit")],
+    order: &[
+        ("batch", "pytest"),
+        ("batch", "commit"),
+        ("pytest", "commit"),
+    ],
     literals: &[Literal {
         step: "commit",
         text: "add fibonacci",
