@@ -10,6 +10,23 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **See and change a server's approval level in the Connectors area.** The
+  screen of a declared service shows `approval: ask`, `reads` or `all` with
+  what that level lets run without asking (`reads`: the catalog's read tools by
+  name; `all`: every tool the server registers), and the list marks a relaxed
+  level as `declared · reads` or `declared · all`. The `a` key proposes the
+  next level (`ask`, `reads`, `all`, `ask`) and writes nothing until your plain
+  `y`; it then changes only that entry's `approval` line in `config.toml`
+  (choosing `ask` removes the line), keeps the old file as `config.toml.bak`
+  and says `restart lazarobox to use it in chats`. It refuses, with a visible
+  notice and no write, when `config.toml` changed on disk since the screen was
+  shown, is not valid TOML, is a symlink or read-only, is over 256 KiB, holds an
+  inline `ai.mcp.servers` list, no longer has the entry or declares it twice. An
+  entry limited to a `project` is set by hand. Only your key in the area can
+  do it: no model, tool result or pasted text can.
+
 ## [1.27.0] - 2026-11-14
 
 ### Added
