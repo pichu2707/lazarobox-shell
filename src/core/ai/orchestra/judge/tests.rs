@@ -298,3 +298,154 @@ fn an_empty_file_is_not_a_norm() {
     assert_eq!(norm("AGENTS.md", b"", 0), None);
     assert_eq!(norm("AGENTS.md", b"  \n\n", 4), None);
 }
+
+// Spec (Verdict format with evidence and location).
+fn fault(criterion: usize, at: Option<&str>, text: &str) -> Fault {
+    Fault {
+        criterion,
+        at: at.map(str::to_owned),
+        text: text.to_owned(),
+    }
+}
+
+fn met(evidence: &str) -> Option<(State, String)> {
+    Some((State::Met, evidence.to_owned()))
+}
+
+#[test]
+fn a_well_formed_fail_names_the_criterion_and_where() {
+    let text = "CRITERION C1 met | the flag exists\n\
+                CRITERION C2 not met | no check on the input\n\
+                FINDING C2 | at: src/a.rs:40-52 | the check is missing\n\
+                VERDICT fail";
+    let got = parse_ruling(text, 2);
+    assert_eq!(got.verdict, Ok(Verdict::Fail));
+    assert_eq!(
+        got.criteria,
+        [
+            met("the flag exists"),
+            Some((State::NotMet, "no check on the input".to_owned()))
+        ]
+    );
+    assert_eq!(
+        got.faults,
+        [fault(2, Some("src/a.rs:40-52"), "the check is missing")]
+    );
+    assert_eq!(got.malformed, 0);
+}
+
+#[test]
+fn a_finding_without_a_location_is_kept_as_unknown() {
+    let text = "CRITERION C1 not met | x\nFINDING C1 | the check is missing\nVERDICT fail";
+    let got = parse_ruling(text, 1);
+    assert_eq!(got.faults, [fault(1, None, "the check is missing")]);
+    let text = "CRITERION C1 not met | x\nFINDING C1 | at: | still missing\nVERDICT fail";
+    assert_eq!(
+        parse_ruling(text, 1).faults,
+        [fault(1, None, "still missing")]
+    );
+}
+
+#[test]
+fn a_not_met_criterion_with_no_finding_gets_one_from_its_evidence() {
+    let text = "CRITERION C1 not met | line 9 drops the error\nVERDICT fail";
+    let got = parse_ruling(text, 1);
+    assert_eq!(got.faults, [fault(1, None, "line 9 drops the error")]);
+}
+
+#[test]
+fn prose_json_and_blank_text_are_no_verdict() {
+    let prose = "The change looks good to me, I would merge it.";
+    assert_eq!(parse_ruling(prose, 1).verdict, Err(NoVerdict::Unparseable));
+    let json = r#"{"verdict": "pass", "criteria": [{"id": "C1", "state": "met"}]}"#;
+    assert_eq!(parse_ruling(json, 1).verdict, Err(NoVerdict::Unparseable));
+    assert_eq!(parse_ruling("", 1).verdict, Err(NoVerdict::Empty));
+    assert_eq!(parse_ruling(" \n\t\n", 0).verdict, Err(NoVerdict::Empty));
+}
+
+#[test]
+fn an_unseen_line_is_no_verdict_even_beside_a_pass() {
+    let text = "UNSEEN: the staged text was not shown\nCRITERION C1 met | x\nVERDICT pass";
+    assert_eq!(parse_ruling(text, 1).verdict, Err(NoVerdict::Unseen));
+}
+
+#[test]
+fn contradictions_are_no_verdict_never_a_pass() {
+    let pass_with_failure = "CRITERION C1 not met | x\nVERDICT pass";
+    assert_eq!(
+        parse_ruling(pass_with_failure, 1).verdict,
+        Err(NoVerdict::Inconsistent)
+    );
+    let fail_with_none = "CRITERION C1 met | x\nVERDICT fail";
+    assert_eq!(
+        parse_ruling(fail_with_none, 1).verdict,
+        Err(NoVerdict::Inconsistent)
+    );
+    let bare_pass = "VERDICT pass";
+    assert_eq!(
+        parse_ruling(bare_pass, 2).verdict,
+        Err(NoVerdict::Inconsistent)
+    );
+    let two_verdicts = "CRITERION C1 met | x\nVERDICT pass\nVERDICT fail";
+    assert_eq!(
+        parse_ruling(two_verdicts, 1).verdict,
+        Err(NoVerdict::Inconsistent)
+    );
+    let repeated = "CRITERION C1 met | x\nVERDICT pass\nVERDICT pass";
+    assert_eq!(parse_ruling(repeated, 1).verdict, Ok(Verdict::Pass));
+}
+
+#[test]
+fn a_pass_carries_its_unverified_criteria_and_reasons() {
+    let text = "CRITERION C1 met | a\nCRITERION C2 met | b\n\
+                CRITERION C3 unknown | tests not seen\nVERDICT pass";
+    let got = parse_ruling(text, 3);
+    assert_eq!(got.verdict, Ok(Verdict::Pass));
+    assert_eq!(got.unverified(), [(3, "tests not seen")]);
+    assert!(got.faults.is_empty());
+}
+
+#[test]
+fn marks_and_case_do_not_hide_a_line() {
+    let text = "- **criterion c1 MET** | fine\n> `Finding C1 | AT: a.rs:3 | odd`\n\
+                * **Verdict**: Pass";
+    let got = parse_ruling(text, 1);
+    assert_eq!(got.verdict, Ok(Verdict::Pass));
+    assert_eq!(got.criteria, [met("fine")]);
+    assert_eq!(got.faults, [fault(1, Some("a.rs:3"), "odd")]);
+}
+
+#[test]
+fn the_first_line_of_a_criterion_counts() {
+    let text = "CRITERION C1 met | first\nCRITERION C1 not met | second\nVERDICT pass";
+    let got = parse_ruling(text, 1);
+    assert_eq!(got.criteria, [met("first")]);
+    assert_eq!(got.verdict, Ok(Verdict::Pass));
+}
+
+#[test]
+fn bad_shapes_and_unknown_ids_are_counted_never_dropped_silently() {
+    let text = "CRITERION C9 met | x\nCRITERION C1 fine | x\nVERDICT maybe\n\
+                FINDING C7 | at: a.rs | x\nCRITERION C1 met | ok";
+    let got = parse_ruling(text, 1);
+    assert_eq!(got.malformed, 4);
+    assert_eq!(got.verdict, Err(NoVerdict::Unparseable));
+    assert_eq!(got.criteria, [met("ok")]);
+}
+
+#[test]
+fn a_hostile_location_is_one_clean_capped_line() {
+    let text = "CRITERION C1 not met | x\n\
+                FINDING C1 | at: src/a\u{1b}[31m.rs\u{7}\u{202e}:4 | bad\nVERDICT fail";
+    let at = parse_ruling(text, 1).faults[0].at.clone().unwrap();
+    assert!(!at.chars().any(|c| c.is_control() || c == '\u{202e}'));
+    let long = format!(
+        "CRITERION C1 not met | {0}\nFINDING C1 | at: {0} | {0}\nVERDICT fail",
+        "y".repeat(400)
+    );
+    let got = parse_ruling(&long, 1);
+    let (_, evidence) = got.criteria[0].clone().unwrap();
+    assert!(evidence.chars().count() <= 120);
+    assert!(got.faults[0].at.as_ref().unwrap().chars().count() <= 120);
+    assert!(got.faults[0].text.chars().count() <= 120);
+}

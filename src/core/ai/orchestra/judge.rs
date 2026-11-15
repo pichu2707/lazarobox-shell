@@ -4,8 +4,8 @@
 
 use super::changes::Change;
 use super::feature::Spec;
-use super::ledger::{NO_HANDOFF, NONE};
-use super::rdd::one_line;
+use super::ledger::{NO_HANDOFF, NONE, one_line as plain_line};
+use super::rdd::{is_mark, one_line};
 use super::review::Tier;
 use super::steps::{Size, Step, Steps};
 
@@ -173,6 +173,224 @@ pub fn norm(name: &str, bytes: &[u8], total: u64) -> Option<Norm> {
 fn is_import(line: &str) -> bool {
     let file = line.trim().strip_prefix('@');
     file.is_some_and(|file| NORM_FILES.contains(&file))
+}
+
+/// What a judge decided.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Verdict {
+    Pass,
+    Fail,
+}
+
+/// Why a judge's text is no verdict. It never counts as a pass.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NoVerdict {
+    Empty,
+    Unparseable,
+    Inconsistent,
+    Unseen,
+}
+
+/// A criterion as a judge ruled it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum State {
+    Met,
+    NotMet,
+    Unknown,
+}
+
+/// A fault a judge named: where it is and what is wrong.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Fault {
+    /// The criterion's number: `C<n>`.
+    pub criterion: usize,
+    /// `<file>:<line>`, `<file>:<start>-<end>` or a function; `None` is
+    /// shown as `at: unknown`.
+    pub at: Option<String>,
+    pub text: String,
+}
+
+/// What a judge's text held.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Ruling {
+    pub verdict: Result<Verdict, NoVerdict>,
+    /// One per criterion: its state and evidence, `None` with no line.
+    pub criteria: Vec<Option<(State, String)>>,
+    pub faults: Vec<Fault>,
+    /// Lines that looked like a verdict, criterion or finding but did not fit.
+    pub malformed: usize,
+}
+
+impl Ruling {
+    /// The criteria a judge could not verify: number and reason.
+    pub fn unverified(&self) -> Vec<(usize, &str)> {
+        let rows = self.criteria.iter().enumerate();
+        rows.filter_map(|(at, row)| match row {
+            Some((State::Unknown, why)) => Some((at + 1, why.as_str())),
+            _ => None,
+        })
+        .collect()
+    }
+}
+
+/// The longest evidence, location or fault text, in characters.
+pub const EVIDENCE_CHARS: usize = 120;
+
+/// Reads a judge's text (D5). One line each, at the start of a line, the
+/// keyword in any case and marks before it ignored, fields split on ` | `:
+/// `VERDICT pass|fail`, `CRITERION C<n> met|not met|unknown | <evidence>`
+/// and `FINDING C<n> | at: <where> | <what>`. The first line of a criterion
+/// counts; a line that does not fit is counted, a finding with no place keeps
+/// `at: None`. Anything short of a consistent verdict is no verdict.
+pub fn parse_ruling(text: &str, count: usize) -> Ruling {
+    let mut ruling = Ruling {
+        verdict: Err(NoVerdict::Empty),
+        criteria: vec![None; count],
+        faults: Vec::new(),
+        malformed: 0,
+    };
+    let (mut said, mut clash, mut unseen) = (None, false, false);
+    for line in text.lines().map(|line| line.trim_start_matches(is_mark)) {
+        if let Some(rest) = word(line, "verdict") {
+            match answer(rest) {
+                None => ruling.malformed += 1,
+                Some(now) => {
+                    clash |= said.is_some_and(|before| before != now);
+                    said = said.or(Some(now));
+                }
+            }
+        } else if let Some(rest) = word(line, "criterion") {
+            ruling.malformed += usize::from(!criterion(&mut ruling.criteria, rest));
+        } else if let Some(rest) = word(line, "finding") {
+            match fault(rest, count) {
+                Some(found) => ruling.faults.push(found),
+                None => ruling.malformed += 1,
+            }
+        } else if let Some(rest) = word(line, "unseen") {
+            unseen |= rest.trim_start_matches(['*', '_', '`']).starts_with(':');
+        }
+    }
+    for (at, row) in ruling.criteria.iter().enumerate() {
+        let named = ruling.faults.iter().any(|f| f.criterion == at + 1);
+        if let (Some((State::NotMet, why)), false) = (row, named) {
+            let (criterion, text) = (at + 1, why.clone());
+            ruling.faults.push(Fault {
+                criterion,
+                at: None,
+                text,
+            });
+        }
+    }
+    ruling.verdict = if text.trim().is_empty() {
+        Err(NoVerdict::Empty)
+    } else if unseen {
+        Err(NoVerdict::Unseen)
+    } else {
+        match said {
+            None => Err(NoVerdict::Unparseable),
+            Some(_) if clash => Err(NoVerdict::Inconsistent),
+            Some(said) => consistent(said, &ruling.criteria),
+        }
+    };
+    ruling
+}
+
+/// `said` holds only if every criterion has a line, a pass has none not met
+/// and a fail has one.
+fn consistent(said: Verdict, rows: &[Option<(State, String)>]) -> Result<Verdict, NoVerdict> {
+    let failed = rows
+        .iter()
+        .any(|row| matches!(row, Some((State::NotMet, _))));
+    let whole = rows.iter().all(Option::is_some);
+    match (said, failed) {
+        _ if !whole => Err(NoVerdict::Inconsistent),
+        (Verdict::Pass, false) | (Verdict::Fail, true) => Ok(said),
+        _ => Err(NoVerdict::Inconsistent),
+    }
+}
+
+/// What follows `word` at the start of `line`, in any case, if it is the
+/// whole word.
+fn word<'a>(line: &'a str, word: &str) -> Option<&'a str> {
+    let head = line.get(..word.len())?;
+    let rest = &line[word.len()..];
+    (head.eq_ignore_ascii_case(word) && !rest.starts_with(char::is_alphanumeric)).then_some(rest)
+}
+
+fn answer(rest: &str) -> Option<Verdict> {
+    let rest = rest.trim_start_matches(['*', '_', '`', ':', ' ']);
+    let first = rest.split(|c: char| !c.is_alphabetic()).next()?;
+    match first.to_ascii_lowercase().as_str() {
+        "pass" => Some(Verdict::Pass),
+        "fail" => Some(Verdict::Fail),
+        _ => None,
+    }
+}
+
+/// The words of a field head, lowercase and without emphasis marks.
+fn head_words(head: &str) -> Vec<String> {
+    let clean = head.replace(['*', '_', '`', ':'], " ").to_lowercase();
+    clean.split_whitespace().map(str::to_owned).collect()
+}
+
+/// The 0-based criterion `C<n>` names, if it is one of `count`.
+fn criterion_at(word: &str, count: usize) -> Option<usize> {
+    let at = word
+        .strip_prefix('c')?
+        .parse::<usize>()
+        .ok()?
+        .checked_sub(1)?;
+    (at < count).then_some(at)
+}
+
+/// Records `<id> <state> | <evidence>`; false when it does not fit.
+fn criterion(rows: &mut [Option<(State, String)>], rest: &str) -> bool {
+    let (head, evidence) = rest.split_once('|').unwrap_or((rest, ""));
+    let words = head_words(head);
+    let Some((id, state)) = words.split_first() else {
+        return false;
+    };
+    let state = match state.join(" ").as_str() {
+        "met" => State::Met,
+        "not met" => State::NotMet,
+        "unknown" => State::Unknown,
+        _ => return false,
+    };
+    let Some(row) = criterion_at(id, rows.len()).and_then(|at| rows.get_mut(at)) else {
+        return false;
+    };
+    row.get_or_insert((state, tidy(evidence)));
+    true
+}
+
+/// `<id> | at: <where> | <what>`; the place may be missing.
+fn fault(rest: &str, count: usize) -> Option<Fault> {
+    let mut parts = rest.split('|');
+    let id = head_words(parts.next()?).into_iter().next()?;
+    let criterion = criterion_at(&id, count)? + 1;
+    let first = parts.next()?.trim();
+    let (at, first) = match first.get(..3) {
+        Some(tag) if tag.eq_ignore_ascii_case("at:") => (Some(&first[3..]), None),
+        _ => (None, Some(first)),
+    };
+    let text = tidy(&first.into_iter().chain(parts).collect::<Vec<_>>().join("|"));
+    let at = at.map(tidy).filter(|at| !at.is_empty());
+    (!text.is_empty()).then_some(Fault {
+        criterion,
+        at,
+        text,
+    })
+}
+
+/// One clean line of at most [`EVIDENCE_CHARS`] characters.
+fn tidy(text: &str) -> String {
+    let line = plain_line(text);
+    let line = line.trim_matches(['*', '`', ' ']);
+    if line.chars().count() <= EVIDENCE_CHARS {
+        return line.to_owned();
+    }
+    let kept: String = line.chars().take(EVIDENCE_CHARS - 1).collect();
+    format!("{}\u{2026}", kept.trim_end())
 }
 
 #[cfg(test)]

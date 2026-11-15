@@ -152,7 +152,7 @@ pub fn parse_report(lens: Lens, text: &str) -> Report {
 
 /// The marks a reply may put before a keyword: blanks, bullets, quotes,
 /// headings, emphasis and code ticks.
-fn is_mark(c: char) -> bool {
+pub(super) fn is_mark(c: char) -> bool {
     c.is_whitespace() || matches!(c, '-' | '*' | '>' | '#' | '_' | '`')
 }
 
