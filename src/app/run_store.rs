@@ -306,7 +306,7 @@ impl App {
     /// no run yet and this is not the run the pane had before it, it is that
     /// turn's run: the steps taken so far join it, and it gets its row in the
     /// store even with no worker.
-    pub(super) fn adopt_trail(&mut self, id: PaneId, run: RunId) -> Vec<Effect> {
+    pub(super) fn adopt_trail(&mut self, id: PaneId, run: RunId, starts: bool) -> Vec<Effect> {
         let known =
             self.run_keep.runs.contains_key(&run) || self.run_keep.trails.contains_key(&run);
         let Some(turn) = self.run_keep.turns.get_mut(&id) else {
@@ -316,15 +316,22 @@ impl App {
             return Vec::new();
         }
         let held = self.run_keep.pending.entry(id).or_default();
-        // The oldest turn that is waiting for a run takes the first new one.
-        let older = held.first().filter(|h| h.turn != turn.turn).is_some();
-        let early = if older {
-            Some(held.remove(0))
-        } else if turn.run.is_none() && turn.prev != Some(run) {
+        let unnamed = turn.run.is_none() && turn.prev != Some(run);
+        let current = held.iter().position(|h| h.turn == turn.turn);
+        // `starts`: the event shows a run starting (a worker, a handoff, a
+        // gate), which is the latest turn's. An end or a stop may be the end
+        // of an earlier turn's run that no event named before: that turn's
+        // steps are older than the latest one's, so they come first.
+        let early = if starts {
+            if unnamed {
+                turn.run = Some(run);
+            }
+            current.filter(|_| unnamed).map(|at| held.remove(at))
+        } else if let Some(at) = held.iter().position(|h| h.turn != turn.turn) {
+            Some(held.remove(at))
+        } else if let (true, Some(at)) = (unnamed, current) {
             turn.run = Some(run);
-            held.iter()
-                .position(|h| h.turn == turn.turn)
-                .map(|at| held.remove(at))
+            Some(held.remove(at))
         } else {
             None
         };
@@ -496,6 +503,11 @@ impl App {
     /// kept for a later one.
     pub(super) fn forget_goal(&mut self, id: PaneId) {
         self.run_keep.goals.remove(&id);
+        // The steps of a start that failed are no run's.
+        let turn = self.run_keep.turns.get(&id).map(|t| t.turn);
+        if let Some(held) = self.run_keep.pending.get_mut(&id) {
+            held.retain(|h| Some(h.turn) != turn);
+        }
         self.resume_not_started(id);
     }
 

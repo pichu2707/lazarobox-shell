@@ -221,15 +221,17 @@ impl App {
         // The steps of a run that stops, for its report (#771); first, the
         // ones taken before the run was known join it.
         let named = match &event {
-            OrchestraEvent::Worker(row) => Some(row.run),
+            OrchestraEvent::Worker(row) => Some((row.run, true)),
+            OrchestraEvent::Handoff { run, .. } | OrchestraEvent::GateRefused { run, .. } => {
+                Some((*run, true))
+            }
             OrchestraEvent::Stopped { run, .. }
             | OrchestraEvent::Expired { run, .. }
-            | OrchestraEvent::Handoff { run, .. }
-            | OrchestraEvent::GateRefused { run, .. }
-            | OrchestraEvent::Ended { run } => Some(*run),
+            | OrchestraEvent::Ended { run } => Some((*run, false)),
             _ => None,
         };
-        let mut kept = named.map_or_else(Vec::new, |run| self.adopt_trail(id, run));
+        let mut kept =
+            named.map_or_else(Vec::new, |(run, starts)| self.adopt_trail(id, run, starts));
         let stopped = match &event {
             OrchestraEvent::Stopped { .. } | OrchestraEvent::Expired { .. } => true,
             OrchestraEvent::Ended { run } => (self.panes.get(&id))
@@ -238,7 +240,7 @@ impl App {
             _ => false,
         };
         let report = match (stopped, named) {
-            (true, Some(run)) => self.trail_report(run),
+            (true, Some((run, _))) => self.trail_report(run),
             _ => Vec::new(),
         };
         // A run that ended stores nothing more, whether its pane is still a

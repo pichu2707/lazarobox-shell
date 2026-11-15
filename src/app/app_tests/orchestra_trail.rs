@@ -9,7 +9,7 @@ use crate::core::ai::orchestra::RunId;
 use crate::core::ai::{
     chat::{
         Entry,
-        engine::{CallId, Finish, ToolStatus},
+        engine::{CallId, ChatError, Finish, ToolStatus},
         store::StoreReply,
     },
     orchestra::{
@@ -366,5 +366,83 @@ fn a_worker_row_that_adopts_steps_saves_the_trail_and_the_worker() {
             .iter()
             .any(|r| r.trail.as_deref().unwrap_or("").contains("list_panes")),
         "{stored:?}"
+    );
+}
+
+fn done(a: &mut App, turn: u64) {
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+}
+
+fn stored_of(effects: &[Effect], run: u64) -> RunRecord {
+    saves(effects)
+        .into_iter()
+        .rfind(|r| r.id == run)
+        .expect("stored")
+}
+
+// S1: a turn that only looked around is not the run the next goal starts.
+#[test]
+fn a_chat_only_turn_does_not_give_its_steps_or_goal_to_the_next_run() {
+    let (mut a, turn) = running();
+    call(&mut a, turn, 1, "list_panes", "first_turn_step");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    done(&mut a, turn);
+    let second = next_turn_of(&ask(&mut a, "second goal"));
+    call(&mut a, second, 1, "list_panes", "second_turn_step");
+    result(&mut a, second, 1, ToolStatus::Ok, "");
+    let started = a.update(event(row(RunId(8), 1, WorkerStatus::Running)));
+    let b = stored_of(&started, 8);
+    let trail = b.trail.clone().unwrap_or_default();
+    assert!(
+        trail.contains("second_turn_step") && !trail.contains("first_turn_step"),
+        "{b:?}"
+    );
+    assert_eq!(b.goal, "second goal");
+}
+
+// S2: the end of an earlier worker-less run does not name the next turn's run.
+#[test]
+fn the_end_of_an_earlier_run_does_not_take_the_next_turns_steps() {
+    let (mut a, turn) = running();
+    done(&mut a, turn);
+    let second = next_turn_of(&ask(&mut a, "second goal"));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    call(&mut a, second, 1, "list_panes", "second_turn_step");
+    result(&mut a, second, 1, ToolStatus::Ok, "");
+    let started = a.update(event(row(RunId(8), 1, WorkerStatus::Running)));
+    let b = stored_of(&started, 8);
+    assert!(
+        b.trail
+            .as_deref()
+            .unwrap_or("")
+            .contains("second_turn_step"),
+        "{b:?}"
+    );
+}
+
+// S3: a start that failed leaves no steps for the next run.
+#[test]
+fn a_failed_start_leaves_no_steps_for_the_next_run() {
+    let (mut a, turn) = running();
+    call(&mut a, turn, 1, "list_panes", "failed_turn_step");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("boom".into())),
+    ));
+    let second = next_turn_of(&ask(&mut a, "second goal"));
+    call(&mut a, second, 1, "list_panes", "second_turn_step");
+    result(&mut a, second, 1, ToolStatus::Ok, "");
+    let started = a.update(event(row(RunId(8), 1, WorkerStatus::Running)));
+    let b = stored_of(&started, 8);
+    let trail = b.trail.clone().unwrap_or_default();
+    assert!(
+        trail.contains("second_turn_step") && !trail.contains("failed_turn_step"),
+        "{b:?}"
     );
 }
