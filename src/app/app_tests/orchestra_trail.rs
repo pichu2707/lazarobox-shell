@@ -1,0 +1,315 @@
+//! The step trail of a run (#771): the coordinator's tool calls and the
+//! handoffs, saved with the run and shown when it stops.
+
+use super::chat_live::ask;
+use super::chat_live::{chat_id, chat_of};
+use super::orchestra_run::{RUN, event, handed_off, row, running};
+use super::*;
+use crate::core::ai::orchestra::RunId;
+use crate::core::ai::{
+    chat::{
+        Entry,
+        engine::{CallId, Finish, ToolStatus},
+        store::StoreReply,
+    },
+    orchestra::{
+        event::OrchestraEvent,
+        ledger::Verdict,
+        record::{RunPhase, RunRecord},
+        worker::WorkerStatus,
+    },
+};
+
+fn saves(effects: &[Effect]) -> Vec<RunRecord> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Store(StoreCmd::SaveRun { run, .. }) => Some((**run).clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn system(a: &App) -> Vec<String> {
+    (chat_of(a).entries().iter())
+        .filter_map(|e| match e {
+            Entry::System(l) => Some(l.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn call(a: &mut App, turn: u64, id: u64, name: &str, summary: &str) -> Vec<Effect> {
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::ToolCall {
+            id: CallId(id),
+            name: name.into(),
+            summary: summary.into(),
+            approval: None,
+        },
+    ))
+}
+
+fn result(a: &mut App, turn: u64, id: u64, status: ToolStatus, summary: &str) -> Vec<Effect> {
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::ToolResult {
+            id: CallId(id),
+            status,
+            summary: summary.into(),
+        },
+    ))
+}
+
+#[test]
+fn a_stopped_run_shows_the_steps_it_took() {
+    let (mut a, turn) = running();
+    call(&mut a, turn, 1, "spawn", "code worker");
+    result(
+        &mut a,
+        turn,
+        1,
+        ToolStatus::Denied,
+        "step authorize is open",
+    );
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(handed_off(Verdict::OffCourse)));
+    a.update(event(OrchestraEvent::Stopped {
+        run: RUN,
+        reason: "run stopped: it took max_turns (6) orchestrator turns".to_owned(),
+    }));
+    let said = system(&a);
+    let at = said
+        .iter()
+        .position(|l| l == "step trail:")
+        .expect("{said:?}");
+    assert_eq!(
+        said[at + 1],
+        "  spawn code worker -> refused: step authorize is open"
+    );
+    assert!(
+        said[at + 2].starts_with("  handoff worker 2 off_course:"),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn the_trail_is_saved_with_the_run_as_steps_happen() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    let effects = result(&mut a, turn, 1, ToolStatus::Ok, "");
+    let [saved] = saves(&effects).try_into().expect("one save");
+    assert_eq!((saved.id, saved.phase), (RUN.0, RunPhase::Live));
+    assert!(saved.workers.is_empty());
+    assert_eq!(
+        saved.trail.as_deref(),
+        Some("cut 0\nread_file src/lib.rs -> ok")
+    );
+}
+
+#[test]
+fn steps_before_the_first_worker_join_the_first_save() {
+    let (mut a, turn) = running();
+    call(&mut a, turn, 1, "list_panes", "");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    let first = a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    let [saved] = saves(&first).try_into().unwrap();
+    assert_eq!(saved.trail.as_deref(), Some("cut 0\nlist_panes -> ok"));
+}
+
+#[test]
+fn a_cancelled_run_shows_its_trail_and_a_clean_end_does_not() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "wait", "worker 1");
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert!(!system(&a).iter().any(|l| l == "step trail:"));
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "wait", "worker 1");
+    a.update(super::chat_notes::ctrl('c'));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let said = system(&a);
+    assert!(
+        said.contains(&"  wait worker 1 -> no result".to_owned()),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_failed_save_says_the_trail_may_be_missing() {
+    let (mut a, _) = running();
+    a.update(AppEvent::Store(StoreReply::RunsFailed {
+        pane: chat_id(),
+        saving: true,
+    }));
+    assert!(
+        system(&a)
+            .iter()
+            .any(|l| l.contains("step trail") && l.contains("could not save")),
+        "{:?}",
+        system(&a)
+    );
+}
+
+#[test]
+fn an_interrupted_run_names_its_last_steps_after_a_restart() {
+    let (mut a, _) = running();
+    let mut run = RunRecord {
+        id: 9,
+        goal: "goal".into(),
+        phase: RunPhase::Interrupted,
+        workers: vec![],
+        folder: None,
+        supersedes: None,
+        trail: Some("cut 0\nexec cargo test -> error: exit 101".into()),
+    };
+    run.folder = chat_of(&a).origin_cwd().map(Into::into);
+    a.update(AppEvent::Store(StoreReply::RunsRecovered {
+        pane: chat_id(),
+        runs: vec![run],
+    }));
+    assert!(
+        system(&a)
+            .iter()
+            .any(|l| l == "  exec cargo test -> error: exit 101"),
+        "{:?}",
+        system(&a)
+    );
+}
+
+fn trails(effects: &[Effect]) -> Vec<(u64, String)> {
+    saves(effects)
+        .into_iter()
+        .filter_map(|r| Some((r.id, r.trail?)))
+        .collect()
+}
+
+// A run with no worker, stopped at the cap, is still stored with its trail.
+#[test]
+fn a_run_with_no_worker_is_stored_with_its_trail_when_it_stops() {
+    let (mut a, turn) = running();
+    call(&mut a, turn, 1, "wait", "worker 9");
+    result(&mut a, turn, 1, ToolStatus::Error, "no such worker");
+    let mut all = a.update(event(OrchestraEvent::Stopped {
+        run: RUN,
+        reason: "run stopped: it took max_turns (6) orchestrator turns".to_owned(),
+    }));
+    all.extend(a.update(event(OrchestraEvent::Ended { run: RUN })));
+    let stored = saves(&all);
+    let last = stored.last().expect("a save");
+    assert_eq!((last.id, last.phase), (RUN.0, RunPhase::Ended));
+    assert!(
+        last.trail
+            .as_deref()
+            .unwrap_or("")
+            .contains("wait worker 9 -> error: no such worker"),
+        "{last:?}"
+    );
+    assert!(
+        system(&a).iter().any(|l| l == "step trail:"),
+        "{:?}",
+        system(&a)
+    );
+}
+
+// Another run's handoff never lands in this run's trail, nor the reverse.
+#[test]
+fn a_handoff_of_another_run_stays_out_of_this_runs_trail() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "wait", "worker 1");
+    let OrchestraEvent::Handoff { mut handoff, .. } = handed_off(Verdict::OnCourse) else {
+        unreachable!()
+    };
+    handoff.run = RunId(8);
+    let other = a.update(event(OrchestraEvent::Handoff {
+        run: RunId(8),
+        handoff,
+    }));
+    let after = result(&mut a, turn, 1, ToolStatus::Ok, "");
+    let of_other = trails(&other);
+    assert!(
+        of_other
+            .iter()
+            .all(|(id, t)| *id == 8 && !t.contains("wait")),
+        "{of_other:?}"
+    );
+    let mine = trails(&after);
+    assert!(
+        mine.iter()
+            .all(|(id, t)| *id == RUN.0 && !t.contains("handoff")),
+        "{mine:?}"
+    );
+    assert!(
+        mine.iter().any(|(_, t)| t.contains("wait worker 1 -> ok")),
+        "{mine:?}"
+    );
+}
+
+fn next_turn_of(effects: &[Effect]) -> u64 {
+    effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("an orchestrator turn")
+}
+
+// The new goal's steps are its own: never the previous run's, never lost.
+#[test]
+fn a_replacing_goal_keeps_its_steps_apart_from_the_run_it_replaces() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "wait", "a_step");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let second = next_turn_of(&ask(&mut a, "second goal"));
+    call(&mut a, second, 1, "list_panes", "b_step");
+    let mid = result(&mut a, second, 1, ToolStatus::Ok, "");
+    let b = RunId(8);
+    let mut all = mid;
+    all.extend(a.update(event(row(b, 1, WorkerStatus::Running))));
+    all.extend(a.update(event(OrchestraEvent::Ended { run: RUN })));
+    let stored = saves(&all);
+    for r in stored.iter().filter(|r| r.id == RUN.0) {
+        let trail = r.trail.clone().unwrap_or_default();
+        assert!(!trail.contains("b_step"), "{r:?}");
+        assert_eq!(r.goal, "plan it", "{r:?}");
+    }
+    let mine = stored.iter().rfind(|r| r.id == b.0).expect("b is stored");
+    assert!(
+        mine.trail.as_deref().unwrap_or("").contains("b_step"),
+        "{mine:?}"
+    );
+    assert_eq!(mine.goal, "second goal");
+}
+
+#[test]
+fn steps_of_a_run_that_never_started_are_not_dropped_silently() {
+    let (mut a, turn) = running();
+    call(&mut a, turn, 1, "wait", "x");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    ask(&mut a, "another goal");
+    assert!(
+        system(&a)
+            .iter()
+            .any(|l| l == "step trail of the unstarted run discarded (1 step)"),
+        "{:?}",
+        system(&a)
+    );
+}

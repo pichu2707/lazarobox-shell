@@ -3431,6 +3431,13 @@ impl App {
                     crate::core::ai::chat::engine::ToolStatus::Error
                 ))
             );
+        // A tool step of the live turn goes to the run's trail (#771).
+        let step = (live
+            && matches!(
+                event,
+                StreamEvent::ToolCall { .. } | StreamEvent::ToolResult { .. }
+            ))
+        .then(|| event.clone());
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
         if finished {
@@ -3457,6 +3464,9 @@ impl App {
         self.dirty |= live;
         // A finished answer is saved (its status says how it ended).
         let mut effects = self.store_effects(id);
+        if let Some(step) = step {
+            effects.extend(self.keep_step(id, turn, &step));
+        }
         if follow == Follow::CancelEngine {
             // The state ended the turn itself (answer cap): stop the engine.
             effects.extend(self.cancel_chat(id));
@@ -9350,6 +9360,8 @@ mod app_tests {
     mod orchestra_store;
     /// The ORCH mode of a chat pane and its Ctrl+O toggle (agent-orchestrator).
     mod orchestra_toggle;
+    /// The step trail a stopped run keeps (#771).
+    mod orchestra_trail;
     /// The undelegated-reply notice and when it is shown.
     mod orchestra_undelegated;
     /// The full-pane transcript of a worker (S9).

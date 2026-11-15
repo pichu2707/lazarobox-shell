@@ -80,6 +80,9 @@ pub struct RunRecord {
     /// The interrupted run this one resumes: the store closes that row when
     /// this one is saved (only if it is still interrupted).
     pub supersedes: Option<u64>,
+    /// The run's step trail as [`super::trail::Trail::to_text`] writes it;
+    /// `None` on a save leaves the stored one as it is.
+    pub trail: Option<String>,
 }
 
 impl RunRecord {

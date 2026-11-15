@@ -32,6 +32,7 @@ fn run(id: u64, phase: RunPhase, workers: Vec<WorkerRecord>) -> RunRecord {
         workers,
         folder: None,
         supersedes: None,
+        trail: None,
     }
 }
 
@@ -501,4 +502,67 @@ fn an_interrupted_run_older_than_thirty_days_is_ended_not_named() {
     let late = recover_runs(&mut conn, owner(55, 5), |_| false, 1_000 + 31 * day).unwrap();
     assert!(late.is_empty(), "31 days");
     assert_eq!(phase_of_run(&conn, 1), "ended");
+}
+
+fn stored_trail(conn: &Connection, id: i64) -> Option<String> {
+    conn.query_row("SELECT trail FROM runs WHERE id = ?1", [id], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn a_trail_is_stored_with_the_run_and_a_save_without_one_keeps_it() {
+    let dir = TempDir::new().unwrap();
+    let mut conn = open_as(&db(&dir), me()).unwrap();
+    let mut first = run(10, RunPhase::Live, vec![worker(1, "running")]);
+    first.trail = Some("cut 0\nspawn code -> ok".into());
+    save_run(&mut conn, &first, owner(1, 1), 100).unwrap();
+    let mut later = run(10, RunPhase::Live, vec![worker(1, "done")]);
+    later.trail = None;
+    save_run(&mut conn, &later, owner(1, 1), 200).unwrap();
+    assert_eq!(
+        stored_trail(&conn, 10).as_deref(),
+        Some("cut 0\nspawn code -> ok")
+    );
+    let mut newer = run(10, RunPhase::Ended, vec![]);
+    newer.trail = Some("cut 0\nspawn code -> ok\nfinish -> ok".into());
+    save_run(&mut conn, &newer, owner(1, 1), 300).unwrap();
+    assert!(stored_trail(&conn, 10).unwrap().ends_with("finish -> ok"));
+}
+
+#[test]
+fn an_interrupted_run_comes_back_with_its_trail() {
+    let dir = TempDir::new().unwrap();
+    let mut conn = open_as(&db(&dir), me()).unwrap();
+    let mut live = run(7, RunPhase::Live, vec![worker(1, "running")]);
+    live.trail = Some("cut 2\nexec cargo test -> error: exit 101".into());
+    save_run(&mut conn, &live, owner(DEAD, 5), 100).unwrap();
+    save_run(
+        &mut conn,
+        &run(8, RunPhase::Live, vec![]),
+        owner(DEAD, 5),
+        100,
+    )
+    .unwrap();
+    let found = recover_runs(&mut conn, owner(2, 9), |_| false, 200).unwrap();
+    let by_id = |id| found.iter().find(|r| r.id == id).unwrap();
+    assert_eq!(
+        by_id(7).trail.as_deref(),
+        Some("cut 2\nexec cargo test -> error: exit 101")
+    );
+    assert_eq!(by_id(8).trail, None);
+}
+
+#[test]
+fn a_database_whose_runs_lack_the_trail_column_gains_it_and_keeps_its_rows() {
+    let dir = TempDir::new().unwrap();
+    let path = db(&dir);
+    {
+        let mut conn = open_as(&path, me()).unwrap();
+        save_run(&mut conn, &run(3, RunPhase::Ended, vec![]), owner(1, 1), 1).unwrap();
+        conn.execute_batch("ALTER TABLE runs DROP COLUMN trail")
+            .unwrap();
+    }
+    let conn = open_as(&path, me()).unwrap();
+    assert_eq!(count(&conn, "runs"), 1);
+    assert_eq!(stored_trail(&conn, 3), None);
 }
