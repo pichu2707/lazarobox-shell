@@ -18,6 +18,7 @@ fn record(goal: &str, workers: Vec<WorkerRecord>) -> RunRecord {
         workers,
         folder: None,
         supersedes: None,
+        trail: None,
     }
 }
 

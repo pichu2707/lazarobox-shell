@@ -75,6 +75,7 @@ impl App {
                 workers: Vec::new(),
                 folder: None,
                 supersedes: None,
+                trail: None,
             }),
         })
     }

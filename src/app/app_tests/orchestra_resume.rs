@@ -49,6 +49,7 @@ fn elsewhere(id: u64, goal: &str, folder: Option<&str>) -> RunRecord {
         ],
         folder: folder.map(PathBuf::from),
         supersedes: None,
+        trail: None,
     }
 }
 

@@ -218,12 +218,36 @@ impl App {
             }
             return Vec::new();
         }
+        // The steps of a run that stops, for its report (#771); first, the
+        // ones taken before the run was known join it.
+        let named = match &event {
+            OrchestraEvent::Worker(row) => Some((row.run, true)),
+            OrchestraEvent::Handoff { run, .. } | OrchestraEvent::GateRefused { run, .. } => {
+                Some((*run, true))
+            }
+            OrchestraEvent::Stopped { run, .. }
+            | OrchestraEvent::Expired { run, .. }
+            | OrchestraEvent::Ended { run } => Some((*run, false)),
+            _ => None,
+        };
+        let mut kept =
+            named.map_or_else(Vec::new, |(run, starts)| self.adopt_trail(id, run, starts));
+        let stopped = match &event {
+            OrchestraEvent::Stopped { .. } | OrchestraEvent::Expired { .. } => true,
+            OrchestraEvent::Ended { run } => (self.panes.get(&id))
+                .and_then(PaneState::chat_state)
+                .is_some_and(|chat| chat.run_cancelled(*run)),
+            _ => false,
+        };
+        let report = match (stopped, named) {
+            (true, Some((run, _))) => self.trail_report(run),
+            _ => Vec::new(),
+        };
         // A run that ended stores nothing more, whether its pane is still a
         // chat or not.
-        let mut kept = Vec::new();
         if let OrchestraEvent::Ended { run } = &event {
             self.end_store(*run);
-            kept = self.keep_end(*run);
+            kept.extend(self.keep_end(*run));
         }
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             // The spend happened: with history on it is stored unlinked.
@@ -253,6 +277,8 @@ impl App {
         let mut ended = None;
         // What the run stores in engram once the pane is not borrowed.
         let mut store = None;
+        // A handoff's unit, verdict and reason, for the run's trail.
+        let mut trail = None;
         // A worker turn's usage waits in the pane for the usage store.
         let mut usage_saved = false;
         match event {
@@ -298,7 +324,7 @@ impl App {
                 });
                 row.inherited = unassigned && !row.overridden;
                 chat.worker_row(row.clone());
-                kept = self.keep_worker(id, &row);
+                kept.extend(self.keep_worker(id, &row));
             }
             OrchestraEvent::Halted {
                 run,
@@ -354,6 +380,7 @@ impl App {
                     chat.push_system_line(format!(
                         "run stopped: it reached run_timeout_mins ({mins}); running workers were cancelled"
                     ));
+                    report.into_iter().for_each(|l| chat.push_system_line(l));
                 }
             }
             // The turn cap, or a ledger that cannot be wrapped (S4): said, in
@@ -361,6 +388,7 @@ impl App {
             OrchestraEvent::Stopped { run, reason } => {
                 if chat.orch_run().is_none_or(|current| current == run) {
                     chat.push_system_line(reason);
+                    report.into_iter().for_each(|l| chat.push_system_line(l));
                     // The run is ending: no key is offered for it.
                     chat.drop_gate_offer();
                 }
@@ -456,6 +484,16 @@ impl App {
             // when engram cannot be used.
             OrchestraEvent::Handoff { run, handoff } => {
                 store = Some((run, Item::of_handoff(&handoff)));
+                trail = Some((
+                    run,
+                    match handoff.unit {
+                        Unit::Worker(w) => format!("worker {}", w.0),
+                        Unit::Step(step) => format!("step {}", step.label()),
+                        Unit::Receipt(w, n) => format!("receipt {n} of worker {}", w.0),
+                    },
+                    handoff.verdict.label(),
+                    handoff.reason.clone(),
+                ));
                 if matches!(handoff.verdict, Verdict::OffCourse | Verdict::Blocked) {
                     let (subject, same) = match handoff.unit {
                         Unit::Worker(worker) => {
@@ -507,6 +545,9 @@ impl App {
             // one started.
             OrchestraEvent::Ended { run } => {
                 ended = Some(run);
+                if chat.run_cancelled(run) {
+                    report.into_iter().for_each(|l| chat.push_system_line(l));
+                }
                 chat.end_orch_run(run);
                 if chat.waiting_run() == Some(run) {
                     chat.set_waiting_run(None);
@@ -536,6 +577,9 @@ impl App {
         }
         if let Some((run, item)) = store {
             effects.extend(self.store_item(id, run, item));
+        }
+        if let Some((run, who, verdict, reason)) = trail {
+            effects.extend(self.keep_handoff(id, run, (&who, verdict, &reason)));
         }
         effects
     }
@@ -1289,6 +1333,7 @@ impl App {
                     .unwrap_or_default()
             }),
         };
+        self.begin_turn(id, turn, attach);
         if attach.is_none() {
             self.keep_goal(id, &goal);
         }

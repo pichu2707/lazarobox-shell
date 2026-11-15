@@ -12,12 +12,20 @@ Slice A, `feat/run-trail-core` (pure, nothing wired):
 
 Slice B, `feat/run-step-trail` (stacked on A):
 
-- [ ] `runs.trail` nullable column, save with COALESCE, read on recovery.
-- [ ] Trail keyed by run id; steps of a fresh goal's turn wait until an event
+- [x] `runs.trail` nullable column, save with COALESCE, read on recovery.
+- [x] Trail keyed by run id; steps of a fresh goal's turn wait until an event
       names its run (not the run the pane had before); a run with no worker
       still gets its store row; only the coordinator's turn feeds the trail.
-- [ ] Show the trail on stop (turn cap, timeout, cancel) and on interrupted runs.
-- [ ] Failed run save says the step trail may be missing; steps of a run that
+- [x] Steps of a turn that has not named its run are held per turn, so a
+      coordinator-only run ending after the next goal keeps its steps and goal.
+      Only an end or stop may name an earlier turn's run (the run's end can
+      arrive after the next goal: `Done` is sent before `turn_ended`, and
+      swapping them would break the Undelegated/Waits notices that wait for
+      an idle pane). Limits: a worker-less run that ends after the next turn
+      already took steps of its own is misfiled, and held steps of a turn that
+      never made a run are dropped, with a notice, two goals later.
+- [x] Show the trail on stop (turn cap, timeout, cancel) and on interrupted runs.
+- [x] Failed run save says the step trail may be missing; steps of a run that
       never started are not dropped silently.
 
 Later:

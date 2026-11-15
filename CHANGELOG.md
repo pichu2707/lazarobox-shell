@@ -10,6 +10,18 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **A stopped run now keeps a trail of its steps.** Each tool call of the
+  coordinator (name, one-line argument summary, `ok`, refused with its reason
+  or error) and each handoff (step or worker, verdict, reason) is stored with
+  the run in the chat database, so it survives a restart. It is listed under
+  the stop report when a run hits `max_turns`, `run_timeout_mins` or is
+  cancelled, and under an interrupted run named after a restart. The trail is
+  capped at 60 steps and says how many earlier ones are not shown; its lines
+  are redacted like the transcript. A run that could not be saved now says the
+  trail may be missing. Older builds ignore the new column.
+
 ## [1.28.2] - 2026-11-15
 
 ### Fixed

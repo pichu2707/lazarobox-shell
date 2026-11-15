@@ -218,7 +218,11 @@ fn memory_off_is_turned_on_for_the_run_only() {
     );
     assert!(saves(&first).is_empty(), "waiting for the project");
     let second = a.update(handoff_of(2));
-    assert!(second.is_empty(), "the project is asked for once");
+    // Only the run's own store row (its trail) may come out.
+    assert!(
+        second.iter().all(|e| matches!(e, Effect::Store(_))),
+        "the project is asked for once"
+    );
     let go = a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
         epoch: RUN_EPOCH,

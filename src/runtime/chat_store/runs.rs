@@ -62,7 +62,7 @@ pub(super) fn ensure(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Err
     tx.execute_batch(SCHEMA_RUNS)?;
     // Columns added after the table first shipped: nullable, so nothing else
     // changes and an older build ignores them.
-    for (column, kind) in [("token", "INTEGER"), ("folder", "TEXT")] {
+    for (column, kind) in [("token", "INTEGER"), ("folder", "TEXT"), ("trail", "TEXT")] {
         let present: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runs') WHERE name = ?1)",
             [column],
@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS runs (
     owner      INTEGER NOT NULL,
     token      INTEGER,
     folder     TEXT,
+    trail      TEXT,
     goal       TEXT NOT NULL,
     phase      TEXT NOT NULL,
     created_at INTEGER NOT NULL,
@@ -119,9 +120,10 @@ pub(crate) fn save_run(
     let id = id_of(run.id)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let written = tx.execute(
-        "INSERT INTO runs(id, owner, token, goal, phase, created_at, updated_at, folder)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
-         ON CONFLICT(id) DO UPDATE SET goal = ?4, phase = ?5, updated_at = ?6
+        "INSERT INTO runs(id, owner, token, goal, phase, created_at, updated_at, folder, trail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8)
+         ON CONFLICT(id) DO UPDATE SET goal = ?4, phase = ?5, updated_at = ?6,
+             trail = COALESCE(?8, runs.trail)
          WHERE runs.phase = 'live' OR excluded.phase = 'ended'",
         (
             id,
@@ -131,6 +133,7 @@ pub(crate) fn save_run(
             run.phase.id(),
             now,
             run.folder.as_deref().and_then(Path::to_str),
+            &run.trail,
         ),
     )?;
     // The first save of a resumed run closes the run it resumes, if nobody
@@ -191,7 +194,7 @@ pub(crate) fn recover_runs(
     let mut found = Vec::new();
     {
         let mut live = tx.prepare(
-            "SELECT id, owner, token, goal, phase, folder FROM runs
+            "SELECT id, owner, token, goal, phase, folder, trail FROM runs
              WHERE phase IN ('live', 'interrupted') ORDER BY id DESC",
         )?;
         let rows = live.query_map([], |r| {
@@ -202,20 +205,21 @@ pub(crate) fn recover_runs(
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
                 r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?,
             ))
         })?;
         for row in rows {
-            let (id, pid, token, goal, phase, folder) = row?;
+            let (id, pid, token, goal, phase, folder, trail) = row?;
             // A run already interrupted and not yet resumed or discarded is
             // named again; a live one only when its owner is gone.
             let gone = token != Some(me.token) && (pid == me.pid || !alive(pid));
             if phase == "interrupted" || gone {
-                found.push((id, goal, folder));
+                found.push((id, goal, folder, trail));
             }
         }
     }
     let mut runs = Vec::new();
-    for (id, goal, folder) in found {
+    for (id, goal, folder, trail) in found {
         tx.execute(
             "UPDATE runs SET phase = 'interrupted', updated_at = ?2
              WHERE id = ?1 AND phase = 'live'",
@@ -243,6 +247,7 @@ pub(crate) fn recover_runs(
             workers,
             folder: folder.map(PathBuf::from),
             supersedes: None,
+            trail,
         });
     }
     tx.commit()?;

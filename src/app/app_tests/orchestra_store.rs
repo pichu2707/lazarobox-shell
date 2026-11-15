@@ -55,6 +55,7 @@ fn interrupted(id: u64, running: usize) -> RunRecord {
             .collect(),
         folder: Some("/launch".into()),
         supersedes: None,
+        trail: None,
     }
 }
 
@@ -157,7 +158,9 @@ fn a_run_store_failure_is_said_once_per_kind() {
     let said = system(&a);
     let count = |text: &str| said.iter().filter(|l| l.as_str() == text).count();
     assert_eq!(
-        count("could not save the run: it will not be listed after a restart"),
+        count(
+            "could not save the run: it will not be listed after a restart, and its step trail may be missing"
+        ),
         1
     );
     assert_eq!(count("could not read the stored runs"), 1);
