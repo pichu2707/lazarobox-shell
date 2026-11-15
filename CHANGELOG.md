@@ -13,7 +13,8 @@ baseline.
 ### Added
 
 - **Per-server approval level for MCP servers.** Each `[[ai.mcp.servers]]`
-  entry takes `approval = "ask" | "reads" | "all"` (set it in `config.toml`).
+  entry takes `approval = "ask" | "reads" | "all"` (in `config.toml`, or with
+  `a` in the Connectors area).
   `ask` (the default, also for a missing or invalid value, which shows a
   notice) asks `y` on every call. `reads` runs without asking only the tools
   the catalog classes as read, and only when the declared name is a catalog
