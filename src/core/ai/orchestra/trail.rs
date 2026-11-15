@@ -19,6 +19,9 @@ pub const LINE_BYTES: usize = 180;
 const CALL_BYTES: usize = 110;
 /// The most bytes of an outcome's detail.
 const DETAIL_BYTES: usize = 50;
+/// The most bytes of one text that are read at all (a defence against
+/// scanning a huge argument).
+const INPUT_BYTES: usize = 1024;
 /// The most steps a stop report shows.
 pub const SHOWN: usize = 12;
 /// The first line of the stored text: how many steps were dropped.
@@ -177,9 +180,18 @@ impl Trail {
     }
 }
 
+/// The first [`INPUT_BYTES`] of `text`, before any scan of it.
+fn cap(text: &str) -> &str {
+    let mut end = text.len().min(INPUT_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 /// `text` on one clean line, tokens redacted.
 fn flat(text: &str) -> String {
-    let text = redact_tokens(&clean(text));
+    let text = redact_tokens(&clean(cap(text)));
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

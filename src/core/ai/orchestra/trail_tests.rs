@@ -173,3 +173,13 @@ fn absorbing_early_steps_puts_them_first_and_keeps_the_cap() {
     assert_eq!(full.lines().len(), MAX_STEPS);
     assert_eq!(full.cut(), 1);
 }
+
+#[test]
+fn a_huge_input_is_cut_before_it_is_scrubbed() {
+    let huge = "a=1&".repeat(1_000_000);
+    let mut trail = Trail::default();
+    call(&mut trail, 1, "run_command", &huge);
+    trail.result(CallId(1), ToolStatus::Error, &huge);
+    trail.handoff("worker 1", "blocked", &huge);
+    assert!(trail.lines().iter().all(|l| l.len() <= LINE_BYTES));
+}

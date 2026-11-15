@@ -127,3 +127,52 @@ fn the_mysql_flag_ends_with_its_command() {
     assert_eq!(scrub("mysql db; ls -pa"), "mysql db; ls -pa");
     assert_eq!(scrub("mysql -p db"), "mysql -p db");
 }
+
+#[test]
+fn an_unbalanced_quote_never_duplicates_or_leaks_text() {
+    // A clipped command: an odd quote count, no secret in it.
+    let clipped = "exec git commit -m \"fix: handle the case where";
+    assert_eq!(scrub(clipped), clipped);
+    assert_eq!(scrub("a \" b \" c \""), "a \" b \" c \"");
+    // A stray quote before JSON does not flip name and value.
+    assert_eq!(
+        scrub("5\" disk {\"password\":\"abc\"}"),
+        "5\" disk {\"password\":\"***\"}"
+    );
+    assert_eq!(
+        scrub("say \"hi {\"token\": \"t\"}"),
+        "say \"hi {\"token\": \"***\"}"
+    );
+}
+
+#[test]
+fn a_json_array_value_is_masked_whole() {
+    assert_eq!(
+        scrub(r#"{"token": ["abc","def"], "n": 1}"#),
+        r#"{"token": ***, "n": 1}"#
+    );
+}
+
+#[test]
+fn text_without_a_secret_comes_out_as_it_went_in() {
+    for text in [
+        "",
+        "\"",
+        "a:b \"c\": d",
+        "{\"name\": \"bob\", \"n\": [1, 2]}",
+        "url http://host:80/x?a=b&c=d",
+        "it's a \"quote",
+    ] {
+        assert_eq!(scrub(text), text);
+    }
+}
+
+#[test]
+fn a_flag_that_names_no_value_does_not_take_the_next_word() {
+    assert_eq!(
+        scrub("docker login --password-stdin host"),
+        "docker login --password-stdin host"
+    );
+    assert_eq!(scrub("cmd --no-auth host"), "cmd --no-auth host");
+    assert_eq!(scrub("cmd --key-file a.pem"), "cmd --key-file a.pem");
+}

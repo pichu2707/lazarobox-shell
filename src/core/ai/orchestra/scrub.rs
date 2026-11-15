@@ -5,7 +5,10 @@
 //! `mysql -pVALUE`; a quoted value is one unit. A name is secret when one of
 //! its segments (split on `_`, `-`, `.`) is a known word, so `api_key` is and
 //! `keyboard` is not. A heuristic over free text, not a guarantee: a secret
-//! under an ordinary name passes. The trail also goes through `redact_tokens`.
+//! under an ordinary name passes, and so do the shapes it does not read:
+//! text after an unbalanced apostrophe (`don't --password x`, the rest is
+//! one quoted word), an attached `-uadmin:pw`, `password= value` split over
+//! two words. The trail also goes through `redact_tokens`.
 
 /// What replaces a value.
 const MASK: &str = "***";
@@ -142,11 +145,19 @@ impl State {
             self.mask = scheme;
             return self.push(format!("{name}:{MASK}"));
         }
-        if word.starts_with('-') && !word.contains('=') && sensitive(word) {
+        if word.starts_with('-') && !word.contains('=') && sensitive(word) && takes_value(word) {
             self.mask = true;
         }
         self.push(pairs(word))
     }
+}
+
+/// Whether a secret-named flag takes the secret as its next word: not
+/// `--password-stdin`, `--no-auth` or `--key-file`.
+fn takes_value(flag: &str) -> bool {
+    let flag = flag.to_lowercase();
+    !(flag.split(|c: char| !c.is_alphanumeric()))
+        .any(|part| ["stdin", "no", "file"].contains(&part))
 }
 
 /// A word whose `name=value` segments (split on `?` and `&`) are masked; a
@@ -178,44 +189,49 @@ fn pairs(word: &str) -> String {
 }
 
 /// `text` with the values of JSON members named like a secret masked: a
-/// string value inside its quotes, any other value up to its end.
+/// string value inside its quotes, any other value (an array whole) up to its
+/// end. It reads from each `:` back to its key, so no quote count matters.
 fn json(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(open) = rest.find('"') {
-        let (head, after) = rest.split_at(open + 1);
-        out.push_str(head);
-        let Some(close) = after.find('"') else { break };
-        let (name, tail) = after.split_at(close + 1);
-        out.push_str(name);
-        rest = tail;
-        let colon = tail.trim_start().strip_prefix(':');
-        let Some(value) = colon.filter(|_| sensitive(&name[..close])) else {
+    let mut done = 0;
+    for (colon, _) in text.match_indices(':') {
+        let key = text[..colon].trim_end();
+        let Some(key) = key.strip_suffix('"') else {
             continue;
         };
-        let gap = tail.len() - value.len();
-        out.push_str(&tail[..gap]);
+        let name = key.rsplit_once('"').map_or("", |(_, name)| name);
+        if colon < done || !sensitive(name) || !key.contains('"') {
+            continue;
+        }
+        let value = &text[colon + 1..];
         let lead = value.len() - value.trim_start().len();
-        out.push_str(&value[..lead]);
-        let value = &value[lead..];
-        let end = if let Some(string) = value.strip_prefix('"') {
-            // The closing quote, past escaped ones.
-            let mut skip = false;
-            let at = string.char_indices().find(|(_, c)| {
-                let end = *c == '"' && !skip;
-                skip = *c == '\\' && !skip;
-                end
-            });
-            at.map_or(value.len(), |(i, _)| i + 2)
-        } else {
-            value.find([',', '}', ']', ' ']).unwrap_or(value.len())
-        };
-        let quote = if value.starts_with('"') { "\"" } else { "" };
+        let start = colon + 1 + lead;
+        let (len, quote) = value_len(&text[start..]);
+        out.push_str(&text[done..start]);
         out.push_str(&format!("{quote}{MASK}{quote}"));
-        rest = &value[end..];
+        done = start + len;
     }
-    out.push_str(rest);
+    out.push_str(&text[done..]);
     out
+}
+
+/// The bytes a JSON value takes at the start of `value`, and the quote that
+/// wraps it in the output: a string with its quotes (to the end when it is
+/// cut), an array whole, anything else up to a separator.
+fn value_len(value: &str) -> (usize, &'static str) {
+    if let Some(string) = value.strip_prefix('"') {
+        let mut skip = false;
+        let end = string.char_indices().find(|(_, c)| {
+            let end = *c == '"' && !skip;
+            skip = *c == '\\' && !skip;
+            end
+        });
+        return (end.map_or(value.len(), |(i, _)| i + 2), "\"");
+    }
+    if value.starts_with('[') {
+        return (value.find(']').map_or(value.len(), |i| i + 1), "");
+    }
+    (value.find([',', '}', ']', ' ']).unwrap_or(value.len()), "")
 }
 
 #[cfg(test)]
