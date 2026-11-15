@@ -9,6 +9,7 @@ pub mod commands;
 pub mod errors;
 pub mod event;
 pub mod feature;
+pub mod judge;
 pub mod ledger;
 pub mod limit;
 pub mod overrides;
