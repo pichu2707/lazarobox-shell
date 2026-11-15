@@ -58,8 +58,8 @@ A worker MUST be started from a `WorkerSpec` holding: kind, prompt, the engine a
 
 Existing scenarios stay unchanged. Added scenarios:
 
-#### Scenario: Judge worker runs on the judge assignment [S3, auto]
-- GIVEN `judge` is `claude` / `opus` and `review` is `codex` / `default`
+#### Scenario: Judge workers run on the judge-a and judge-b assignments [S3, auto]
+- GIVEN `judge-a` is `claude` / `opus`, `judge-b` is unassigned and `review` is `codex` / `default`
 - WHEN the review spawns the first judge
 - THEN the fake runner receives a request for claude with model `opus`, and the second judge of a pair receives codex with model `default`
 

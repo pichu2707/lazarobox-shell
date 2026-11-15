@@ -32,7 +32,7 @@ The gap today (exploration, engram `sdd/acceptance-judges/explore`):
 - **J1 Standard.** Three sources: the criteria from the resolve/track handoffs and the feature document (Large goals only; Small goals have only the resolve/classify reasons), the project's tests green, and the repo norms (`AGENTS.md`, `CLAUDE.md`).
 - **J2 Proportional to scale, from data that exists.** The level is computed from classify's `Size`, the staged change (file count and bytes, `Change`/`StagedDiff`) and the S7b `Tier`. No function-level promise (no function count exists). Small → one judge. Large (`Size` Large, or more than one file, or `Tier` ≥ `medium`) → two independent judges that must agree. Read-only goals → none.
 - **J3 May correct, user always informed.** Every verdict, failed criterion and correction is a visible transcript line. Each finding names WHERE (file:line or function, a parsed `at:` field). Each correction names WHAT it changes (file and range, or function). Disagreement or exhausted rounds → a verdict line with what is missing. Never silent.
-- **J4 Model from the menu.** A new `judge` row in the Models tab (new `Task::Judge`); unassigned uses the default the menu already shows (`(default)`).
+- **J4 Model from the menu.** Two new rows in the Models tab, `judge-a` and `judge-b` (new `Task::JudgeA` and `Task::JudgeB`), inside the menu section `ODD + RDD roles` (#765); an unassigned row shows `(default)`. Amended by J17: it was a single `judge` row (`Task::Judge`).
 - **J5 One review system.** A judge mode INSIDE the existing S7b review at `propose_batch`, reusing the diff, correction worker, `Guard`, `MAX_CORRECTIONS`, receipt and reviewer notices. The gate widens from "high or cheap author" to "any writer except read-only goals".
 - **J6 Tests evidence in two moments.** Pre-apply, judges check the diff against criteria and norms. Before the run closes, an evidence check reads the post-apply test commands the run already records (Commands, `attested()`, user-approved `run_command`). No test run or a failing one → a visible line before finishing. The judge never runs commands (stays read-only).
 - **J7 Norms capped.** At most the first 8 KB of `AGENTS.md`/`CLAUDE.md` reach a judge, with a visible notice when cut.
@@ -46,7 +46,7 @@ The gap today (exploration, engram `sdd/acceptance-judges/explore`):
 2. **Verdict format (S1).** Judge prompts and a parser: verdict `pass`/`fail`, failed criteria, findings with a required `at:` field; `Finding` gains a location. A finding without `at:` is shown as `at: unknown`, never dropped.
 3. **Standard bundle (S1, S4).** Criteria from the handoffs and feature document; repo norms capped (J7).
 4. **Runtime hook (S2).** The judge mode in S7b: widened gate, one or two judges, agreement rule, correction through the existing bounded flow, transcript lines with where/what, judge section in the receipt.
-5. **Menu row (S3).** `judge` task row, `[ai.tasks.judge]`, `Task::Judge`, reviewer notices (same model, local, diff leaving the machine) for judges.
+5. **Menu section (S3).** Section `ODD + RDD roles` with its header, a `Set all ODD + RDD roles` row and the two rows `judge-a` and `judge-b`; `[ai.tasks.judge-a]` and `[ai.tasks.judge-b]`, `Task::JudgeA` and `Task::JudgeB`; reviewer notices (same model, local, diff leaving the machine) per judge (J17).
 6. **Tests evidence (S4).** Check before `finish` on recorded post-apply commands; visible line when absent or failing.
 
 ### Out of Scope
@@ -56,6 +56,7 @@ The gap today (exploration, engram `sdd/acceptance-judges/explore`):
 - Function-level scale analysis (J2).
 - A project test-command setting (none exists; J6 reads only what the run recorded).
 - Changing the lenses, refuter or `MAX_CORRECTIONS` value.
+- The other roles of #765 (coordinator, `implement (code)`, `implement (simple)`, the four lens rows, refuter, corrector) and the sub-headers of the section: a later change. S3 builds the section header, its `Set all ODD + RDD roles` row and the two judge rows only (J17).
 - Local-model evaluation (#441, `local-multistep`).
 
 ## Capabilities
@@ -66,17 +67,17 @@ The gap today (exploration, engram `sdd/acceptance-judges/explore`):
 
 ### Modified Capabilities
 
-- `agent-orchestrator`: "Receipt-driven review [S7b, W7]" gains the judge mode and the widened gate; "Mandatory review for a cheap author, optional for a strong one [W7]" (consent for the widened gate); "Worker contract" (judge workers on the `judge` assignment); "A run ends by itself" (evidence line before close).
+- `agent-orchestrator`: "Receipt-driven review [S7b, W7]" gains the judge mode and the widened gate; "Mandatory review for a cheap author, optional for a strong one [W7]" (consent for the widened gate); "Worker contract" (judge workers on the `judge-a` and `judge-b` assignments); "A run ends by itself" (evidence line before close).
 - `orchestrator-handoffs`: "RDD receipts [S7b]" gains judge verdicts, failed criteria, locations and correction targets.
-- `ai-task-models`: "Fixed task set" gains `judge`; fallback, "Set all excludes" and "Runtime use of every task assignment" cover it.
-- `configuration`: `[ai.tasks.judge]` slot.
-- `config-menu`: the Models tab gains the `judge` row (row lists and navigation scenarios).
+- `ai-task-models`: "Fixed task set" gains `judge-a` and `judge-b`; their fallback (`review`, then the run default), "Set all excludes the judges" and "Runtime use of every task assignment" cover them (J17).
+- `configuration`: `[ai.tasks.judge-a]` and `[ai.tasks.judge-b]` slots.
+- `config-menu`: the Models tab gains the `ODD + RDD roles` section: header, `Set all ODD + RDD roles`, `judge-a`, `judge-b` (row lists and navigation scenarios).
 
 ## Approach
 
 1. **S1 pure core.** `src/core/ai/orchestra/judge.rs` (new): level, standard bundle, prompts, parser; `at:` added to `Finding` (rdd.rs). Tested without processes.
 2. **S2 runtime.** In `start_review`/`conduct` (src/runtime/orchestra/review.rs), when the level is not `none`, spawn one or two read-only judge workers over the staged diff; two that disagree → a verdict line naming what is missing and the batch goes to the user with blockers open. Failed criteria feed the existing correction worker, scoped to the named locations; lines go through `OrchestraEvent::Review`.
-3. **S3 menu.** Add `Task::Judge` after `simple` (src/core/menu.rs Models rows, config tasks); the judge spawn reads it; `review_notices` covers the judge roster.
+3. **S3 menu.** Add `Task::JudgeA` and `Task::JudgeB` after `simple` (src/core/menu.rs Models rows, config tasks) under the `ODD + RDD roles` section; the judge spawns read them; `review_notices` covers the judge roster (J17).
 4. **S4 close.** Before `finish` (src/runtime/orchestra/run.rs), read the run's Commands records; no test command or a failed one → a visible line. Norms read from the run root, capped at 8 KB.
 
 ## Affected Areas
@@ -107,7 +108,7 @@ The gap today (exploration, engram `sdd/acceptance-judges/explore`):
 ## Rollback Plan
 
 - S1 is a pure module: revert the PR.
-- S2 reverts the gate to "high or cheap author"; S3 removes the row (how an older build treats a leftover `[ai.tasks.judge]` table is for the design to verify); S4 removes the close check. Each slice reverts alone.
+- S2 reverts the gate to "high or cheap author"; S3 removes the section and the two rows (an older build reports a leftover `[ai.tasks.judge-a]` or `[ai.tasks.judge-b]` table as an unknown key and ignores it, design D14); S4 removes the close check. Each slice reverts alone.
 
 ## Dependencies
 
@@ -128,16 +129,17 @@ The gap today (exploration, engram `sdd/acceptance-judges/explore`):
 |---|---|---|---|
 | S1 | Pure judge module: level, standard bundle, prompts, verdict parser, `at:` in `Finding`. No runtime change | J1, J2, J3, J7 | 250-330 |
 | S2 | Runtime hook in S7b: widened gate, one/two judges, agreement, correction targets, transcript lines, receipt section; judges use the `review` assignment until S3 | J3, J5, J8 | 300-390 |
-| S3 | `judge` menu row, `Task::Judge`, config slot, notices | J4 | 120-200 |
+| S3 | `ODD + RDD roles` section (header, `Set all ODD + RDD roles`, `judge-a`, `judge-b`), `Task::JudgeA`/`JudgeB`, config slots, notices | J4, J10, J11, J17 | 190-260 |
 | S4 | Tests evidence before close, norms read and capped, README | J6, J7 | 180-280 |
 
 ## Settled questions (owner, 2026-11-15)
 
 - **J9 Consent once per run.** The judges ask consent once, when the run starts. After that they work without asking and report every step in the transcript. When the judge model is a cloud model and the diff leaves the machine, the existing notice is always shown.
-- **J10 Independent second judge.** The second judge uses the `review` assignment when it is set and differs from `judge`. When only one model is available, both judges use it, and a visible notice says they are not independent.
-- **J11 Default model.** An unassigned `judge` falls back to the run's default model, the same `(default)` rule as `general`. `Set all tasks` includes `judge`.
+- **J10 Independent second judge.** The second judge is `judge-b`. Unset, it uses the `review` assignment when `review` is set and differs from the model of `judge-a`; otherwise it uses `judge-a`'s model, and a visible notice says they are not independent. When only one model is available, both judges use it, with the same notice. Amended by J17: it was the second judge on `review` against a single `judge` row.
+- **J11 Default model.** An unassigned `judge-a` falls back to `review`, then to the run's default model (the same `(default)` rule as `general`). An unassigned `judge-b` falls back as in J10. `Set all tasks` does NOT include the judges; `Set all ODD + RDD roles` does. Amended by J17: it was `judge` to the run default, with `Set all tasks` including `judge`.
 - **J12 High tier: both, one correction.** On a `high` change the lenses (code quality) and the judges (the agreed standard) both run, because they check different things. They share one correction round, so two correctors never edit the same change.
 - **J13 No tests: the user confirms.** When no test ran, or one failed, after apply, the run waits before closing with a line such as `no tests ran · Enter to finish anyway · Esc to keep working`. A line that only scrolls past is not enough (never fail silently).
 - **J14 Unknown criteria may pass, visibly.** A batch can pass with criteria the judges could not verify, as long as none is `not met`. The pass line names them, for example `passed · 2 met, 1 unverified (C3: tests not seen)`. Approved by the owner on 2026-11-15.
 - **J15 Docs-only changes skip the tests wait.** When every applied file is documentation (Markdown, text, docs folders), the J13 wait does not apply; the close says `no tests needed (docs only)`. Approved by the owner on 2026-11-15.
 - **J16 Worker cost on high tier accepted.** Up to 9 workers on a `high` change (lenses plus two judges plus corrector) is accepted; no cap to one judge when the lenses run. Approved by the owner on 2026-11-15.
+- **J17 Judges in the ODD + RDD role section (#765).** There is no single `judge` row. The judges are two rows, `judge-a` and `judge-b`, in a new Models-tab section `ODD + RDD roles`, whose first slice is S3. Config: `ai.tasks.judge-a` and `ai.tasks.judge-b`, two new `Task` variants (design D13). Fallbacks: `judge-a` unset uses `review`, then the run default; `judge-b` unset uses `review` when set and different from `judge-a`'s model, else `judge-a`'s model with the "not independent" notice (J10 semantics kept). `Set all ODD + RDD roles` sets the judges; the old `Set all tasks` no longer includes them, as it never includes `orchestrate` or `simple` (roles of the same section). S3 builds the section header and the two judge rows only; the other roles of #765 are a later change. Amends J4, J10 and J11. Owner decision of 2026-11-15, binding.

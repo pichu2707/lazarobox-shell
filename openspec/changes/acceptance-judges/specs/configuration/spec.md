@@ -2,39 +2,44 @@
 
 ## Base of this delta
 
-This delta targets `openspec/specs/configuration/spec.md` (the "Simple slot [W8]" requirement is the model). Nothing existing is modified; one requirement is added. Slice [S3].
+This delta targets `openspec/specs/configuration/spec.md` (the "Simple slot [W8]" requirement is the model). Nothing existing is modified; one requirement is added. Slice [S3]. Decision J17: the judges are two slots, `judge-a` and `judge-b`, of the section `ODD + RDD roles` of issue #765.
 
 ## ADDED Requirements
 
-### Requirement: Judge slot [S3]
-The configuration MUST carry an eighth AI task slot, `judge`, with the same `engine` and `model` keys and the same validation as the other tasks, read from the table `[ai.tasks.judge]`. An absent table means unassigned. Unlike `simple` and `orchestrate`, the slot MUST be counted by Set all and its aggregate (see ai-task-models). A build that does not know the table MUST ignore it and load every earlier key unchanged (the design verifies this for the previous schema before S3 ships). The menu writes the table only when the user assigns `judge` or uses Set all, and a file with no `judge` table MUST gain none from a save that did not touch it, byte for byte as for the other slots.
+### Requirement: Judge slots [S3]
+The configuration MUST carry two more AI task slots, `judge-a` and `judge-b`, with the same `engine` and `model` keys and the same validation as the other tasks, read from the tables `[ai.tasks.judge-a]` and `[ai.tasks.judge-b]`. An absent table means unassigned. Unlike the five Set-all tasks, the slots are NOT counted by `Set all tasks` and its aggregate; they are covered by `Set all ODD + RDD roles` (see ai-task-models). A build that does not know a table MUST ignore it, MUST report it as an unknown key (`unknown key: ai.tasks.judge-a`) in the visible configuration problems like any other unknown key under `ai.tasks`, and MUST load every earlier key unchanged (the design verifies this for the previous schema before S3 ships). The menu writes a table only when the user assigns that judge or uses `Set all ODD + RDD roles`, and a file with no judge table MUST gain none from a save that did not touch it, byte for byte as for the other slots.
 
-#### Scenario: Slot parsed [S3, auto]
-- GIVEN `[ai.tasks.judge]` with `engine = "claude"` and `model = "opus"`
+#### Scenario: Slots parsed [S3, auto]
+- GIVEN `[ai.tasks.judge-a]` with `engine = "claude"` and `model = "opus"` and `[ai.tasks.judge-b]` with `engine = "codex"`
 - WHEN the configuration is loaded
-- THEN `judge` is `claude` / `opus` and the other slots are as before
+- THEN `judge-a` is `claude` / `opus`, `judge-b` is `codex` and the other slots are as before
 
 #### Scenario: Absent means unassigned [S3, auto]
-- GIVEN no `[ai.tasks.judge]` table
+- GIVEN no judge table
 - WHEN the configuration is loaded
-- THEN `judge` is unassigned and falls back to `general`
+- THEN both judges are unassigned and fall back as ai-task-models states
 
-#### Scenario: Older build ignores the table [S3, auto]
-- GIVEN a file with `[ai.tasks.judge]` read by the previous schema
+#### Scenario: Older build reports the table and keeps working [S3, auto]
+- GIVEN a file with `[ai.tasks.judge-a]` read by the previous schema
 - WHEN it is loaded
-- THEN the earlier keys load unchanged and the new table is ignored, with no startup notice about it
+- THEN the earlier keys load unchanged, the table is ignored, and the visible configuration problems name `unknown key: ai.tasks.judge-a`
 
 #### Scenario: Invalid value follows the task rules [S3, auto]
-- GIVEN `[ai.tasks.judge]` with a wrong type for `engine`
+- GIVEN `[ai.tasks.judge-b]` with a wrong type for `engine`
 - WHEN the configuration is loaded
 - THEN the slot falls back as the other task slots do and a startup notice names the key
 
-#### Scenario: Set all writes judge [S3, auto]
-- GIVEN no `judge` table and `codex` / `default` chosen for Set all tasks
+#### Scenario: Set all ODD + RDD roles writes the judges [S3, auto]
+- GIVEN no judge table and `codex` / `default` chosen for `Set all ODD + RDD roles`
 - WHEN the menu saves
-- THEN `[ai.tasks.judge]` holds `codex` / `default` together with the other five Set-all tasks
+- THEN `[ai.tasks.judge-a]` and `[ai.tasks.judge-b]` each hold `codex` / `default` and no other task table changes
+
+#### Scenario: Set all tasks writes no judge table [S3, auto]
+- GIVEN no judge table and `codex` / `default` chosen for Set all tasks
+- WHEN the menu saves
+- THEN no judge table appears
 
 #### Scenario: Untouched file gains no table [S3, auto]
-- GIVEN a file with no `judge` table and a save that changes only `Mouse`
+- GIVEN a file with no judge table and a save that changes only `Mouse`
 - WHEN the file is written
-- THEN no `[ai.tasks.judge]` table appears
+- THEN no judge table appears

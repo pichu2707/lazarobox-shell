@@ -2,13 +2,13 @@
 
 Order: S1a -> S1b -> S2a -> S2b -> S3 -> S4, one PR each, stacked-to-main (each base = main after the previous PR merges). Each slice is under 400 production lines (tests, fixtures, snapshots, comments, blank lines and docs do not count). Strict TDD (`cargo test`): in every slice the RED test task comes before its GREEN task, through the public interface of the module; refactor last. MSRV 1.88: no `if let` guards in match arms (D18). Every slice ends with `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`, then `rm -rf target` in the worktree (AGENTS.md). Never run the full suite from a worktree under `/tmp`.
 
-Decisions J1-J16 and D1-D18 are binding. J14 (unknown criteria may pass, visibly) lives in S1a (parser carries unverified criteria) and S2a (pass line and receipt). J15 (docs-only skips the tests wait) lives in S4. Both changed spec text on 2026-11-15 (this tasks phase): `specs/acceptance-judges/spec.md` (verdict format, visible-line forms, tests-evidence outcome, 4 new scenarios), `specs/orchestrator-handoffs/spec.md` (receipt: `unverified:` and `tests: no tests needed (docs only)`), `specs/agent-orchestrator/spec.md` (docs-only scenario in "A run ends by itself"). J16 (up to 9 workers on `high`) needs no task; it is a recorded risk.
+Decisions J1-J17 and D1-D18 are binding. J17 (2026-11-15) changed S3 only: the judges are the rows `judge-a` and `judge-b` of the `ODD + RDD roles` section of #765 (D13, D14), and J4, J10, J11 are amended in place; the delta specs `config-menu`, `ai-task-models`, `configuration`, `acceptance-judges` and the one scenario of `agent-orchestrator` follow it. J14 (unknown criteria may pass, visibly) lives in S1a (parser carries unverified criteria) and S2a (pass line and receipt). J15 (docs-only skips the tests wait) lives in S4. Both changed spec text on 2026-11-15 (this tasks phase): `specs/acceptance-judges/spec.md` (verdict format, visible-line forms, tests-evidence outcome, 4 new scenarios), `specs/orchestrator-handoffs/spec.md` (receipt: `unverified:` and `tests: no tests needed (docs only)`), `specs/agent-orchestrator/spec.md` (docs-only scenario in "A run ends by itself"). J16 (up to 9 workers on `high`) needs no task; it is a recorded risk.
 
 ## Review Workload Forecast
 
 | Field | Value |
 |-------|-------|
-| Estimated changed lines (production) | S1a ~250, S1b ~220, S2a ~340, S2b ~160, S3 ~210, S4 ~330 (total ~1510) |
+| Estimated changed lines (production) | S1a ~250, S1b ~220, S2a ~340, S2b ~160, S3 ~260, S4 ~330 (total ~1560) |
 | 400-line budget risk | Medium: S2a (85%) and S4 (83%) are the tight ones; the rest Low |
 | Chained PRs recommended | Yes (six PRs) |
 | Suggested split | S1a -> S1b -> S2a -> S2b -> S3 -> S4 (stacked) |
@@ -20,7 +20,7 @@ Chained PRs recommended: Yes
 Chain strategy: stacked-to-main
 400-line budget risk: Medium
 
-Per slice, any risk of passing 400? S1a no (~250, prompts `.md` ~70 not counted as production Rust). S1b no. S2a possible: ~340 estimate plus the J14 pass line (~10) and the consent fallback; checkpoint at task 7.9, and if the running total passes ~380, move the lines tasks 7.7/7.8 (D11) into S2b (S2b has ~240 of room). S2b no. S3 no. S4 possible: ~330 including `docs_only` (~25); checkpoint at 14.6, lever: move `guidance.rs` hint and `CloseOffer` rendering into a follow-up if over 380.
+Per slice, any risk of passing 400? S1a no (~250, prompts `.md` ~70 not counted as production Rust). S1b no. S2a possible: ~340 estimate plus the J14 pass line (~10) and the consent fallback; checkpoint at task 7.9, and if the running total passes ~380, move the lines tasks 7.7/7.8 (D11) into S2b (S2b has ~240 of room). S2b no. S3 no (~260, 65%; J17 added the section header, `Set all ODD + RDD roles` and the second `Task` variant, about +50). S4 possible: ~330 including `docs_only` (~25); checkpoint at 14.6, lever: move `guidance.rs` hint and `CloseOffer` rendering into a follow-up if over 380.
 
 ### Suggested Work Units
 
@@ -30,7 +30,7 @@ Per slice, any risk of passing 400? S1a no (~250, prompts `.md` ~70 not counted 
 | S1b | Pure core: `agree`, `changed`, `Review::judged/rejudged/contested`, receipt section, `ApprovalAsk::JudgeConsent` | PR 2 | base main after PR 1; still no runtime caller |
 | S2a | Runtime hook: gate, consent, judges in `conduct`, lines | PR 3 | base main after PR 2; judges use `review` assignment |
 | S2b | Correction lines, re-judge, exhausted line | PR 4 | base main after PR 3 |
-| S3 | `Task::Judge`, slot, row, second judge, notices, norms I/O | PR 5 | base main after PR 4 |
+| S3 | `Task::JudgeA/JudgeB`, slots, `ODD + RDD roles` section (header, `Set all ODD + RDD roles`, 2 rows), `resolve_judges`, notices, norms I/O | PR 5 | base main after PR 4 |
 | S4 | Tests evidence, docs-only (J15), `Hold`, `CloseWait`, Enter/Esc, README | PR 6 | base main after PR 5 |
 
 ## S1a Pure core: level, standard, prompt, verdict parser (~250 lines)
@@ -113,29 +113,30 @@ Files: `src/runtime/orchestra/review.rs` (~160); `judge.rs` line builders if not
 - [ ] 9.5 RED then GREEN: exhausted rounds: `judge: rounds exhausted (3) · open: C2 · missing: <what>`, receipt `correction: limit reached (3 rounds)`, batch reaches the user with `C2` open.
 - [ ] 9.6 Verification: `cargo test`, clippy, fmt. [manual] per `skills/run-lazarobox/SKILL.md` (isolated home): provoke a failed criterion (a goal whose change breaks an explicit criterion) and read the target line, the `changes:` line and the re-judge verdict; note that a weak local judge may give `no verdict` (record it, not a defect).
 
-## S3 `judge` menu row, `Task::Judge`, second judge, notices, norms I/O (~210 lines)
+## S3 `ODD + RDD roles` section, `judge-a` / `judge-b`, `resolve_judges`, notices, norms I/O (~260 lines)
 
-Files: `src/core/config.rs` (~50), `src/core/menu.rs` (~15), `src/core/ai/chat/prompts.rs` (~5), `src/core/ai/orchestra/run.rs` (`review_notices` per judge task, ~40), `src/app/orchestra.rs` (roster, `set_second_judge`, ~40), `src/runtime/orchestra/review.rs` (spawn tasks, norms read, ~60).
+Files: `src/core/ai/config.rs` (`Task::JudgeA/JudgeB`, ids, tables, `ROLES`, `resolve_judges`, roles aggregate, ~75), `src/core/menu.rs` (section title, `Set all ODD + RDD roles`, two rows, picker and Set-all handling, ~50), `src/core/ai/chat/prompts.rs` (~5), `src/core/ai/orchestra/run.rs` (`review_notices` per judge task, `set_judges`, ~40), `src/app/orchestra.rs` (roster with `resolve_judges`, ~40), `src/runtime/orchestra/review.rs` (spawn tasks, norms read, ~60). Scope limit (J17): only the section header, its Set-all row and the two judge rows; the other roles of #765 and the sub-headers are a later change.
 
 ### 10. Verify first
 
-- [ ] 10.1 Verify D14 for the previous schema: load a config with `[ai.tasks.judge]` through the schema of `main` before S3 (the build of the S2b parent) and record: earlier keys load unchanged and what notice appears. The configuration spec says "no startup notice"; D14 says `note_unknown_keys` (config.rs:1601) reports it. If a notice appears, fix the spec scenario "Older build ignores the table" (state it was never silent) and record under this task.
-- [ ] 10.2 Verify `Task::ALL` consumers (grep `Task::ALL`, `Task::Orchestrate as usize == 5`, config.rs:452, :3743, menu.rs:594, app/orchestra.rs:825, run.rs:497) and list the exact tests that hard-code 7 or `ALL[..5]`.
+- [ ] 10.1 Verify D14 for the previous schema: load a config with `[ai.tasks.judge-a]` and `[ai.tasks.judge-b]` through the schema of `main` before S3 (the build of the S2b parent) and record: earlier keys load unchanged and the notice `unknown key: ai.tasks.judge-a` appears as a visible configuration problem, not silently. If the notice does not appear, fix the configuration spec scenario "Older build reports the table and keeps working" and D14, and record under this task.
+- [ ] 10.2 Verify `Task::ALL` consumers (grep `Task::ALL`, `Task::Orchestrate as usize == 5`, config.rs:452, :3743, menu.rs:594, app/orchestra.rs:825, run.rs:497) and list the exact tests that hard-code 7 or `ALL[..5]` (the `ALL[..5]` test stays: `SET_ALL` is unchanged). Verify the menu renderer: `Row::Title` inside a tab (menu.rs:1178), navigation passing over a title, and the popup sizing rule with the taller Models tab; record whether the popup height follows the tallest tab.
 
 ### 11. Implementation
 
-- [ ] 11.1 RED: `Task::ALL.len() == 8`, `Judge as usize == 7`, `Orchestrate as usize == 5`; `[ai.tasks.judge]` parsed, absent means unassigned and falls back to `general`, wrong type flagged by key; Set all covers `judge` and the explicit list `[General, Code, Chat, Review, Summarize, Judge]`; untouched file gains no table (byte for byte); `builtin(profile, Task::Judge)` is `judge_builtin`.
-- [ ] 11.2 GREEN: `Task::Judge` at index 7, `slots: [Assignment; 8]`, id `judge`, `SET_ALL` explicit list (replace the `ALL[..5]` test), builtin arm.
-- [ ] 11.3 RED then GREEN: menu: row order `... simple, judge, Hugging Face`; navigation visits `judge`; Enter opens the task picker with `(default · use general)`; unassigned reads `(default)`; no `not recommended` mark; Set all writes judge; `TestBackend` plus insta snapshot: popup size unchanged with the extra row (config-menu spec).
-- [ ] 11.4 RED: second-judge rule (D13, J10 table): judge 1 on `Task::Judge`; judge 2 on `Task::Review` when set and its resolved spec differs; otherwise both on `Task::Judge` and the line `judge: judges are not independent · both on <engine › model>`; notices evaluated per judge task (local engine says local models are unreliable as judges, same model as author warns, diff leaving the machine); an unusable judge model ends `refused`.
-- [ ] 11.5 GREEN: `Run::set_second_judge(Task)`, app roster, `review_notices(.., task)` once per distinct judge task, spawn tasks in `conduct`.
-- [ ] 11.6 RED: norms read (D3 I/O): `AGENTS.md` then `CLAUDE.md` from the run origin; skips a symlink and a missing file; `take(8 KiB)`; once per run kept in `Live`; one cut line `judge: norms cut at 8 KB · <file> is <n> KB`; 3 KB `AGENTS.md` and no `CLAUDE.md` gives no cut line and no error.
-- [ ] 11.7 GREEN: norms read on the blocking pool; standard rebuilt with norms.
+- [ ] 11.1 RED: `Task::ALL.len() == 9`, `JudgeA as usize == 7`, `JudgeB as usize == 8`, `Orchestrate as usize == 5`, ids `judge-a` / `judge-b`, tables `ai.tasks.judge-a` / `ai.tasks.judge-b`; both parsed, absent means unassigned, wrong type flagged by key; `SET_ALL` still the five tasks; `Task::ROLES == [JudgeA, JudgeB]`; untouched file gains no table (byte for byte); `builtin(profile, JudgeA | JudgeB)` is `judge_builtin`.
+- [ ] 11.2 GREEN: the two variants at indexes 7 and 8, `slots: [Assignment; 9]`, ids, tables, `ROLES`, builtin arms.
+- [ ] 11.3 RED then GREEN: `resolve_judges` table (J10, J11, J17): `judge-a` own, else `review`, else `general`; `judge-b` own, else `review` when set and different from `a`, else `a` with `independent = false`; an own `judge-b` equal to `a` is not independent; roles aggregate (`(not set)`, shared value, `(mixed)`).
+- [ ] 11.4 RED then GREEN: menu: row order `... simple`, title `ODD + RDD roles`, `Set all ODD + RDD roles`, `judge-a`, `judge-b`, `Hugging Face`; the title is not selectable and navigation passes over it; Enter opens the task picker with `(default)` first; unassigned reads `(default)`; no `not recommended` mark; `Set all ODD + RDD roles` writes only the judges; `Set all tasks` writes no judge; `TestBackend` plus insta snapshot: popup size unchanged with the section (config-menu spec).
+- [ ] 11.5 RED: second-judge rule (D13, J10 table): judge 1 on `Task::JudgeA`; judge 2 on `Task::JudgeB`; when `resolve_judges` says not independent, the line `judge: judges are not independent · both on <engine › model>`; notices evaluated per judge task (local engine says local models are unreliable as judges, same model as author warns, diff leaving the machine); an unusable judge model ends `refused`.
+- [ ] 11.6 GREEN: `Run::set_judges`, app roster, `review_notices(.., task)` once per distinct judge task, spawn tasks in `conduct`.
+- [ ] 11.7 RED: norms read (D3 I/O): `AGENTS.md` then `CLAUDE.md` from the run origin; skips a symlink and a missing file; `take(8 KiB)`; once per run kept in `Live`; one cut line `judge: norms cut at 8 KB · <file> is <n> KB`; 3 KB `AGENTS.md` and no `CLAUDE.md` gives no cut line and no error.
+- [ ] 11.8 GREEN: norms read on the blocking pool; standard rebuilt with norms.
 
 ### 12. Verification
 
-- [ ] 12.1 `cargo test`, clippy, fmt; every `ALL`-length test updated and passing.
-- [ ] 12.2 [manual] Per `skills/run-lazarobox/SKILL.md` (isolated home, never the user's config): open Config, Models tab, confirm the `judge` row after `simple` shows `(default)`, assign it, Set all, and confirm the written `config.toml` in the isolated home gains `[ai.tasks.judge]` only then. Run a two-judge goal with `review` unset and read the not-independent line.
+- [ ] 12.1 `cargo test`, clippy, fmt; every `ALL`-length test updated and passing. Checkpoint: if the running production total passes ~380, move the norms I/O (11.7, 11.8, ~60) to its own follow-up slice (S3b).
+- [ ] 12.2 [manual] Per `skills/run-lazarobox/SKILL.md` (isolated home, never the user's config): open Config, Models tab, confirm the section `ODD + RDD roles` after `simple` with `judge-a` and `judge-b` showing `(default)`, assign `judge-a`, use `Set all ODD + RDD roles`, and confirm the written `config.toml` in the isolated home gains `[ai.tasks.judge-a]` and `[ai.tasks.judge-b]` only then and that `Set all tasks` writes neither. Run a two-judge goal with `review` and `judge-b` unset and read the not-independent line.
 
 ## S4 Tests evidence before close, docs-only, norms docs (~330 lines)
 
@@ -166,7 +167,7 @@ Files: `src/core/ai/orchestra/judge.rs` or `orchestra/evidence.rs` (`is_test`, `
 
 ### 16. Docs and verification
 
-- [ ] 16.1 README orchestrator section (not counted): judges, level rule, `judge` row, norms cap, tests wait and its docs-only exception, J14 unverified passes.
+- [ ] 16.1 README orchestrator section (not counted): judges, level rule, the `judge-a` / `judge-b` rows, norms cap, tests wait and its docs-only exception, J14 unverified passes.
 - [ ] 16.2 `cargo test`, clippy, fmt; a run with nothing applied is never held (regression); lens-only reviews unchanged.
 - [ ] 16.3 [manual] Per `skills/run-lazarobox/SKILL.md` (isolated home, tmux, never the user's config): (a) apply a code change and finish with no test: confirm the wait line, Esc keeps the run open, Enter closes with `tests: none ran, finished by the user` in the report; (b) apply a Markdown-only change: confirm `tests: no tests needed (docs only)` and no wait; (c) approve a `cargo test` `run_command` after the apply: confirm `tests: cargo test passed` and no wait. Confirm Esc here does not cancel a live turn (13.1).
 
