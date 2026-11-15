@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines the acceptance judges of the orchestrator: read-only judge workers that rule a staged change against the agreed standard (the criteria fixed in the run, the project's tests, the repo norms), in a number proportional to the scale of the change, with every verdict, failed criterion, location and correction visible in the transcript. They run inside the S7b receipt-driven review (one review system) and never approve anything: the user's batch review decides. Decisions J1-J13 of `proposal.md` are settled. Slice tags: [S1] pure core (level, standard, verdict format); [S2] runtime hook; [S3] `judge` assignment; [S4] tests evidence before close and norms. Tags: [auto] = `cargo test`; [manual] = real machine.
+Defines the acceptance judges of the orchestrator: read-only judge workers that rule a staged change against the agreed standard (the criteria fixed in the run, the project's tests, the repo norms), in a number proportional to the scale of the change, with every verdict, failed criterion, location and correction visible in the transcript. They run inside the S7b receipt-driven review (one review system) and never approve anything: the user's batch review decides. Decisions J1-J13 and J17 of `proposal.md` are settled. Slice tags: [S1] pure core (level, standard, verdict format); [S2] runtime hook; [S3] `judge-a` and `judge-b` assignments (section `ODD + RDD roles` of #765, J17); [S4] tests evidence before close and norms. Tags: [auto] = `cargo test`; [manual] = real machine.
 
 ## Requirements
 
@@ -152,20 +152,25 @@ With level `one`, the single verdict decides, and a `no verdict` is shown and le
 - THEN the change is not judged `pass` and the disagreement line names judge 2
 
 ### Requirement: Which model judges [S2, S3]
-Until the `judge` task exists (S3), every judge MUST run on the effective `review` assignment (S2). From S3, judge 1 MUST run on the effective `judge` assignment (own assignment, else the run's default, as `general`; see ai-task-models). Judge 2 MUST run on the `review` assignment when `review` is assigned and differs from the effective `judge` assignment (J10). When `review` is unassigned or equals the judge assignment, both judges MUST use the judge model and a visible line MUST say `judge: judges are not independent · both on <engine › model>`. A level `one` run uses judge 1 only. Each judge MUST run on the engine and model in effect at its spawn; lazarobox MUST NOT pick another engine, and a judge whose engine is unavailable ends `refused` as any worker, with a line, and is `no verdict`.
+Until the judge rows exist (S3), every judge MUST run on the effective `review` assignment (S2). From S3, judge 1 MUST run on the effective `judge-a` assignment (own assignment, else `review`, else the run's default, as `general`; see ai-task-models). Judge 2 MUST run on the effective `judge-b` assignment: its own assignment; unset, the `review` assignment when `review` is assigned and differs from the effective `judge-a`; otherwise the effective `judge-a` (J10, J11, J17). When judge 2 resolves to the same engine and model as judge 1, both judges use that model and a visible line MUST say `judge: judges are not independent · both on <engine › model>`. A level `one` run uses judge 1 only. Each judge MUST run on the engine and model in effect at its spawn; lazarobox MUST NOT pick another engine, and a judge whose engine is unavailable ends `refused` as any worker, with a line, and is `no verdict`.
 
-#### Scenario: Second judge on the review row [S3, auto]
-- GIVEN `judge` is `claude` / `opus` and `review` is `codex` / `default`
+#### Scenario: Second judge on its own row [S3, auto]
+- GIVEN `judge-a` is `claude` / `opus`, `judge-b` is `ollama` / `llama3:8b` (available) and `review` is `codex` / `default`
+- WHEN two judges are spawned
+- THEN judge 1 runs on claude / `opus` and judge 2 on ollama / `llama3:8b`
+
+#### Scenario: Unset second judge uses the review row [S3, auto]
+- GIVEN `judge-a` is `claude` / `opus`, `judge-b` unassigned and `review` is `codex` / `default`
 - WHEN two judges are spawned
 - THEN judge 1 runs on claude / `opus` and judge 2 on codex / `default`
 
 #### Scenario: One model for both says so [S3, auto]
-- GIVEN `judge` and `review` both unassigned and `general` is `claude` / `sonnet`
+- GIVEN `judge-a`, `judge-b` and `review` all unassigned and `general` is `claude` / `sonnet`
 - WHEN two judges are spawned
 - THEN both run on claude / `sonnet` and the transcript shows `judge: judges are not independent · both on claude › sonnet`
 
 #### Scenario: Before S3 the review row serves [S2, auto]
-- GIVEN no `judge` task and `review` set to `codex` / `default`
+- GIVEN no judge rows yet and `review` set to `codex` / `default`
 - WHEN a judge is spawned
 - THEN it runs on codex / `default`
 
