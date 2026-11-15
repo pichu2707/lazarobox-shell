@@ -104,6 +104,7 @@ Does S1 need splitting? No, not up front. The design counts ~374 (eval.rs 170, s
 - [x] H5 `table::accept` refuses with `nothing rose` instead of an empty list (the only production change).
 - [x] H6 `_DUMP` files are `<scenario>-<model>-<n>.json`, `n` claimed with `create_new` (`write_dump`), so a run never overwrites another.
 - [x] H7 A test step means the test passes: `eval::COMMAND_OK` (`exit code 0 `, pinned against real `RunOutcome::facts`) is required to complete a `run_command` step; a command that ran and did not exit 0 (nonzero, timeout, signal, cancel) is `RunResult.failed`, shown as `failed:pytest` in the table, distinct from `missing:pytest`. Spec text updated ("run and pass"); replay fixture `fib-pytest-fails.json` (canned pytest exits 1). Production: `eval.rs` and `table.rs`.
+- [x] H8 (review) `helper_age_warning` compares the helper with the newest of `src/`, `Cargo.toml`, `Cargo.lock` (not with the test binary, which cargo links after the helper). The pre-check probes `pytest --version` and `python3 -m pytest --version` through the sandboxed dispatch and fails only when neither works. Note: the `run_command` allow-list has no `python3`, so the second form is refused by the host today; only a `pytest` on the PATH can pass the probe. `Expect.must_pass` replaces the tool-name rule of H7.
 
 ## S2 HTTP 400 disambiguation (C6) - ~40-80 lines
 

@@ -706,17 +706,67 @@ pub(super) async fn sandbox_probe(
     Ok(())
 }
 
-/// A warning when `helper` is older than `exe` (the test binary): `cargo test
-/// --lib` does not rebuild `target/debug/lazarobox`, so the live run would use
-/// a stale sandbox helper. `None` when it is fresh or its age is unknown.
-pub(super) fn helper_age_warning(helper: &Path, exe: &Path) -> Option<String> {
-    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    (modified(helper)? < modified(exe)?).then(|| {
+/// The newest modification time under `dir`, recursively.
+fn newest(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut best = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        let time = if path.is_dir() {
+            newest(&path)
+        } else {
+            entry.metadata().and_then(|m| m.modified()).ok()
+        };
+        best = best.max(time);
+    }
+    best
+}
+
+/// A warning when a source file under `root` (`src/`, `Cargo.toml`,
+/// `Cargo.lock`) is newer than `helper`: `cargo test --lib` does not rebuild
+/// `target/debug/lazarobox`, so the live run would use a stale sandbox helper.
+/// The test binary's own age says nothing (cargo links it after the helper).
+/// `None` when the helper is fresh or a time is unknown.
+pub(super) fn helper_age_warning(helper: &Path, root: &Path) -> Option<String> {
+    let built = std::fs::metadata(helper).and_then(|m| m.modified()).ok()?;
+    let files = ["Cargo.toml", "Cargo.lock"].map(|f| {
+        std::fs::metadata(root.join(f))
+            .and_then(|m| m.modified())
+            .ok()
+    });
+    let source = files
+        .into_iter()
+        .chain([newest(&root.join("src"))])
+        .max()??;
+    (source > built).then(|| {
         format!(
-            "WARNING: {} is older than the test binary: run `cargo build` or the sandbox helper may be stale",
+            "WARNING: the sources are newer than {}: run `cargo build` or the sandbox helper is stale",
             helper.display()
         )
     })
+}
+
+/// Probes every `forms` of running pytest (`program args`) through `dispatch`
+/// and fails only when none works. `Ok` names the form that works, and says
+/// when the first one (the bare `pytest`) does not.
+pub(super) async fn pytest_probe(
+    dispatch: &dyn Dispatch,
+    forms: &[(&str, &[&str])],
+) -> Result<String, String> {
+    let mut failures = Vec::new();
+    for (program, args) in forms {
+        let form = format!("{program} {}", args.join(" "));
+        match sandbox_probe(dispatch, program, args).await {
+            Ok(()) if failures.is_empty() => return Ok(form),
+            Ok(()) => {
+                return Ok(format!(
+                    "pytest not on the sandboxed PATH; {form} works ({})",
+                    failures.join("; ")
+                ));
+            }
+            Err(why) => failures.push(format!("{form}: {why}")),
+        }
+    }
+    Err(failures.join("\n"))
 }
 
 /// The live pre-check of the sandbox: a throwaway rig in `Mode::Live` runs one
@@ -726,8 +776,13 @@ pub(super) async fn live_sandbox_check() {
     let scenario = &scenarios::WRITE_AND_TEST;
     let folder = Folder::new(&throwaway_root(), scenario);
     let rig = Rig::new(scenario, &folder, None, Mode::Live);
-    if let Err(why) = sandbox_probe(&*rig.dispatch(), "pytest", &["--version"]).await {
-        panic!("{why}");
+    let forms: [(&str, &[&str]); 2] = [
+        ("pytest", &["--version"]),
+        ("python3", &["-m", "pytest", "--version"]),
+    ];
+    match pytest_probe(&*rig.dispatch(), &forms).await {
+        Ok(form) => eprintln!("sandbox pre-check: {form}"),
+        Err(why) => panic!("{why}"),
     }
 }
 

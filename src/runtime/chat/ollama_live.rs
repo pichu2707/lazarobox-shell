@@ -13,8 +13,8 @@
 //!
 //! Run `cargo build` first: commands and git run through the sandbox helper, the
 //! `lazarobox` binary in `target/debug` (`cargo test --lib` does not rebuild it:
-//! the test prints a warning when it is older than the test binary). Before any
-//! model call the test runs `pytest --version` through that helper and fails
+//! the test prints a warning when a source file is newer than it). Before any
+//! model call the test runs `pytest --version` (and `python3 -m pytest --version`) through that helper and fails
 //! naming the cause when the sandbox cannot run a command (no Landlock, no
 //! pytest on the PATH).
 //!
@@ -215,7 +215,7 @@ async fn the_chosen_models_run_the_tasks() {
         "LAZAROBOX_EVAL_TASKS names no known task"
     );
     let helper = live_helper();
-    if let Some(warning) = helper_age_warning(&helper, &std::env::current_exe().unwrap()) {
+    if let Some(warning) = helper_age_warning(&helper, Path::new(env!("CARGO_MANIFEST_DIR"))) {
         eprintln!("{warning}");
     }
     live_sandbox_check().await;

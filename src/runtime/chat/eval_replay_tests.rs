@@ -10,8 +10,8 @@ use serde_json::Value;
 
 use super::{
     eval_harness::{
-        EXIT_NONZERO, Fixture, Folder, Mode, Rig, helper_age_warning, leaks, proxy, sandbox_probe,
-        throwaway_root,
+        EXIT_NONZERO, Fixture, Folder, Mode, Rig, helper_age_warning, leaks, proxy, pytest_probe,
+        sandbox_probe, throwaway_root,
     },
     ollama_tests::fake,
 };
@@ -449,29 +449,86 @@ async fn the_probe_fails_on_any_failing_runner() {
     assert!(why.contains("sandbox unavailable on this kernel"), "{why}");
 }
 
-// Hardening: `cargo test --lib` does not rebuild the helper.
+// Hardening: the helper is stale when a source file is newer than it (`cargo
+// test --lib` does not rebuild it), whatever order cargo linked the binaries.
 #[test]
-fn a_helper_older_than_the_test_binary_is_warned_about() {
+fn a_helper_older_than_a_source_file_is_warned_about() {
     use std::{
         fs::File,
         time::{Duration, SystemTime},
     };
     let folder = Folder::new(&throwaway_root(), &scenarios::READ_ONLY);
-    let dir = folder.home.parent().unwrap();
-    let (helper, exe) = (dir.join("lazarobox"), dir.join("tests-bin"));
+    let root = folder.home.parent().unwrap().join("crate");
+    std::fs::create_dir_all(root.join("src/deep")).unwrap();
+    let helper = root.join("lazarobox");
     let now = SystemTime::now();
-    for (path, age) in [(&helper, 60), (&exe, 0)] {
-        let file = File::create(path).unwrap();
+    let touch = |path: std::path::PathBuf, age: u64| {
+        File::create(&path).unwrap();
+        let file = File::options().write(true).open(&path).unwrap();
         file.set_modified(now - Duration::from_secs(age)).unwrap();
-    }
-    let warning = helper_age_warning(&helper, &exe).expect("a warning");
+    };
+    touch(root.join("Cargo.toml"), 300);
+    touch(root.join("Cargo.lock"), 300);
+    touch(root.join("src/deep/a.rs"), 200);
+    touch(helper.clone(), 100);
+    assert_eq!(helper_age_warning(&helper, &root), None, "fresh helper");
+    touch(root.join("src/deep/b.rs"), 10);
+    let warning = helper_age_warning(&helper, &root).expect("a warning");
     assert!(warning.contains("cargo build"), "{warning}");
-    File::options()
-        .write(true)
-        .open(&helper)
-        .unwrap()
-        .set_modified(now + Duration::from_secs(60))
-        .unwrap();
-    assert_eq!(helper_age_warning(&helper, &exe), None);
-    assert_eq!(helper_age_warning(&dir.join("missing"), &exe), None);
+    touch(root.join("src/deep/b.rs"), 200);
+    touch(root.join("Cargo.lock"), 10);
+    assert!(helper_age_warning(&helper, &root).is_some(), "Cargo.lock");
+    assert_eq!(helper_age_warning(&root.join("missing"), &root), None);
+}
+
+/// Answers by program name: `ok` programs exit 0, any other fails.
+struct Programs(&'static [&'static str]);
+
+impl crate::runtime::mcp::Dispatch for Programs {
+    fn call(
+        &self,
+        call: Call,
+    ) -> futures::future::BoxFuture<'static, crate::runtime::mcp::Outcome> {
+        let Call::RunCommand { args } = call else {
+            unreachable!()
+        };
+        let ok = self.0.iter().any(|p| args["program"] == *p);
+        Box::pin(async move {
+            crate::runtime::mcp::Outcome {
+                text: if ok {
+                    "exit code 0 after 0.1s".into()
+                } else {
+                    "the program was not found on the PATH".into()
+                },
+                is_error: !ok,
+            }
+        })
+    }
+}
+
+const FORMS: [(&str, &[&str]); 2] = [
+    ("pytest", &["--version"]),
+    ("python3", &["-m", "pytest", "--version"]),
+];
+
+// Hardening: the live probe tries every way a model may run pytest and only
+// fails when none works, saying which one does.
+#[tokio::test]
+async fn the_pytest_probe_reports_which_form_works_and_fails_when_none_does() {
+    let both = pytest_probe(&Programs(&["pytest", "python3"]), &FORMS).await;
+    assert_eq!(both.unwrap(), "pytest --version");
+    let only_module = pytest_probe(&Programs(&["python3"]), &FORMS).await.unwrap();
+    assert!(
+        only_module.contains("python3 -m pytest --version"),
+        "{only_module}"
+    );
+    assert!(
+        only_module.contains("pytest not on the sandboxed PATH"),
+        "{only_module}"
+    );
+    let why = pytest_probe(&Programs(&[]), &FORMS).await.unwrap_err();
+    assert!(
+        why.contains("pytest --version") && why.contains("python3 -m pytest"),
+        "{why}"
+    );
 }
