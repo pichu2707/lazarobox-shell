@@ -89,15 +89,48 @@ pub(super) fn exchanges_from_body(body: &Value) -> Vec<ToolExchange> {
     list
 }
 
+/// One call that reached the dispatch, in order, and whether it failed.
+pub(super) struct Done {
+    pub(super) name: String,
+    pub(super) error: bool,
+}
+
+/// The parse errors: their texts are answered by the loop, so the call never
+/// reached the dispatch and has no record.
+const PARSE_ERRORS: [ToolError; 13] = [
+    ToolError::UnknownTool,
+    ToolError::NotAnObject,
+    ToolError::MissingArgument,
+    ToolError::WrongType,
+    ToolError::ExtraArgument,
+    ToolError::TooLong,
+    ToolError::PaneRange,
+    ToolError::ScrollbackRange,
+    ToolError::DraftKind,
+    ToolError::DraftEmpty,
+    ToolError::DraftTitleLong,
+    ToolError::DraftTitleLines,
+    ToolError::DraftBodyLong,
+];
+
+fn never_ran(result: &str) -> bool {
+    result == ollama::TOO_MANY || PARSE_ERRORS.iter().any(|e| refusal_text(*e) == result)
+}
+
 /// Makes every exchange whose real outcome was an error read as refused: the
 /// loop keeps the result text only, so a failure without a refusal prefix
-/// (`nothing is staged`) would score as a completed step. One record marks one
-/// exchange.
-pub(super) fn mark_failed(exchanges: &mut [ToolExchange], errors: &[String]) {
-    let mut errors = errors.to_vec();
+/// (`nothing is staged`) would score as a completed step. The records pair
+/// with the exchanges by order and tool name, never by text (a text may be
+/// cut or equal to another); a call the parse refused has no record.
+pub(super) fn mark_failed(exchanges: &mut [ToolExchange], calls: &[Done]) {
+    let mut records = calls.iter().peekable();
     for exchange in exchanges {
-        if let Some(at) = errors.iter().position(|text| *text == exchange.result) {
-            errors.remove(at);
+        if never_ran(&exchange.result) {
+            continue;
+        }
+        if let Some(done) = records.next_if(|d| d.name == exchange.name)
+            && done.error
+        {
             exchange.result = format!("{}: {}", ollama::FAILED, exchange.result);
         }
     }
@@ -107,7 +140,7 @@ pub(super) fn mark_failed(exchanges: &mut [ToolExchange], errors: &[String]) {
 #[derive(Default)]
 struct Seen {
     unexpected: bool,
-    errors: Vec<String>,
+    calls: Vec<Done>,
 }
 
 /// Answers the approvals of a run by its scenario, and keeps what the
@@ -138,15 +171,25 @@ impl Judge {
         known
     }
 
-    fn failed(&self, text: &str) {
-        self.seen.lock().unwrap().errors.push(text.to_owned());
+    /// A call reached the dispatch: its slot, filled by [`Judge::ended`].
+    fn began(&self, name: &str) -> usize {
+        let mut seen = self.seen.lock().unwrap();
+        seen.calls.push(Done {
+            name: name.to_owned(),
+            error: false,
+        });
+        seen.calls.len() - 1
+    }
+
+    fn ended(&self, slot: usize, error: bool) {
+        self.seen.lock().unwrap().calls[slot].error = error;
     }
 
     /// Scores the run from the last request body and its final answer.
     pub(super) fn run(&self, body: &Value, answer: &str, time: Duration) -> Run {
         let seen = self.seen.lock().unwrap();
         let mut exchanges = exchanges_from_body(body);
-        mark_failed(&mut exchanges, &seen.errors);
+        mark_failed(&mut exchanges, &seen.calls);
         let mut run = Run::new(score(self.scenario, &exchanges, answer), time);
         run.unexpected = seen.unexpected;
         run
@@ -169,12 +212,16 @@ impl Approver for Judge {
     }
 }
 
-/// The dispatch of a run: files and the batch go to the real host; commands,
-/// git and the orchestration tools get fixed answers, so no sandbox, python3
-/// or git is needed. Records every error outcome for [`mark_failed`].
+/// The dispatch of a run. Files and the batch always go to the real host. In
+/// replay (`live` false) commands, git and the orchestration tools get fixed
+/// answers, so no sandbox, python3 or git is needed; live, only the
+/// orchestration tools do, and commands and git run for real in the lab (still
+/// approved through the [`Judge`]). Every outcome is recorded for
+/// [`mark_failed`] in both modes.
 pub(super) struct Canned {
     real: Arc<dyn Dispatch>,
     judge: Arc<Judge>,
+    live: bool,
     /// A tool whose canned answer is an error without a refusal prefix.
     pub(super) fail: Option<&'static str>,
 }
@@ -182,22 +229,22 @@ pub(super) struct Canned {
 impl Dispatch for Canned {
     fn call(&self, call: Call) -> BoxFuture<'static, Outcome> {
         let judge = self.judge.clone();
+        let slot = judge.began(call.name());
         // The tool the scenario must expect, and the fixed text.
         let fixed = match &call {
+            Call::Orchestra(_) => Some(("", "recorded")),
+            _ if self.live => None,
             Call::RunCommand { .. } => Some(("run_command", "exit code 0: 1 passed")),
             Call::GitAdd { .. } => Some(("git_commit", "staged 2 paths")),
             Call::GitCommit { .. } => Some(("git_commit", "committed abc1234")),
             git if git.uses_git() => Some(("", "nothing to report")),
-            Call::Orchestra(_) => Some(("", "recorded")),
             _ => None,
         };
         let Some((tool, text)) = fixed else {
             let real = self.real.call(call);
             return async move {
                 let outcome = real.await;
-                if outcome.is_error {
-                    judge.failed(&outcome.text);
-                }
+                judge.ended(slot, outcome.is_error);
                 outcome
             }
             .boxed();
@@ -218,9 +265,7 @@ impl Dispatch for Canned {
                 is_error: false,
             }
         };
-        if outcome.is_error {
-            judge.failed(&outcome.text);
-        }
+        judge.ended(slot, outcome.is_error);
         async move { outcome }.boxed()
     }
 }
@@ -330,6 +375,34 @@ pub(super) fn families(scenario: &Scenario) -> FamilySet {
     }
 }
 
+/// How a run's commands and git are answered.
+#[derive(PartialEq, Eq)]
+pub(super) enum Mode {
+    /// Fixed texts: CI needs no sandbox, python3 or git.
+    Replay,
+    /// For real, in the lab, through the sandbox helper (the built binary).
+    Live,
+    /// For real, through a script that does not sandbox: offline tests.
+    StandIn(PathBuf),
+}
+
+/// The `lazarobox` binary that serves `__jail-exec`: the one `cargo build`
+/// leaves next to the test binaries.
+pub(super) fn live_helper() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let helper = exe
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join("lazarobox");
+    assert!(
+        helper.is_file(),
+        "the sandbox helper {} is missing: run `cargo build` first",
+        helper.display()
+    );
+    helper
+}
+
 /// Everything one run needs: the request, the dispatch and the judge.
 pub(super) struct Rig {
     pub(super) request: ChatRequest,
@@ -344,13 +417,14 @@ impl Rig {
         scenario: &'static Scenario,
         folder: &Folder,
         fail: Option<&'static str>,
+        mode: Mode,
     ) -> Self {
-        let host = ToolHost::new(
-            Some(folder.home.clone().into()),
-            None,
-            None,
-            Limits::default(),
-        );
+        let home = folder.home.clone().into();
+        let host = match &mode {
+            Mode::Replay => ToolHost::new(Some(home), None, None, Limits::default()),
+            Mode::Live => ToolHost::with_helper(home, live_helper(), false),
+            Mode::StandIn(helper) => ToolHost::with_helper(home, helper.clone(), true),
+        };
         let (tx, rx) = mpsc::channel(TURN_CHANNEL);
         let judge = Judge::new(scenario);
         let mut scope = TurnScope::new(tx.clone(), Locality::Local, folder.repo.clone());
@@ -360,6 +434,7 @@ impl Rig {
         let dispatch = Canned {
             real: host.dispatch(scope),
             judge: judge.clone(),
+            live: mode != Mode::Replay,
             fail,
         };
         let task = match scenario.category {
@@ -384,6 +459,10 @@ impl Rig {
             tx,
             rx,
         }
+    }
+
+    pub(super) fn dispatch(&self) -> Arc<dyn Dispatch> {
+        self.dispatch.clone()
     }
 
     /// Runs the turn against the server on `port`; returns the final answer:
@@ -504,6 +583,16 @@ impl Fixture {
     }
 }
 
+/// Whether `name` is in `text` as a whole word.
+fn has_word(text: &str, name: &str) -> bool {
+    text.match_indices(name).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + name.len()..].chars().next();
+        let edge = |c: Option<char>| !c.is_some_and(char::is_alphanumeric);
+        edge(before) && edge(after)
+    })
+}
+
 /// The kinds of leak a curated fixture must not hold: never the matched value,
 /// so a shared log shows no secret. `home` and `user` are the running values.
 pub(super) fn leaks(text: &str, home: &str, user: &str) -> Vec<&'static str> {
@@ -537,7 +626,7 @@ pub(super) fn leaks(text: &str, home: &str, user: &str) -> Vec<&'static str> {
         ("home path", words().any(|w| w.starts_with("~/"))),
         ("windows path", words().any(windows)),
         ("home", home.len() > 1 && text.contains(home)),
-        ("user", user.len() > 2 && text.contains(user)),
+        ("user", user.len() > 4 && has_word(text, user)),
         (
             "email",
             words()
@@ -639,22 +728,7 @@ async fn forward(mut client: TcpStream, upstream: &str, bodies: Arc<Mutex<Vec<Va
 /// `eval::refused` knows, or a refused step would score as completed.
 #[test]
 fn the_refusal_prefixes_cover_the_real_constants() {
-    let errors = [
-        ToolError::UnknownTool,
-        ToolError::NotAnObject,
-        ToolError::MissingArgument,
-        ToolError::WrongType,
-        ToolError::ExtraArgument,
-        ToolError::TooLong,
-        ToolError::PaneRange,
-        ToolError::ScrollbackRange,
-        ToolError::DraftKind,
-        ToolError::DraftEmpty,
-        ToolError::DraftTitleLong,
-        ToolError::DraftTitleLines,
-        ToolError::DraftBodyLong,
-    ];
-    for error in errors {
+    for error in PARSE_ERRORS {
         assert!(refused(refusal_text(error)), "{error:?}");
     }
     for text in [
@@ -723,7 +797,10 @@ fn a_recorded_failure_makes_its_exchange_refused() {
         exchange("git_commit", "committed abc"),
         exchange("git_commit", "nothing is staged"),
     ];
-    mark_failed(&mut list, &["nothing is staged".to_owned()]);
+    mark_failed(
+        &mut list,
+        &[done("git_commit", true), done("git_commit", false)],
+    );
     assert!(refused(&list[0].result), "{}", list[0].result);
     assert!(list[0].result.ends_with("nothing is staged"));
     assert!(!refused(&list[1].result));
@@ -810,4 +887,64 @@ fn a_dump_is_a_fixture_with_the_repo_root_replaced() {
     assert_eq!(fixture.scenario().id, "read-only");
     assert_eq!(fixture.steps().len(), 2);
     assert!(text.contains("\"path\": \"./a.py\""), "{text}");
+}
+
+fn done(name: &str, error: bool) -> Done {
+    Done {
+        name: name.to_owned(),
+        error,
+    }
+}
+
+// Verify W2: records pair with exchanges by order, not by text.
+#[test]
+fn only_the_call_that_failed_is_marked_when_two_results_read_alike() {
+    let mut list = vec![
+        exchange("run_command", "exit 1"),
+        exchange("run_command", "exit 1"),
+    ];
+    mark_failed(
+        &mut list,
+        &[done("run_command", false), done("run_command", true)],
+    );
+    assert!(!refused(&list[0].result));
+    assert!(refused(&list[1].result));
+}
+
+#[test]
+fn a_failure_is_marked_even_when_its_text_was_cut_or_replaced() {
+    let mut list = vec![exchange("git_commit", "result dropped")];
+    mark_failed(&mut list, &[done("git_commit", true)]);
+    assert!(refused(&list[0].result));
+    let mut cut = vec![exchange("git_commit", "nothing is st")];
+    mark_failed(&mut cut, &[done("git_commit", true)]);
+    assert!(refused(&cut[0].result));
+}
+
+#[test]
+fn a_call_the_parse_refused_never_reached_the_dispatch() {
+    let mut list = vec![
+        exchange("write_file", refusal_text(ToolError::MissingArgument)),
+        exchange("write_file", "staged a.py"),
+        exchange("write_file", "path not available"),
+    ];
+    mark_failed(
+        &mut list,
+        &[done("write_file", false), done("write_file", true)],
+    );
+    assert_eq!(list[1].result, "staged a.py");
+    assert!(refused(&list[2].result));
+    assert_eq!(list[0].result, refusal_text(ToolError::MissingArgument));
+}
+
+// Verify W3: the user name is a whole word, and a short one is not checked.
+#[test]
+fn the_user_name_is_matched_as_a_word_and_short_names_are_skipped() {
+    let body =
+        |text: &str| format!(r#"{{"scenario": "read-only", "replies": [{{"text": "{text}"}}]}}"#);
+    let prose = body("the user asked for a file");
+    assert!(leaks(&prose, "/home/zzzz", "user").is_empty());
+    assert!(leaks(&body("hello someone."), "/home/zzzz", "someone").contains(&"user"));
+    assert!(leaks(&body("someones file"), "/home/zzzz", "someone").is_empty());
+    assert!(leaks(&body("hello root"), "/home/zzzz", "root").is_empty());
 }

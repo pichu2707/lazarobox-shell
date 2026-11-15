@@ -11,6 +11,9 @@
 //!   cargo test --lib ollama_live -- --ignored --nocapture --test-threads=1
 //! ```
 //!
+//! Run `cargo build` first: commands and git run through the sandbox helper, the
+//! `lazarobox` binary in `target/debug`.
+//!
 //! Environment: `LAZAROBOX_EVAL_MODEL` (comma list, required), `_RUNS` (default
 //! 5), `_TASKS` (comma list of task ids, default all), `_HARDWARE` (text for
 //! the table), `_OUT` (file the table is also written to), `_DUMP` (folder for
@@ -19,9 +22,14 @@
 //! nothing is pulled, and a missing model, Ollama or `python3 -m pytest` fails
 //! the test with a message.
 //!
-//! The coordinator task (`coordinate`) answers the orchestration tools with
-//! fixed texts: it measures whether the model CALLS the step handoffs and
-//! `spawn_agent`, not what a real run manager does after them.
+//! What is real and what is fixed: the model, the files, the batch, `run_command`
+//! (the real sandbox, python3 and pytest) and every git tool run for real in the
+//! run's throwaway repo, and the harness approves only what the scenario
+//! expects. The one fixed answer is the orchestration tools of the `coordinate`
+//! task (`handoff`, `spawn_agent`, ...): they answer `recorded`, so that task
+//! measures whether the model CALLS the step handoffs and `spawn_agent`, not what
+//! a real run manager does after them. Replay (CI) answers commands and git with
+//! fixed text too; live never does.
 //!
 //! Fixture curation (C4): the repository is public. Take a run from the
 //! `_DUMP` folder, read it, keep at most one per task, make sure it holds
@@ -42,7 +50,7 @@ use tokio::{
     time::timeout,
 };
 
-use super::eval_harness::{Folder, Rig, dump, proxy, throwaway_root};
+use super::eval_harness::{Folder, Mode, Rig, dump, live_helper, proxy, throwaway_root};
 use crate::{
     core::ai::eval::{
         Scenario,
@@ -118,7 +126,7 @@ async fn one(
 ) -> Run {
     let folder = Folder::new(&throwaway_root(), scenario);
     folder.init_git();
-    let mut rig = Rig::new(scenario, &folder, None);
+    let mut rig = Rig::new(scenario, &folder, None, Mode::Live);
     rig.request.model = Some(model.to_owned());
     let judge = rig.judge.clone();
     bodies.lock().unwrap().clear();
@@ -198,6 +206,7 @@ async fn the_chosen_models_run_the_tasks() {
         !tasks.is_empty(),
         "LAZAROBOX_EVAL_TASKS names no known task"
     );
+    live_helper();
     let version = precheck(&models).await;
     let (port, bodies) = proxy(OLLAMA).await;
     let mut rows = Vec::new();

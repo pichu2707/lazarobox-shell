@@ -9,11 +9,14 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::{
-    eval_harness::{Fixture, Folder, Rig, leaks, proxy, throwaway_root},
+    eval_harness::{Fixture, Folder, Mode, Rig, leaks, proxy, throwaway_root},
     ollama_tests::fake,
 };
 use crate::{
-    core::ai::eval::{RunResult, table::Run},
+    core::ai::{
+        eval::{RunResult, table::Run},
+        tools::Call,
+    },
     runtime::loopback::Timeouts,
 };
 
@@ -43,7 +46,7 @@ async fn replay(raw: &str, fail: Option<&'static str>) -> Replayed {
     let scenario = fixture.scenario();
     let fake = fake(fixture.steps()).await;
     let folder = Folder::new(&throwaway_root(), scenario);
-    let rig = Rig::new(scenario, &folder, fail);
+    let rig = Rig::new(scenario, &folder, fail, Mode::Replay);
     let judge = rig.judge.clone();
     let answer = rig.drive(fake.port, &Timeouts::SERVER).await;
     let last = fake.bodies().last().cloned().expect("a request");
@@ -240,7 +243,7 @@ async fn a_run_through_the_recording_proxy_scores_like_a_direct_run() {
     let upstream: &'static str = Box::leak(format!("127.0.0.1:{}", server.port).into_boxed_str());
     let (port, bodies) = proxy(upstream).await;
     let folder = Folder::new(&throwaway_root(), scenario);
-    let rig = Rig::new(scenario, &folder, None);
+    let rig = Rig::new(scenario, &folder, None, Mode::Replay);
     let judge = rig.judge.clone();
     let answer = rig.drive(port, &Timeouts::SERVER).await;
     let last = bodies
@@ -254,4 +257,57 @@ async fn a_run_through_the_recording_proxy_scores_like_a_direct_run() {
     let run = judge.run(&last, &answer, Duration::ZERO);
     assert!(run.passed(), "{:?}", run.result);
     assert!(answer.starts_with("Done"), "{answer}");
+}
+
+// Verify W1: the live rig runs commands and git for real in the lab; only the
+// replay rig answers them with fixed text. The helper is a script that does
+// not sandbox, so the test needs git and a shell, not Landlock.
+const STAND_IN: &str =
+    "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n";
+
+fn live_rig(folder: &Folder) -> Rig {
+    use std::os::unix::fs::PermissionsExt;
+    let scenario = &crate::core::ai::eval::scenarios::WRITE_AND_TEST;
+    let helper = folder.home.parent().unwrap().join("helper");
+    std::fs::write(&helper, STAND_IN).unwrap();
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    Rig::new(scenario, folder, None, Mode::StandIn(helper))
+}
+
+#[tokio::test]
+async fn the_live_rig_runs_git_in_the_lab_and_the_replay_rig_does_not() {
+    let scenario = &crate::core::ai::eval::scenarios::WRITE_AND_TEST;
+    let folder = Folder::new(&throwaway_root(), scenario);
+    folder.init_git();
+    let log = || Call::GitLog {
+        max_count: None,
+        path: None,
+    };
+    let replay = Rig::new(scenario, &folder, None, Mode::Replay);
+    assert_eq!(
+        replay.dispatch().call(log()).await.text,
+        "nothing to report"
+    );
+    let real = live_rig(&folder).dispatch().call(log()).await.text;
+    assert!(real.contains("eval seed"), "{real}");
+}
+
+#[tokio::test]
+async fn a_real_failure_in_the_live_rig_is_recorded_and_fails_the_step() {
+    let scenario = &crate::core::ai::eval::scenarios::WRITE_AND_TEST;
+    let folder = Folder::new(&throwaway_root(), scenario);
+    folder.init_git();
+    let rig = live_rig(&folder);
+    // Nothing is staged: the real commit fails.
+    let call = Call::GitCommit {
+        message: "add fibonacci".into(),
+    };
+    let outcome = rig.dispatch().call(call).await;
+    assert!(outcome.is_error, "{outcome:?}");
+    let body = serde_json::json!({"messages": [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "git_commit", "arguments": {"message": "add fibonacci"}}}]},
+        {"role": "tool", "content": outcome.text, "tool_name": "git_commit"}]});
+    let run = rig.judge.run(&body, "Done.", Duration::ZERO);
+    assert!(run.result.missing.contains(&"commit"), "{:?}", run.result);
 }

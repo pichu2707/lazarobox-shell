@@ -123,6 +123,16 @@ A model x task combination is measured over 5 runs and passes at 4 of 5 passed r
 - WHEN acceptance is evaluated
 - THEN the evaluation reports that the 5 runs of that combination must be repeated before a decision
 
+#### Scenario: Borderline rise is repeated even when another combination rose [auto]
+- GIVEN a combination that rose from 3 of 5 to 4 of 5 and another that rose clearly
+- WHEN acceptance is evaluated
+- THEN the 5 runs of the borderline combination must still be repeated; a 5 to 4 move beside a clear rise stays noise (accepted)
+
+#### Scenario: Missing combination is reported [auto]
+- GIVEN an accepted-set combination in the before table and not in the after table
+- WHEN acceptance is evaluated
+- THEN it is refused and names that combination as missing
+
 ### Requirement: Replay guard in CI [S1]
 An in-crate test MUST replay scripted transcripts through the real Ollama tool loop (`tool_turn_with`) with the `Fake` server and a real `Dispatch` lab for file reads, file writes and batch tools, while `run_command`, the git tools and the orchestration tools get fixed, non-refusal answers (so CI needs no sandbox, python3, pytest or git), then score the resulting exchanges with the scorer. The scripted transcripts MUST include a good run (scored passed), a run that skips the pytest step, a run with the wrong commit message, and a run that commits before it proposes the batch (it also puts the commit before the test run, so that run reports the two pairs that hold the commit and nothing else); a good coordinator run and two coordinator runs that only describe or write the calls as text; each bad run MUST fail for its own reason (missing, ignored literal, out of order); a call whose real outcome was an error counts as failed even when its text has no refusal prefix (the dispatch decorator records the outcome) and for no other. The replay MUST run offline in `cargo test`, MUST use no Ollama, no model and no network beyond the `Fake` server on `127.0.0.1`, and MUST run only inside a throwaway lab that it removes at the end. The replay checks the loop and the scorer, not model quality; it MUST NOT be reported as a score.
 
@@ -142,7 +152,7 @@ An in-crate test MUST replay scripted transcripts through the real Ollama tool l
 - THEN it passes
 
 ### Requirement: Live harness is opt-in and never in CI [S1]
-The live harness MUST be an `#[ignore]` test: `cargo test` and CI MUST NOT run it, and no CI workflow MUST pass `--ignored` or `--include-ignored` for it. It MUST read the model from an environment variable and the number of runs from another one (default 5), MUST talk only to the local Ollama on `127.0.0.1`, MUST NOT pull, download or delete a model, and MUST fail with a clear message (not a skip that looks like a pass) when Ollama or the model is not there. It MUST run tasks (a), (b), (c) and (d) (or the ones named by the environment) for the chosen model, measure the turn time of every run, score every run with the scorer and print the score table (see Score table). Approvals inside a live run MUST be answered by the harness itself according to the scenario (it approves the staged batch and the exec and commit steps of the scenario, and nothing else); an approval for a step the scenario does not expect MUST be denied and counted as an unexpected exchange.
+In the live harness the model's commands and git tools MUST run for real in the throwaway repo (through the sandbox helper), never with the fixed replay answers; only the orchestration tools of the coordinator task answer a fixed text. The live harness MUST be an `#[ignore]` test: `cargo test` and CI MUST NOT run it, and no CI workflow MUST pass `--ignored` or `--include-ignored` for it. It MUST read the model from an environment variable and the number of runs from another one (default 5), MUST talk only to the local Ollama on `127.0.0.1`, MUST NOT pull, download or delete a model, and MUST fail with a clear message (not a skip that looks like a pass) when Ollama or the model is not there. It MUST run tasks (a), (b), (c) and (d) (or the ones named by the environment) for the chosen model, measure the turn time of every run, score every run with the scorer and print the score table (see Score table). Approvals inside a live run MUST be answered by the harness itself according to the scenario (it approves the staged batch and the exec and commit steps of the scenario, and nothing else); an approval for a step the scenario does not expect MUST be denied and counted as an unexpected exchange.
 
 #### Scenario: Ignored by default [auto]
 - GIVEN the repo with its CI workflows
