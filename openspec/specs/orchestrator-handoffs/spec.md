@@ -114,6 +114,15 @@ Each closed ODD step MUST have a handoff, and a step is not closed before it exi
 - WHEN the orchestrator tries to close step `explore`
 - THEN it is refused until the handoff exists
 
+#### Scenario: The reply says what closed and what comes next [auto]
+- GIVEN a step handoff accepted in order, with or without a valid verdict
+- WHEN the orchestrator reads the reply
+- THEN it says the step is closed, gives the verdict and, when it was missing or invalid, says to give `verdict: on_course, off_course or blocked`
+- AND it names the next open step from the run's own step state (`track` only for a large goal), or that every step is closed
+- AND, when the next step is `implement`, it says the spawn gate is open, or on a read-only goal that only a simple worker with no files to write may be spawned
+- AND the `track` handoff that builds the feature document gets the same reply, followed by the document's key
+- AND a spawn gate refusal lists the steps already closed
+
 #### Scenario: A correction keeps the log [auto]
 - GIVEN a feature document with `S1` and `S2` and a user correction to `S2`
 - WHEN the document is updated

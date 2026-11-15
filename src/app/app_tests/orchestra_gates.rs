@@ -17,7 +17,7 @@ fn refused(gate: Gate, step: Step) -> OrchestraEvent {
         run: RUN,
         gate,
         step,
-        reason: gate.refusal(step),
+        reason: gate.refusal(step, &[]),
     }
 }
 
@@ -44,8 +44,8 @@ fn a_gate_refusal_is_a_system_line_naming_the_gate_and_the_step() {
     assert_eq!(
         lines,
         vec![
-            Gate::Spawn.refusal(Step::Explore),
-            Gate::Finish.refusal(Step::Implement)
+            Gate::Spawn.refusal(Step::Explore, &[]),
+            Gate::Finish.refusal(Step::Implement, &[])
         ]
     );
     assert!(lines.iter().all(|l| l.is_ascii()));

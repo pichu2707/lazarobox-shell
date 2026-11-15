@@ -21,6 +21,7 @@ use crate::core::ai::{
         overrides::{Change, FailurePicker, Picked},
         persist::Item,
         run::{Roster, RunLimits},
+        steps::closed_text,
         worker::{ErrorClass, WorkerStatus},
     },
 };
@@ -412,14 +413,15 @@ impl App {
             }
             // The turn ended with the spawn gate standing: the run stays open
             // for the reply, and the pane says why (W3, option B).
-            OrchestraEvent::Waits { run, step } => {
+            OrchestraEvent::Waits { run, step, closed } => {
                 // A `Waits` that comes after the run ended or was cancelled
                 // marks nothing.
                 if chat.orch_run() == Some(run) && !chat.run_cancelled(run) {
                     chat.set_waiting_run(Some(run));
                     chat.push_system_line(format!(
-                        "run waits for your reply: step {} is not closed (Enter gates off)",
-                        step.label()
+                        "run waits for your reply: step {} is not closed; {} (Enter gates off)",
+                        step.label(),
+                        closed_text(&closed)
                     ));
                 }
             }

@@ -945,6 +945,7 @@ impl RunManager {
             NextTurn::Wait(step) => Next::Wait(OrchestraEvent::Waits {
                 run: live.run.id(),
                 step,
+                closed: live.run.steps().closed_steps(),
             }),
             NextTurn::Capped(taken) => {
                 let gate = live
@@ -1306,7 +1307,7 @@ impl RunManager {
     /// `gate`'s text and the pane the same, redacted and capped once. The run
     /// goes on (W3).
     fn gate_refused(&self, pane: PaneId, live: &Live, gate: Gate, step: Step) -> Outcome {
-        let reason = refusal_reason(&gate.refusal(step));
+        let reason = refusal_reason(&gate.refusal(step, &live.run.steps().closed_steps()));
         let run = live.run.id();
         let event = OrchestraEvent::GateRefused {
             run,
@@ -1449,7 +1450,7 @@ impl RunManager {
         let stored = self.on_run(pane, run, |live| {
             match live.run.handoff_step(step, mark, note) {
                 Ok(StepDone { handoff, refused }) => {
-                    let mut text = format!("step {}: {}", step.label(), handoff.verdict.label());
+                    let mut text = live.run.steps().reply(step, handoff.verdict);
                     if !refused.is_empty() {
                         text.push_str(&format!(
                             "; read-only: code workers refused: {}",
@@ -1481,7 +1482,8 @@ impl RunManager {
             match live.run.feature_build(&live.goal, specs, tasks, note) {
                 Ok((handoff, doc)) => {
                     let text = format!(
-                        "feature document: {} specs, {} tasks, key orchestra/{}/feature",
+                        "{}; feature document: {} specs, {} tasks, key orchestra/{}/feature",
+                        live.run.steps().reply(Step::Track, handoff.verdict),
                         doc.specs().len(),
                         doc.tasks().len(),
                         run.0

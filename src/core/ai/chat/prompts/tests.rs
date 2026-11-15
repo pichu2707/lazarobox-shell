@@ -111,6 +111,8 @@ fn the_orchestrate_prompts_hold_one_playbook_per_odd_step_in_order() {
             "correction",
             "orchestra/<run>/feature",
             "drafts and review only",
+            "A handoff closes its step whatever the verdict",
+            "give a verdict",
         ] {
             assert!(prompt.contains(rule), "{profile:?}: {rule}");
         }

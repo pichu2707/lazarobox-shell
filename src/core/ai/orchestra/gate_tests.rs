@@ -177,7 +177,7 @@ fn lifting_the_gates_lets_a_code_spawn_through_with_steps_open() {
 #[test]
 fn the_refusal_text_names_the_gate_and_the_step() {
     for step in Step::ALL {
-        let spawn = Gate::Spawn.refusal(step);
+        let spawn = Gate::Spawn.refusal(step, &[]);
         assert!(spawn.starts_with("spawn gate:"), "{spawn}");
         assert!(spawn.contains(&format!("step {}", step.label())), "{spawn}");
         assert!(!spawn.contains("do not retry"), "{spawn}");
@@ -185,7 +185,7 @@ fn the_refusal_text_names_the_gate_and_the_step() {
             spawn.contains("spawn again only after it is handed off"),
             "{spawn}"
         );
-        let finish = Gate::Finish.refusal(step);
+        let finish = Gate::Finish.refusal(step, &[]);
         assert!(finish.starts_with("finish gate:"), "{finish}");
         assert!(finish.contains("Write off"), "{finish}");
         for text in [spawn, finish] {
@@ -265,7 +265,11 @@ fn a_code_worker_that_could_not_start_does_not_satisfy_the_finish_gate() {
         Err(Refusal::WriteOff)
     );
     assert_eq!(write_off.finish("done"), Err(FinishError::Gate));
-    assert!(Gate::Finish.refusal(Step::Implement).contains("Write off"));
+    assert!(
+        Gate::Finish
+            .refusal(Step::Implement, &[])
+            .contains("Write off")
+    );
     write_off.lift_gates();
     assert_eq!(write_off.finish("done"), Ok(vec![]));
 
@@ -434,4 +438,32 @@ fn waiting_for_the_reply_stops_at_the_turn_cap() {
     });
     let _ = run.spawn(Instant::now(), Task::Code, "p");
     assert_eq!(run.next_turn(), NextTurn::Capped(1));
+}
+
+// A spawn refusal names the steps already closed, so a model cannot think its
+// handoffs were lost.
+#[test]
+fn the_spawn_refusal_names_the_closed_steps() {
+    let closed = [Step::Authorize, Step::Explore];
+    let text = Gate::Spawn.refusal(Step::Resolve, &closed);
+    assert!(
+        text.starts_with("spawn gate: step resolve is not closed (closed: authorize, explore)."),
+        "{text}"
+    );
+    assert!(text.ends_with("Only the user can lift the gate (Enter gates off)"));
+    assert!(text.len() <= ERROR_CAP && text.is_ascii());
+    let none = Gate::Spawn.refusal(Step::Authorize, &[]);
+    assert!(none.contains("(closed: none)"), "{none}");
+}
+
+// The longest spawn refusal still fits the coordinator's error cap: the open
+// step comes after every closed one.
+#[test]
+fn the_spawn_refusal_fits_the_cap_with_every_earlier_step_closed() {
+    // The spawn gate only ever names a step before `implement`.
+    for (at, step) in Step::ALL.into_iter().take(5).enumerate() {
+        let text = Gate::Spawn.refusal(step, &Step::ALL[..at]);
+        assert!(text.len() <= ERROR_CAP && text.is_ascii(), "{text}");
+        assert!(text.ends_with("(Enter gates off)"), "{text}");
+    }
 }

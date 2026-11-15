@@ -14,7 +14,8 @@ use crate::core::ai::{
     },
 };
 
-const WAITS: &str = "run waits for your reply: step explore is not closed (Enter gates off)";
+const WAITS: &str =
+    "run waits for your reply: step explore is not closed; closed: authorize (Enter gates off)";
 
 fn waiting() -> (App, u64) {
     let (mut a, turn) = running();
@@ -22,11 +23,12 @@ fn waiting() -> (App, u64) {
         run: RUN,
         gate: Gate::Spawn,
         step: Step::Explore,
-        reason: Gate::Spawn.refusal(Step::Explore),
+        reason: Gate::Spawn.refusal(Step::Explore, &[]),
     }));
     a.update(event(OrchestraEvent::Waits {
         run: RUN,
         step: Step::Explore,
+        closed: vec![Step::Authorize],
     }));
     a.update(finish(turn));
     (a, turn)
@@ -179,7 +181,7 @@ fn refused_event() -> OrchestraEvent {
         run: RUN,
         gate: Gate::Spawn,
         step: Step::Explore,
-        reason: Gate::Spawn.refusal(Step::Explore),
+        reason: Gate::Spawn.refusal(Step::Explore, &[]),
     }
 }
 
@@ -187,6 +189,7 @@ fn waits_event() -> OrchestraEvent {
     OrchestraEvent::Waits {
         run: RUN,
         step: Step::Explore,
+        closed: vec![Step::Authorize],
     }
 }
 
