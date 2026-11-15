@@ -354,7 +354,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let probe_dir = probe_store::dir_from(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"));
     let terminal = crate::core::probe::terminal_key(
         |name| env::var(name).ok(),
-        crate::core::probe::current_emulator().as_deref(),
+        crate::core::probe::current_emulator,
     );
     let stored = probe_store::load(probe_dir.as_deref()).map(|rows| rows.get(&terminal).copied());
     app = app.with_probe(terminal, stored, start_args.check_prefix);

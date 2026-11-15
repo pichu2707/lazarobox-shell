@@ -99,14 +99,24 @@ impl Seen {
 ///    key handling);
 /// 4. `TERM`, followed by ` (name)` when it is generic (`xterm` or `xterm-`
 ///    plus a colour depth, as `xterm-256color`) and `emulator`, the process
-///    name of the terminal found by [`ancestor_emulator`], is known. zutty, st
-///    and xterm itself only set that, so `TERM` alone would share one row;
+///    name of the terminal found by [`ancestor_emulator`], gives one. zutty,
+///    st and xterm itself only set that, so `TERM` alone would share one row.
+///    `emulator` runs only then, and never over ssh (`SSH_CONNECTION` or
+///    `SSH_TTY` set), where the ancestor is `sshd`, not the terminal;
 /// 5. `unknown`.
+///
+/// The process walk is best effort: it silently falls back to plain `TERM`
+/// when `/proc` is unreadable, the chain is deeper than the limit, or it
+/// reaches pid 1. The key is only a row name, so the fallback costs one extra
+/// probe, not a failure.
 ///
 /// It only names the stored row; it never changes how the prefix behaves.
 /// Rows stored under the old generic key (`xterm-256color`) no longer match,
 /// so those terminals probe once more.
-pub fn terminal_key(var: impl Fn(&str) -> Option<String>, emulator: Option<&str>) -> String {
+pub fn terminal_key(
+    var: impl Fn(&str) -> Option<String>,
+    emulator: impl FnOnce() -> Option<String>,
+) -> String {
     let set = |name: &str| {
         var(name)
             .map(|v| v.trim().to_owned())
@@ -134,9 +144,15 @@ pub fn terminal_key(var: impl Fn(&str) -> Option<String>, emulator: Option<&str>
     let Some(term) = set("TERM") else {
         return "unknown".to_owned();
     };
-    match emulator.map(str::trim).filter(|e| !e.is_empty()) {
-        Some(name) if is_generic_term(&term) => format!("{term} ({name})"),
-        _ => term,
+    if !is_generic_term(&term) || set("SSH_CONNECTION").is_some() || set("SSH_TTY").is_some() {
+        return term;
+    }
+    match emulator()
+        .map(|e| e.trim().to_owned())
+        .filter(|e| !e.is_empty())
+    {
+        Some(name) => format!("{term} ({name})"),
+        None => term,
     }
 }
 
@@ -160,7 +176,7 @@ fn is_generic_term(term: &str) -> bool {
 }
 
 /// Process names that sit between the terminal and lazarobox.
-const NOT_AN_EMULATOR: [&str; 20] = [
+const NOT_AN_EMULATOR: [&str; 38] = [
     "sh",
     "bash",
     "zsh",
@@ -181,6 +197,24 @@ const NOT_AN_EMULATOR: [&str; 20] = [
     "script",
     "lazarobox",
     "lazarobox-shell",
+    "sshd",
+    "sshd-session",
+    "ssh",
+    "mosh-server",
+    "mosh-client",
+    "tmux: server",
+    "tmux",
+    "screen",
+    "cargo",
+    "just",
+    "make",
+    "nvim",
+    "vim",
+    "python3",
+    "python",
+    "node",
+    "pwsh",
+    "sudo-rs",
 ];
 
 /// How many ancestors [`ancestor_emulator`] looks at.
@@ -196,8 +230,9 @@ pub fn parent_pid(stat: &str) -> Option<u32> {
 
 /// The terminal emulator's process name: walks up from `start` (the parent
 /// of lazarobox), skipping shells and wrappers, and returns the first other
-/// name. `read` gives a pid's `(comm, parent pid)`. Pid 1, `init` and `systemd` end the
-/// walk with no name, as do a missing process and `WALK_LIMIT` levels.
+/// name. `read` gives a pid's `(comm, parent pid)`. Pid 1, `init`,
+/// `systemd`, a missing process, a name with control characters and
+/// `WALK_LIMIT` levels all end the walk with no name.
 pub fn ancestor_emulator(
     start: u32,
     read: impl Fn(u32) -> Option<(String, u32)>,
@@ -209,7 +244,10 @@ pub fn ancestor_emulator(
         }
         let (comm, parent) = read(pid)?;
         let comm = comm.trim();
-        if comm.is_empty() || matches!(comm, "init" | "systemd") {
+        if comm.is_empty()
+            || comm.chars().any(char::is_control)
+            || matches!(comm, "init" | "systemd")
+        {
             return None;
         }
         if !NOT_AN_EMULATOR.contains(&comm) {
@@ -440,7 +478,7 @@ mod tests {
 
     #[test]
     fn the_terminal_key_follows_the_environment_order() {
-        let key = |vars: &[(&str, &str)]| terminal_key(env(vars), None);
+        let key = |vars: &[(&str, &str)]| terminal_key(env(vars), || None);
         assert_eq!(
             key(&[
                 ("TERM_PROGRAM", "kitty"),
@@ -463,7 +501,7 @@ mod tests {
 
     #[test]
     fn terminal_specific_variables_come_before_term() {
-        let key = |vars: &[(&str, &str)]| terminal_key(env(vars), Some("zutty"));
+        let key = |vars: &[(&str, &str)]| terminal_key(env(vars), || Some("zutty".to_owned()));
         let t = ("TERM", "xterm-256color");
         assert_eq!(key(&[("KITTY_WINDOW_ID", "3"), t]), "kitty");
         assert_eq!(
@@ -489,7 +527,9 @@ mod tests {
 
     #[test]
     fn a_generic_term_gets_the_emulator_name_appended() {
-        let key = |term: &str, name: Option<&str>| terminal_key(env(&[("TERM", term)]), name);
+        let key = |term: &str, name: Option<&str>| {
+            terminal_key(env(&[("TERM", term)]), || name.map(str::to_owned))
+        };
         assert_eq!(
             key("xterm-256color", Some("zutty")),
             "xterm-256color (zutty)"
@@ -505,12 +545,81 @@ mod tests {
         assert_eq!(key("screen-256color", Some("tmux")), "screen-256color");
         // A terminal-specific variable is not suffixed either.
         assert_eq!(
-            terminal_key(
-                env(&[("VTE_VERSION", "1"), ("TERM", "xterm")]),
-                Some("gnome-terminal-")
-            ),
+            terminal_key(env(&[("VTE_VERSION", "1"), ("TERM", "xterm")]), || Some(
+                "gnome-terminal-".to_owned()
+            )),
             "vte"
         );
+    }
+
+    #[test]
+    fn the_walk_runs_only_when_a_generic_term_decides_the_key() {
+        use std::cell::Cell;
+        let key = |vars: &[(&str, &str)]| {
+            let calls = Cell::new(0);
+            let k = terminal_key(env(vars), || {
+                calls.set(calls.get() + 1);
+                Some("zutty".to_owned())
+            });
+            (k, calls.get())
+        };
+        let t = ("TERM", "xterm-256color");
+        assert_eq!(key(&[t]), ("xterm-256color (zutty)".to_owned(), 1));
+        for vars in [
+            vec![("TERM_PROGRAM", "kitty"), t],
+            vec![("WT_SESSION", "1"), t],
+            vec![("VTE_VERSION", "1"), t],
+            vec![("TERM", "xterm-kitty")],
+            vec![("TERM", "screen")],
+            vec![],
+            vec![t, ("SSH_CONNECTION", "1.2.3.4 1 5.6.7.8 22")],
+            vec![t, ("SSH_TTY", "/dev/pts/3")],
+        ] {
+            assert_eq!(key(&vars).1, 0, "{vars:?}");
+        }
+        // Over ssh the key stays plain TERM.
+        assert_eq!(key(&[t, ("SSH_TTY", "/dev/pts/3")]).0, "xterm-256color");
+        // Empty ssh variables do not count.
+        assert_eq!(key(&[t, ("SSH_TTY", "")]).1, 1);
+    }
+
+    #[test]
+    fn wrappers_and_session_tools_keep_the_walk_going() {
+        for name in [
+            "sshd",
+            "sshd-session",
+            "ssh",
+            "mosh-server",
+            "mosh-client",
+            "tmux: server",
+            "tmux",
+            "screen",
+            "cargo",
+            "just",
+            "make",
+            "nvim",
+            "vim",
+            "python3",
+            "python",
+            "node",
+            "pwsh",
+            "sudo-rs",
+        ] {
+            let tree = [(40, name, 30), (30, "zutty", 1)];
+            assert_eq!(
+                ancestor_emulator(40, table(&tree)),
+                Some("zutty".into()),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_with_control_characters_is_no_name() {
+        let tree = [(40, "zu\x1b[31mtty", 1)];
+        assert_eq!(ancestor_emulator(40, table(&tree)), None);
+        let tree = [(40, "bash", 30), (30, "a\nb", 20), (20, "zutty", 1)];
+        assert_eq!(ancestor_emulator(40, table(&tree)), None);
     }
 
     #[test]
