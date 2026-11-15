@@ -12,6 +12,16 @@ Read the skill's `SKILL.md` before acting when its trigger matches.
 | [`report-lazarobox-issue`](skills/report-lazarobox-issue/SKILL.md) | lazarobox crashes, hangs, prints an error or behaves against its README while you work: offer to report it on GitHub, with the user's consent, after searching open and closed issues. |
 | [`run-lazarobox`](skills/run-lazarobox/SKILL.md) | running, launching or driving lazarobox, or doing a manual or live check of a change on the real binary: use an isolated home and tmux session, never the user's config. |
 
+## README languages
+
+`README.md` is the full README in English (crates.io shows it) and
+`README.es.md` is the same content in Spanish. Each file is in one language
+only and starts with the language links. A change to one README changes the
+other in the same pull request, with the same sections in the same order.
+Code blocks, config keys, keys, commands and the texts lazarobox prints stay
+as they are in both; English phrases the code matches (for example in
+`src/core/ai/chat/next_step.rs`) are quoted as the code has them.
+
 ## Worktrees and build folders
 
 Each git worktree builds into its own `target/`, which grows to 10-20 GB in

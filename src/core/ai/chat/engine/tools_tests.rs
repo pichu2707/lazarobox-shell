@@ -69,18 +69,31 @@ fn the_text_only_servers_and_opencode_stay_off() {
 
 #[test]
 fn the_readme_states_llamacpp_tools_and_their_template_requirement() {
-    let readme = include_str!("../../../../../README.md");
-    assert!(
-        !readme.contains("Ninguno de los tres muestra razonamiento ni ofrece herramientas"),
-        "the old limit still says llama.cpp offers no tools"
-    );
-    let section = readme
-        .split("### Tools with llama.cpp")
-        .nth(1)
-        .expect("a `### Tools with llama.cpp` section");
-    let section = section.split("\n### ").next().unwrap();
-    for needle in ["--jinja", "Qwen2.5", "texto"] {
-        assert!(section.contains(needle), "{needle}");
+    let readmes = [
+        (
+            include_str!("../../../../../README.md"),
+            "### Tools with llama.cpp",
+            "text",
+        ),
+        (
+            include_str!("../../../../../README.es.md"),
+            "### Herramientas con llama.cpp",
+            "texto",
+        ),
+    ];
+    for (readme, heading, plain) in readmes {
+        assert!(
+            !readme.contains("Ninguno de los tres muestra razonamiento ni ofrece herramientas"),
+            "the old limit still says llama.cpp offers no tools"
+        );
+        let section = readme
+            .split(heading)
+            .nth(1)
+            .unwrap_or_else(|| panic!("a `{heading}` section"));
+        let section = section.split("\n### ").next().unwrap();
+        for needle in ["--jinja", "Qwen2.5", plain] {
+            assert!(section.contains(needle), "{heading}: {needle}");
+        }
     }
 }
 
