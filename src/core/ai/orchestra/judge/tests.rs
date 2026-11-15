@@ -637,7 +637,7 @@ fn one_judge_decides_and_no_verdict_leaves_the_batch_to_the_user() {
     );
     let failed = fail_at(2, "src/a.rs:4");
     assert_eq!(
-        agree(&[failed.clone()]),
+        agree(std::slice::from_ref(&failed)),
         Agreement::Fail(failed.faults.clone())
     );
     let Agreement::Disagree { missing } = agree(&[no_verdict()]) else {
