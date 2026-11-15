@@ -426,3 +426,177 @@ fn no_config_folder_writes_nothing() {
     assert!(matches!(done, Connected::Refused(_)), "{done:?}");
     assert!(!done.notice().contains('\n'));
 }
+
+const TWO: &str = "# mine\n[[ai.mcp.servers]]\nname = \"gsc\"\ncommand = \"uvx\"\n\n[[ai.mcp.servers]]\nname = \"ga4\"\ncommand = \"g\"\n";
+
+impl Lab {
+    fn approve_fs(
+        &self,
+        fs: &impl SaveFs,
+        shown: Option<&str>,
+        level: McpApproval,
+    ) -> Result<bool, AppendRefusal> {
+        let expected = shown.map(|text| digest(text.as_bytes()));
+        edit_approval_with(fs, Some(&self.config()), expected.as_ref(), "gsc", level)
+    }
+
+    fn approve(&self, shown: Option<&str>, level: McpApproval) -> Result<bool, AppendRefusal> {
+        self.approve_fs(&RealFs, shown, level)
+    }
+}
+
+// mcp-connect: Confirmed change adds the key (backup, mode, notice)
+#[test]
+fn an_approval_change_backs_up_the_old_bytes_and_keeps_the_mode() {
+    let lab = lab();
+    lab.put(&lab.config(), TWO, 0o644);
+    assert_eq!(lab.approve(Some(TWO), McpApproval::Reads), Ok(true));
+    assert_eq!(
+        lab.read("config.toml"),
+        TWO.replace(
+            "command = \"uvx\"\n",
+            "command = \"uvx\"\napproval = \"reads\"\n"
+        )
+    );
+    assert_eq!(lab.read("config.toml.bak"), TWO);
+    assert_eq!(lab.mode(&lab.config()), 0o644);
+    assert_eq!(lab.names(), ["config.toml", "config.toml.bak"]);
+    assert_eq!(
+        approval_notice("gsc", McpApproval::Reads, Ok(true)),
+        Ok("approval: gsc set to reads in config.toml; the previous file stays in config.toml.bak; restart lazarobox to use it in chats".to_owned())
+    );
+}
+
+// mcp-connect: The change is refused without a write
+#[test]
+fn every_refusal_leaves_the_file_and_no_backup() {
+    let level = McpApproval::All;
+    let lab = lab();
+    // Changed on disk, and entry removed after the screen was shown.
+    lab.put(&lab.config(), TWO, 0o644);
+    assert_eq!(
+        lab.approve(Some("mouse = true\n"), level),
+        Err(AppendRefusal::File(Refusal::Changed))
+    );
+    lab.assert_untouched(TWO);
+    let gone = "mouse = true\n";
+    lab.put(&lab.config(), gone, 0o644);
+    assert_eq!(
+        lab.approve(Some(gone), level),
+        Err(AppendRefusal::NotDeclared("gsc".into()))
+    );
+    lab.assert_untouched(gone);
+    // Not valid TOML, an inline list, read-only, group-writable, too large.
+    for bad in ["[broken\n", "[ai.mcp]\nservers = []\n"] {
+        lab.put(&lab.config(), bad, 0o644);
+        assert!(lab.approve(Some(bad), level).is_err(), "{bad:?}");
+        lab.assert_untouched(bad);
+    }
+    lab.put(&lab.config(), TWO, 0o444);
+    assert!(matches!(
+        lab.approve(Some(TWO), level),
+        Err(AppendRefusal::File(Refusal::ReadOnly(_)))
+    ));
+    lab.assert_untouched(TWO);
+    fs::set_permissions(lab.config(), fs::Permissions::from_mode(0o644)).unwrap();
+    let big = format!("# {}\n{TWO}", "x".repeat(MAX_BYTES as usize));
+    lab.put(&lab.config(), &big, 0o644);
+    assert_eq!(
+        lab.approve(Some(&big), level),
+        Err(AppendRefusal::File(Refusal::TooLarge))
+    );
+    lab.assert_untouched(&big);
+    // A symlink.
+    let lab = super::tests::lab();
+    let real = lab._root.path().join("elsewhere.toml");
+    lab.put(&real, TWO, 0o644);
+    symlink(&real, lab.config()).unwrap();
+    assert_eq!(
+        lab.approve(Some(TWO), level),
+        Err(AppendRefusal::File(Refusal::FileSymlink))
+    );
+    assert_eq!(fs::read_to_string(&real).unwrap(), TWO);
+    // A missing file.
+    let lab = super::tests::lab();
+    assert!(lab.approve(None, level).is_err());
+    assert!(lab.names().is_empty());
+    assert_eq!(
+        approval_notice("gsc", level, Err(AppendRefusal::Twice)),
+        Err(
+            "approval: nothing was written: declared more than once; set approval by hand"
+                .to_owned()
+        )
+    );
+}
+
+/// The real I/O with one step made to fail.
+struct Failing(&'static str);
+
+impl SaveFs for Failing {
+    fn euid(&self) -> u32 {
+        RealFs.euid()
+    }
+    fn random(&self) -> u64 {
+        RealFs.random()
+    }
+    fn open_dir(&self, path: &Path) -> std::io::Result<OwnedFd> {
+        RealFs.open_dir(path)
+    }
+    fn fstat(&self, fd: &OwnedFd) -> std::io::Result<Stat> {
+        RealFs.fstat(fd)
+    }
+    fn open_read(&self, dir: &OwnedFd, name: &str) -> std::io::Result<OwnedFd> {
+        RealFs.open_read(dir, name)
+    }
+    fn read(&self, fd: &OwnedFd, max: u64) -> std::io::Result<Vec<u8>> {
+        RealFs.read(fd, max)
+    }
+    fn stat_at(&self, dir: &OwnedFd, name: &str) -> std::io::Result<Stat> {
+        RealFs.stat_at(dir, name)
+    }
+    fn create_excl(&self, dir: &OwnedFd, name: &str) -> std::io::Result<OwnedFd> {
+        RealFs.create_excl(dir, name)
+    }
+    fn private(&self, fd: &OwnedFd) -> std::io::Result<()> {
+        RealFs.private(fd)
+    }
+    fn write_all(&self, fd: &OwnedFd, bytes: &[u8]) -> std::io::Result<()> {
+        if self.0 == "write" {
+            return Err(std::io::Error::from(std::io::ErrorKind::StorageFull));
+        }
+        RealFs.write_all(fd, bytes)
+    }
+    fn fsync(&self, fd: &OwnedFd) -> std::io::Result<()> {
+        if self.0 == "fsync" {
+            return Err(std::io::Error::from(std::io::ErrorKind::Other));
+        }
+        RealFs.fsync(fd)
+    }
+    fn rename(&self, dir: &OwnedFd, from: &str, to: &str) -> std::io::Result<()> {
+        if self.0 == "rename" && to == "config.toml" {
+            return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        }
+        RealFs.rename(dir, from, to)
+    }
+    fn unlink(&self, dir: &OwnedFd, name: &str) -> std::io::Result<()> {
+        RealFs.unlink(dir, name)
+    }
+}
+
+#[test]
+fn a_failing_write_fsync_or_rename_leaves_the_original() {
+    for step in ["write", "fsync", "rename"] {
+        let lab = lab();
+        lab.put(&lab.config(), TWO, 0o644);
+        let out = lab.approve_fs(&Failing(step), Some(TWO), McpApproval::All);
+        assert!(out.is_err(), "{step}");
+        assert_eq!(lab.read("config.toml"), TWO, "{step}");
+        assert!(
+            lab.names()
+                .iter()
+                .all(|n| n == "config.toml" || n == "config.toml.bak"),
+            "{step}: {:?}",
+            lab.names()
+        );
+    }
+}

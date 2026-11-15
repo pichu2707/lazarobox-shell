@@ -10,8 +10,13 @@ use std::path::Path;
 
 use super::secrets_write::{SaveFs, Target, replace_with, save_all_with};
 use crate::core::{
-    ai::mcp_secrets::{BACKUP as SECRETS_BACKUP, Refusal, line_of},
-    config_append::{AppendRefusal, BACKUP, Connect, Connected, FILE, MAX_BYTES, appended, digest},
+    ai::{
+        config::McpApproval,
+        mcp_secrets::{BACKUP as SECRETS_BACKUP, Refusal, line_of},
+    },
+    config_append::{
+        AppendRefusal, BACKUP, Connect, Connected, FILE, MAX_BYTES, appended, digest, edit_approval,
+    },
 };
 
 const CONFIG: Target = Target {
@@ -42,6 +47,46 @@ pub fn append_with(
         };
         appended(text, snippets, names)
     })
+}
+
+/// Sets the approval level of the entry `name` in the `config.toml` at
+/// `config`, when it still holds the bytes of digest `expected` (the ones the
+/// screen was shown). `true` when a backup was made. Reached only from the
+/// user's key in the Connectors area.
+pub fn edit_approval_with(
+    fs: &impl SaveFs,
+    config: Option<&Path>,
+    expected: Option<&[u8; 32]>,
+    name: &str,
+    level: McpApproval,
+) -> Result<bool, AppendRefusal> {
+    replace_with(fs, config, CONFIG, |current| {
+        if current.map(digest).as_ref() != expected {
+            return Err(Refusal::Changed.into());
+        }
+        let bytes = current.unwrap_or_default();
+        let text = std::str::from_utf8(bytes)
+            .map_err(|e| AppendRefusal::NotToml(line_of(bytes, e.valid_up_to())))?;
+        edit_approval(text, name, level)
+    })
+}
+
+/// The one line the user sees for [`edit_approval_with`]'s outcome.
+pub fn approval_notice(
+    name: &str,
+    level: McpApproval,
+    done: Result<bool, AppendRefusal>,
+) -> Result<String, String> {
+    match done {
+        Ok(_) => Ok(format!(
+            "approval: {name} set to {} in {FILE}; the previous file stays in {BACKUP}; restart lazarobox to use it in chats",
+            level.key()
+        )),
+        Err(refusal) => Err(format!(
+            "approval: nothing was written: {}",
+            refusal.notice()
+        )),
+    }
 }
 
 /// Saves the values of `write` in the `secrets.toml` at `secrets`, then
