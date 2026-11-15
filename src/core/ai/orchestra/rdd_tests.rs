@@ -1003,7 +1003,10 @@ mod judges {
         let silent = parse_ruling("nothing useful", 2);
         let mut single = judge_review();
         single
-            .judged(&agree(std::slice::from_ref(&silent)), &[silent.clone()])
+            .judged(
+                &agree(std::slice::from_ref(&silent)),
+                std::slice::from_ref(&silent),
+            )
             .unwrap();
         assert_eq!(single.conclude(), Ok(Outcome::Incomplete));
         assert!(
