@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-11-15
+
 ### Added
 
 - **Per-server approval level for MCP servers.** Each `[[ai.mcp.servers]]`
@@ -2940,7 +2942,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.27.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.28.0...HEAD
+[1.28.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.24.0...v1.25.0
