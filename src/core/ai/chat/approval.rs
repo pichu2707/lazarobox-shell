@@ -680,9 +680,13 @@ pub const RUN_BLOCKED_LINE: &str =
 /// Why a read of the user's files asks on a cloud engine once the
 /// conversation read GitHub text.
 pub const GITHUB_READ_ASK: &str = "this conversation read GitHub: reads of your files need your y";
+/// Why a call to a user's MCP server asks at any approval level once the
+/// conversation read GitHub text (design D32).
+const GITHUB_TOOL_ASK: &str = "this conversation read GitHub: calls to your servers need your y";
 /// The same three texts for a conversation blocked by rows of a newer
 /// version: nothing says GitHub was read, so none may say it.
 const NEWER_READ: &str = "auto-run is off: messages from a newer version";
+const NEWER_TOOL_ASK: &str = "messages from a newer version: calls to your servers need your y";
 const NEWER_READ_ASK: &str = "messages from a newer version: reads of your files need your y";
 const NEWER_RUN_LINE: &str =
     "approval: run (blocked: messages from a newer version; commands are only typed)";
@@ -701,6 +705,14 @@ impl BlockWhy {
         match self {
             Self::Marker => GITHUB_READ_ASK,
             Self::NewerRows => NEWER_READ_ASK,
+        }
+    }
+
+    /// Why a call to a user's server asks whatever its server's level.
+    pub fn tool_ask(self) -> &'static str {
+        match self {
+            Self::Marker => GITHUB_TOOL_ASK,
+            Self::NewerRows => NEWER_TOOL_ASK,
         }
     }
 
@@ -936,6 +948,14 @@ pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode, blocked: bool) -> O
 /// for `y`, whatever the mode. `None` for a local read, any other ask, and a
 /// conversation that is not blocked.
 pub fn blocked_read_reason(ask: &ApprovalAsk, blocked: Option<BlockWhy>) -> Option<&'static str> {
+    // A user tool that its server's level would have let run unasked: the
+    // reason the level did not apply (design D32).
+    if let ApprovalAsk::External {
+        unasked: Some(_), ..
+    } = ask
+    {
+        return blocked.map(BlockWhy::tool_ask);
+    }
     let reads = matches!(
         ask,
         ApprovalAsk::Read { cloud: true, .. }

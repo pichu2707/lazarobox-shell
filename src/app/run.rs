@@ -828,7 +828,8 @@ impl App {
                 command: format!("{server} {tool} {args}"),
                 keys: EXTERNAL_KEYS,
                 armed,
-                why: None,
+                // Set only for a blocked conversation (design D32).
+                why,
                 notice: None,
             }),
         }

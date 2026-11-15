@@ -177,8 +177,8 @@ Work units (each a reviewable commit; U1-U4 are S9a, U5-U6 are S9b, U7 is docs):
 
 ### U3 GitHub-blocked conversation and command match (D32, D29)
 
-- [ ] 9.8 RED/GREEN: a `blocked` conversation never gets `Unprompted::Level`: every call to a user tool opens the confirm showing the `BlockWhy` reason at `reads` and at `all`, nothing runs before `y`; the same call in an unblocked conversation runs unasked (mcp-servers: A GitHub-blocked conversation asks at all, A GitHub-blocked conversation asks for a read tool at reads; agent-tools: A blocked conversation asks whatever the level).
-- [ ] 9.9 RED/GREEN: end to end command match on the host path: a server named `gsc` declared with another command at `reads` shows a confirm for a tool the catalog classes read; at `all` it runs (mcp-servers: A custom server named like an entry asks at reads, the call half).
+- [x] 9.8 RED/GREEN: a `blocked` conversation never gets `Unprompted::Level`: every call to a user tool opens the confirm showing the `BlockWhy` reason at `reads` and at `all`, nothing runs before `y`; the same call in an unblocked conversation runs unasked (mcp-servers: A GitHub-blocked conversation asks at all, A GitHub-blocked conversation asks for a read tool at reads; agent-tools: A blocked conversation asks whatever the level).
+- [x] 9.9 RED/GREEN: end to end command match on the host path: a server named `gsc` declared with another command at `reads` shows a confirm for a tool the catalog classes read; at `all` it runs (mcp-servers: A custom server named like an entry asks at reads, the call half).
 
 ### U4 Visibility: start line and result marker (D33)
 

@@ -472,3 +472,42 @@ async fn the_filters_hold_at_every_approval_level() {
         assert_eq!(lab.received("google"), "", "{level:?}");
     }
 }
+
+// Spec (mcp-servers, A custom server named like an entry asks at reads, the
+// call half): a server named `ga4` that runs another command gets no Read
+// class from the catalog, so the call asks at `reads` and runs at `all`.
+#[tokio::test]
+async fn a_custom_server_named_like_an_entry_asks_at_reads_and_runs_at_all() {
+    use crate::core::ai::config::McpApproval::{All, Reads};
+    for (level, runs) in [(Reads, false), (All, true)] {
+        let lab = lab();
+        let server = at(lab.listing("ga4", &["run_report"], "echoed", "0"), level);
+        let approver = Modal::new(false, Decision::Denied("the user declined"));
+        let (dispatch, _rx) = level_world(&lab, &[server], &[], approver.clone()).await;
+        let out = dispatch.call(tool("ga4", "run_report")).await;
+        assert_eq!(!out.is_error, runs, "{level:?}: {out:?}");
+        let want = if runs { Some(All) } else { None };
+        assert_eq!(asked_level(&approver.asked()), [want], "{level:?}");
+        assert_eq!(
+            lab.received("ga4").contains("run_report"),
+            runs,
+            "{level:?}"
+        );
+    }
+}
+
+// Spec (mcp-servers, A GitHub-blocked conversation asks at all): the app does
+// not answer the ask of a blocked conversation, so the server is not
+// contacted before a `y`.
+#[tokio::test]
+async fn a_blocked_conversation_contacts_no_server_before_y() {
+    use crate::core::ai::config::McpApproval::All;
+    let lab = lab();
+    let server = at(lab.server("fake", "echo", "echoed"), All);
+    let approver = Modal::new(true, Decision::Denied("the user declined"));
+    let (dispatch, _rx) = level_world(&lab, &[server], &[], approver.clone()).await;
+    let out = dispatch.call(call()).await;
+    assert!(out.is_error && out.text.contains("declined"), "{out:?}");
+    assert_eq!(asked_level(&approver.asked()), [Some(All)]);
+    assert_eq!(lab.received("fake"), "");
+}

@@ -465,3 +465,68 @@ fn a_newer_rows_block_never_claims_github_text_was_read() {
         Some(GITHUB_READ)
     );
 }
+
+fn user_tool(level: crate::core::ai::config::McpApproval) -> ApprovalAsk {
+    ApprovalAsk::External {
+        server: "ga4".into(),
+        tool: "run_report".into(),
+        args: "{}".into(),
+        unasked: Some(level),
+    }
+}
+
+// Spec (mcp-servers, A GitHub-blocked conversation asks at all / at reads;
+// agent-tools, A blocked conversation asks whatever the level): a user tool
+// that its server's level would let run unasked opens the confirm with the
+// block reason, in every approval mode, and nothing is answered before `y`;
+// an unblocked conversation runs the same call unasked.
+#[test]
+fn a_blocked_conversation_asks_for_a_user_tool_at_reads_and_at_all() {
+    use crate::core::ai::config::McpApproval::{All, Reads};
+    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        for (index, level) in [Reads, All].into_iter().enumerate() {
+            let call = index as u64 + 1;
+            let (mut a, turn) = run_live();
+            chat_mut(&mut a).set_approval_mode(mode);
+            assert_eq!(
+                announce(&mut a, turn, call, user_tool(level)),
+                vec![decision(turn, call, Decision::Unprompted)],
+                "unblocked {mode:?} {level:?}"
+            );
+            started(&mut a, turn);
+            assert_eq!(
+                announce(&mut a, turn, call + 10, user_tool(level)),
+                vec![],
+                "blocked {mode:?} {level:?}"
+            );
+            let prompt = a.approval_prompt(id2()).unwrap();
+            assert_eq!(
+                prompt.why.as_deref(),
+                Some(BlockWhy::Marker.tool_ask()),
+                "{mode:?} {level:?}"
+            );
+            assert!(pending(&a).is_some(), "{mode:?} {level:?}");
+            assert_eq!(
+                a.update(key('y')),
+                vec![decision(turn, call + 10, Decision::Sent)],
+                "{mode:?} {level:?}"
+            );
+        }
+    }
+}
+
+// The default level carries no `unasked`, so the reason of the level is not
+// shown: the call asks as it always has.
+#[test]
+fn a_blocked_conversation_shows_no_level_reason_for_a_user_tool_at_ask() {
+    let (mut a, turn) = run_live();
+    started(&mut a, turn);
+    let plain = ApprovalAsk::External {
+        server: "ga4".into(),
+        tool: "run_report".into(),
+        args: "{}".into(),
+        unasked: None,
+    };
+    assert_eq!(announce(&mut a, turn, 1, plain), vec![]);
+    assert_eq!(a.approval_prompt(id2()).unwrap().why, None);
+}
