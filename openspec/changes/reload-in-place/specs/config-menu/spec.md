@@ -2,7 +2,7 @@
 
 ## Base of this delta
 
-This delta targets `openspec/specs/config-menu/spec.md`. The MODIFIED block is a full copy of the requirement "Notify, Sound and Updates keys (drift fix)" (openspec/specs/config-menu/spec.md:919-935) as it stands on e480992e. Only the Updates sentences change: Enter, which has no effect once an update was installed in this run (src/core/menu.rs:3033, src/app.rs:1986-2011), now asks for the reload. Scenarios are added at the end. The key and where it appears are Open question 1 of design.md; this delta writes its recommendation (A).
+This delta targets `openspec/specs/config-menu/spec.md`. The MODIFIED block is a full copy of the requirement "Notify, Sound and Updates keys (drift fix)" (openspec/specs/config-menu/spec.md:919-935) as it stands on main at 3b9548c2 (1.27.0). Only the Updates sentences change: Enter, which has no effect once an update was installed in this run (src/core/menu.rs:3290-3291, `update_ended` in src/app.rs:2084-2108), now asks for the reload. Scenarios are added at the end. The key and where it appears are Open question 1 of design.md; this delta writes its recommendation (A).
 
 ## MODIFIED Requirements
 
