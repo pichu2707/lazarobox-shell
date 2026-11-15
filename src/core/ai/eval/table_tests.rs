@@ -266,3 +266,50 @@ fn a_reason_names_the_pair_and_the_tool() {
     let table = render(&header(), &[Row::new("m", &READ_ONLY, vec![run])]);
     assert!(table.contains("forbidden:write_file"), "{table}");
 }
+
+// Verify S1: a sure rise elsewhere never hides a rise that lands on exactly 4
+// of 5, and a combination that vanished from the after table is reported.
+#[test]
+fn a_rise_onto_four_is_repeated_even_when_another_combination_rose() {
+    let before = [row("qwen3:14b", 3, 5), row("qwen2.5:7b", 1, 5)];
+    let after = [row("qwen3:14b", 4, 5), row("qwen2.5:7b", 3, 5)];
+    assert_eq!(
+        accept(&before, &after),
+        Verdict::Repeat(vec!["qwen3:14b write-and-test".to_owned()])
+    );
+}
+
+#[test]
+fn a_combination_missing_from_the_after_table_is_reported() {
+    let before = [row("qwen3:14b", 5, 5), row("qwen2.5:7b", 1, 5)];
+    let after = [row("qwen2.5:7b", 3, 5)];
+    assert_eq!(
+        accept(&before, &after),
+        Verdict::Refused(vec!["qwen3:14b write-and-test missing".to_owned()])
+    );
+    let informative = [row("tiny:1b", 5, 5), row("qwen2.5:7b", 1, 5)];
+    assert_eq!(accept(&informative, &after), Verdict::Accepted);
+}
+
+// Verify S3: the header never carries a path, a control or a non-ASCII char.
+#[test]
+fn the_header_fields_are_cleaned() {
+    let mut h = header();
+    h.hardware = "GPU \u{e9}\u{1b}[31m\n/home/u/box, 16 GiB".to_owned();
+    h.ollama = "0.30\r\n.10 C:\\x".to_owned();
+    let table = render(&h, &[row("m", 5, 5)]);
+    assert!(table.is_ascii() && !table.contains('\r') && !table.contains('\x1b'));
+    assert!(!table.contains("/home") && !table.contains("C:"), "{table}");
+    assert_eq!(
+        table
+            .lines()
+            .filter(|l| l.starts_with("hardware: "))
+            .count(),
+        1
+    );
+    assert_eq!(
+        table.lines().filter(|l| l.starts_with("ollama: ")).count(),
+        1
+    );
+    assert!(table.contains("16 GiB"), "{table}");
+}

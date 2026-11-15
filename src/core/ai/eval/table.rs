@@ -157,32 +157,38 @@ pub enum Verdict {
 }
 
 /// Judges `after` against `before` on the accepted models (C9): accepted when
-/// a combination rose and none fell below passing. A move across 4 of 5 that
-/// no other rise backs is borderline and must be repeated.
+/// a combination rose and none fell below passing or vanished. A rise onto or
+/// off exactly 4 of 5 is borderline and is repeated even when another
+/// combination rose; a drop onto 4 of 5 is noise that a sure rise outweighs.
 pub fn accept(before: &[Row], after: &[Row]) -> Verdict {
-    let (mut fell, mut sure, mut border) = (Vec::new(), false, Vec::new());
-    for now in after
-        .iter()
-        .filter(|r| ACCEPTED.contains(&r.model.as_str()))
-    {
+    let accepted = |r: &&Row| ACCEPTED.contains(&r.model.as_str());
+    let (mut fell, mut sure, mut up, mut down) = (Vec::new(), false, Vec::new(), Vec::new());
+    for was in before.iter().filter(accepted) {
+        if !after.iter().any(|r| r.name() == was.name()) {
+            fell.push(format!("{} missing", was.name()));
+        }
+    }
+    for now in after.iter().filter(accepted) {
         let Some(was) = before.iter().find(|r| r.name() == now.name()) else {
             continue;
         };
         let (a, b, runs) = (now.passed(), was.passed(), now.runs.len());
+        let edge = a == 4 || b == 4;
         if passes(b, was.runs.len()) && !passes(a, runs) {
             fell.push(now.name());
-        } else if a > b && (a == 4 || b == 4) {
-            border.push(now.name());
+        } else if a > b && edge {
+            up.push(now.name());
         } else if a > b {
             sure = true;
-        } else if a < b && (a == 4 || b == 4) {
-            border.push(now.name());
+        } else if a < b && edge {
+            down.push(now.name());
         }
     }
-    match (fell.is_empty(), sure, border.is_empty()) {
+    match (fell.is_empty(), up.is_empty(), sure, down.is_empty()) {
         (false, ..) => Verdict::Refused(fell),
-        (_, true, _) => Verdict::Accepted,
-        (_, _, false) => Verdict::Repeat(border),
+        (_, false, ..) => Verdict::Repeat(up),
+        (_, _, true, _) => Verdict::Accepted,
+        (.., false) => Verdict::Repeat(down),
         _ => Verdict::Refused(fell),
     }
 }
@@ -204,6 +210,26 @@ pub fn hardware(given: Option<&str>, gpu: Option<(&str, &str)>) -> String {
         (None, Some((name, memory))) => format!("{name}, {memory}"),
         (None, None) => "cpu".to_owned(),
     }
+}
+
+/// A header field as safe text: ASCII only, one line, and a word that looks
+/// like a path (`/` or `\`) replaced, so a table never carries a path.
+fn clean(field: &str) -> String {
+    let words: Vec<String> = field
+        .split_whitespace()
+        .map(|word| {
+            let word: String = word
+                .chars()
+                .map(|c| if c.is_ascii_graphic() { c } else { '?' })
+                .collect();
+            if word.contains(['/', '\\']) {
+                "?".to_owned()
+            } else {
+                word
+            }
+        })
+        .collect();
+    words.join(" ").chars().take(80).collect()
 }
 
 /// The UTC date `YYYY-MM-DD` of a Unix time.
@@ -243,7 +269,11 @@ pub fn render(header: &Header, rows: &[Row]) -> String {
     );
     let mut out = format!(
         "lazarobox local-model eval, format 1\ndate: {}\nollama: {}\nhardware: {}\nruns: {}\nlazarobox: {}\n\n",
-        header.date, header.ollama, header.hardware, header.runs, header.sha
+        clean(&header.date),
+        clean(&header.ollama),
+        clean(&header.hardware),
+        header.runs,
+        clean(&header.sha)
     );
     let mut summary = BTreeMap::<(&str, &str), (usize, usize)>::new();
     for row in &sorted {
