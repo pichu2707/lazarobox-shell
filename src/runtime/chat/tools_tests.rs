@@ -736,6 +736,28 @@ async fn the_chats_serve_every_key_of_a_pane() {
     assert_eq!(chats.close_batch(pane(2)), Some(1));
 }
 
+// A worker's batch that was put before the user is only theirs to apply while
+// its run lives: through the chats (no run manager here, so no run is live)
+// the apply says the run ended and writes nothing.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn the_chats_refuse_to_apply_a_worker_batch_of_a_run_that_is_not_live() {
+    use crate::core::ai::{chat::review::RUN_ENDED, orchestra::WorkerKey};
+    let lab = lab();
+    let (chats, _rx) = tooled(&lab, idle());
+    let key = StageKey::Worker(pane(1), WorkerKey::for_test(1, 1));
+    stage(&stager_of(&lab, key), "w.txt", "w").await;
+    let id = lab.host.asked_id_for_test(key).unwrap();
+    assert_eq!(
+        chats.apply_batch(id, None),
+        Some(BatchEvent::Done {
+            shown: RUN_ENDED.into(),
+            told: None,
+        })
+    );
+    assert!(!lab.home.join("proj/w.txt").exists(), "nothing was written");
+}
+
 // Spec (code-write, Orphan, close and quit): the user reviews, applies or
 // discards what a turn left behind, through the chats. While a turn runs the
 // batch is the model's, not an orphan.

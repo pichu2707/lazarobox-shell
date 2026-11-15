@@ -33,7 +33,7 @@ use tokio::{process::Command, task::JoinHandle, time::timeout};
 
 use super::{McpClient, Timeouts};
 use crate::{
-    core::ai::{config::McpServer, sanitize::clean},
+    core::ai::{config::McpServer, mcp_secrets::redact_values, sanitize::clean},
     runtime::{
         ai_detect::{finish_stderr, read_tail, stderr_note},
         mcp::shim::TOKEN_ENV,
@@ -150,22 +150,50 @@ impl McpClient {
         env_lookup: impl Fn(&str) -> Option<OsString>,
         timeouts: Timeouts,
     ) -> Result<Self, String> {
+        Self::start_redacting(server, home, env_lookup, timeouts, Vec::new()).await
+    }
+
+    /// [`McpClient::start`] where every non-empty entry of `redact` (the
+    /// values this server was given) is removed from what it says, before
+    /// that text is cut.
+    pub async fn start_redacting(
+        server: &McpServer,
+        home: &Path,
+        env_lookup: impl Fn(&str) -> Option<OsString>,
+        timeouts: Timeouts,
+        redact: Vec<String>,
+    ) -> Result<Self, String> {
         let mut client = Self::spawn(server, home, env_lookup)?;
         client.timeouts = timeouts;
+        client.redact = redact;
         let error = match client.handshake().await {
             Ok(()) => return Ok(client),
             Err(error) => error,
         };
         let stderr = client.process.as_mut().and_then(|p| p.stderr.take());
+        let redact = std::mem::take(&mut client.redact);
         client.shutdown().await;
         let said = match stderr {
             Some(task) => finish_stderr(task, START_GRACE).await,
             None => None,
         };
-        Err(match said.and_then(|bytes| stderr_note(&bytes)) {
-            Some(note) => format!("{}: {note}", error.reason()),
+        // The whole tail is redacted before `stderr_note` cuts it: once as it
+        // is, once cleaned (a color code can run through a value).
+        let said = said.map(|bytes| {
+            let text = redact_values(&String::from_utf8_lossy(&bytes), &redact);
+            redact_values(&clean(&text), &redact).into_bytes()
+        });
+        let note = said.and_then(|bytes| stderr_note(&bytes));
+        Err(match note {
+            Some(note) => format!("{}: {}", error.reason(), redact_values(&note, &redact)),
             None => error.reason(),
         })
+    }
+
+    /// Whether the process behind this client has ended (a `try_wait`).
+    pub fn has_exited(&mut self) -> bool {
+        let ended = |p: &mut Process| p.child.try_wait().is_ok_and(|status| status.is_some());
+        self.process.as_mut().is_some_and(ended)
     }
 
     /// Kills the server's whole process group and reaps it, in at most 3 s.

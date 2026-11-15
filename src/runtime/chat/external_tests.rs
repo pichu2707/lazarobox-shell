@@ -33,7 +33,6 @@ use crate::{
     runtime::{
         mcp::external::fake::{Lab as Fake, lab as fake_lab},
         orchestra::RunManager,
-        proc::process_state,
         tools::{Limits, ToolHost},
     },
 };
@@ -131,13 +130,19 @@ fn server_pid(lab: &Lab, name: &str) -> Option<libc::pid_t> {
 }
 
 async fn gone(pid: libc::pid_t) -> bool {
+    crate::runtime::proc::wait_gone(pid).await
+}
+
+/// Whether `pid` still runs after a few seconds: for a server that must not
+/// be stopped (a pass has to wait to be sure, so the wait is short).
+async fn outlives(pid: libc::pid_t) -> bool {
     for _ in 0..100 {
-        if matches!(process_state(pid), None | Some('Z')) {
-            return true;
+        if crate::runtime::proc::stopped(pid) {
+            return false;
         }
         sleep(Duration::from_millis(50)).await;
     }
-    false
+    true
 }
 
 #[tokio::test]
@@ -233,7 +238,10 @@ async fn a_background_run_leaves_the_servers_of_the_pane_running() {
     let pid = server_pid(&lab, "fs").expect("started");
     chats.send_background(pane(1), 2, request(""));
     notices(&mut rx).await;
-    assert!(!gone(pid).await, "a compaction run is not a tool-less turn");
+    assert!(
+        outlives(pid).await,
+        "a compaction run is not a tool-less turn"
+    );
 }
 
 #[tokio::test]

@@ -31,6 +31,9 @@ fn row(id: u32, status: WorkerStatus, elapsed: Option<u64>) -> WorkerRow {
         usage: None,
         partial: false,
         overridden: false,
+        inherited: false,
+        clarifying: None,
+        split: false,
     }
 }
 
@@ -360,5 +363,82 @@ fn a_refused_worker_never_ran_so_it_does_not_make_the_run_partial() {
         ends_with(&state, "run 10 in 1 out $0.0010"),
         "{:?}",
         texts(&state)
+    );
+}
+
+// agent-orchestrator / Row shows the clarification (W8c, 20.3): a done worker
+// that called `needs_specification` says so in its row; any other row does not.
+#[test]
+fn a_worker_row_says_it_needs_specification() {
+    let mut asked = row(1, WorkerStatus::Done, Some(3));
+    asked.clarifying = Some(1);
+    let mut state = chat();
+    state.worker_row(asked);
+    state.worker_row(row(2, WorkerStatus::Done, Some(3)));
+    let lines = texts(&state);
+    let said = |l: &&String| l.contains("needs specification");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("done 3.0s") && l.contains("needs specification")),
+        "{lines:?}"
+    );
+    assert_eq!(lines.iter().filter(said).count(), 1, "{lines:?}");
+}
+
+// Review fix: the third asker's row says the limit was reached, never `3 of 2`.
+#[test]
+fn the_third_askers_row_says_the_limit_was_reached() {
+    let mut third = row(3, WorkerStatus::Done, Some(3));
+    third.clarifying = Some(3);
+    let mut state = chat();
+    state.worker_row(third);
+    let lines = texts(&state);
+    let said = |l: &String| l.contains("needs specification, limit reached (2 rounds)");
+    assert!(lines.iter().any(said), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("round 3")), "{lines:?}");
+}
+
+// Spec (chat-pane, "A limit and a clarification stop are visible", W9b 22.7):
+// the row of a worker that ended with a split chosen says `split`, and no
+// clarification round.
+#[test]
+fn a_split_row_says_split_and_no_round() {
+    let mut split = row(2, WorkerStatus::Done, Some(3));
+    split.split = true;
+    let mut state = chat();
+    state.worker_row(split);
+    let lines = texts(&state);
+    let said = |l: &String| l.contains(" split") && !l.contains("needs specification");
+    assert!(lines.iter().any(said), "{lines:?}");
+}
+
+// Spec (chat-pane, "Row shows the round", W8c 20.3): the row of a worker that
+// ended "needs specification" in round 2 says `round 2 of 2`.
+#[test]
+fn a_clarifying_row_shows_its_round() {
+    let mut second = row(2, WorkerStatus::Done, Some(3));
+    second.clarifying = Some(2);
+    let mut state = chat();
+    state.worker_row(second);
+    let lines = texts(&state);
+    let said = |l: &String| l.contains("needs specification, round 2 of 2");
+    assert!(lines.iter().any(said), "{lines:?}");
+}
+
+// A worker on the engine of an unassigned task row says `(default)`, like the
+// menu row; the run's override says `(override)` instead.
+#[test]
+fn a_worker_row_marks_a_default_engine_and_an_override() {
+    let mut worker = row(1, WorkerStatus::Running, None);
+    worker.inherited = true;
+    assert_eq!(
+        transcript::worker_line(&worker),
+        "review codex>gpt-5 (default) running"
+    );
+    worker.overridden = true;
+    assert_eq!(
+        transcript::worker_line(&worker),
+        "review codex>gpt-5 (override) running"
     );
 }

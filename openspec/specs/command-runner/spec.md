@@ -34,8 +34,9 @@ Terms: "jail" = the Landlock sandbox (ABI 3 or higher) used for the child. "Root
 - WHEN the process is built
 - THEN the argument reaches `cargo` as one literal argv element and no shell runs
 
-### Requirement: Approval on every command
-Every `run_command` call MUST need an explicit user `y`, every time, in every approval mode. The prompt MUST show the program, the arguments, the working directory and a visible notice that network is on and that a test can exfiltrate the project's `.env`. A declined, timed-out or cancelled prompt ends as `denied` and nothing starts. The call MUST NOT be covered by any auto-approval.
+### Requirement: Approval on every command [W5]
+Every `run_command` call MUST need an explicit user `y`, every time, in every approval mode. The prompt MUST show the program, the arguments, the working directory and a visible notice that network is on and that a test can exfiltrate the project's `.env`. [W5] When the call comes from a worker, the prompt MUST also show the label `worker n/m <kind> <engine>><model>`, MUST join the worker approval queue, and its answer MUST reach the session of that worker only. A declined, timed-out or cancelled prompt ends as `denied` and nothing starts. The call MUST NOT be covered by any auto-approval. Time spent on the prompt does not count against the worker's deadline.
+(Previously: no worker could call `run_command`, so the prompt carried no worker label and no queue)
 
 #### Scenario: Prompt content [auto]
 - GIVEN a valid `cargo test` call
@@ -51,6 +52,16 @@ Every `run_command` call MUST need an explicit user `y`, every time, in every ap
 - GIVEN a pending prompt
 - WHEN `n`, a timeout or a cancel ends it
 - THEN the result is `denied` and no process was started
+
+#### Scenario: Worker command carries the label [W5, auto]
+- GIVEN a worker 1 of 2 `simple` on `ollama>llama3:8b` calling `cargo test`
+- WHEN the prompt is built
+- THEN it shows the label, `cargo test`, the cwd and the network notice, in `run` mode too
+
+#### Scenario: Worker answer stays with the worker [W5, auto]
+- GIVEN two workers with pending command asks
+- WHEN the user answers one
+- THEN the other worker's ask is unchanged and its worker is not resumed
 
 ### Requirement: Refusals before start
 `run_command` MUST be refused when any of these holds: no jail is active (Landlock ABI below 3, or a non-Linux system); the chat origin fails the root policy (when the origin is `$HOME`, a parent of `$HOME` or `/`, the text is the fixed `path not available: the chat's folder is your home, a folder above it or /, where commands cannot run; ask the user to run /cd <project folder>`, the same for every command and git verb and never naming the folder or a path); under WSL, the chat origin is a broad Windows drive folder (a drive root, `<drive>/Users` or a `<drive>/Users/<name>` profile root, granted or not; the text is `path not available: the chat's folder is <folder>, where commands cannot run; ask the user to run /cd <project folder>`, the same for every command and git verb, like the broad-folder text of writes); under WSL, the chat origin is any other Windows drive folder without the user's grant (the folder-level drive text of code-write, Root policy, the same for every command and git verb); `cwd` resolves outside the root; the chat holds unproposed staged changes (message `propose them first`); a run is already active in this chat; or two runs are already active across the whole app. A refusal MUST happen before any prompt. Tests always run against the disk, never against staged content.
@@ -79,6 +90,11 @@ Every `run_command` call MUST need an explicit user `y`, every time, in every ap
 - GIVEN `cwd` `..` and `cwd` `/tmp`
 - WHEN each is validated
 - THEN each is refused with the refusal text `path not available`
+
+#### Scenario: Cwd that is not a folder is named [auto]
+- GIVEN a `cwd` that is not an existing folder inside the root (missing, a file, or a link out)
+- WHEN the call is validated
+- THEN a path the root policy refuses (a secret, a hidden name) gets the bare `path not available`, whether it exists or not; any other gets one text, `path not available: the folder <cwd>/ is not a folder inside the chat's folder (paths are relative to the chat's folder <folder>)`, whatever is there, so it reveals nothing; and a worker whose own staged or unapplied batch stages that folder or something below it gets that batch's text (`propose them first`, or the not-applied text) instead
 
 ### Requirement: Jail profile
 The child MUST run inside the jail through the existing helper. The profile MUST grant: read and execute on the toolchain directories and system directories; read, write and execute on the root; read and write on a private temp directory and on the package caches; and nothing on `~/.ssh`, `~/.gnupg`, `~/.aws` or other credential locations. The write-and-execute class for the root MUST NOT be reachable from the CLI jail or from any other profile. Outbound network MUST stay open (a visible notice covers it). The child MUST NOT be able to read a credential directory even when the project asks for it. When the root is on a Windows drive, the jail's broad-root check MUST also refuse, ASCII case-insensitively, a drive root, `<drive>/Users`, any `<drive>/Users/<name>`, the Windows system folders, a profile's `AppData` and `NTUSER.DAT*`, and any path with a DOS 8.3 short name, so none of them can become the read, write and execute root. The jail helper cannot know the user's own Windows profile, so the other folders the WSL drive read policy refuses (another user's profile, the secret folders of a profile) are refused earlier, by the root policy, before the jail starts.
@@ -171,3 +187,21 @@ The working directory shown in the approval prompt and used to start a command M
 - GIVEN an approval prompt pending, and in another run a command running
 - WHEN `/cd /w/c` is requested
 - THEN it is refused with the matching reason and the prompt or run keeps its folder
+
+### Requirement: Worker commands run after the worker's batch is applied [W6]
+A command called by a worker MUST be refused with the existing `propose them first` message while that worker's own batch is staged or in review. A command MUST NOT run against staged content (no overlay). Until W10 ships, the existing per-pane refusals (a run already active in the chat, two runs across the app, the busy gate `CHAT_BUSY`) apply to workers as they do to a chat, and each refusal MUST be shown to the user as well as returned to the worker. Whether a worker's refusal is scoped to its own batch once workers have their own batches, and whether more than one command per pane may run, is open for design.
+
+#### Scenario: Refused while the batch is staged [W6, auto]
+- GIVEN a worker whose batch is staged or in review
+- WHEN it calls `run_command`
+- THEN the call returns `propose them first`, no prompt opens, and a notice shows the refusal
+
+#### Scenario: Runs after the batch is applied [W6, auto]
+- GIVEN a worker whose batch was approved and applied, and the user approving the command
+- WHEN it calls `cargo test`
+- THEN the command runs against the disk
+
+#### Scenario: Busy gate is disclosed [W6, auto]
+- GIVEN a run already active in the pane
+- WHEN a worker calls `run_command`
+- THEN it is refused before any prompt and the user sees a notice with the cause

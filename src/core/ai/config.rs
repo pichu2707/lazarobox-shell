@@ -24,16 +24,20 @@ pub enum Task {
     /// The orchestrator role. Appended last so the slot indices of the five
     /// original tasks hold.
     Orchestrate,
+    /// The worker role for direct, fully specified tasks. Appended after
+    /// `Orchestrate` so earlier slot indices hold; never part of `SET_ALL`.
+    Simple,
 }
 
 impl Task {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::General,
         Self::Code,
         Self::Chat,
         Self::Review,
         Self::Summarize,
         Self::Orchestrate,
+        Self::Simple,
     ];
 
     /// The five tasks `Set all tasks` and its aggregate cover: `Orchestrate`
@@ -55,6 +59,7 @@ impl Task {
             Self::Review => "review",
             Self::Summarize => "summarize",
             Self::Orchestrate => "orchestrate",
+            Self::Simple => "simple",
         }
     }
 
@@ -68,6 +73,7 @@ impl Task {
             Self::Review => "ai.tasks.review",
             Self::Summarize => "ai.tasks.summarize",
             Self::Orchestrate => "ai.tasks.orchestrate",
+            Self::Simple => "ai.tasks.simple",
         }
     }
 }
@@ -418,7 +424,7 @@ const MCP_ENV_NAME_MAX: usize = 64;
 /// they live under `[ai]` too.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AiConfig {
-    slots: [Assignment; 6],
+    slots: [Assignment; 7],
     profile: Profile,
     context: bool,
     notify: NotifyMode,
@@ -2229,7 +2235,8 @@ mod tests {
                 "chat",
                 "review",
                 "summarize",
-                "orchestrate"
+                "orchestrate",
+                "simple"
             ]
         );
         let tables: Vec<&str> = Task::ALL.iter().map(|t| t.table()).collect();
@@ -2241,7 +2248,8 @@ mod tests {
                 "ai.tasks.chat",
                 "ai.tasks.review",
                 "ai.tasks.summarize",
-                "ai.tasks.orchestrate"
+                "ai.tasks.orchestrate",
+                "ai.tasks.simple"
             ]
         );
     }
@@ -3616,6 +3624,62 @@ mod tests {
         assert_eq!(Task::Orchestrate as usize, 5);
         assert_eq!(Task::Orchestrate.table(), "ai.tasks.orchestrate");
         assert_eq!(Task::SET_ALL, Task::ALL[..5]);
+    }
+
+    // Spec (ai-task-models): Task set integrity [W8]; Set all excludes Simple.
+    #[test]
+    fn simple_is_the_seventh_task_and_set_all_is_unchanged() {
+        assert_eq!(Task::ALL.len(), 7);
+        assert_eq!(Task::Simple as usize, 6);
+        assert_eq!(Task::Simple.id(), "simple");
+        assert_eq!(Task::Simple.table(), "ai.tasks.simple");
+        assert_eq!(Task::ALL[6], Task::Simple);
+        assert_eq!(Task::SET_ALL, Task::ALL[..5]);
+    }
+
+    // Spec (configuration): Simple slot [W8].
+    #[test]
+    fn the_simple_slot_is_parsed_falls_back_to_general_and_flags_a_wrong_type() {
+        let (config, problems) =
+            read_text("[ai.tasks.simple]\nengine = \"ollama\"\nmodel = \"llama3:8b\"\n");
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(config.get(Task::Simple), &asg("ollama", "llama3:8b"));
+        let (config, _) = read_text("[ai]\nengine = \"codex\"\nmodel = \"default\"\n");
+        assert_eq!(config.get(Task::Simple), &Assignment::default());
+        assert_eq!(
+            config.resolve(Task::Simple),
+            (asg("codex", "default"), true)
+        );
+        assert_eq!(config.label(Task::Simple), "(default)");
+        let (config, problems) = read_text("[ai.tasks.simple]\nengine = 3\n");
+        assert_eq!(problems, vec!["ai.tasks.simple.engine: expected a string"]);
+        assert_eq!(config.get(Task::Simple), &Assignment::default());
+        let (_, problems) = read_text("[ai.tasks]\nsimple = 1\n");
+        assert_eq!(problems, vec!["ai.tasks.simple: expected a table"]);
+    }
+
+    // Spec (configuration): an older build ignores the table and keeps every
+    // other slot.
+    #[test]
+    fn a_simple_table_leaves_every_other_slot_as_written() {
+        let (config, problems) = read_text(
+            "[ai]\nengine = \"claude\"\nmodel = \"opus\"\n[ai.tasks.code]\nengine = \"codex\"\nmodel = \"default\"\n[ai.tasks.orchestrate]\nengine = \"claude\"\nmodel = \"sonnet\"\n[ai.tasks.simple]\nengine = \"ollama\"\nmodel = \"llama3:8b\"\n",
+        );
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(config.get(Task::General), &asg("claude", "opus"));
+        assert_eq!(config.get(Task::Code), &asg("codex", "default"));
+        assert_eq!(config.get(Task::Orchestrate), &asg("claude", "sonnet"));
+        assert_eq!(config.get(Task::Simple), &asg("ollama", "llama3:8b"));
+    }
+
+    // Spec (ai-task-models): the aggregate ignores `simple`.
+    #[test]
+    fn the_aggregate_ignores_simple() {
+        let config = cfg(&[
+            (Task::General, Some("claude"), Some("opus")),
+            (Task::Simple, Some("ollama"), Some("llama3:8b")),
+        ]);
+        assert_eq!(config.aggregate(), "claude › opus");
     }
 
     // Spec (configuration): Slot parsed, Absent means unassigned.

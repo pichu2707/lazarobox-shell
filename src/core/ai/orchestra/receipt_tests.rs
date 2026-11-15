@@ -183,6 +183,20 @@ fn no_correction_reads_none() {
     );
 }
 
+// Spec (Corrections are bounded): the receipt says the limit stopped the
+// correction, not that none was due.
+#[test]
+fn a_review_stopped_by_the_correction_limit_says_so() {
+    let mut held = found("FINDING severe change observed: pins a yanked crate");
+    held.review.note_limit(3);
+    let note = judgement(&held.evidence());
+    assert!(
+        note.done.contains("correction: limit reached (3 rounds)"),
+        "{}",
+        note.done
+    );
+}
+
 // Spec (A late path is not reviewed): late, changed and unread paths are listed.
 #[test]
 fn late_changed_and_unread_paths_are_listed() {
@@ -451,4 +465,48 @@ fn a_diff_gap_is_named_and_never_called_clean() {
         "{}",
         note.left
     );
+}
+
+// Spec "Cheap author, no consent" (17.2, D21): a mandatory review's receipt
+// and its batch-review line say `mandatory`, never `granted`, and it counts
+// as reviewed.
+#[test]
+fn a_mandatory_review_says_mandatory_in_the_receipt_and_the_line() {
+    let mut review = high();
+    review.consent(Consent::Mandatory).unwrap();
+    review.pick("risk", "a cheap author").unwrap();
+    review.report(Lens::Risk, "NONE").unwrap();
+    let outcome = review.conclude().ok();
+    let held = Held::of(review, outcome);
+    let ev = held.evidence();
+    let note = judgement(&ev);
+    assert!(note.done.contains("consent: mandatory"), "{}", note.done);
+    assert!(note.done.contains("outcome: clean"), "{}", note.done);
+    let text = line(&ev);
+    assert!(text.contains("consent mandatory"), "{text}");
+    assert!(!text.contains("granted"), "{text}");
+    assert!(summary(&ev).reviewed);
+}
+
+// Spec "Reviewer unavailable stops visibly" (17.7) and D21: a review that
+// stopped before it could conclude says why in its receipt and in the batch
+// review line, still `not reviewed`.
+#[test]
+fn a_stopped_review_says_why_in_the_receipt_and_the_line() {
+    let mut review = high();
+    review.consent(Consent::Mandatory).unwrap();
+    review.note_stop("lens risk (worker 3) was refused: gemini is not installed");
+    let held = Held::of(review, None);
+    let ev = held.evidence();
+    let note = judgement(&ev);
+    assert!(
+        note.done.contains(
+            "outcome: not reviewed (lens risk (worker 3) was refused: gemini is not installed)"
+        ),
+        "{}",
+        note.done
+    );
+    let text = line(&ev);
+    assert!(text.contains("not reviewed (lens risk"), "{text}");
+    assert!(!summary(&ev).reviewed);
 }

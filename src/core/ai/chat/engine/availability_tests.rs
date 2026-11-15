@@ -1,6 +1,6 @@
 use super::*;
 use crate::core::ai::{
-    EngineState,
+    EngineState, ServerPorts,
     config::Assignment,
     jail::{Backend, JailOff, JailSupport},
 };
@@ -281,6 +281,48 @@ fn a_model_that_is_not_listed_needs_a_download() {
             model: "old:7b".into()
         }
     );
+}
+
+// llama.cpp cannot download a model: a name the server does not serve is a
+// naming mismatch (`--alias`), never a download.
+#[test]
+fn a_llamacpp_model_under_another_served_name_is_not_served() {
+    let c = cfg(Task::Chat, Some("llamacpp"), Some("qwen"));
+    let d = detected(vec![state(
+        "llamacpp",
+        Status::Available,
+        &["/models/qwen2.5-7b.gguf"],
+    )]);
+    assert_eq!(
+        availability(&c, Some(&d), JAIL),
+        Availability::ModelNotServed {
+            engine: "llamacpp".into(),
+            model: "qwen".into(),
+            served: vec!["/models/qwen2.5-7b.gguf".into()],
+            port: 8080,
+        }
+    );
+}
+
+#[test]
+fn a_llamacpp_alias_equal_to_the_model_is_ready() {
+    let c = cfg(Task::Chat, Some("llamacpp"), Some("qwen"));
+    let d = detected(vec![state("llamacpp", Status::Available, &["qwen"])]);
+    assert_eq!(
+        availability(&c, Some(&d), JAIL),
+        ready("llamacpp", Some("qwen"))
+    );
+}
+
+#[test]
+fn a_llamacpp_port_override_reaches_the_not_served_state() {
+    let c = cfg(Task::Chat, Some("llamacpp"), Some("qwen"))
+        .with_servers(ServerPorts::default().with("llamacpp", 39080));
+    let d = detected(vec![state("llamacpp", Status::Available, &[])]);
+    assert!(matches!(
+        availability(&c, Some(&d), JAIL),
+        Availability::ModelNotServed { port: 39080, ref served, .. } if served.is_empty()
+    ));
 }
 
 #[test]

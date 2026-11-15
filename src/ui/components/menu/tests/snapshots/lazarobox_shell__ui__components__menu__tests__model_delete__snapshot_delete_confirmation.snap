@@ -3,7 +3,7 @@ source: src/ui/components/menu/tests/model_delete.rs
 expression: "text(&draw(80, POPUP_H, &confirming(Some(2_400_000_000))))"
 ---
          ┌ Menu ──────────────────────────────────────────────────────┐         
-         │ Settings │ Models │ Tools │ Chat                           │         
+         │ Settings │ Models │ Tools │ Connectors │ Chat              │         
          │ Delete a model                                             │         
          │ delete qwen3:4b?                                           │         
          │ size: 2.4 GB (models share layers, so it may free less)    │         

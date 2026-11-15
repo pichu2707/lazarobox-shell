@@ -93,6 +93,9 @@ struct PortableHandle {
     writer: Sender<Vec<u8>>,
     pid: Option<u32>,
     killed: bool,
+    /// How long the shell gets to handle SIGHUP: `HUP_GRACE`, or longer in a
+    /// test that must not depend on being scheduled within it.
+    hup_grace: Duration,
 }
 
 impl PtyHandle for PortableHandle {
@@ -138,7 +141,7 @@ impl PtyHandle for PortableHandle {
         let running = matches!(self.reaped.try_recv(), Err(TryRecvError::Empty));
         if running {
             self.signal_group(libc::SIGHUP);
-            if self.reaped.recv_timeout(HUP_GRACE).is_ok() {
+            if self.reaped.recv_timeout(self.hup_grace).is_ok() {
                 // Shell gone; jobs it left behind can outlive it.
                 self.signal_group(libc::SIGKILL);
                 return;
@@ -202,6 +205,15 @@ fn pump<R: Read + ?Sized>(reader: &mut R, sink: &mut PtySink) -> bool {
 /// Starts the child described by `spec` on a new PTY. `sink` receives its
 /// output and, once, `Exited` when the PTY closes.
 pub fn spawn_portable(spec: &SpawnSpec, sink: PtySink) -> io::Result<Box<dyn PtyHandle>> {
+    spawn_with_grace(spec, sink, HUP_GRACE)
+}
+
+/// [`spawn_portable`] with the SIGHUP grace of [`PtyHandle::kill`] given.
+fn spawn_with_grace(
+    spec: &SpawnSpec,
+    sink: PtySink,
+    hup_grace: Duration,
+) -> io::Result<Box<dyn PtyHandle>> {
     let pair = native_pty_system()
         .openpty(pty_size(spec.size))
         .map_err(io::Error::other)?;
@@ -278,6 +290,7 @@ pub fn spawn_portable(spec: &SpawnSpec, sink: PtySink) -> io::Result<Box<dyn Pty
         writer: tx,
         pid,
         killed: false,
+        hup_grace,
     }))
 }
 
@@ -294,14 +307,23 @@ mod tests {
         pane::PaneSize,
         pty::{PtyEvent, SpawnSpec},
     };
+    use crate::runtime::proc::{stopped, wait_gone_blocking};
 
     const TIMEOUT: Duration = Duration::from_secs(5);
 
     fn spawn(program: &str, size: PaneSize) -> (Box<dyn PtyHandle>, Receiver<PtyEvent>) {
+        spawn_graced(program, size, HUP_GRACE)
+    }
+
+    fn spawn_graced(
+        program: &str,
+        size: PaneSize,
+        hup_grace: Duration,
+    ) -> (Box<dyn PtyHandle>, Receiver<PtyEvent>) {
         let (tx, rx) = mpsc::channel();
         let spec = SpawnSpec::new(Some(program), "/".into(), size);
         let sink: PtySink = Box::new(move |event| tx.send(event).is_ok());
-        (spawn_portable(&spec, sink).expect("spawn"), rx)
+        (spawn_with_grace(&spec, sink, hup_grace).expect("spawn"), rx)
     }
 
     /// Collects output until `needle` shows up or the timeout expires.
@@ -503,19 +525,6 @@ mod tests {
         assert_eq!(count_exited(&rx, Duration::from_secs(15)), 1);
     }
 
-    fn is_alive(pid: u32) -> bool {
-        std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .map(|stat| {
-                !stat
-                    .rsplit(')')
-                    .next()
-                    .unwrap_or("")
-                    .trim_start()
-                    .starts_with('Z')
-            })
-            .unwrap_or(false)
-    }
-
     /// The pid in `job=<pid>` of the shell's output (the tty echo of the
     /// command line has `job=$!`, no digits). Only a whole line counts: the
     /// output can arrive in pieces, and `job=1` of `job=1234` is not pid 1.
@@ -568,24 +577,32 @@ mod tests {
                 None => {}
             }
         };
-        assert!(is_alive(job));
+        assert!(!stopped(job as libc::pid_t));
         assert_eq!(
             parent_of(job),
             pty.pid(),
             "job={job} is not the shell's child"
         );
         drop(pty);
-        let deadline = Instant::now() + TIMEOUT;
-        while is_alive(job) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(!is_alive(job), "background job survived the drop");
+        // The job is reparented once its shell is gone, so a zombie waiting
+        // for init counts as gone.
+        assert!(
+            wait_gone_blocking(job as libc::pid_t),
+            "background job survived the drop"
+        );
     }
 
     /// Starts `/bin/sh`, installs `setup`, then spins so signals are handled
     /// promptly. Returns once the shell reported it is ready.
     fn spawn_spinning_shell(setup: &str) -> (Box<dyn PtyHandle>, Receiver<PtyEvent>) {
-        let (mut pty, rx) = spawn("/bin/sh", size(24, 80));
+        spinning_shell(setup, HUP_GRACE)
+    }
+
+    fn spinning_shell(
+        setup: &str,
+        hup_grace: Duration,
+    ) -> (Box<dyn PtyHandle>, Receiver<PtyEvent>) {
+        let (mut pty, rx) = spawn_graced("/bin/sh", size(24, 80), hup_grace);
         // The split quotes keep the tty echo of the command line from matching.
         pty.write(format!("{setup}\necho rea\"\"dy; while :; do :; done\n").into_bytes());
         assert!(wait_for(&rx, "ready").contains("ready"), "shell not ready");
@@ -593,13 +610,17 @@ mod tests {
     }
 
     // Quit must let the shell handle SIGHUP (save history, run traps) before
-    // the group is force-killed.
+    // the group is force-killed. The grace is long here: a loaded runner may
+    // not schedule the trap within `HUP_GRACE`, and kill() returns as soon as
+    // the shell exits, so a passing run stays fast (#438).
     #[test]
     fn kill_lets_the_shell_handle_sighup() {
         let marker = std::env::temp_dir().join(format!("lazarobox-hup-{}", std::process::id()));
         let _ = std::fs::remove_file(&marker);
-        let (mut pty, _rx) =
-            spawn_spinning_shell(&format!("trap 'echo bye > {}; exit' HUP", marker.display()));
+        let (mut pty, _rx) = spinning_shell(
+            &format!("trap 'echo bye > {}; exit' HUP", marker.display()),
+            Duration::from_secs(20),
+        );
         pty.kill();
         let said = std::fs::read_to_string(&marker);
         let _ = std::fs::remove_file(&marker);

@@ -203,6 +203,10 @@ pub enum Decision {
     /// A check that fails (a full-screen app, a shell that cannot take a
     /// multi-line paste) is a `Denied` with the reason instead.
     Sent,
+    /// `Sent` for a command typed, not run, with the reason `y` in `run` mode
+    /// did not run it (a half-typed line, a program in the pane...); the model
+    /// is told it has not run and why.
+    SentNotRun(&'static str),
     /// `Sent` for a command typed without a prompt (design D18) into the pane
     /// the user knows as number `.0`; the result row names it.
     Typed(usize),
@@ -432,6 +436,15 @@ pub enum Availability {
         engine: String,
         model: String,
     },
+    /// A llama.cpp server is up but serves other ids than the configured
+    /// model (its `--alias` differs). Nothing is missing: llama.cpp cannot
+    /// download, so this is a naming mismatch. `served` may be empty.
+    ModelNotServed {
+        engine: String,
+        model: String,
+        served: Vec<String>,
+        port: u16,
+    },
 }
 
 /// Resolves the engine of the `chat` task. Pure, never changes the
@@ -562,6 +575,15 @@ pub fn availability_for_with(
             return Availability::NoModel { engine };
         };
         if !state.models.iter().any(|m| same_model(m, &model)) {
+            if engine == "llamacpp" {
+                let port = cfg.servers().port(&engine).unwrap_or_default();
+                return Availability::ModelNotServed {
+                    engine,
+                    model,
+                    served: state.models.clone(),
+                    port,
+                };
+            }
             return Availability::ModelMissing { engine, model };
         }
         return Availability::Ready {

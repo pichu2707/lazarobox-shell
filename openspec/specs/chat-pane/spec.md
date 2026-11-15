@@ -379,7 +379,8 @@ Before a message is sent, and again on every send attempt, the engine for the ch
 - unsupported (`opencode`): `not supported in chat yet`;
 - no jail (`codex` or `gemini` on a system without a working CLI jail, see chat-engines): `<engine>: not available on this system yet`;
 - CLI gated off (an adapter exists but a manual gate failed, see chat-engines): the engine id and `gated off`;
-- server with no model, or a model that is not detected: the engine id, the model name when set, and `no model` or `download required`.
+- server with no model, or a model that is not detected: the engine id, the model name when set, and `no model` or `download required`;
+- `llamacpp` with a model the server does not serve under that name (llama.cpp cannot download): the engine id, the server address (`127.0.0.1:<port>`), the configured model, the fix (`--alias <model>` or setting the model to the served name) and then at most three served ids in quotes, each clipped, with `(+N more)` for the rest (or `it serves no model`). The fix MUST come before the ids so a long list never cuts it. It MUST NOT say `download required`.
 While the first detection result has not arrived, the pane MUST show `checking engines…` and a send MUST wait for the result instead of failing.
 
 #### Scenario: Unassigned [auto]
@@ -411,6 +412,11 @@ While the first detection result has not arrived, the pane MUST show `checking e
 - GIVEN `chat` is `ollama` / `old:7b` and ollama lists only `llama3:8b`
 - WHEN send is attempted
 - THEN the guidance names `old:7b` and `download required` and no ChatSend is emitted
+
+#### Scenario: llama.cpp serves the model under another id [auto]
+- GIVEN `chat` is `llamacpp` / `qwen` and the server lists only `/models/qwen2.5-7b.gguf`
+- WHEN send is attempted
+- THEN the guidance says the server at `127.0.0.1:8080` does not serve `"qwen"`, names `--alias qwen` and then the served `"/models/qwen2.5-7b.gguf"`, does not contain `download`, and no ChatSend is emitted
 
 #### Scenario: Checking engines [auto]
 - GIVEN no detection result has arrived and `chat` is `ollama` / `llama3:8b`
@@ -1248,3 +1254,42 @@ The chat MUST show a visible notice (a system line, never silence) for each of t
 - GIVEN a pane running an alternate-screen app and `scrollback: 50`
 - WHEN the call is served
 - THEN the visible grid is read and a notice says scrollback is unavailable there
+
+### Requirement: Worker-flow notices are transcript notices [W1, W2, W7, W8]
+Every notice this change introduces (undelegated reply, silent worker outcomes, spawn refusals, the Write-off refusal, gate refusals and overrides, the clarification limit, the same-model warning, the local-reviewer limits, the cloud-diff notice, the queue-for-one-writer notice) MUST be a system line in the pane's transcript. Each MUST be ASCII, short, neutral in tone, never sent to a model as history, never saved as a chat message, and included in yank and COPY like other system lines. A notice MUST be shown each time its condition occurs. The Write-off refusal notice MUST name the `Write` toggle and the step to turn it on from the chat.
+
+#### Scenario: Notice is a system line, not history [W1, auto]
+- GIVEN a notice raised during a run
+- WHEN the next orchestrator turn is built
+- THEN the history does not hold it, and the transcript still shows it
+
+#### Scenario: Notice repeats [W1, auto]
+- GIVEN the undelegated-reply condition happens in two turns
+- WHEN each turn ends
+- THEN the notice is shown after each
+
+### Requirement: Worker asks are labelled and queued [W5, W6, W9]
+A worker's command ask, line-limit ask and outside-brief ask MUST show the label `worker n/m <kind> <engine>><model>` and join the worker approval queue (one prompt visible at a time, FIFO, the count waiting shown), like a worker's read ask. Each answer applies to its own prompt, reaches the session of the worker that asked, and reaches no other worker. Cancelling a worker denies its pending and queued asks. A timer never answers any of them.
+
+#### Scenario: Command ask reaches its own worker [W5, auto]
+- GIVEN workers 1 and 2 each calling `run_command`
+- WHEN the user answers the first prompt `y` and the second `n`
+- THEN worker 1's command runs, worker 2's ends `denied`, and neither answer reaches the other worker
+
+#### Scenario: Ask shows the label [W5, auto]
+- GIVEN worker 2 of 3, kind `simple` on `ollama>llama3:8b`, asking to run `cargo test`
+- WHEN the prompt is drawn
+- THEN it shows `worker 2/3 simple ollama>llama3:8b` with the program, args and cwd
+
+#### Scenario: Cancel denies the ask [W9, auto]
+- GIVEN a worker with a pending line-limit ask
+- WHEN the worker is cancelled
+- THEN the ask ends as denied and no extra lines are written
+
+### Requirement: A limit and a clarification stop are visible in the run row [W8, W9]
+A worker row whose worker ended "needs specification", or ended with a split chosen, MUST show that state in its status text, and the run state MUST show the clarification round of the brief (`round n of 2`) while a brief is being clarified.
+
+#### Scenario: Row shows the round [W8, auto, TestBackend + insta]
+- GIVEN a `simple` worker that ended "needs specification" in round 2
+- WHEN the row and run state are rendered
+- THEN the row says it needs specification and the run state shows `round 2 of 2`

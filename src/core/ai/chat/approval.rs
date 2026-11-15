@@ -152,6 +152,10 @@ pub enum ApprovalAsk {
         /// What a run of this chat that was cancelled left changed in the
         /// watched git places, as one sanitized line the host fills in.
         earlier: Option<String>,
+        /// The worker that asks and its label (see [`worker_label`]), as
+        /// for [`ApprovalAsk::WorkerRead`]: the host fills it in from the
+        /// worker's scope; [`ask_for`] and a chat's call leave it `None`.
+        worker: Option<(WorkerKey, String)>,
     },
     /// Show the diff of the repository to the engine: file text leaves the
     /// machine, so a cloud engine asks (`git_status` and `git_log` return
@@ -230,6 +234,21 @@ pub enum ApprovalAsk {
         /// Why the change is `high` and which paths it holds, one clean line.
         change: String,
     },
+    /// A `simple` worker's staged batch holds a file over the 400-line limit,
+    /// or one outside its brief (W9, D14, decision K2): the user is asked
+    /// before the batch is reviewed or proposed. `y` keeps the batch whole;
+    /// `n` or Esc splits the work and discards the staged batch. Never routed
+    /// by the approval mode, and only the user answers it.
+    Limit {
+        /// The worker whose batch it is: the session the answer goes to.
+        worker: WorkerKey,
+        /// That worker's label (see [`worker_label`]), one clean line.
+        label: String,
+        /// The files over the limit, each with its counted lines.
+        over: Vec<LimitFile>,
+        /// The staged files the brief does not list, one clean line each.
+        outside: Vec<String>,
+    },
     /// Change the chat folder (the user's `/cd`, never a tool call). `from`
     /// is the current folder as one sanitized line, `to` the resolved folder
     /// that becomes the chat's on `y`, and `note` a fact the user must see
@@ -242,6 +261,15 @@ pub enum ApprovalAsk {
         note: Option<String>,
         checking: bool,
     },
+}
+
+/// One file of a limit ask: the counted lines a write adds to it, whether
+/// every added line was counted (an unknown language), all one clean line.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LimitFile {
+    pub path: String,
+    pub lines: usize,
+    pub every_line: bool,
 }
 
 /// Where a read leads, as the host found it on the real path (every link
@@ -281,11 +309,12 @@ impl ApprovalAsk {
         }
     }
 
-    /// Whether a worker raised the ask (a read outside its scope, a batch it
-    /// proposed): only those queue behind a pending approval.
+    /// Whether a worker raised the ask (a read outside its scope, a command,
+    /// a batch it proposed): only those queue behind a pending approval.
     pub fn is_worker(&self) -> bool {
         match self {
-            Self::WorkerRead { .. } | Self::Consent { .. } => true,
+            Self::WorkerRead { .. } | Self::Consent { .. } | Self::Limit { .. } => true,
+            Self::Exec { worker, .. } => worker.is_some(),
             Self::Batch(review) => review.label().is_some(),
             _ => false,
         }
@@ -296,7 +325,10 @@ impl ApprovalAsk {
     /// that session and no other.
     pub fn worker(&self) -> Option<WorkerKey> {
         match self {
-            Self::WorkerRead { worker, .. } | Self::Consent { worker, .. } => Some(*worker),
+            Self::WorkerRead { worker, .. }
+            | Self::Consent { worker, .. }
+            | Self::Limit { worker, .. } => Some(*worker),
+            Self::Exec { worker, .. } => worker.as_ref().map(|(key, _)| *key),
             Self::Batch(review) => review.worker(),
             _ => None,
         }
@@ -350,6 +382,7 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
                 timeout_secs: u64::try_from(allow::TIMEOUT_DEFAULT).unwrap_or(120),
                 cloud: locality == Locality::Cloud,
                 earlier: None,
+                worker: None,
             })
         }
         // The diff holds file text, so it goes to a cloud provider only after
@@ -424,6 +457,8 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         // The host reads the index and builds the commit review itself.
         | Call::GitCommit { .. }
         | Call::Github(_)
+        // It records the worker's question on the run: nothing to approve.
+        | Call::NeedsSpecification { .. }
         | Call::Orchestra(_) => None,
     }
 }
@@ -1004,6 +1039,11 @@ pub const FOLDER_KEYS: &str = "y change folder · any other key cancels";
 pub const FOLDER_CHECKING_KEYS: &str = "Esc cancels";
 /// The keys of the consent prompt of a receipt-driven review.
 pub const CONSENT_KEYS: &str = "y review it · n skip the review";
+/// The keys of the limit ask of a `simple` worker (decision K2).
+pub const LIMIT_KEYS: &str = "y keep · n or Esc split";
+/// The keys of that ask when it lists only files outside the brief: there is
+/// nothing to split (decision K2).
+pub const OUTSIDE_KEYS: &str = "y keep · n or Esc decline";
 /// The keys of the `/github` dialog. ASCII: it must read on a Linux console.
 pub const GITHUB_GRANT_KEYS: &str = "y allow | n or Esc decline";
 /// What the `/github` dialog adds under the repository. ASCII.
@@ -1029,11 +1069,22 @@ pub const WRITE_DECLINED_LINE: &str = "Write stays off";
 /// Why a model's call cannot open the `/write` dialog.
 pub const TOOL_GRANT_DENIED: &str = "only the user can turn Write on for a chat";
 
-/// The prompt of the `/write` dialog for the chat folder `folder`.
+/// What the `/exec` dialog adds under the folder. ASCII.
+pub const EXEC_GRANT_NOTE: &str = "the model may propose commands in this folder, this chat only\nevery command still asks, in every approval mode\nthe saved Exec toggle stays as it is";
+/// The system line of an `/exec` grant. ASCII, 80 columns.
+pub const EXEC_GRANTED_LINE: &str =
+    "Exec on for this chat from the next message; every command still asks";
+/// The system line of a declined `/exec` dialog.
+pub const EXEC_DECLINED_LINE: &str = "Exec stays off";
+/// Why a model's call cannot open the `/exec` dialog.
+pub const EXEC_GRANT_DENIED: &str = "only the user can turn Exec on for a chat";
+
+/// The prompt of the `/write` or `/exec` dialog for the chat folder `folder`.
 pub fn tool_grant_prompt(toggle: ToolToggle, folder: &Path, armed: bool) -> ApprovalPrompt {
-    let name = match toggle {
-        ToolToggle::Write => "Write",
-        other => other.key(),
+    let (name, note) = match toggle {
+        ToolToggle::Write => ("Write", WRITE_GRANT_NOTE),
+        ToolToggle::Exec => ("Exec", EXEC_GRANT_NOTE),
+        other => (other.key(), WRITE_GRANT_NOTE),
     };
     ApprovalPrompt {
         target: format!("Turn {name} on for this chat?"),
@@ -1041,7 +1092,7 @@ pub fn tool_grant_prompt(toggle: ToolToggle, folder: &Path, armed: bool) -> Appr
         keys: TOOL_GRANT_KEYS,
         armed,
         why: None,
-        notice: Some(WRITE_GRANT_NOTE.to_owned()),
+        notice: Some(note.to_owned()),
     }
 }
 
@@ -1280,6 +1331,28 @@ mod tests {
         utf8: true,
         github_read: None,
     };
+
+    // 22.2 (W9b, D14): no mode routes the limit ask of a worker: it prompts.
+    #[test]
+    fn a_limit_ask_is_never_routed_by_a_mode() {
+        let ask = ApprovalAsk::Limit {
+            worker: WorkerKey::for_test(1, 1),
+            label: "simple x>y".to_owned(),
+            over: vec![LimitFile {
+                path: "src/a.rs".to_owned(),
+                lines: 401,
+                every_line: false,
+            }],
+            outside: Vec::new(),
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            assert!(matches!(
+                route(&ask, Origin::Tool, mode, FREE),
+                Route::Prompt(None)
+            ));
+            assert_eq!(answers_itself(&ask, mode, false), None);
+        }
+    }
 
     fn run_ask() -> ApprovalAsk {
         ask_of("cd x")
@@ -1982,6 +2055,9 @@ mod tests {
             WRITE_GRANTED_LINE,
             WRITE_DECLINED_LINE,
             TOOL_GRANT_DENIED,
+            EXEC_GRANTED_LINE,
+            EXEC_DECLINED_LINE,
+            EXEC_GRANT_DENIED,
         ] {
             assert!(line.is_ascii() && line.len() <= 80, "{line:?}");
         }
@@ -2284,6 +2360,71 @@ mod tests {
         assert_eq!(a.waiting(), MAX_QUEUED);
     }
 
+    fn exec_ask(worker: Option<(crate::core::ai::orchestra::WorkerKey, &str)>) -> ApprovalAsk {
+        ApprovalAsk::Exec {
+            program: "cargo".into(),
+            args: vec!["test".into()],
+            cwd: ".".into(),
+            script: None,
+            timeout_secs: 120,
+            cloud: false,
+            earlier: None,
+            worker: worker.map(|(key, label)| (key, label.to_owned())),
+        }
+    }
+
+    // D19: a worker's command ask names its worker, so it queues and its
+    // answer reaches that session; a chat's own command ask is unchanged.
+    #[test]
+    fn a_worker_exec_ask_is_a_worker_ask_and_a_chat_one_is_not() {
+        let key = crate::core::ai::orchestra::WorkerKey::for_test(1, 2);
+        let worker = exec_ask(Some((key, "2/3 code ollama>llama3:8b")));
+        assert!(worker.is_worker());
+        assert_eq!(worker.worker(), Some(key));
+        let chat = exec_ask(None);
+        assert!(!chat.is_worker());
+        assert_eq!(chat.worker(), None);
+    }
+
+    // A worker's command ask queues behind a pending ask, up to the bound; a
+    // chat's own is still refused beside one.
+    #[test]
+    fn a_worker_exec_ask_queues_and_a_chat_one_is_refused() {
+        let key = crate::core::ai::orchestra::WorkerKey::for_test(1, 2);
+        let mut a = Approvals::default();
+        a.request_call(worker_read("a", "w"), 1, CallId(1), None)
+            .unwrap();
+        let err = a
+            .request_call(exec_ask(None), 1, CallId(2), None)
+            .unwrap_err();
+        assert_eq!(err.reason(), ANOTHER_PENDING);
+        for n in 0..MAX_QUEUED as u64 {
+            a.request_call(exec_ask(Some((key, "w"))), 1, CallId(10 + n), None)
+                .unwrap();
+        }
+        assert_eq!(a.waiting(), MAX_QUEUED);
+        let err = a
+            .request_call(exec_ask(Some((key, "w"))), 1, CallId(999), None)
+            .unwrap_err();
+        assert_eq!(err.reason(), QUEUE_FULL);
+    }
+
+    // GUARD: no mode answers a command ask, a worker's or a chat's.
+    #[test]
+    fn no_mode_answers_an_exec_ask_of_a_worker_or_a_chat() {
+        let key = crate::core::ai::orchestra::WorkerKey::for_test(1, 2);
+        for ask in [exec_ask(None), exec_ask(Some((key, "w")))] {
+            for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+                for blocked in [false, true] {
+                    assert_eq!(answers_itself(&ask, mode, blocked), None, "{mode:?}");
+                }
+                for origin in [Origin::Tool, Origin::Block] {
+                    assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
+                }
+            }
+        }
+    }
+
     #[test]
     fn all_three_asks_can_be_pending() {
         for ask in [
@@ -2439,6 +2580,7 @@ mod tests {
                         timeout_secs: 120,
                         cloud: locality == Locality::Cloud,
                         earlier: None,
+                        worker: None,
                     })
                 );
             }
@@ -2778,6 +2920,7 @@ mod tests {
             timeout_secs: 120,
             cloud: false,
             earlier: None,
+            worker: None,
         };
         for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
             for origin in [Origin::Tool, Origin::Block] {

@@ -342,6 +342,10 @@ impl Badge {
 /// orphan badge, or the badge went stale.
 pub const NO_ORPHAN: &str = "no orphan batch to review";
 
+/// Said when a review, or an answer to one, finds its run ended: the run
+/// denied the batch, so nothing was written and nothing can be.
+pub const RUN_ENDED: &str = "review closed: the run ended; nothing was written";
+
 /// The notice of a close that discarded `entries` staged entries.
 pub fn closed_notice(entries: usize) -> String {
     let s = if entries == 1 { "y" } else { "ies" };

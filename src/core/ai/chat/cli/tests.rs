@@ -426,6 +426,7 @@ fn the_known_flags_are_exactly_what_the_argv_builders_pass() {
         socket: "/run/user/1000/lazarobox/s-1-1.sock".into(),
         token: Secret::new("0123456789abcdef0123456789abcdef"),
         unwire: Unwire::none(),
+        coordinator: false,
     };
     for engine in ["claude", "codex", "gemini"] {
         let request = ChatRequest {

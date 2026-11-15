@@ -83,6 +83,10 @@ pub enum PrefixAction {
     RunInPane,
     /// Flips the focused chat between `ask` and `auto` for its conversation.
     ToggleApproval,
+    /// Opens the `/exec` dialog of the focused chat. Never grants.
+    OpenExecGrant,
+    /// Opens the `/write` dialog of the focused chat. Never grants.
+    OpenWriteGrant,
     ToggleZoom,
     NewTab,
     CloseTab,
@@ -257,6 +261,10 @@ pub const PREFIX_TREE: &[Binding] = &[
         "approval: ask/auto/run",
         PrefixAction::ToggleApproval,
     )),
+    // `w` is the window group, so Write takes `f` (files). Both only open the
+    // dialog of the command; `y` there is what grants.
+    unhinted(act('x', "Exec grant dialog", PrefixAction::OpenExecGrant)),
+    unhinted(act('f', "Write grant dialog", PrefixAction::OpenWriteGrant)),
     // `t` is the tab group, so the tag editor takes the capital.
     unhinted(act('T', "tags", PrefixAction::EditTags)),
     // `w` is the window group, so the worker transcript takes the capital.
@@ -687,6 +695,35 @@ mod tests {
         assert!(!hint(PREFIX_TREE, 200).contains("approval"));
     }
 
+    // Spec (modal-input, grant keys): `x` and `f` are unhinted root leaves named
+    // Exec and Write, bound nowhere else; the root hint is unchanged.
+    #[test]
+    fn x_and_f_are_unhinted_root_leaves_that_open_the_grant_dialogs() {
+        for (c, action, name) in [
+            ('x', PrefixAction::OpenExecGrant, "Exec"),
+            ('f', PrefixAction::OpenWriteGrant, "Write"),
+        ] {
+            let binding = PREFIX_TREE
+                .iter()
+                .find(|b| b.chord.matches(&plain(c)))
+                .expect("bound at the root");
+            assert_eq!(binding.target, Target::Action(action));
+            assert!(
+                binding.description.contains(name),
+                "{}",
+                binding.description
+            );
+            assert!(!binding.description.to_lowercase().contains("run"));
+            assert!(!binding.hinted);
+            let roots = PREFIX_TREE.iter().filter(|b| b.chord.matches(&plain(c)));
+            assert_eq!(roots.count(), 1, "no duplicate key at the root");
+            for table in &tables()[1..] {
+                assert_ne!(lookup(table, &plain(c)), Step::Run(action));
+            }
+        }
+        assert_eq!(width(&hint(PREFIX_TREE, 200)), 79);
+    }
+
     #[test]
     fn c_inside_another_group_does_not_open_a_chat() {
         for table in &tables()[1..] {
@@ -737,8 +774,8 @@ mod tests {
                 chord.label()
             );
         }
-        // literal (the alias counted apart) + quit + copy + menu + chat + note + memory + summary + run + approval + tags + worker + resume + discard + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
-        assert_eq!(once.len(), 38);
+        // literal (the alias counted apart) + quit + copy + menu + chat + note + memory + summary + run + approval + exec + write + tags + worker + resume + discard + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
+        assert_eq!(once.len(), 40);
     }
 
     #[test]

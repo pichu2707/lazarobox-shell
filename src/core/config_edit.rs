@@ -1754,6 +1754,26 @@ other = 1
         assert_eq!(out, "[ai.tasks.orchestrate]\nextra = 1\n");
     }
 
+    // Spec (configuration): Simple slot [W8]. A cleared `simple` is absent
+    // from the file like `orchestrate`, so an older build never reads a stale
+    // empty table.
+    #[test]
+    fn clearing_the_simple_slot_removes_its_keys() {
+        use crate::core::ai::config::Task;
+        let table = Task::Simple.table();
+        let edit = |key, value: &'static str| ConfigEdit {
+            table,
+            key,
+            value: std::borrow::Cow::Borrowed(value),
+        };
+        let rest = "[ai]\nengine = \"x\"\n";
+        let with_slot = format!("{rest}\n[ai.tasks.simple]\nengine = \"ollama\"\nmodel = \"m\"\n");
+        let out = apply_edit(Some(&with_slot), &[edit("engine", ""), edit("model", "")]).unwrap();
+        assert_eq!(out.trim_end(), rest.trim_end());
+        let out = apply_edit(Some(rest), &[edit("engine", ""), edit("model", "")]).unwrap();
+        assert_eq!(out, rest);
+    }
+
     #[test]
     fn the_other_tasks_still_write_empty_strings_when_cleared() {
         let out = apply_edit(None, &code_edits("", "")).unwrap();

@@ -256,6 +256,220 @@ pub(crate) fn process_state(pid: libc::pid_t) -> Option<char> {
     }
 }
 
+/// How long a test waits for a signalled process to be gone. Polling returns
+/// as soon as it is, so a generous bound costs nothing on a pass; it only
+/// matters on a runner so starved that a SIGKILLed process is not scheduled to
+/// exit for seconds. Tests of the runtime use this one bound, never their own.
+#[cfg(test)]
+pub(crate) const GONE_WITHIN: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// No such process, or only a zombie nobody has collected yet.
+#[cfg(test)]
+pub(crate) fn stopped(pid: libc::pid_t) -> bool {
+    matches!(process_state(pid), None | Some('Z'))
+}
+
+/// A gap between two polls this far above the poll interval means the runner
+/// itself stalled (a starved VM), not that the process is slow to exit.
+#[cfg(test)]
+const STALL_GAP: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// After the deadline the wait keeps polling this long before it judges, so
+/// one instant of bad luck at the deadline cannot fail a process that exits a
+/// moment later.
+#[cfg(test)]
+const GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// What the wait loop does next.
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+enum GoneStep {
+    Gone,
+    Poll,
+    Fail,
+}
+
+/// The decisions of a gone-wait, free of clocks and sleeping so they can be
+/// tested: it tracks the largest gap between polls, grants a grace after the
+/// deadline and, when a stall was seen, extends the deadline once.
+#[cfg(test)]
+struct GoneWatch {
+    start: std::time::Instant,
+    last: std::time::Instant,
+    end: std::time::Instant,
+    grace_end: Option<std::time::Instant>,
+    largest_gap: std::time::Duration,
+    extended: bool,
+}
+
+#[cfg(test)]
+impl GoneWatch {
+    fn new(now: std::time::Instant, within: std::time::Duration) -> Self {
+        Self {
+            start: now,
+            last: now,
+            end: now + within,
+            grace_end: None,
+            largest_gap: std::time::Duration::ZERO,
+            extended: false,
+        }
+    }
+
+    /// Records a poll at `now` that found the process gone or not.
+    fn step(&mut self, now: std::time::Instant, gone: bool) -> GoneStep {
+        self.largest_gap = self
+            .largest_gap
+            .max(now.saturating_duration_since(self.last));
+        self.last = now;
+        if gone {
+            return GoneStep::Gone;
+        }
+        if now < self.end {
+            return GoneStep::Poll;
+        }
+        match self.grace_end {
+            None => {
+                self.grace_end = Some(now + GRACE);
+                GoneStep::Poll
+            }
+            Some(grace_end) if now < grace_end => GoneStep::Poll,
+            Some(_) if self.stalled() && !self.extended => {
+                // A stall does not count against the process: wait once more.
+                self.extended = true;
+                self.end = now + GONE_WITHIN;
+                self.grace_end = None;
+                GoneStep::Poll
+            }
+            Some(_) => GoneStep::Fail,
+        }
+    }
+
+    /// How long the wait has run, as of the last poll.
+    fn elapsed(&self) -> std::time::Duration {
+        self.last.saturating_duration_since(self.start)
+    }
+
+    fn largest_gap(&self) -> std::time::Duration {
+        self.largest_gap
+    }
+
+    fn stalled(&self) -> bool {
+        self.largest_gap > STALL_GAP
+    }
+
+    fn extended(&self) -> bool {
+        self.extended
+    }
+}
+
+/// The contents of a file, or why it could not be read: never a panic.
+#[cfg(all(test, target_os = "linux"))]
+fn read_or_missing(path: &str) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(text) => format!("{path}: {}", text.trim().replace('\n', " | ")),
+        Err(e) => format!("{path}: unreadable ({e})"),
+    }
+}
+
+/// What a process that should be gone is doing: pid, state letter and, on
+/// Linux, the State/PPid/Name lines of `/proc`.
+#[cfg(test)]
+pub(crate) fn describe(pid: libc::pid_t) -> String {
+    describe_with(pid, &GoneWatch::new(std::time::Instant::now(), GONE_WITHIN))
+}
+
+/// [`describe`] plus what the wait saw of the runner: the largest gap between
+/// polls, whether a stall extended the wait and, on Linux, its load.
+#[cfg(test)]
+fn describe_with(pid: libc::pid_t, watch: &GoneWatch) -> String {
+    #[cfg(target_os = "linux")]
+    let more = {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+        let lines: Vec<&str> = status
+            .lines()
+            .filter(|l| {
+                ["State:", "PPid:", "Name:"]
+                    .iter()
+                    .any(|k| l.starts_with(k))
+            })
+            .collect();
+        format!("{lines:?}")
+    };
+    // No /proc elsewhere: `ps` answers, or says why it could not.
+    #[cfg(not(target_os = "linux"))]
+    let more = match std::process::Command::new("ps")
+        .args(["-o", "stat=,ppid=,comm=", "-p", &pid.to_string()])
+        .output()
+    {
+        Ok(out) => format!("ps: {}", String::from_utf8_lossy(&out.stdout).trim()),
+        Err(e) => format!("no /proc here and `ps` could not run: {e}"),
+    };
+    let text = format!(
+        "pid {pid} still runs after {:?}: state {:?} {more}\n\
+         largest poll gap {:?} (a stall is above {STALL_GAP:?}); stall extension: {}",
+        watch.elapsed(),
+        process_state(pid),
+        watch.largest_gap(),
+        if watch.extended() { "yes" } else { "no" },
+    );
+    #[cfg(target_os = "linux")]
+    let text = {
+        let load: Vec<String> = ["/proc/loadavg", "/proc/pressure/cpu"]
+            .iter()
+            .map(|path| read_or_missing(path))
+            .collect();
+        format!("{text}\n{}", load.join("\n"))
+    };
+    text
+}
+
+/// Waits (on the async clock) for `pid` to be gone, a zombie counting as gone
+/// unless `zombie` is false. Says what it found on stderr when it gives up, so
+/// the output of the failed test shows it.
+#[cfg(test)]
+pub(crate) async fn wait_gone_with(pid: libc::pid_t, zombie: bool) -> bool {
+    let done = |pid| {
+        if zombie {
+            stopped(pid)
+        } else {
+            process_state(pid).is_none()
+        }
+    };
+    let mut watch = GoneWatch::new(std::time::Instant::now(), GONE_WITHIN);
+    loop {
+        match watch.step(std::time::Instant::now(), done(pid)) {
+            GoneStep::Gone => return true,
+            GoneStep::Poll => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+            GoneStep::Fail => {
+                eprintln!("{}", describe_with(pid, &watch));
+                return false;
+            }
+        }
+    }
+}
+
+/// [`wait_gone_with`] counting a zombie as gone.
+#[cfg(test)]
+pub(crate) async fn wait_gone(pid: libc::pid_t) -> bool {
+    wait_gone_with(pid, true).await
+}
+
+/// [`wait_gone`] for a test that cannot use the async clock.
+#[cfg(test)]
+pub(crate) fn wait_gone_blocking(pid: libc::pid_t) -> bool {
+    let mut watch = GoneWatch::new(std::time::Instant::now(), GONE_WITHIN);
+    loop {
+        match watch.step(std::time::Instant::now(), stopped(pid)) {
+            GoneStep::Gone => return true,
+            GoneStep::Poll => std::thread::sleep(std::time::Duration::from_millis(20)),
+            GoneStep::Fail => {
+                eprintln!("{}", describe_with(pid, &watch));
+                return false;
+            }
+        }
+    }
+}
+
 /// Reads the outcome of `ps -o stat= -p PID`, failing closed: only "ps ran
 /// and found no such pid" (exit status 1, empty output, as on macOS/BSD)
 /// counts as gone. A `ps` that cannot run, or ends any other way, panics so
@@ -439,20 +653,6 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    /// No such process, or only a zombie nobody has collected yet.
-    fn is_gone(pid: libc::pid_t) -> bool {
-        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Err(_) => true,
-            Ok(stat) => stat
-                .rsplit(')')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .starts_with('Z'),
-        }
-    }
-
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn kill_and_reap_takes_down_grandchildren_of_a_leader_that_exited() {
         use tokio::io::AsyncReadExt;
@@ -486,11 +686,36 @@ mod tests {
             .expect("wait succeeds");
         assert!(status.success());
         assert!(!group.is_armed(), "reaping disarms the guard");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !is_gone(grandchild) && std::time::Instant::now() < deadline {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        assert!(is_gone(grandchild), "the group's grandchild is killed");
+        assert!(
+            super::wait_gone(grandchild).await,
+            "the group's grandchild is killed"
+        );
+    }
+
+    // The shared diagnostic names the pid and the state a "stopped" process
+    // was left in, and a killed one (zombie or reaped) is gone.
+    #[tokio::test]
+    async fn a_process_that_still_runs_is_described_and_a_killed_one_is_gone() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id() as libc::pid_t;
+        assert!(!stopped(pid));
+        let why = describe(pid);
+        assert!(
+            why.contains(&format!("pid {pid} still runs")) && why.contains("state Some("),
+            "{why}"
+        );
+        // Only Linux has the /proc lines; elsewhere `ps` answers.
+        #[cfg(target_os = "linux")]
+        assert!(why.contains("PPid:"), "{why}");
+        #[cfg(not(target_os = "linux"))]
+        assert!(why.contains("ps: "), "{why}");
+        child.kill().unwrap();
+        assert!(wait_gone(pid).await);
+        child.wait().unwrap();
+        assert!(wait_gone_blocking(pid));
     }
 
     #[test]
@@ -530,5 +755,120 @@ mod tests {
         assert!(!running(pid, start), "a zombie has ended");
         child.wait().unwrap();
         assert!(!running(pid, start));
+    }
+
+    use std::time::{Duration, Instant};
+
+    /// Drives a watch with a fake clock: each poll happens `gap` after the last.
+    fn drive(watch: &mut GoneWatch, now: &mut Instant, gap: Duration, gone: bool) -> GoneStep {
+        *now += gap;
+        watch.step(*now, gone)
+    }
+
+    #[test]
+    fn a_gone_process_ends_the_wait_at_once() {
+        let t0 = Instant::now();
+        let mut w = GoneWatch::new(t0, GONE_WITHIN);
+        assert_eq!(w.step(t0, true), GoneStep::Gone);
+    }
+
+    #[test]
+    fn without_a_stall_the_wait_fails_after_the_deadline_and_the_grace() {
+        let t0 = Instant::now();
+        let mut w = GoneWatch::new(t0, GONE_WITHIN);
+        let mut now = t0;
+        let poll = Duration::from_millis(20);
+        assert_eq!(drive(&mut w, &mut now, poll, false), GoneStep::Poll);
+        // Steady polls up to the deadline, none of them a stall.
+        for _ in 0..40 {
+            drive(&mut w, &mut now, Duration::from_millis(500), false);
+        }
+        // Past the deadline: grace first, not a verdict from one instant.
+        assert_eq!(drive(&mut w, &mut now, poll, false), GoneStep::Poll);
+        assert_eq!(drive(&mut w, &mut now, poll, false), GoneStep::Poll);
+        // The grace is over.
+        assert_eq!(drive(&mut w, &mut now, GRACE, false), GoneStep::Fail);
+        assert!(!w.extended());
+    }
+
+    #[test]
+    fn a_process_that_goes_during_the_grace_passes() {
+        let t0 = Instant::now();
+        let mut w = GoneWatch::new(t0, GONE_WITHIN);
+        let mut now = t0;
+        assert_eq!(drive(&mut w, &mut now, GONE_WITHIN, false), GoneStep::Poll);
+        let poll = Duration::from_millis(20);
+        assert_eq!(drive(&mut w, &mut now, poll, true), GoneStep::Gone);
+    }
+
+    #[test]
+    fn a_stall_extends_the_wait_once() {
+        let t0 = Instant::now();
+        let mut w = GoneWatch::new(t0, GONE_WITHIN);
+        let mut now = t0;
+        // The runner freezes for longer than STALL_GAP between two polls.
+        assert_eq!(
+            drive(&mut w, &mut now, STALL_GAP * 3, false),
+            GoneStep::Poll
+        );
+        assert_eq!(w.largest_gap(), STALL_GAP * 3);
+        assert!(w.stalled());
+        // Deadline and grace run out: extended once, so keep waiting.
+        assert_eq!(drive(&mut w, &mut now, GONE_WITHIN, false), GoneStep::Poll);
+        assert_eq!(drive(&mut w, &mut now, GRACE, false), GoneStep::Poll);
+        assert!(w.extended());
+        // A process that exits in the extra time still passes.
+        let mut other = GoneWatch::new(t0, GONE_WITHIN);
+        let mut n2 = t0;
+        drive(&mut other, &mut n2, STALL_GAP * 3, false);
+        drive(&mut other, &mut n2, GONE_WITHIN, false);
+        drive(&mut other, &mut n2, GRACE, false);
+        assert_eq!(
+            drive(&mut other, &mut n2, Duration::from_millis(20), true),
+            GoneStep::Gone
+        );
+        // The second expiry is final: a stall does not extend twice.
+        let poll = Duration::from_millis(20);
+        assert_eq!(drive(&mut w, &mut now, GONE_WITHIN, false), GoneStep::Poll);
+        assert_eq!(drive(&mut w, &mut now, poll, false), GoneStep::Poll);
+        assert_eq!(drive(&mut w, &mut now, GRACE, false), GoneStep::Fail);
+    }
+
+    #[test]
+    fn small_gaps_are_not_a_stall() {
+        let t0 = Instant::now();
+        let mut w = GoneWatch::new(t0, GONE_WITHIN);
+        let mut now = t0;
+        for _ in 0..10 {
+            drive(&mut w, &mut now, Duration::from_millis(30), false);
+        }
+        assert!(!w.stalled());
+        assert_eq!(w.largest_gap(), Duration::from_millis(30));
+    }
+
+    #[test]
+    fn the_description_reports_the_gap_and_the_extension() {
+        let t0 = Instant::now();
+        let mut w = GoneWatch::new(t0, GONE_WITHIN);
+        w.step(t0 + Duration::from_millis(2500), false);
+        let text = describe_with(std::process::id() as libc::pid_t, &w);
+        assert!(text.contains("largest poll gap 2.5s"), "{text}");
+        assert!(text.contains("stall extension: no"), "{text}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_description_carries_the_load_on_linux() {
+        let w = GoneWatch::new(Instant::now(), GONE_WITHIN);
+        let text = describe_with(std::process::id() as libc::pid_t, &w);
+        assert!(text.contains("/proc/loadavg:"), "{text}");
+        assert!(text.contains("/proc/pressure/cpu:"), "{text}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_missing_proc_file_is_named_not_a_panic() {
+        let text = read_or_missing("/proc/no-such-file-here");
+        assert!(text.contains("unreadable"), "{text}");
     }
 }

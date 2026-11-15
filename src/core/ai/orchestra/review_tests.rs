@@ -1,7 +1,8 @@
 //! The risk assessment of a staged change set (agent-orchestrator S7b, D16).
 
+use super::WorkerId;
 use super::changes::Change;
-use super::review::{Raise, RaiseError, Source, Tier, assess};
+use super::review::{Raise, RaiseError, Source, Tier, assess, notices};
 
 fn change(path: &str) -> Change {
     Change {
@@ -306,4 +307,79 @@ fn a_passive_raise_is_refused_because_the_tier_only_goes_up() {
     let err = Raise::new("passive", "fine").unwrap_err();
     assert_eq!(err, RaiseError::Lowering);
     assert!(err.to_string().contains("raise the tier above passive"));
+}
+
+// D22 (17.6), spec "Same model warns": the Review row on the author's own
+// engine and model warns; an Ollama name without a tag is `:latest`.
+#[test]
+fn the_same_model_as_author_and_reviewer_warns() {
+    let opus = ("claude", Some("opus"));
+    let got = notices(WorkerId(2), opus, opus);
+    assert_eq!(
+        got,
+        ["review of worker 2: author and reviewer are the same model (claude>opus)"]
+    );
+    let (bare, tagged) = (
+        ("ollama", Some("llama3")),
+        ("ollama", Some("llama3:latest")),
+    );
+    let got = notices(WorkerId(1), bare, tagged);
+    assert!(
+        got.iter()
+            .any(|l| l.contains("same model (ollama>llama3:latest)")),
+        "{got:?}"
+    );
+    // GUARD: a different model is quiet; the same name on another engine is
+    // not the same model, and only says where the diff goes.
+    let got = notices(WorkerId(1), opus, ("claude", Some("sonnet")));
+    assert!(got.is_empty(), "{got:?}");
+    let got = notices(WorkerId(1), opus, ("codex", Some("opus")));
+    assert_eq!(
+        got,
+        ["review of worker 1: the staged diff goes to codex>opus"]
+    );
+}
+
+// Spec "Local reviewer states its limits": a local Review row says what a
+// local reviewer cannot be trusted with; a local author on a cloud row says
+// where the diff goes (spec "Cloud reviewer on a local diff is announced").
+#[test]
+fn a_local_reviewer_states_its_limits_and_a_cloud_one_says_where_the_diff_goes() {
+    let local = ("ollama", Some("llama3:8b"));
+    let got = notices(WorkerId(3), ("claude", Some("opus")), local);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].starts_with("review of worker 3: "), "{got:?}");
+    assert!(got[0].contains("local model"), "{got:?}");
+    // A local author on another local model: the limits only.
+    let got = notices(WorkerId(3), ("llamacpp", None), local);
+    assert_eq!(got.len(), 1, "{got:?}");
+    let got = notices(WorkerId(4), local, ("claude", Some("opus")));
+    assert_eq!(
+        got,
+        ["review of worker 4: the staged diff goes to claude>opus"]
+    );
+    // An Ollama cloud tag is a cloud reviewer, not a local one.
+    let got = notices(WorkerId(4), local, ("ollama", Some("gpt-oss:120b-cloud")));
+    assert_eq!(
+        got,
+        ["review of worker 4: the staged diff goes to ollama>gpt-oss:120b-cloud"]
+    );
+    // A cloud author on another vendor's reviewer: the diff reaches a new
+    // vendor, said (RED: it was silent).
+    let got = notices(
+        WorkerId(4),
+        ("claude", Some("opus")),
+        ("gemini", Some("pro")),
+    );
+    assert_eq!(
+        got,
+        ["review of worker 4: the staged diff goes to gemini>pro"]
+    );
+    // GUARD: the same engine on another model sends the diff nowhere new.
+    let got = notices(
+        WorkerId(4),
+        ("claude", Some("opus")),
+        ("claude", Some("sonnet")),
+    );
+    assert!(got.is_empty(), "{got:?}");
 }

@@ -64,7 +64,7 @@ Each chat session MUST have its own unix socket in the runtime dir (mode 0700) w
 - WHEN the chat closes, or the app starts
 - THEN the socket file is removed
 
-### Requirement: Tools served
+### Requirement: Tools served [W11]
 The shim MUST serve only the tools of the registry that apply to the session: the three read tools, `run_in_pane`, `list_panes`, `read_pane`, the user MCP tools when configured (see mcp-servers), and the tools of each coding-tools family whose toggle is on (search, write, run, git). With tools off no shim is started, and a family with its toggle off MUST NOT be listed or served. The engine-side permission MUST allow every lazarobox tool, because lazarobox is the policy point: `find_dir`, `list_dir` and `glob` run freely, and `read_file`, `grep`, `run_command`, `read_pane` and the git and write tools wait for the user's `y` or review inside lazarobox as their specs say (every CLI is a cloud engine, see agent-tools), except `run_in_pane` in a chat in `auto` mode, which is typed without a prompt (see agent-tools, Chat approval mode). `read_pane` MUST ask in every approval mode. Write tools MUST be described as having side effects. A `tools/call` MUST be executed by the app under the registry rules (path policy, caps, validation) and the result MUST be returned as MCP content labeled as untrusted data (see agent-tools). Tool events MUST be emitted to the chat for every call. On the `codex` engine the injection MUST pass our calls on with `default_tools_approval_mode = "approve"` for the `lazarobox` server only (the key needs codex 0.125 or later), so that codex does not refuse them itself and every call reaches lazarobox's own approval, which is unchanged.
 
 #### Scenario: Only registry tools [auto]
@@ -108,9 +108,15 @@ The shim MUST serve only the tools of the registry that apply to the session: th
 - THEN `read_pane` is listed, the approval shows the redacted text, and the result is returned only after `y`, wrapped as untrusted
 
 #### Scenario: read_pane not served to a worker [auto]
-- GIVEN a worker or orchestrator session
+- GIVEN a worker session
 - WHEN `tools/list` is read
-- THEN `read_pane` is absent
+- THEN `read_pane`, `list_panes` and `run_in_pane` are absent
+
+#### Scenario: Pane reads served to the coordinator [W11, auto]
+- GIVEN an orchestrator session of any CLI engine
+- WHEN `tools/list` is read
+- THEN `list_panes` and `read_pane` are listed and `run_in_pane` is absent
+(Previously: "GIVEN a worker or orchestrator session ... THEN `read_pane` is absent".)
 
 ### Requirement: Approval round trip
 A `run_in_pane` call through the shim MUST block until the user answers or the wait ends, and MUST return `sent` or `denied` only. In a chat in `auto` mode it returns as soon as the command is typed or refused, unless it falls back to the prompt (see agent-tools, Chat approval mode); the mode is never an approval made by the app on its own, because it only types. The prompt appears in the chat pane (see chat-pane, pane-commands). If the CLI's own MCP call timeout is shorter than the user's decision, the call returns `denied` (never `sent`) when it expires, the prompt is withdrawn, and a later `y` writes nothing. A shim that dies, a closed socket and a cancelled turn MUST end the pending approval as `denied`. The app MUST NOT approve on its own at any point. The CLI's default MCP timeout MUST be measured by design for each engine, and a longer timeout MAY be configured in the injection only where the CLI supports it.

@@ -160,3 +160,18 @@ fn a_not_installed_llamacpp_explains_itself_and_leaves_the_draft_alone() {
     assert_eq!(title(&m), "Engine for code");
     assert_eq!(m.ai_draft(), draft);
 }
+
+// llama.cpp cannot download: a model the server does not serve reads
+// `not served` as the reason a row cannot be chosen.
+#[test]
+fn a_not_served_row_gives_not_served_as_its_reason() {
+    let row = PickRow {
+        key: PickKey::Model("qwen".to_owned()),
+        label: "qwen".to_owned(),
+        mark: Mark::NotServed,
+        enabled: false,
+        current: false,
+        tools: None,
+    };
+    assert_eq!(disabled_reason(&row), "not served");
+}

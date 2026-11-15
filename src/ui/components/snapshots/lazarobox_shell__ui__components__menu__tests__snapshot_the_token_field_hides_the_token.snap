@@ -3,7 +3,7 @@ source: src/ui/components/menu.rs
 expression: shown
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ Models │ Tools │ Chat                           │
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
 │ Hugging Face account                                       │
 │ ••••••                                                     │
 │ paste a Hugging Face token                                 │

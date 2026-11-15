@@ -5,6 +5,7 @@
 use std::borrow::Cow;
 
 mod account;
+mod connectors;
 pub mod feedback;
 mod limit;
 
@@ -19,6 +20,8 @@ use super::{
         config::{AiConfig, ApprovalMode, NotifyMode, Profile, Task, ToolToggle, cycled_idle},
         hf::{AccountAsk, AccountReply, Answer, Ask, Job, TokenFacts},
         marks::ToolMark,
+        mcp_catalog::{checks::Probed, presence::Presence},
+        mcp_secrets::{CLIENT_FILE, Refusal, SecretText},
         menu::AiMenu,
         ollama_lib::{self, Pull},
         picker::{
@@ -281,6 +284,10 @@ pub enum ItemKind {
     /// count from 1 up to the cores. It changes the live config like a
     /// [`Choice`] and is written as a TOML integer, `auto` as a string.
     Jobs,
+    /// The `Connectors` row of the Connectors tab: Enter opens the area.
+    /// It never writes a config edit; Connect Google's append to
+    /// `config.toml` is its own write, after `y` on its plan.
+    Connectors,
 }
 
 /// The version shown on the Updates row. Tests see a fixed one, so a release
@@ -585,10 +592,23 @@ pub static MODELS_SECTION: Section = Section {
             kind: ItemKind::Assign(Some(Task::Orchestrate)),
         },
         Item {
+            label: "simple",
+            kind: ItemKind::Assign(Some(Task::Simple)),
+        },
+        Item {
             label: "Hugging Face",
             kind: ItemKind::HfAccount,
         },
     ],
+};
+
+/// The Connectors tab: one row that opens the area.
+pub static CONNECTORS_SECTION: Section = Section {
+    title: "Connectors",
+    items: &[Item {
+        label: "Connectors",
+        kind: ItemKind::Connectors,
+    }],
 };
 
 /// The Tools tab: the tools switch, the six family switches, `Approval` and
@@ -771,7 +791,7 @@ pub static TABS: [Tab; TAB_COUNT] = [
     },
     Tab {
         label: "Connectors",
-        sections: &[],
+        sections: std::slice::from_ref(&CONNECTORS_SECTION),
         needs_ai: true,
         note: false,
         caution: false,
@@ -831,6 +851,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::HfAccount
             | ItemKind::Feedback
             | ItemKind::Usage
+            | ItemKind::Connectors
             | ItemKind::Jobs => None,
         })
 }
@@ -1029,6 +1050,55 @@ pub enum MenuCommand {
     /// opener (see [`MenuState::with_opener`]); without one the link is a
     /// [`MenuCommand::Copy`].
     Open(String),
+    /// Probe this declared server (the `y` was answered); the report comes
+    /// back through the app, one `AppEvent::McpProbe`.
+    Probe(Box<crate::core::ai::config::McpServer>),
+    /// Esc while a probe runs: stop it.
+    CancelProbe,
+    /// Run this catalog install or login line in a new shell tab (the `y`
+    /// was answered, with the full line on screen): it is typed there and
+    /// sent with Enter.
+    Connector(String),
+    /// The Connectors area opened: read `config.toml` and which values
+    /// `secrets.toml` holds; the answer comes back as [`MenuState::presence_reply`].
+    LoadPresence,
+    /// A confirmed secret field: save this one value of this server's table
+    /// of `secrets.toml` (mcp-secrets, Menu save). The reply comes back through
+    /// [`MenuState::secret_reply`].
+    SaveSecret {
+        server: &'static str,
+        name: &'static str,
+        value: SecretText,
+    },
+    /// A confirmed OAuth client form: write `google-oauth-client.json`
+    /// (mcp-secrets, OAuth client file). `replace` is the user's `y` over an
+    /// existing file. The reply comes back through [`MenuState::secret_reply`].
+    SaveClient {
+        id: String,
+        secret: SecretText,
+        replace: bool,
+    },
+    /// `y` on the backup deletion prompt; the reply comes back through
+    /// [`MenuState::backup_reply`].
+    DeleteBackup,
+    /// `g` on `gsc`: check the client file and `uv`, and build the login
+    /// line; the answer comes back through [`MenuState::link_reply`].
+    LinkGsc(crate::core::ai::mcp_catalog::gsc::Plan),
+    /// `y` on the prompt of Link with Google for `google`: start the link
+    /// session of this declared server. Its steps come back through
+    /// [`MenuState::link_step`]; Esc stops it with [`MenuCommand::CancelProbe`].
+    LinkGoogle {
+        server: Box<crate::core::ai::config::McpServer>,
+        ask: crate::core::ai::mcp_catalog::link::Ask,
+    },
+    /// `n` on the Connect Google screen: read the client, `config.toml` and
+    /// `secrets.toml` as they are now and plan the write (nothing is
+    /// written); the answer comes back through [`MenuState::google_plan`].
+    PlanGoogle(crate::core::ai::mcp_catalog::connect::Ask),
+    /// `y` on the plan Connect Google showed: write it (openspec change
+    /// `google-connect`). The answer comes back through
+    /// [`MenuState::google_connected`].
+    ConnectGoogle(Box<crate::core::config_append::Connect>),
     /// Send this Feedback request with `gh` (find similar issues, create,
     /// or comment); the answer comes back through
     /// [`MenuState::feedback_reply`].
@@ -1077,6 +1147,7 @@ const HINT_CUSTOM: &str = "type a model · Enter ok · Ctrl+U clear · Esc back"
 fn disabled_reason(row: &PickRow) -> &str {
     match row.mark {
         Mark::DownloadRequired => "download required",
+        Mark::NotServed => "not served",
         Mark::Checking => "checking…",
         _ if row.key == PickKey::Info => &row.label,
         _ if matches!(row.key, PickKey::Note { .. }) => &row.label,
@@ -1180,6 +1251,8 @@ pub struct MenuState {
     no_sandbox: bool,
     /// What the `Build jobs` row works `auto` out from.
     build_machine: build_jobs::Machine,
+    /// The Connectors area and what it knows.
+    connectors: connectors::Connectors,
 }
 
 /// The view that replaces the rows while it is open. One `sub_view()` picks
@@ -1194,6 +1267,7 @@ enum SubView {
     AccountField,
     Feedback,
     Usage,
+    Connectors,
 }
 
 /// What became of the Feedback form.
@@ -1245,6 +1319,158 @@ impl MenuState {
             opener: false,
             no_sandbox: false,
             build_machine: build_jobs::Machine::default(),
+            connectors: connectors::Connectors::default(),
+        }
+    }
+
+    /// The servers loaded at startup, this session's probe reports and the
+    /// path of `config.toml`, for the Connectors area.
+    pub fn with_connectors(
+        mut self,
+        servers: Vec<crate::core::ai::config::McpServer>,
+        probes: Vec<Probed>,
+        config_path: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.connectors = connectors::Connectors::new(servers, probes, config_path);
+        self
+    }
+
+    /// What the runtime read when the area opened (D20).
+    pub fn presence_reply(&mut self, presence: Presence) {
+        self.connectors.presence_reply(presence);
+    }
+
+    /// What the save of a secret field answered: the notice either way.
+    pub fn secret_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
+        let client = |notice: &String| notice.contains(CLIENT_FILE);
+        if reply.as_ref().is_ok_and(client) {
+            self.connectors.client_saved();
+        }
+        self.connectors
+            .saved(reply.as_ref().is_ok_and(|n| !client(n)));
+        // A file that appeared since the area read the disk: read again, so
+        // the next form asks to replace it.
+        let stale = reply
+            .as_ref()
+            .is_err_and(|n| *n == Refusal::Exists.notice_of(CLIENT_FILE));
+        let command = self.backup_reply(reply);
+        if stale {
+            MenuCommand::LoadPresence
+        } else {
+            command
+        }
+    }
+
+    /// What the deletion of the backup answered: the files are read again
+    /// after a success, so the states and the `d` row follow the disk.
+    pub fn backup_reply(&mut self, reply: Result<String, String>) -> MenuCommand {
+        let ok = reply.is_ok();
+        self.notice = Some(reply.unwrap_or_else(|notice| notice));
+        if ok {
+            MenuCommand::LoadPresence
+        } else {
+            MenuCommand::None
+        }
+    }
+
+    /// Tests: the pin of the lazarobox client, which the build leaves empty.
+    #[cfg(test)]
+    pub(crate) fn set_client_pin(&mut self, pin: Option<&'static str>) {
+        self.connectors.pin = pin;
+    }
+
+    /// What the checks of Link with Google answered: the line to confirm, or
+    /// the notice of the check that failed.
+    pub fn link_reply(
+        &mut self,
+        reply: Result<String, String>,
+        said: Option<String>,
+    ) -> MenuCommand {
+        let room = self.connectors_room();
+        if let Some(notice) = self.connectors.link_reply(reply, said, room) {
+            self.notice = notice;
+        }
+        MenuCommand::None
+    }
+
+    /// What the runtime read of the OAuth client file for Connect Google:
+    /// its id, `None` when there is no file, or why it is refused.
+    pub fn google_client(&mut self, reply: Result<Option<String>, String>) {
+        self.connectors.google_client(reply);
+    }
+
+    /// The plan Connect Google asked for, or why there is none: the screen
+    /// shows it, a refusal is the footer notice.
+    pub fn google_plan(
+        &mut self,
+        reply: Result<Box<crate::core::ai::mcp_catalog::connect::Preview>, String>,
+    ) {
+        self.connectors.google_plan(reply);
+        if let Some(notice) = self.connectors.take_notice() {
+            self.notice = Some(notice.into_owned());
+        }
+    }
+
+    /// What became of Connect Google's write: its notice, and the files read
+    /// again when something was written.
+    pub fn google_connected(&mut self, done: crate::core::config_append::Connected) -> MenuCommand {
+        let reload = self.connectors.google_connected(&done);
+        self.notice = Some(done.notice().to_owned());
+        if reload {
+            MenuCommand::LoadPresence
+        } else {
+            MenuCommand::None
+        }
+    }
+
+    /// This menu started a link session that has not ended.
+    pub fn link_running(&self) -> bool {
+        self.connectors.link_running()
+    }
+
+    /// The link session moved on.
+    pub fn link_step(&mut self, step: crate::core::ai::mcp_catalog::link::Step) -> MenuCommand {
+        match self.connectors.link_step(step) {
+            connectors::Moved::Nothing => MenuCommand::None,
+            connectors::Moved::Open(url) => self.open_or_copy(url),
+            connectors::Moved::Said(result) => self.backup_reply(result),
+        }
+    }
+
+    /// A probe ended.
+    pub fn probe_reply(&mut self, report: Probed) {
+        self.connectors.probe_reply(report);
+    }
+
+    /// The columns of text a row of the area can show: the popup is at most
+    /// `WANT_WIDTH_AI` wide, less two borders and the space a row starts with.
+    fn connectors_room(&self) -> usize {
+        let cols = self.term.map_or(WANT_WIDTH_AI, |(cols, _)| cols);
+        usize::from(cols.min(WANT_WIDTH_AI)).saturating_sub(3)
+    }
+
+    fn on_connectors_row(&self) -> bool {
+        matches!(self.selected_kind(), Some(ItemKind::Connectors))
+    }
+
+    /// Keys in the Connectors area. A repeat only scrolls and moves, except
+    /// in an open field: a doubled letter there is text.
+    fn on_connectors_key(&mut self, key: &KeyEvent, repeat: bool, config: &Config) -> MenuCommand {
+        let moves = matches!(
+            key.code,
+            KeyCode::Char('j' | 'k') | KeyCode::Up | KeyCode::Down
+        );
+        if repeat && !moves && !self.connectors.field_open() {
+            return MenuCommand::None;
+        }
+        let dirty = !self.edits(config).is_empty();
+        let command = self.connectors.key(key, dirty, self.connectors_room());
+        if let Some(notice) = self.connectors.take_notice() {
+            self.notice = Some(notice.into_owned());
+        }
+        match command {
+            MenuCommand::Open(url) => self.open_or_copy(url),
+            other => other,
         }
     }
 
@@ -1867,7 +2093,8 @@ impl MenuState {
                 | SubView::Picker
                 | SubView::AccountField
                 | SubView::Feedback
-                | SubView::Usage,
+                | SubView::Usage
+                | SubView::Connectors,
             ) => true,
             None => false,
         }
@@ -1948,6 +2175,8 @@ impl MenuState {
             Some(SubView::Feedback)
         } else if self.usage.is_some() {
             Some(SubView::Usage)
+        } else if self.connectors.is_open() {
+            Some(SubView::Connectors)
         } else {
             None
         }
@@ -2051,6 +2280,7 @@ impl MenuState {
             | ItemKind::HfAccount
             | ItemKind::Feedback
             | ItemKind::Usage
+            | ItemKind::Connectors
             | ItemKind::Jobs => None,
         }
     }
@@ -2080,6 +2310,7 @@ impl MenuState {
             Some(SubView::AccountField) => self.account_rows(),
             Some(SubView::Feedback) => self.feedback_rows(),
             Some(SubView::Usage) => self.usage_rows(),
+            Some(SubView::Connectors) => Some(self.connectors.rows(self.connectors_room())),
             None => None,
         };
         if let Some(rows) = view {
@@ -2171,6 +2402,16 @@ impl MenuState {
                         index += 1;
                         row
                     }
+                    ItemKind::Connectors => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: Some(self.connectors.value()),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
                     ItemKind::Jobs => {
                         let row = Row::Item {
                             label: item.label,
@@ -2242,6 +2483,7 @@ impl MenuState {
             Some(SubView::AccountField) => return self.on_account_key(key, repeat),
             Some(SubView::Feedback) => return self.on_feedback_key(key, repeat),
             Some(SubView::Usage) => return self.on_usage_key(key, repeat),
+            Some(SubView::Connectors) => return self.on_connectors_key(key, repeat, config),
             Some(SubView::Picker) => return self.on_picker_key(key, repeat),
             Some(SubView::Warning) | None => {}
         }
@@ -2283,6 +2525,13 @@ impl MenuState {
             KeyCode::Char('d') if !repeat && self.on_account_row() => {
                 self.account.forget();
                 MenuCommand::None
+            }
+            KeyCode::Enter if self.on_connectors_row() => {
+                if repeat {
+                    MenuCommand::None
+                } else {
+                    self.connectors.open()
+                }
             }
             KeyCode::Enter if self.on_feedback_row() => {
                 if !repeat {
@@ -2829,6 +3078,12 @@ impl MenuState {
                 }
             }
             Some(SubView::Usage) => self.paste_limit(text),
+            Some(SubView::Connectors) => {
+                self.connectors.paste(text);
+                if let Some(notice) = self.connectors.take_notice() {
+                    self.notice = Some(notice.into_owned());
+                }
+            }
             Some(SubView::Warning) | None => {}
         }
     }
@@ -2901,6 +3156,7 @@ impl MenuState {
                 };
                 return Footer::Hint(Cow::Borrowed(hint));
             }
+            Some(SubView::Connectors) => return Footer::Hint(self.connectors.hint()),
             // The picker's footers follow below, with its cursor row.
             Some(SubView::Picker) | Some(SubView::Warning) | None => {}
         }
@@ -3007,7 +3263,9 @@ impl MenuState {
             _ if in_ai_view => Cow::Borrowed(HINT_TASK),
             _ if self.on_updates_row() => Cow::Owned(self.updates_hint()),
             _ if self.on_account_row() => Cow::Borrowed(self.account.hint()),
-            _ if self.on_feedback_row() => Cow::Borrowed(HINT_FEEDBACK_ROW),
+            _ if self.on_feedback_row() || self.on_connectors_row() => {
+                Cow::Borrowed(HINT_FEEDBACK_ROW)
+            }
             _ if self.on_notify_row() => match &self.test_report {
                 Some(report) => Cow::Owned(report.clone()),
                 None => Cow::Borrowed(HINT_NOTIFY),
@@ -3387,7 +3645,7 @@ mod ai_tests;
 mod goto_tests;
 
 #[cfg(test)]
-mod tabs_tests;
+pub(crate) mod tabs_tests;
 
 #[cfg(test)]
 mod tools_tests;
@@ -3471,3 +3729,16 @@ mod feedback_tests;
 mod descriptor_tests;
 #[cfg(test)]
 mod feedback_menu_tests;
+
+#[cfg(test)]
+mod connectors_client_tests;
+#[cfg(test)]
+mod connectors_connect_tests;
+#[cfg(test)]
+mod connectors_fields_tests;
+#[cfg(test)]
+mod connectors_google_tests;
+#[cfg(test)]
+mod connectors_link_tests;
+#[cfg(test)]
+mod connectors_tests;

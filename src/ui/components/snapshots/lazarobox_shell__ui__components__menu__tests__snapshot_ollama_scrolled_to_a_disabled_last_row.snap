@@ -3,7 +3,7 @@ source: src/ui/components/menu.rs
 expression: shown
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ Models │ Tools │ Chat                           │
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
 │ Model for general (ollama) 18/19                           │
 │ llama3.1:8b download required                              │
 │ qwen3:8b download required                                 │

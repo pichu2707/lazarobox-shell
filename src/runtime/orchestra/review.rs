@@ -48,6 +48,13 @@ const DEFAULT_LENSES: [Lens; 2] = [Lens::Risk, Lens::Reliability];
 /// Why the default lenses are picked.
 const DEFAULT_WHY: &str = "default lens for a high-risk change";
 
+/// Corrections a worker's proposals share until one of its batches is applied. Each proposal
+/// is a review of its own with its one correction; a small model that keeps
+/// re-proposing the same batch, with trivial blockers each time, would get
+/// one correction per proposal for ever. Past this many the review still
+/// looks and reports, but the batch goes to the user with its blockers open.
+pub(super) const MAX_CORRECTIONS: u32 = 3;
+
 /// A finished review, kept for the receipt (7b.3).
 #[derive(Clone, Debug)]
 pub struct Reviewed {
@@ -135,6 +142,9 @@ pub(super) struct State {
     /// or stages into (the correction): its proposer. A reader's entry goes
     /// with its review; a correction's stays, like `correcting`.
     pub(super) proposers: HashMap<WorkerId, WorkerId>,
+    /// Corrections started for each proposer's batch since it last landed
+    /// (an apply); bounded by [`MAX_CORRECTIONS`].
+    pub(super) corrections: HashMap<WorkerId, u32>,
     /// What review workers could not read, by worker.
     pub(super) unread: HashMap<WorkerId, Vec<String>>,
 }
@@ -411,7 +421,7 @@ impl RunManager {
         let of = format!("review of worker {}", worker.0);
         let mut review = Review::new(assessment);
         let unanswered = match &answered {
-            Answered::Granted => None,
+            Answered::Granted | Answered::Mandatory => None,
             Answered::Declined => {
                 let _ = review.consent(Consent::Declined);
                 self.say(
@@ -441,7 +451,12 @@ impl RunManager {
             self.keep(pane, run, kept, &changes, &changes);
             return Ok(changes);
         }
-        let _ = review.consent(Consent::Granted);
+        let given = if answered == Answered::Mandatory {
+            Consent::Mandatory
+        } else {
+            Consent::Granted
+        };
+        let _ = review.consent(given);
         let mut guard = Guard {
             manager: self.clone(),
             pane,
@@ -482,6 +497,10 @@ impl RunManager {
         }
         review.note_cut(guard.cut_bytes);
         guard.release();
+        // The receipt says why a review that never concluded did not.
+        if let Some(Stop::Start(why) | Stop::Other(why)) = &stopped {
+            review.note_stop(why);
+        }
         let (outcome, line) = match stopped {
             Some(Stop::Start(why)) => (
                 None,
@@ -664,21 +683,15 @@ impl RunManager {
         let wrap = || {
             (self.nonce)().ok_or_else(|| Stop::Start("a prompt cannot be wrapped now".to_owned()))
         };
-        let (profile, room) = self
+        // The lenses, the refuter and the correction are internal workers
+        // (D22): `max_workers` bounds the coordinator's, not these.
+        let (profile, notices) = self
             .on_run(pane, run, |live| {
-                let limits = live.run.limits();
-                let room = limits.workers.saturating_sub(live.run.worker_count());
-                (live.profile, (room, limits.workers))
+                (live.profile, live.run.review_notices(worker))
             })
             .ok_or_else(|| Stop::Start(ENDED.to_owned()))?;
-        // Two lenses and the refuter: all or none, so no lens is left
-        // running while the next cannot start.
-        let need = DEFAULT_LENSES.len() + 1;
-        if room.0 < need {
-            return Err(Stop::Start(format!(
-                "max_workers is {} and leaves room for {} more, a review needs {need}",
-                room.1, room.0
-            )));
+        for notice in notices {
+            self.say(pane, run, notice);
         }
         let diff = self.diff_text(pane, run, worker).await;
         let mut lenses = Vec::new();
@@ -693,6 +706,11 @@ impl RunManager {
                 .start_review(pane, run, Role::Reader, worker, prompt.text, system)
                 .map_err(Stop::Start)?;
             guard.spawned.push(id);
+            // A reviewer whose engine cannot run is refused at once and
+            // halts the run; the review says so, never another engine (D21).
+            if let Some(why) = self.refused_at_start(pane, run, id) {
+                return Err(Stop::Start(lens_refused(lens.id(), id.0, &why)));
+            }
             lenses.push((lens, id));
         }
         let ids: Vec<_> = lenses.iter().map(|(_, id)| *id).collect();
@@ -729,11 +747,31 @@ impl RunManager {
             }
         }
         review.settle_unanswered().map_err(|e| other(refused(e)))?;
+        let spent = self
+            .on_run(pane, run, |live| {
+                live.review.corrections.get(&worker).copied().unwrap_or(0)
+            })
+            .ok_or_else(|| Stop::Start(ENDED.to_owned()))?;
+        if spent >= MAX_CORRECTIONS && !review.blockers().is_empty() {
+            review.note_limit(spent);
+            self.say(
+                pane,
+                run,
+                format!(
+                    "review of worker {}: correction limit reached ({spent} correction rounds ran for this worker's proposals); no more corrections, your batch review follows with the blockers open",
+                    worker.0
+                ),
+            );
+            return Ok(());
+        }
         let targets = match review.begin_correction() {
             Ok(targets) => targets,
             Err(ReviewError::NoBlockers) => return Ok(()),
             Err(e) => return Err(other(refused(e))),
         };
+        self.on_run(pane, run, |live| {
+            *live.review.corrections.entry(worker).or_default() += 1;
+        });
         let open = self
             .correct(
                 pane, run, worker, guard, changes, reviewed, review, &targets,
@@ -807,23 +845,6 @@ impl RunManager {
         review: &Review,
         targets: &[usize],
     ) -> Result<Vec<usize>, Stop> {
-        // The correction and its check: both or neither, so a correction is
-        // never left unchecked for want of a slot.
-        let room = self.on_run(pane, run, |live| {
-            let workers = live.run.limits().workers;
-            workers.saturating_sub(live.run.worker_count())
-        });
-        let room = room.ok_or_else(|| Stop::Other(ENDED.to_owned()))?;
-        if room < 2 {
-            self.say(
-                pane,
-                run,
-                format!(
-                    "the correction was skipped: max_workers leaves room for {room} more worker(s), a correction and its check need 2; the blockers stay open"
-                ),
-            );
-            return Ok(targets.to_vec());
-        }
         let nonce = (self.nonce)()
             .ok_or_else(|| Stop::Start("a prompt cannot be wrapped now".to_owned()))?;
         let blockers: Vec<&Finding> = targets
@@ -965,6 +986,20 @@ impl RunManager {
             .unwrap_or_else(StagedDiff::unavailable)
     }
 
+    /// Why review worker `id` was refused as it started, if it was.
+    fn refused_at_start(&self, pane: PaneId, run: RunId, id: WorkerId) -> Option<String> {
+        let why = self.on_run(pane, run, |live| {
+            let result = live.run.result(id)?;
+            (result.status == WorkerStatus::Refused).then(|| {
+                result
+                    .error
+                    .as_ref()
+                    .map_or_else(String::new, |(_, text)| text.clone())
+            })
+        });
+        why.flatten()
+    }
+
     /// Starts one review worker as a worker of the run.
     pub(super) fn start_review(
         self: &Arc<Self>,
@@ -991,7 +1026,11 @@ impl RunManager {
                     // Nobody can spawn a correction: the review goes on at the
                     // next propose_batch, so the step is the menu's alone.
                     Refusal::WriteOff => WRITE_OFF_CORRECTION.to_owned(),
+                    // Internal workers are outside the cap: never refused.
                     Refusal::WorkerCap(cap) => format!("max_workers is {cap}"),
+                    Refusal::Brief(error) => error.text(),
+                    Refusal::Round(error) => error.text(),
+                    Refusal::Overlap { worker, path, held } => overlap_text(worker, &path, &held),
                     Refusal::Gate(_) => "a step gate refused an internal worker".to_owned(),
                 })?;
             if let Some(system) = system {
@@ -1115,5 +1154,36 @@ mod guard_tests {
             panic!("{event:?}");
         };
         assert!(text.contains("could not be cancelled"), "{text}");
+    }
+}
+
+/// The line saying a lens' worker was refused at start. The reason can carry
+/// an absolute path (a served model file), so it goes through the same
+/// sanitizing and path masking as any refusal and is stored without them.
+fn lens_refused(lens: &str, worker: impl std::fmt::Display, why: &str) -> String {
+    format!(
+        "lens {lens} (worker {worker}) was refused: {}",
+        super::refusal_reason(why)
+    )
+}
+
+#[cfg(test)]
+mod lens_refused_tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_lens_line_hides_the_home_path_of_a_served_model() {
+        let line = lens_refused(
+            "security",
+            3,
+            "llamacpp: the server at 127.0.0.1:8080 does not serve \"qwen\": start llama-server \
+             with --alias qwen; it serves \"/home/ana/models/qwen.gguf\"",
+        );
+        assert!(!line.contains("/home/ana"), "{line}");
+        assert!(
+            line.contains("lens security (worker 3) was refused"),
+            "{line}"
+        );
+        assert!(line.contains("--alias qwen"), "{line}");
     }
 }

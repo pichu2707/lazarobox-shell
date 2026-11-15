@@ -26,16 +26,14 @@ use tokio::{sync::Mutex, time::timeout};
 
 use super::{
     Outcome,
-    client::{ClientError, McpClient, Timeouts},
+    client::{ClientError, Listed, McpClient, Timeouts},
 };
 use crate::core::ai::{
     config::McpServer,
-    mcp_secrets::Secrets,
+    mcp_catalog::{admits, gsc, link},
+    mcp_secrets::{Secrets, redact_list, redact_values},
     sanitize::clean,
-    tools::{
-        ExternalTool,
-        servers::{Qualified, qualify},
-    },
+    tools::servers::{Qualified, qualify},
 };
 
 /// What the model is told when a name reaches no running server.
@@ -63,19 +61,34 @@ pub struct ExternalSet {
     unavailable: Vec<String>,
 }
 
-/// Starts one server and reads its tools, or says why it cannot.
-async fn connect(
+/// Starts one server and reads its tools, or says why it cannot. A `gsc` whose
+/// values select the OAuth way is refused first when it has no folder or no
+/// token (`stat` only): its server would run a browser flow inside a call. A
+/// `google` whose `env` names a credentials folder is refused too.
+pub(crate) async fn connect(
     server: &McpServer,
     home: &Path,
     lookup: &impl Fn(&str) -> Option<OsString>,
+    redact: &[String],
     timeouts: Timeouts,
-) -> Result<(McpClient, Vec<ExternalTool>), String> {
-    let mut client = McpClient::start(server, home, lookup, timeouts).await?;
-    match client.list_tools().await {
+) -> Result<(McpClient, Listed), String> {
+    let text = |name: &str| lookup(name).map(|v| v.to_string_lossy().into_owned());
+    if let Some(why) = gsc::start_refusal(server, home, &text, |token| {
+        // A `stat`: an empty file is not a link.
+        token.metadata().is_ok_and(|m| m.len() > 0)
+    }) {
+        return Err(why.to_owned());
+    }
+    if let Some(why) = link::start_refusal(server) {
+        return Err(why.to_owned());
+    }
+    let mut client =
+        McpClient::start_redacting(server, home, lookup, timeouts, redact.to_vec()).await?;
+    match client.list_tools_with(|tool| admits(server, tool)).await {
         Ok(tools) => Ok((client, tools)),
         Err(error) => {
             client.shutdown().await;
-            Err(error.reason())
+            Err(redact_values(&error.reason(), redact))
         }
     }
 }
@@ -87,12 +100,13 @@ async fn start_one(
     lookup: &impl Fn(&str) -> Option<OsString>,
     secrets: &Secrets,
     timeouts: Timeouts,
-) -> (String, Result<(McpClient, Vec<ExternalTool>), String>) {
+) -> (String, Result<(McpClient, Listed), String>) {
     // This server's own values only: a value never reaches another server.
     let own = secrets.lookup_for(server, lookup);
+    let values = redact_list(server, &own);
     (
         clean(&server.name),
-        connect(server, home, &own, timeouts).await,
+        connect(server, home, &own, &values, timeouts).await,
     )
 }
 
@@ -132,7 +146,7 @@ impl ExternalSet {
         let mut unavailable = Vec::new();
         for (name, result) in started {
             match result {
-                Ok((client, tools)) => {
+                Ok((client, Listed { tools, .. })) => {
                     listed.push((name.clone(), tools));
                     clients.push((name, Mutex::new(Some(client))));
                 }

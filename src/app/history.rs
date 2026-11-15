@@ -567,7 +567,7 @@ impl App {
         // A dialog read for the conversation that leaves is not for this one.
         self.withdraw_github_dialog(id, github::R_RESUMED);
         self.withdraw_write_dialog(id, github::R_RESUMED);
-        let lowered = self.end_write(id, write::RESUME_ENDED);
+        let lowered = self.end_grants_for_resume(id);
         let mode = self.ai.approval();
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();

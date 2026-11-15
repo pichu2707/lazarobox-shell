@@ -23,7 +23,7 @@ pub struct Change {
 
 /// The files a worker staged, in the order it first staged them.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct ChangeLedger(Vec<Change>);
+pub struct ChangeLedger(Vec<Change>, Vec<String>);
 
 impl ChangeLedger {
     pub fn changes(&self) -> &[Change] {
@@ -38,6 +38,7 @@ impl ChangeLedger {
             applied: false,
             ..change
         };
+        self.1.retain(|dropped| *dropped != change.path);
         match self.0.iter_mut().find(|known| known.path == change.path) {
             Some(known) => *known = change,
             None => self.0.push(change),
@@ -54,9 +55,17 @@ impl ChangeLedger {
         }
     }
 
+    /// A split threw the staged batch away (W9b): the paths not on disk are
+    /// `discarded`, no longer pending, until staged again.
+    pub fn discard_pending(&mut self) {
+        let left = self.0.iter().filter(|change| !change.applied);
+        self.1 = left.map(|change| change.path.clone()).collect();
+    }
+
     /// The paths staged and not yet on disk.
     pub fn pending(&self) -> usize {
-        self.0.iter().filter(|change| !change.applied).count()
+        let left = self.0.iter().filter(|change| !change.applied);
+        left.filter(|change| !self.1.contains(&change.path)).count()
     }
 
     /// The `files changed` block of the worker's result, `None` when it
@@ -74,6 +83,8 @@ impl ChangeLedger {
             };
             let state = if change.applied {
                 "applied"
+            } else if self.1.contains(&change.path) {
+                "discarded"
             } else {
                 "not applied"
             };
@@ -99,6 +110,10 @@ pub enum Disclosure {
     /// A worker staged `files` paths and its batch was never proposed: the
     /// pane holds it as an orphan.
     StagedNotProposed { files: usize },
+    /// A `simple` worker called `needs_specification` and ended (W8c): its
+    /// brief needs an answer. `brief` is the first worker of that brief, so a
+    /// respawn of a clarification round names the same brief as the run stop.
+    NeedsSpecification { brief: u32 },
 }
 
 /// A short fingerprint of a staged change: FNV-1a 64 over the text it

@@ -2,24 +2,40 @@
 //! explicit `Instant`s and nothing here starts a process.
 
 use std::collections::VecDeque;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
+use super::brief::{Brief, BriefError};
 use super::changes::{Change, ChangeLedger, Disclosure};
 use super::claims::Audit;
+use super::commands::{Commands, Ran};
 use super::feature::{FeatureDoc, FeatureError};
-use super::ledger::{Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Unit};
+use super::ledger::{
+    Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Trail, Unit,
+};
+use super::limit::{Count, Written};
 use super::receipt::{self, Evidence};
+use super::review;
+use super::rounds::{ROUNDS, RoundError};
 use super::steps::{Gate, Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
 use super::textcall;
-use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
+use super::worker::{CLARIFY_MAX, Closing, ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::{Availability, Usage, locality};
 use crate::core::ai::chat::guidance::guidance;
 use crate::core::ai::config::Task;
+use crate::core::ai::sanitize::clean;
 use crate::core::ai::tools::Locality;
 use crate::core::ai::tools::github::forwards_off_machine;
 use crate::core::ai::tools::label;
 use crate::core::ai::tools::registry::{Family, FamilySet};
+
+/// Whether a worker on `engine` and `model` is a cheap author (design D20):
+/// a local server that keeps the model on the machine. An Ollama `*-cloud`
+/// model is not, nor is a CLI engine, an unknown engine or an empty one.
+pub fn cheap(engine: &str, model: Option<&str>) -> bool {
+    locality(engine) == Some(Locality::Local) && !forwards_off_machine(engine, model)
+}
 
 /// What bounds a run: the workers that run at once, the workers it may spawn
 /// in all and its wall clock (`max_parallel`, `max_workers`,
@@ -81,6 +97,9 @@ pub enum NextTurn {
     Continue(usize),
     /// Work is pending but `max_turns` turns were taken: the run ends.
     Capped(usize),
+    /// A brief asked a third time: the run ends, naming the brief by its
+    /// first worker (W8c, D4).
+    Limit(WorkerId),
     /// Nothing is pending but a spawn refusal of a step gate stands, naming
     /// this step: the run stays open for the user's reply, who may lift the
     /// gates (W3, option B). The reply turn is counted here.
@@ -110,8 +129,23 @@ pub enum UserChoice {
 }
 
 /// Why a spawn did not create a worker.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Refusal {
+    /// The brief of a `simple` worker is incomplete or names a bad path
+    /// (W8b).
+    Brief(BriefError),
+    /// `answers` of a `simple` spawn is missing, or names what cannot be
+    /// answered (W8c, D4).
+    Round(RoundError),
+    /// The outputs of a `simple` brief overlap a live worker's: two workers
+    /// would write the same file (D10). `path` is the path as the new brief
+    /// wrote it.
+    Overlap {
+        worker: WorkerId,
+        path: String,
+        /// The live worker's output that covers or is covered by `path`.
+        held: String,
+    },
     /// `run paused`: a failure is unresolved.
     Paused,
     Ended,
@@ -169,8 +203,18 @@ pub struct NotHalted;
 /// and true whatever the cause. It stands outside the worker's wrapper.
 const CALLS_AS_TEXT: &str = "lazarobox: this worker changed no file, and its reply holds tool calls written as text. Do not report its files as created.";
 
+/// What lazarobox says before the result of a worker whose brief held fields
+/// it does not know (W8b), outside the wrapper.
+pub const EXTRA_PREFIX: &str = "lazarobox: brief extra fields: ";
+
 /// What lazarobox says before the check of a handoff, outside the wrapper.
 const CHECK_PREFIX: &str = "lazarobox: handoff check: ";
+
+/// What lazarobox says before the result of a worker that called
+/// `needs_specification` (W8c), outside the wrapper: text that only says the
+/// phrase does not get it.
+const CLARIFIED: &str =
+    "lazarobox: this worker called needs_specification; its question is in its data below.";
 
 /// A receipt and the counts the ledger line is made of.
 #[derive(Clone, Debug)]
@@ -188,6 +232,9 @@ struct Slot {
     /// What the worker staged (S7). Kept across a retry: the staged files
     /// stay in the writer's own batch whatever the attempt.
     ledger: ChangeLedger,
+    /// The commands it called that reached the user's ask (W6), kept
+    /// across a retry like the ledger.
+    commands: Commands,
     /// What the worker's engine reported so far, over every attempt: a failed
     /// attempt spent its tokens too.
     usage: Option<Usage>,
@@ -203,6 +250,27 @@ struct Slot {
     parked: bool,
     /// The current turn runs without tools: no write tool was offered to it.
     no_tools: bool,
+    /// The call the worker's attempt ended on (W8c); dropped by a retry.
+    closing: Option<Closing>,
+    /// The clarification rounds the worker's brief had before it (W8c, D4):
+    /// 0 for a fresh brief, its parent's plus one when it carried `answers`.
+    /// Kept across a retry; in memory only (D26).
+    round: u32,
+    /// The first worker of the worker's brief, 0 for a worker with no brief.
+    brief: u32,
+    /// A later spawn answered this worker's clarification.
+    answered: bool,
+    /// The counted lines of the batches the worker's brief applied (W9, B).
+    written: Written,
+    /// The counts of the batch the worker proposed last, until it is applied.
+    counted: Vec<(String, Count)>,
+    /// The worker whose clarification this one answers: it is reopened when
+    /// this one ends without completing, so the round count goes on.
+    parent: Option<WorkerId>,
+    /// Started by lazarobox itself (a review lens, the refuter, a
+    /// correction): outside `max_workers` and with no handoff to wait for
+    /// (D22), still shown with its row.
+    internal: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -370,6 +438,18 @@ impl Run {
         self.slots.len()
     }
 
+    /// How many workers the coordinator spawned: what `max_workers` bounds.
+    /// Internal workers (D22) are not counted.
+    fn public_count(&self) -> usize {
+        self.slots.iter().filter(|slot| !slot.internal).count()
+    }
+
+    /// Whether lazarobox started the worker itself (a review lens, the
+    /// refuter, a correction).
+    pub fn is_internal(&self, id: WorkerId) -> bool {
+        self.slots.get(index(id)).is_some_and(|slot| slot.internal)
+    }
+
     /// Whether the run made no worker and was not cancelled: an orchestrator
     /// turn that ends now answered in text alone (agent-orchestrator [W1]).
     pub fn undelegated(&self) -> bool {
@@ -391,11 +471,9 @@ impl Run {
     /// off the machine (an Ollama `*-cloud` model is not).
     pub fn shares_engine(&self, id: WorkerId) -> Option<WorkerId> {
         let local = |slot: &Slot| {
-            let spec = &slot.spec;
             slot.status == WorkerStatus::Running
                 && !slot.parked
-                && locality(&spec.engine) == Some(Locality::Local)
-                && !forwards_off_machine(&spec.engine, spec.model.as_deref())
+                && cheap(&slot.spec.engine, slot.spec.model.as_deref())
         };
         let mine = self.slot(id).filter(|slot| local(slot))?;
         let other = |(n, slot): &(usize, &Slot)| {
@@ -403,6 +481,27 @@ impl Run {
         };
         let found = self.slots.iter().enumerate().find(other)?;
         Some(WorkerId(found.0 as u32 + 1))
+    }
+
+    /// Whether worker `id` is a cheap author (design D20), by the engine and
+    /// model it was spawned with (or relaunched on), never the menu now: its
+    /// staged change is always reviewed, with no consent ask (D21).
+    pub fn cheap(&self, id: WorkerId) -> bool {
+        self.spec(id)
+            .is_some_and(|spec| cheap(&spec.engine, spec.model.as_deref()))
+    }
+
+    /// The notices a review of worker `id`'s change says as it starts (D22):
+    /// the Review row as the roster resolved it against the author's spec.
+    /// Empty when the row cannot run (the lens is refused, and that says so).
+    pub fn review_notices(&self, id: WorkerId) -> Vec<String> {
+        let (Some(author), Availability::Ready { engine, model }) =
+            (self.spec(id), self.roster.get(Task::Review))
+        else {
+            return Vec::new();
+        };
+        let author = (author.engine.as_str(), author.model.as_deref());
+        review::notices(id, author, (engine.as_str(), model.as_deref()))
     }
 
     /// What worker `id` reported using so far; `None` when its engine
@@ -457,6 +556,30 @@ impl Run {
         id: WorkerId,
         unproposed: impl FnOnce() -> bool,
     ) -> Option<Disclosure> {
+        self.disclosures(id, unproposed).into_iter().next()
+    }
+
+    /// Every fact [`Self::disclosure`] could say: a worker that asked for a
+    /// clearer brief (W8c) says so, and an unproposed batch it staged is
+    /// still said beside it. An empty ledger is expected of it and silent.
+    pub fn disclosures(&self, id: WorkerId, unproposed: impl FnOnce() -> bool) -> Vec<Disclosure> {
+        let Some(slot) = self.slot(id) else {
+            return Vec::new();
+        };
+        let clarified = matches!(slot.closing, Some(Closing::Clarify(_)));
+        let asked = slot.status == WorkerStatus::Done && clarified;
+        let mut said = Vec::new();
+        if asked {
+            said.push(Disclosure::NeedsSpecification { brief: slot.brief });
+        }
+        said.extend(
+            self.silent(id, unproposed)
+                .filter(|what| !asked || matches!(what, Disclosure::StagedNotProposed { .. })),
+        );
+        said
+    }
+
+    fn silent(&self, id: WorkerId, unproposed: impl FnOnce() -> bool) -> Option<Disclosure> {
         let slot = self.slot(id)?;
         if matches!(slot.status, WorkerStatus::Queued | WorkerStatus::Running) {
             return None;
@@ -491,11 +614,148 @@ impl Run {
         }
     }
 
+    /// Worker `id` called a command that reached the user's ask, and it
+    /// ended as `ran` says (W6).
+    pub fn ran(&mut self, id: WorkerId, ran: Ran) {
+        if let Some(slot) = self.slots.get_mut(index(id)) {
+            slot.commands.ran(ran);
+        }
+    }
+
+    /// Worker `id` called `needs_specification` (D3): its closing is recorded,
+    /// the question cleaned to one line and capped. `false` when nothing was
+    /// recorded: the worker is not running, was not offered the tool or had
+    /// already closed (the first question stands).
+    pub fn clarify(&mut self, id: WorkerId, what: &str) -> bool {
+        let Some(slot) = self.slots.get_mut(index(id)) else {
+            return false;
+        };
+        let offered = slot.spec.families.contains(Family::Clarify);
+        if slot.status != WorkerStatus::Running || !offered || slot.closing.is_some() {
+            return false;
+        }
+        let flat = clean(what).split_whitespace().collect::<Vec<_>>().join(" ");
+        slot.closing = Some(Closing::Clarify(flat.chars().take(CLARIFY_MAX).collect()));
+        true
+    }
+
+    /// The round of worker `id`'s clarification, 1 for the first of its brief
+    /// (W8c), once it called `needs_specification` in this attempt.
+    pub fn clarify_round(&self, id: WorkerId) -> Option<u32> {
+        let slot = self.slot(id)?;
+        matches!(slot.closing, Some(Closing::Clarify(_))).then_some(slot.round + 1)
+    }
+
+    /// What the handoff of worker `id` keeps of its brief's rounds (20.7).
+    fn trail(&self, id: WorkerId) -> Trail {
+        let Some(slot) = self.slot(id) else {
+            return Trail::default();
+        };
+        let asked = u32::from(matches!(slot.closing, Some(Closing::Clarify(_))));
+        let split = match &slot.closing {
+            Some(Closing::Split(files)) => {
+                let line = clean(&files.join(", "));
+                line.split_whitespace().collect::<Vec<_>>().join(" ")
+            }
+            _ => String::new(),
+        };
+        Trail {
+            brief: slot.brief,
+            rounds: (slot.round + asked).min(ROUNDS),
+            split,
+            limit: asked == 1 && slot.round >= ROUNDS,
+        }
+    }
+
+    /// What the turn cap adds to its line while a clarification is open:
+    /// the brief and its round, or nothing.
+    pub fn open_note(&self) -> String {
+        let Some(id) = self.open_clarifications().into_iter().next() else {
+            return String::new();
+        };
+        let slot = &self.slots[index(id)];
+        format!(
+            "; brief {} still waits for an answer (round {} of {ROUNDS})",
+            slot.brief,
+            (slot.round + 1).min(ROUNDS)
+        )
+    }
+
+    /// The files of worker `id`'s proposed batch (`counts`, per project
+    /// path) that go over the limit with what the worker already applied (W9,
+    /// B), with the counted lines they would hold. Only a `simple` worker has
+    /// a cap (assumption D). The counts are kept until the batch is applied.
+    pub fn over_limit(&mut self, id: WorkerId, counts: &[(String, Count)]) -> Vec<(String, Count)> {
+        let Some(slot) = self.slots.get_mut(index(id)) else {
+            return Vec::new();
+        };
+        if slot.spec.task != Task::Simple {
+            return Vec::new();
+        }
+        slot.counted = counts.to_vec();
+        let each = counts.iter();
+        let total = each.map(|(path, count)| (path.clone(), slot.written.with(path, *count)));
+        total.filter(|(_, count)| count.over()).collect()
+    }
+
+    /// The staged `paths` that worker `id`'s brief does not list among its
+    /// outputs (W9b, C). Only a `simple` worker has a brief to leave.
+    pub fn outside_brief(&self, id: WorkerId, paths: &[String]) -> Vec<String> {
+        let Some(slot) = self.slot(id).filter(|s| s.spec.task == Task::Simple) else {
+            return Vec::new();
+        };
+        let listed = slot.spec.outputs().unwrap_or_default();
+        let outside = paths
+            .iter()
+            .filter(|p| !listed.iter().any(|o| inside(p, o)));
+        outside.cloned().collect()
+    }
+
+    /// Whether worker `id` ended its attempt by choosing to split.
+    pub fn split_chosen(&self, id: WorkerId) -> bool {
+        matches!(self.closing(id), Some(Closing::Split(_)))
+    }
+
+    /// Worker `id` chose to split its brief (W9b): `files` are the files over
+    /// the limit, cleaned to one line each and capped like a clarification
+    /// question. It ends the worker's writes and opens no clarification.
+    /// `false` when nothing was recorded: it is not running or had closed.
+    pub fn split(&mut self, id: WorkerId, files: &[String]) -> bool {
+        let Some(slot) = self.slots.get_mut(index(id)) else {
+            return false;
+        };
+        if slot.status != WorkerStatus::Running || slot.closing.is_some() {
+            return false;
+        }
+        let one_line = |file: &String| {
+            let flat = clean(file).split_whitespace().collect::<Vec<_>>().join(" ");
+            flat.chars().take(CLARIFY_MAX).collect::<String>()
+        };
+        slot.closing = Some(Closing::Split(files.iter().map(one_line).collect()));
+        slot.ledger.discard_pending();
+        true
+    }
+
+    /// Whether worker `id` has called `needs_specification` in this attempt.
+    pub fn clarifying(&self, id: WorkerId) -> bool {
+        self.closing(id).is_some()
+    }
+
+    /// The call worker `id`'s attempt ended on, if any.
+    pub fn closing(&self, id: WorkerId) -> Option<&Closing> {
+        self.slot(id)?.closing.as_ref()
+    }
+
     /// The user's batch review applied a batch holding `paths` that worker
     /// `id` proposed.
     pub fn applied(&mut self, id: WorkerId, paths: &[String]) {
         if let Some(slot) = self.slots.get_mut(index(id)) {
             slot.ledger.applied(paths);
+            for (path, count) in std::mem::take(&mut slot.counted) {
+                if paths.contains(&path) {
+                    slot.written.add(&path, count);
+                }
+            }
         }
     }
 
@@ -523,7 +783,86 @@ impl Run {
     /// with the reason, and halts the run like any failure: no other engine
     /// is tried. Only a paused or ended run refuses outright.
     pub fn spawn(&mut self, now: Instant, task: Task, prompt: &str) -> Result<WorkerId, Refusal> {
-        self.spawn_as(now, task, prompt, true)
+        self.spawn_as(now, task, prompt, None, true)
+    }
+
+    /// Creates a `simple` worker from its brief (W8b). A brief that is
+    /// incomplete or names a bad path creates no worker and changes nothing:
+    /// the run stays as it was. The worker's one message is built from the
+    /// brief.
+    pub fn spawn_simple(
+        &mut self,
+        now: Instant,
+        brief: Brief,
+        origin: &Path,
+    ) -> Result<WorkerId, Refusal> {
+        self.check_open()?;
+        let brief = brief.validate(origin).map_err(Refusal::Brief)?;
+        let brief = brief.relative_to(origin);
+        let parent = self.check_answers(brief.answers).map_err(Refusal::Round)?;
+        let prompt = brief.prompt();
+        let id = self.spawn_as(now, Task::Simple, &prompt, Some(brief), true)?;
+        // The parent's clarification is answered and the chain goes on; a
+        // spawn with no `answers` starts a brief of its own.
+        let (round, first) = match parent {
+            Some(parent) => {
+                self.slots[index(parent)].answered = true;
+                (
+                    self.slots[index(parent)].round + 1,
+                    self.slots[index(parent)].brief,
+                )
+            }
+            None => (0, id.0),
+        };
+        let slot = &mut self.slots[index(id)];
+        slot.round = round;
+        slot.brief = first;
+        slot.parent = parent;
+        // A child refused at once never ran: its parent stays open.
+        if let Some(parent) = parent
+            && self.slots[index(id)].status == WorkerStatus::Refused
+        {
+            self.slots[index(parent)].answered = false;
+        }
+        Ok(id)
+    }
+
+    /// The workers whose clarification is open: they ended done on a call of
+    /// `needs_specification` and no spawn answered them (D4). A run that
+    /// ended holds none.
+    fn open_clarifications(&self) -> Vec<WorkerId> {
+        if matches!(self.state, RunState::Finished | RunState::Cancelled) {
+            return Vec::new();
+        }
+        let open = |slot: &Slot| {
+            let asked = matches!(slot.closing, Some(Closing::Clarify(_)));
+            asked && slot.status == WorkerStatus::Done && !slot.answered
+        };
+        let numbered = self.slots.iter().enumerate();
+        numbered
+            .filter(|(_, slot)| open(slot))
+            .map(|(i, _)| WorkerId(i as u32 + 1))
+            .collect()
+    }
+
+    /// Checks the `answers` of a `simple` spawn against the open
+    /// clarifications (D4): the worker it answers, or why it is refused.
+    fn check_answers(&self, answers: Option<u32>) -> Result<Option<WorkerId>, RoundError> {
+        let open = self.open_clarifications();
+        let Some(n) = answers else {
+            return open.first().map_or(Ok(None), |w| Err(RoundError::Open(*w)));
+        };
+        let id = WorkerId(n);
+        let Some(slot) = self.slot(id) else {
+            return Err(RoundError::Unknown(n));
+        };
+        if !open.contains(&id) {
+            return Err(RoundError::NotAsked(n));
+        }
+        if slot.round >= ROUNDS {
+            return Err(RoundError::Over(WorkerId(slot.brief)));
+        }
+        Ok(Some(id))
     }
 
     /// A worker lazarobox starts itself (a review lens, a correction): the
@@ -534,7 +873,16 @@ impl Run {
         task: Task,
         prompt: &str,
     ) -> Result<WorkerId, Refusal> {
-        self.spawn_as(now, task, prompt, false)
+        self.spawn_as(now, task, prompt, None, false)
+    }
+
+    /// A paused or ended run takes no worker.
+    fn check_open(&self) -> Result<(), Refusal> {
+        match self.state {
+            RunState::Halted { .. } => Err(Refusal::Paused),
+            RunState::Finished | RunState::Cancelled => Err(Refusal::Ended),
+            RunState::Open => Ok(()),
+        }
     }
 
     fn spawn_as(
@@ -542,21 +890,20 @@ impl Run {
         now: Instant,
         task: Task,
         prompt: &str,
+        brief: Option<Brief>,
         gated: bool,
     ) -> Result<WorkerId, Refusal> {
-        match self.state {
-            RunState::Halted { .. } => return Err(Refusal::Paused),
-            RunState::Finished | RunState::Cancelled => return Err(Refusal::Ended),
-            RunState::Open => {}
-        }
-        let (spec, refusal) = self.resolve(task, prompt);
+        self.check_open()?;
+        let (spec, refusal) = self.resolve(task, prompt, brief);
         // A read-only goal is judged by the role, before the menu: turning
-        // Write on would not help.
-        let writer = spec.toolset.families().contains(Family::Write);
+        // Write on would not help. A `simple` worker with no `outputs` is no
+        // writer: `resolve` already took its Write away (one rule, W8b).
+        let writer = spec.toolset.families().contains(Family::Write)
+            && !self.strips_tools(task, spec.outputs());
         if self.steps.read_only() && writer {
             return Err(Refusal::ReadOnly);
         }
-        if self.slots.len() >= self.limits.workers {
+        if gated && self.public_count() >= self.limits.workers {
             return Err(Refusal::WorkerCap(self.limits.workers));
         }
         if writer && gated && !self.gates_lifted {
@@ -570,18 +917,30 @@ impl Run {
         if writer && !spec.writes() {
             return Err(Refusal::WriteOff);
         }
+        if let Some((worker, path, held)) = self.overlap(spec.outputs().unwrap_or_default()) {
+            return Err(Refusal::Overlap { worker, path, held });
+        }
         self.slots.push(Slot {
             spec,
             status: WorkerStatus::Queued,
             started: None,
             result: None,
             ledger: ChangeLedger::default(),
+            commands: Commands::default(),
             usage: None,
             reported: false,
             gap: false,
             handoff: None,
             parked: false,
             no_tools: false,
+            closing: None,
+            round: 0,
+            brief: 0,
+            answered: false,
+            parent: None,
+            written: Written::default(),
+            counted: Vec::new(),
+            internal: !gated,
         });
         let id = WorkerId(self.slots.len() as u32);
         if writer {
@@ -593,14 +952,39 @@ impl Run {
         Ok(id)
     }
 
+    /// The first live (queued or running) worker whose brief outputs overlap
+    /// `outputs`, the path of `outputs` that does and the output it meets
+    /// (D10). A directory covers the files under it. An ended worker blocks
+    /// nothing. Paths are origin-relative (`spawn_simple` made them so). Names
+    /// compare ignoring ASCII case, as on macOS and Windows: two names that
+    /// differ only in case are refused on Linux too, which is accepted.
+    fn overlap(&self, outputs: &[String]) -> Option<(WorkerId, String, String)> {
+        let live = |s: &&Slot| matches!(s.status, WorkerStatus::Queued | WorkerStatus::Running);
+        let mut held = self.slots.iter().enumerate().filter(|(_, s)| live(s));
+        held.find_map(|(i, s)| {
+            let mine = s.spec.outputs().unwrap_or_default();
+            outputs.iter().find_map(|path| {
+                let met = mine.iter().find(|m| covers(m, path))?;
+                Some((WorkerId(i as u32 + 1), path.clone(), met.clone()))
+            })
+        })
+    }
+
     /// A worker waits in the queue, at the back for a new one and at the
     /// front for a retried one; a refusal ends it at once.
     fn enqueue(&mut self, now: Instant, id: WorkerId, refusal: Option<String>, front: bool) {
         // A new attempt starts the clock over, so a refusal reports no time.
         self.slots[index(id)].started = None;
+        // A retried child answers its parent again.
+        if let Some(parent) = self.slots[index(id)].parent {
+            self.slots[index(parent)].answered = true;
+        }
+        // A new attempt starts over, even one refused at once: the closing of
+        // the last attempt must not show in `collect`.
+        self.slots[index(id)].closing = None;
         // A read-only goal starts no code worker, however it got here (a
         // retry, a relaunch).
-        let code = self.slots[index(id)].spec.writes();
+        let code = self.refuses_on_read_only(&self.slots[index(id)].spec);
         // An engine that cannot run is a setup problem; a read-only goal is not.
         let refusal = refusal
             .map(|reason| (ErrorClass::Setup, reason))
@@ -638,9 +1022,11 @@ impl Run {
             };
             // Starting is a new process: the menu is read again now, and a
             // writer that lost Write meanwhile is refused, not run bare.
+            let strip = self.strips(&self.slots[index(next)].spec);
+            let ceiling = self.ceiling;
             let spec = &mut self.slots[index(next)].spec;
-            spec.families = spec.toolset.capped(self.ceiling);
-            if spec.toolset.families().contains(Family::Write) && !spec.writes() {
+            spec.families = Self::capped_families(spec.toolset, ceiling, strip);
+            if !strip && spec.toolset.families().contains(Family::Write) && !spec.writes() {
                 let error = (ErrorClass::Setup, WRITE_OFF.to_owned());
                 self.end(now, next, WorkerStatus::Refused, "", Some(error));
                 continue;
@@ -651,7 +1037,45 @@ impl Run {
         }
     }
 
-    fn resolve(&self, task: Task, prompt: &str) -> (WorkerSpec, Option<String>) {
+    /// Whether a worker of `task` starts with Write and Exec taken away
+    /// instead of being refused: only a `simple` worker (owner decision
+    /// 2026-11-11, option B: it keeps Read only). With a brief, it is when
+    /// the brief lists no `outputs` (W8b: a writing `simple` on a read-only
+    /// goal is refused instead); without one, when the goal is read-only (the
+    /// W8a rule for a worker spawned from free text).
+    fn strips_tools(&self, task: Task, outputs: Option<&[String]>) -> bool {
+        task == Task::Simple && outputs.map_or(self.steps.read_only(), <[String]>::is_empty)
+    }
+
+    fn strips(&self, spec: &WorkerSpec) -> bool {
+        self.strips_tools(spec.task, spec.outputs())
+    }
+
+    /// A toolset under the menu's ceiling, without Write and Exec when
+    /// `strip`.
+    fn capped_families(toolset: Toolset, ceiling: FamilySet, strip: bool) -> FamilySet {
+        let capped = toolset.capped(ceiling);
+        if strip {
+            capped.without(Family::Write).without(Family::Exec)
+        } else {
+            capped
+        }
+    }
+
+    /// Whether a read-only goal refuses the worker: it writes and its tools
+    /// are not taken away. A `simple` worker queued before the goal turned
+    /// read-only still holds Write until `promote` strips it, so it is
+    /// exempt through [`Self::strips_tools`], the one rule.
+    fn refuses_on_read_only(&self, spec: &WorkerSpec) -> bool {
+        spec.writes() && !self.strips(spec)
+    }
+
+    fn resolve(
+        &self,
+        task: Task,
+        prompt: &str,
+        brief: Option<Brief>,
+    ) -> (WorkerSpec, Option<String>) {
         let (engine, model, refusal) = match self.roster.get(task) {
             Availability::Ready { engine, model } => (engine.clone(), model.clone(), None),
             Availability::Unassigned => (
@@ -661,20 +1085,22 @@ impl Run {
             ),
             other => (String::new(), None, guidance(other)),
         };
+        let strip = self.strips_tools(task, brief.as_ref().map(Brief::outputs));
         let spec = WorkerSpec {
             task,
             prompt: prompt.to_owned(),
             engine,
             model,
             toolset: Toolset::for_kind(task),
-            families: Toolset::for_kind(task).capped(self.ceiling),
+            families: Self::capped_families(Toolset::for_kind(task), self.ceiling, strip),
             deadline: self.deadline,
+            brief,
         };
         // A role that writes, under a menu that no longer allows it, is
         // refused and never run read-only without a word. `spawn` refuses it
         // first; this covers the re-resolves of a retry and a relaunch.
         let refusal = refusal.or_else(|| {
-            (spec.toolset.families().contains(Family::Write) && !spec.writes())
+            (spec.toolset.families().contains(Family::Write) && !spec.writes() && !strip)
                 .then(|| WRITE_OFF.to_owned())
         });
         (spec, refusal)
@@ -700,21 +1126,14 @@ impl Run {
         }
     }
 
-    /// Times out the running workers past their deadline. Returns them so
-    /// the runtime kills their processes.
-    pub fn on_tick(&mut self, now: Instant) -> Vec<WorkerId> {
-        let late: Vec<_> = self.ids(WorkerStatus::Running, |slot| {
-            // An overflowing deadline never expires.
-            slot.started.is_some_and(|at| {
-                at.checked_add(slot.spec.deadline)
-                    .is_some_and(|end| now >= end)
-            })
-        });
-        for id in &late {
+    /// Worker `id`'s own deadline passed: its turn's clock, which stops while
+    /// it waits for the user or its review (D5, D6), is the judge, never the
+    /// wall time since it started. Ends it `timed_out` if it still runs.
+    pub fn time_out(&mut self, now: Instant, id: WorkerId) {
+        if self.status(id) == Some(WorkerStatus::Running) {
             let error = (ErrorClass::Timeout, "deadline passed".to_owned());
-            self.end(now, *id, WorkerStatus::TimedOut, "", Some(error));
+            self.end(now, id, WorkerStatus::TimedOut, "", Some(error));
         }
-        late
     }
 
     /// The status of each id. While a failure is unresolved every id answers
@@ -758,14 +1177,46 @@ impl Run {
     ) -> Result<String, CollectError> {
         let nonce = label::nonce_from(nonce_bytes);
         let text = self.collect(id)?;
-        // The ledger comes first, so the cap on a long answer never hides it.
+        // The ledger comes first, so the cap on a long answer never hides
+        // it, then the commands the worker ran (W6), then its text.
         let ledger = self.ledger(id).and_then(ChangeLedger::render);
-        let wrapped = match ledger {
-            Some(ledger) => label::wrap(&nonce, &format!("{ledger}\n\n{text}")),
-            None => label::wrap(&nonce, text),
+        let commands = self.slot(id).and_then(|slot| slot.commands.render());
+        let asked = self.slot(id).and_then(|slot| match slot.closing.as_ref() {
+            Some(Closing::Clarify(what)) => Some(format!("needs specification: {what}")),
+            Some(Closing::Split(files)) => {
+                Some(format!("split chosen: {} (discarded)", files.join(", ")))
+            }
+            _ => None,
+        });
+        let called = asked.is_some();
+        let body: Vec<&str> = [
+            asked.as_deref(),
+            ledger.as_deref(),
+            commands.as_deref(),
+            Some(text),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let wrapped = label::wrap(&nonce, &body.join("\n\n"));
+        // How its commands ended is lazarobox's own word, outside the
+        // wrapper, so the worker's text cannot pass for it (W6).
+        let record = self.slot(id).and_then(|slot| slot.commands.attested());
+        let wrapped = match record {
+            Some(record) => format!("{record}\n\n{wrapped}"),
+            None => wrapped,
         };
         // lazarobox's own word, outside the worker's wrapper: the worker
         // cannot forge it, and the coordinator must not claim files exist.
+        let wrapped = match self.brief_extra(id) {
+            Some(names) => format!("{EXTRA_PREFIX}{names}\n\n{wrapped}"),
+            None => wrapped,
+        };
+        let wrapped = if called {
+            format!("{CLARIFIED}\n\n{wrapped}")
+        } else {
+            wrapped
+        };
         let said = self.slot(id).is_some_and(Slot::said_calls_as_text);
         let wrapped = if said {
             format!("{CALLS_AS_TEXT}\n\n{wrapped}")
@@ -783,6 +1234,13 @@ impl Run {
         } else {
             format!("{CHECK_PREFIX}{}\n\n{wrapped}", lines.join("; "))
         })
+    }
+
+    /// The names of the extra fields of worker `id`'s brief, `None` when it
+    /// had none (W8b).
+    pub fn brief_extra(&self, id: WorkerId) -> Option<String> {
+        let brief = self.slot(id)?.spec.brief.as_ref()?;
+        (!brief.extra.is_empty()).then(|| brief.extra_names())
     }
 
     /// The claim check of worker `id`'s stored handoff, against its ledger as
@@ -878,6 +1336,17 @@ impl Run {
             status: slot.status,
             ledger: slot.writer_ledger().cloned(),
             prior: slot.handoff.as_ref().and_then(|h| h.audit.clone()),
+            extra: slot
+                .spec
+                .brief
+                .as_ref()
+                .map(Brief::extra_names)
+                .unwrap_or_default(),
+            clarification: match &slot.closing {
+                Some(Closing::Clarify(what)) => what.clone(),
+                _ => String::new(),
+            },
+            trail: self.trail(id),
         }
     }
 
@@ -937,6 +1406,9 @@ impl Run {
             status: WorkerStatus::Done,
             ledger: None,
             prior: None,
+            extra: String::new(),
+            clarification: String::new(),
+            trail: Trail::default(),
         };
         // A step closes even while the run is halted, its verdict forced to
         // `blocked`: the same rule as a worker's handoff (D17).
@@ -1010,7 +1482,7 @@ impl Run {
         let queued: Vec<_> = self.queue.iter().copied().collect();
         let code: Vec<_> = queued
             .into_iter()
-            .filter(|id| self.slots[index(*id)].spec.writes())
+            .filter(|id| self.refuses_on_read_only(&self.slots[index(*id)].spec))
             .collect();
         for id in &code {
             let slot = &mut self.slots[index(*id)];
@@ -1035,6 +1507,7 @@ impl Run {
         numbered
             .filter(|(_, slot)| {
                 slot.handoff.is_none()
+                    && !slot.internal
                     && !matches!(slot.status, WorkerStatus::Queued | WorkerStatus::Running)
             })
             .map(|(i, _)| WorkerId(i as u32 + 1))
@@ -1095,6 +1568,16 @@ impl Run {
     /// running, or a finished worker with no handoff, continues in a new turn
     /// until `max_turns` turns were taken (D8); the turn is counted here.
     pub fn next_turn(&mut self) -> NextTurn {
+        // A brief that asked a third time ends the run (D4).
+        let third = self.slots.iter().find(|slot| {
+            let asked = matches!(slot.closing, Some(Closing::Clarify(_)));
+            asked && slot.status == WorkerStatus::Done && slot.round >= ROUNDS
+        });
+        if self.state == RunState::Open
+            && let Some(slot) = third
+        {
+            return NextTurn::Limit(WorkerId(slot.brief));
+        }
         let live = [WorkerStatus::Queued, WorkerStatus::Running]
             .iter()
             .any(|status| !self.ids(*status, |_| true).is_empty());
@@ -1129,6 +1612,7 @@ impl Run {
         let rows = self.slots.iter().enumerate().map(|(i, slot)| {
             let id = WorkerId(i as u32 + 1);
             let row = Row::new(id, slot.spec.task, slot.status, slot.handoff.as_ref());
+            let row = if slot.internal { row.internal() } else { row };
             row.flagged(self.audit(id).map(|a| a.flags()).unwrap_or_default())
         });
         let feature = self.feature.as_ref();
@@ -1162,6 +1646,9 @@ impl Run {
         let RunState::Halted { worker, .. } = self.state else {
             return Err(NotHalted);
         };
+        // A retry or relaunch only runs while the run is halted, and a halted
+        // run takes no new worker (`check_open`), so nothing can have taken
+        // this worker's outputs meanwhile: overlap is not re-checked.
         let reresolve = match choice {
             UserChoice::Cancel => return Ok(self.cancel_run(now)),
             UserChoice::Retry => false,
@@ -1178,7 +1665,8 @@ impl Run {
         let slot = &self.slots[index(worker)];
         // A refused worker has no engine to reuse: it is resolved again.
         let refusal = if reresolve || slot.status == WorkerStatus::Refused {
-            let (spec, refusal) = self.resolve(slot.spec.task, &slot.spec.prompt.clone());
+            let (task, prompt) = (slot.spec.task, slot.spec.prompt.clone());
+            let (spec, refusal) = self.resolve(task, &prompt, slot.spec.brief.clone());
             self.slots[index(worker)].spec = spec;
             // The queued workers refused with it are one failure, said once.
             refusal.map(|reason| match others {
@@ -1188,9 +1676,11 @@ impl Run {
         } else {
             // A retry is a new process: the spec is capped by the menu as it
             // is now, and a writer that lost Write is refused, not run bare.
+            let strip = self.strips(&self.slots[index(worker)].spec);
+            let ceiling = self.ceiling;
             let spec = &mut self.slots[index(worker)].spec;
-            spec.families = spec.toolset.capped(self.ceiling);
-            (spec.toolset.families().contains(Family::Write) && !spec.writes())
+            spec.families = Self::capped_families(spec.toolset, ceiling, strip);
+            (!strip && spec.toolset.families().contains(Family::Write) && !spec.writes())
                 .then(|| WRITE_OFF.to_owned())
         };
         // The run stays halted while the worker is queued again, so a refusal
@@ -1218,7 +1708,8 @@ impl Run {
             if slot.spec.task != task {
                 continue;
             }
-            let (spec, refusal) = self.resolve(task, &slot.spec.prompt.clone());
+            let (spec, refusal) =
+                self.resolve(task, &slot.spec.prompt.clone(), slot.spec.brief.clone());
             self.slots[index(id)].spec = spec;
             if let Some(reason) = refusal {
                 self.enqueue(now, id, Some(reason), false);
@@ -1292,6 +1783,13 @@ impl Run {
             usage: slot.usage.map(|usage| shown(usage, slot.gap)),
         });
         self.queue.retain(|queued| *queued != id);
+        // An answering child that did not complete leaves its parent's
+        // question open: the next spawn must answer it again (D4).
+        if status != WorkerStatus::Done
+            && let Some(parent) = self.slots[index(id)].parent
+        {
+            self.slots[index(parent)].answered = false;
+        }
         match (&self.state, error) {
             (RunState::Open, Some((class, text))) => {
                 self.state = RunState::Halted {
@@ -1344,6 +1842,24 @@ fn shown(usage: Usage, partial: bool) -> Usage {
         cost_micros: usage.cost_micros.filter(|_| !partial),
         ..usage
     }
+}
+
+/// The components of a path, without empty ones or `.`.
+fn parts(path: &str) -> Vec<String> {
+    let parts = path.split('/').filter(|c| !c.is_empty() && *c != ".");
+    parts.map(str::to_owned).collect()
+}
+
+/// Whether `path` is `output` or lies under it, comparing components
+/// ignoring ASCII case. `.` (the project root) holds every path.
+fn inside(path: &str, output: &str) -> bool {
+    let (long, short) = (parts(path), parts(output));
+    long.len() >= short.len() && (long.iter().zip(&short)).all(|(x, y)| x.eq_ignore_ascii_case(y))
+}
+
+/// Whether one of two output paths is the other or a directory above it.
+fn covers(a: &str, b: &str) -> bool {
+    inside(a, b) || inside(b, a)
 }
 
 /// Worker ids start at 1; id 0 maps to no slot.

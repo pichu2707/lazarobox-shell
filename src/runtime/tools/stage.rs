@@ -6,7 +6,7 @@
 //! Applying goes through [`apply`]; this file holds no write API.
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{HashMap, HashSet, hash_map::Entry},
     path::Path,
 };
 
@@ -16,7 +16,7 @@ use super::{
 };
 use crate::core::ai::{
     chat::review::{Badge, BatchReview, ReviewDoc},
-    orchestra::WorkerKey,
+    orchestra::{RunId, WorkerKey},
     tools::{
         paths::SecretRoots,
         stage::{Batch, BatchId, Outcome, StageError, StageKey, State},
@@ -56,6 +56,9 @@ pub struct Stages {
     /// The worker label a sealed batch was headed with, by key and the
     /// generation it belongs to: an orphan review shows it again.
     labels: HashMap<StageKey, (u64, WorkerLabel)>,
+    /// The keys whose last closed batch was applied whole (W6: a worker's
+    /// command runs only then). A discard or a partial apply clears it.
+    applied: HashSet<StageKey>,
 }
 
 /// The ask label, worker and receipt line a worker's review is headed with.
@@ -212,6 +215,11 @@ impl Stages {
             batch.resolve(id, outcome)?;
             self.batches.remove(&id.key);
             self.labels.remove(&id.key);
+            if outcome == Outcome::Applied {
+                self.applied.insert(id.key);
+            } else {
+                self.applied.remove(&id.key);
+            }
         }
         Ok(result)
     }
@@ -221,13 +229,27 @@ impl Stages {
         self.current(id)?.discard();
         self.batches.remove(&id.key);
         self.labels.remove(&id.key);
+        self.applied.remove(&id.key);
         Ok(())
     }
 
-    /// Drops whatever `key` holds. How many entries were lost; `None` when
-    /// nothing worth a notice was: an empty batch is no loss. A pane close
-    /// goes through [`Stages::discard_pane`]; tests use this to clear one key.
+    /// Whether the last batch `key` closed was applied, and none is open
+    /// since: what a worker's command needs (W6).
+    pub fn applied(&self, key: StageKey) -> bool {
+        self.applied.contains(&key) && !self.batches.contains_key(&key)
+    }
+
+    /// Marks `key`'s last batch applied without one, for tests of a worker
+    /// command that need no batch review first.
     #[cfg(test)]
+    pub fn applied_for_test(&mut self, key: StageKey) {
+        self.applied.insert(key);
+    }
+
+    /// Drops whatever `key` holds. How many entries were lost; `None` when
+    /// nothing worth a notice was: an empty batch is no loss. A worker's split
+    /// (W9b) discards its batch here; a pane close goes through
+    /// [`Stages::discard_pane`].
     pub fn discard_key(&mut self, key: StageKey) -> Option<usize> {
         let lost = self.batches.remove(&key)?.entries().len();
         (lost > 0).then_some(lost)
@@ -238,6 +260,7 @@ impl Stages {
     pub fn discard_pane(&mut self, pane: PaneId) -> Option<usize> {
         let mut lost = 0;
         self.labels.retain(|key, _| key.pane() != pane);
+        self.applied.retain(|key| key.pane() != pane);
         self.batches.retain(|key, batch| {
             let ours = key.pane() == pane;
             if ours {
@@ -246,6 +269,25 @@ impl Stages {
             !ours
         });
         (lost > 0).then_some(lost)
+    }
+
+    /// Drops the batches the workers of run `run` of `pane` proposed to the
+    /// user: the run ended and denied them, so they are not orphans to apply
+    /// later. A batch a worker staged and never proposed stays an orphan.
+    /// How many were dropped.
+    pub fn discard_asked(&mut self, pane: PaneId, run: RunId) -> usize {
+        let ours =
+            |key: &StageKey| matches!(key, StageKey::Worker(p, w) if *p == pane && w.run == run);
+        let gone: Vec<StageKey> = (self.batches.iter())
+            .filter(|(key, batch)| ours(key) && batch.asked())
+            .map(|(key, _)| *key)
+            .collect();
+        for key in &gone {
+            self.batches.remove(key);
+            self.labels.remove(key);
+            self.applied.remove(key);
+        }
+        gone.len()
     }
 
     /// The oldest orphan of `pane` for the user, by arrival (generation): the
@@ -523,6 +565,82 @@ mod tests {
         // The same answer again is stale: nothing is written twice.
         assert_eq!(stages.apply_with(id, &disk).err(), Some(StageError::Stale));
         assert_eq!(disk.log.borrow().len(), 1);
+    }
+
+    /// A disk whose second create fails and whose undo fails too: the apply
+    /// leaves the first file changed (`Partial`).
+    #[derive(Default)]
+    struct Broken {
+        creates: RefCell<usize>,
+    }
+
+    impl WriteOps for Broken {
+        fn probe(&self, _: &Path) -> Result<Option<Vec<u8>>, WriteError> {
+            Ok(None)
+        }
+        fn make_dir(&self, _: &Path) -> Result<(), WriteError> {
+            Ok(())
+        }
+        fn create_file(&self, _: &Path, _: &[u8]) -> Result<(), WriteError> {
+            *self.creates.borrow_mut() += 1;
+            match *self.creates.borrow() {
+                1 => Ok(()),
+                _ => Err(WriteError::Denied),
+            }
+        }
+        fn replace_file(&self, _: &Path, _: &[u8], _: &[u8]) -> Result<(), WriteError> {
+            Ok(())
+        }
+        fn delete_file(&self, _: &Path, _: &[u8]) -> Result<(), WriteError> {
+            Err(WriteError::Denied)
+        }
+        fn delete_dir(&self, _: &Path) -> Result<(), WriteError> {
+            Ok(())
+        }
+    }
+
+    /// Stages `a.txt` and `b.txt` in the batch of `key` and proposes it.
+    fn proposed_pair(stages: &mut Stages, key: StageKey) -> BatchId {
+        put(stages, key, "a.txt");
+        let id = put(stages, key, "b.txt");
+        stages.seal(id).unwrap();
+        id
+    }
+
+    // Spec "Worker commands [W6]" (B1 of the W6a review): a worker's command
+    // runs only after its own batch was applied whole. A partly applied batch
+    // closes without that, and clears an earlier applied one.
+    #[test]
+    fn a_partly_applied_batch_does_not_count_as_applied() {
+        let mut stages = Stages::default();
+        let key = worker(1, 1);
+        let first = put(&mut stages, key, "first.txt");
+        stages.seal(first).unwrap();
+        stages.apply_with(first, &Rec::default()).unwrap();
+        assert!(stages.applied(key), "a whole apply counts");
+        let id = proposed_pair(&mut stages, key);
+        let result = stages.apply_with(id, &Broken::default()).unwrap();
+        assert!(matches!(result, ApplyResult::Partial { .. }), "{result:?}");
+        assert!(stages.batch(key).is_none(), "a partial apply closes it");
+        assert!(!stages.applied(key));
+    }
+
+    // ... and a new batch opened after an applied one is not applied until it
+    // is applied itself.
+    #[test]
+    fn a_new_batch_after_an_applied_one_is_not_applied() {
+        let mut stages = Stages::default();
+        let key = worker(1, 1);
+        let first = put(&mut stages, key, "first.txt");
+        stages.seal(first).unwrap();
+        stages.apply_with(first, &Rec::default()).unwrap();
+        let second = put(&mut stages, key, "second.txt");
+        assert!(!stages.applied(key), "staging");
+        stages.seal(second).unwrap();
+        assert!(!stages.applied(key), "proposed");
+        stages.apply_with(second, &Rec::default()).unwrap();
+        assert!(stages.applied(key), "applied whole again");
+        assert!(!stages.applied(worker(1, 2)), "another worker is not");
     }
 
     #[test]

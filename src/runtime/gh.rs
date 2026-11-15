@@ -185,7 +185,7 @@ async fn create(program: &Path, issue: &Issue, deadline: Instant) -> SendReply {
 }
 
 /// How one `gh` run ended.
-enum Run {
+pub(crate) enum Run {
     /// Success: what it printed on stdout.
     Printed(String),
     /// It has no credential.
@@ -249,7 +249,12 @@ async fn spawn(program: &Path, args: &[&str]) -> std::io::Result<Child> {
 /// One run of `program` with `args` (no shell): `input` on stdin, stdout
 /// and stderr captured, the environment inherited (`gh` reads its own config
 /// and tokens there). Killed when `deadline` passes.
-async fn run(program: &Path, args: &[&str], input: Option<&str>, deadline: Instant) -> Run {
+pub(crate) async fn run(
+    program: &Path,
+    args: &[&str],
+    input: Option<&str>,
+    deadline: Instant,
+) -> Run {
     let mut child = match spawn(program, args).await {
         Ok(child) => child,
         Err(error) => return Run::Failed(error.to_string()),

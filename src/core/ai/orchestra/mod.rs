@@ -2,18 +2,22 @@
 //! orchestration tool calls and the read scope. No IO beyond the path checks
 //! of `scope`; time comes in as explicit `Instant`s.
 
+pub mod brief;
 pub mod changes;
 pub mod claims;
+pub mod commands;
 pub mod errors;
 pub mod event;
 pub mod feature;
 pub mod ledger;
+pub mod limit;
 pub mod overrides;
 pub mod persist;
 pub mod rdd;
 pub mod receipt;
 pub mod record;
 pub mod review;
+pub mod rounds;
 pub mod run;
 pub mod scope;
 pub mod steps;
@@ -80,10 +84,16 @@ pub enum Toolset {
     /// `find_dir`, `list_dir` and `read_file`: what every worker but a
     /// `code` one gets.
     ReadOnly,
-    /// The read tools and the coding-tools write tools (S7): `create_dir`,
-    /// `write_file`, `edit_file` and `propose_batch`. Writes are staged in
-    /// the worker's own batch and reach the disk only through the user's review.
+    /// The read tools, the coding-tools write tools (S7): `create_dir`,
+    /// `write_file`, `edit_file` and `propose_batch`, and `run_command` (W6).
+    /// Writes are staged in the worker's own batch and reach the disk only
+    /// through the user's review; a command runs only after that batch is
+    /// applied, and asks the user every time. The menu caps Write and Exec.
     Code,
+    /// The `simple` worker (W8a): the families of `Code` and `needs_specification`
+    /// (W8c), for a direct, fully specified task. Kept apart from `Code` so a read-only goal can
+    /// start it without Write instead of refusing it.
+    Simple,
     /// The orchestration tools and the pane reads (`list_panes`,
     /// `read_pane`), for the orchestrator turn only.
     Orchestrator,
@@ -98,7 +108,12 @@ impl Toolset {
         let read = FamilySet::EMPTY.with(Family::Read);
         match self {
             Self::ReadOnly => read,
-            Self::Code => read.with(Family::Write),
+            Self::Code => read.with(Family::Write).with(Family::Exec),
+            // `Clarify` has no toggle: the ceiling never takes it away.
+            Self::Simple => read
+                .with(Family::Write)
+                .with(Family::Exec)
+                .with(Family::Clarify),
             Self::Orchestrator => read.with(Family::PaneRead).with(Family::Orchestra),
         }
     }
@@ -113,26 +128,41 @@ impl Toolset {
             .fold(self.families(), FamilySet::without)
     }
 
-    /// The toolset of a worker kind: `Code` for a `code` worker, read-only
-    /// for every other kind.
+    /// The toolset of a worker kind: `Code` for a `code` worker, `Simple`
+    /// for a `simple` one, read-only for every other kind.
     pub fn for_kind(task: Task) -> Self {
         match task {
             Task::Code => Self::Code,
+            Task::Simple => Self::Simple,
             _ => Self::ReadOnly,
         }
     }
 }
 
 #[cfg(test)]
+mod brief_extra_tests;
+#[cfg(test)]
+mod brief_spawn_tests;
+#[cfg(test)]
+mod brief_tests;
+#[cfg(test)]
+mod ceiling_exec_tests;
+#[cfg(test)]
 mod ceiling_tests;
 #[cfg(test)]
 mod claims_tests;
+#[cfg(test)]
+mod clarify_tests;
 #[cfg(test)]
 mod feature_tests;
 #[cfg(test)]
 mod gate_tests;
 #[cfg(test)]
 mod ledger_tests;
+#[cfg(test)]
+mod limit_run_tests;
+#[cfg(test)]
+mod limit_tests;
 #[cfg(test)]
 mod persist_tests;
 #[cfg(test)]
@@ -142,7 +172,11 @@ mod receipt_tests;
 #[cfg(test)]
 mod review_tests;
 #[cfg(test)]
+mod rounds_tests;
+#[cfg(test)]
 mod share_tests;
+#[cfg(test)]
+mod simple_tests;
 #[cfg(test)]
 mod steps_tests;
 #[cfg(test)]

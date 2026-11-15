@@ -166,7 +166,8 @@ pub(crate) enum Stop {
 }
 
 /// Sends `request` over `stream` and relays the reply to `tx`. The total
-/// limit covers everything from here on.
+/// limit covers everything from here on; a worker turn's pauses while it
+/// waits for the user (`pending::total_limit`).
 pub(crate) async fn drive<S>(
     mut stream: S,
     request: &[u8],
@@ -177,7 +178,7 @@ pub(crate) async fn drive<S>(
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let turn = relay(&mut stream, request, timeouts, decoder, tx);
-    let error = match timeout(timeouts.total, turn).await {
+    let error = match pending::total_limit(timeouts.total, turn).await {
         Ok(Ok(())) | Ok(Err(Stop::Cancelled)) => return,
         Ok(Err(Stop::Failed(message))) => ChatError::Failed(message.into()),
         Ok(Err(Stop::Error(error))) => error,
@@ -195,7 +196,7 @@ async fn fail(tx: &mpsc::Sender<StreamEvent>, message: &str) {
 /// Whether tool calls of this turn wait for the user (see
 /// `runtime::tools::pending`). The first-byte and idle limits and the `Slow`
 /// hints do not run meanwhile: the engine is silent because the user is
-/// deciding. The total limit never looks at it.
+/// deciding. The total limit of a chat turn never looks at it.
 struct Hold(Option<watch::Receiver<usize>>);
 
 impl Hold {

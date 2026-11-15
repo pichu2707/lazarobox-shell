@@ -823,3 +823,20 @@ fn a_batch_that_does_not_match_the_change_set_is_a_gap() {
     assert!(p.gaps.is_empty(), "{:?}", p.gaps);
     assert!(p.text.contains("created dir: src"));
 }
+
+// Spec "A cheap author needs no consent" (17.2, D21): a mandatory review is
+// recorded as such, never as the user's grant, and runs as a granted one:
+// lenses, a report and a conclusion. It is answered once, like a consent.
+#[test]
+fn a_mandatory_review_runs_as_a_granted_one_and_is_recorded_as_mandatory() {
+    let mut review = Review::new(assess(&[change("src/a.rs")], None));
+    review.consent(Consent::Mandatory).unwrap();
+    assert_eq!(review.consent_answer(), Some(Consent::Mandatory));
+    assert_eq!(
+        review.consent(Consent::Granted),
+        Err(ReviewError::AlreadyAnswered)
+    );
+    review.pick("risk", "a cheap author").unwrap();
+    review.report(Lens::Risk, "NONE").unwrap();
+    assert_eq!(review.conclude(), Ok(Outcome::Clean));
+}

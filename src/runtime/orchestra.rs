@@ -44,10 +44,10 @@ use super::{
     prompts::load_prompt,
     tools::{
         Answered, Approver, Late, OrchHandle, Orchestra, Pending, ToolHost, TurnScope, WorkerScope,
-        fs::load_roots,
+        fs::load_roots, pending,
     },
 };
-use crate::core::ai::chat::prompts::worker_system;
+use crate::core::ai::chat::prompts::{read_only_worker_system, worker_system};
 use crate::core::ai::sanitize::{clean, redact_tokens};
 use crate::core::{
     ai::{
@@ -69,12 +69,16 @@ use crate::core::{
         jail,
         orchestra::{
             RunId, WorkerId, WorkerKey,
+            brief::Brief,
             changes::Change,
+            commands::Ran,
             errors::classify,
             event::{Degrade, shared_engine_notice},
             feature::FeatureError,
             ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
+            limit::Count,
             review::Assessment,
+            rounds::ROUNDS,
             run::{
                 CancelOutcome, CollectError, NextTurn, NotHalted, Refusal, Roster, Run, RunLimits,
                 RunState, StepDone, UserChoice, WorkerEvent,
@@ -100,6 +104,13 @@ pub use crate::core::ai::orchestra::event::{Continuation, OrchestraEvent, TraceI
 mod review;
 
 pub use review::Reviewed;
+
+#[cfg(test)]
+tokio::task_local! {
+    /// The dispatch of a server engine's worker turn, for the fake engine of
+    /// the tests: the adapters read their own, which is private to `chat`.
+    static TEST_DISPATCH: Arc<dyn Dispatch>;
+}
 
 /// Says what is staged after a correction, in a test.
 #[cfg(test)]
@@ -127,8 +138,9 @@ const CONTINUE_HEAD: &str = "Your previous turn ended while the run is still ope
 struct Route {
     key: WorkerKey,
     trace: Tracer,
-    /// The count the worker's own turn watches for its timers: the one it was
-    /// started with, whatever turn it has outlived since.
+    /// The worker's own count of asks that wait for the user, whatever turn
+    /// it has outlived: its turn's timers and its deadline pause on it (D5).
+    /// Its own, never the turn's: a sibling's ask must not stop its clock.
     own: Pending,
     state: Mutex<Current>,
 }
@@ -136,8 +148,6 @@ struct Route {
 struct Current {
     events: mpsc::Sender<StreamEvent>,
     approver: Arc<dyn Approver>,
-    /// The current orchestrator turn's count, which its approver feeds.
-    pending: Pending,
     /// Counts the retargets, so a failed send can tell whether the route moved.
     generation: u64,
     /// The last gap a denied ask was said for.
@@ -150,16 +160,14 @@ impl Route {
         trace: Tracer,
         events: mpsc::Sender<StreamEvent>,
         approver: Arc<dyn Approver>,
-        pending: Pending,
     ) -> Arc<Self> {
         Arc::new(Self {
             key,
             trace,
-            own: pending.clone(),
+            own: Pending::new(),
             state: Mutex::new(Current {
                 events,
                 approver,
-                pending,
                 generation: 0,
                 said: None,
             }),
@@ -170,17 +178,11 @@ impl Route {
     /// are denied first (the worker may ask again): their wait sits under a
     /// turn the new prompt would not name. Then the new turn's approver of
     /// this worker takes over, a new attempt of its session.
-    fn retarget(
-        &self,
-        events: mpsc::Sender<StreamEvent>,
-        turn: &Arc<dyn Approver>,
-        pending: &Pending,
-    ) {
+    fn retarget(&self, events: mpsc::Sender<StreamEvent>, turn: &Arc<dyn Approver>) {
         let mut state = lock(&self.state);
         state.approver.end_worker(self.key);
         state.approver = turn.for_worker(self.key).unwrap_or_else(|| turn.clone());
         state.events = events;
-        state.pending = pending.clone();
         state.generation += 1;
     }
 
@@ -258,11 +260,11 @@ struct Rerouted(Arc<Route>);
 impl Approver for Rerouted {
     fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer> {
         // The turn's approver counts the ask for the turn's timers; the
-        // worker's own timers, if they watch another count, hear it too.
+        // worker's own count hears it at once, before the app may queue it,
+        // so the worker's clock stops while it waits (D5).
         let (current, also) = {
             let state = lock(&self.0.state);
-            let also = (!state.pending.same(&self.0.own)).then(|| self.0.own.enter());
-            (state.approver.clone(), also)
+            (state.approver.clone(), self.0.own.enter())
         };
         let wait = current.ask(id, ask);
         async move {
@@ -791,7 +793,7 @@ impl RunManager {
                 )
             });
             for route in live.routes.values() {
-                route.retarget(scope.events.clone(), &scope.approver, &scope.pending);
+                route.retarget(scope.events.clone(), &scope.approver);
             }
             live.events = scope.events;
             live.approver = scope.approver;
@@ -884,6 +886,14 @@ impl RunManager {
         }
     }
 
+    /// Whether run `run` of `pane` is the live one: it has not ended and was
+    /// not replaced.
+    pub fn is_live(&self, pane: PaneId, run: RunId) -> bool {
+        lock(&self.runs)
+            .get(&pane)
+            .is_some_and(|live| live.run.id() == run)
+    }
+
     /// The orchestrator turn of run `run` of `pane` ended. With work pending
     /// (a worker live, or a finished one with no handoff) the run continues
     /// in a new turn, or stops at `max_turns` (S4, D8). Otherwise it ends by
@@ -947,10 +957,15 @@ impl RunManager {
                             step.label()
                         )
                     });
+                let open = live.run.open_note();
                 Next::Stop(format!(
-                    "run stopped: it took max_turns ({taken}) orchestrator turns; running workers were cancelled{gate}"
+                    "run stopped: it took max_turns ({taken}) orchestrator turns; running workers were cancelled{gate}{open}"
                 ))
             }
+            NextTurn::Limit(brief) => Next::Stop(format!(
+                "run stopped: brief {} asked for a clearer brief a third time; the limit is {ROUNDS} rounds of clarification per brief; running workers were cancelled",
+                brief.0
+            )),
             NextTurn::Continue(turn) => match (self.nonce)() {
                 Some(bytes) => {
                     let ledger = live.run.run_ledger(&live.goal).render();
@@ -1115,6 +1130,11 @@ impl RunManager {
             .collect();
         self.sync(pane, &mut live);
         self.announce_built(pane, run, built);
+        // The run denied the batches its workers proposed: none stays as an
+        // orphan for a later `y`. The app closes the views on `Ended`.
+        if let Some(tooling) = &self.tooling {
+            tooling.host.end_run_batches(pane, run);
+        }
         self.send(pane, OrchestraEvent::Ended { run });
         tasks
     }
@@ -1180,6 +1200,7 @@ impl RunManager {
     ) -> BoxFuture<'static, Outcome> {
         let now = match call {
             OrchCall::Spawn { task, prompt } => self.spawn(pane, run, task, &prompt),
+            OrchCall::SpawnSimple { brief } => self.spawn_simple(pane, run, brief),
             OrchCall::Wait { ids, timeout } => {
                 return self.clone().wait(pane, run, ids, timeout).boxed();
             }
@@ -1206,8 +1227,27 @@ impl RunManager {
     /// Creates a worker: it starts when a slot is free, or ends `refused`
     /// when its engine is unavailable, which halts the run.
     fn spawn(self: &Arc<Self>, pane: PaneId, run: RunId, task: Task, prompt: &str) -> Outcome {
+        self.spawn_with(pane, run, task, |live| live.run.spawn(now(), task, prompt))
+    }
+
+    /// A `simple` worker from its brief: a brief that is refused creates no
+    /// worker, and the coordinator and the pane hear the same text.
+    fn spawn_simple(self: &Arc<Self>, pane: PaneId, run: RunId, brief: Brief) -> Outcome {
+        self.spawn_with(pane, run, Task::Simple, |live| {
+            let origin = live.origin.clone();
+            live.run.spawn_simple(now(), brief, &origin)
+        })
+    }
+
+    fn spawn_with(
+        self: &Arc<Self>,
+        pane: PaneId,
+        run: RunId,
+        task: Task,
+        create: impl FnOnce(&mut Live) -> Result<WorkerId, Refusal>,
+    ) -> Outcome {
         let spawned = self.on_run(pane, run, |live| {
-            let id = match live.run.spawn(now(), task, prompt) {
+            let id = match create(live) {
                 Ok(id) => id,
                 // A gate has its own event: the pane hears the gate and the
                 // step, not a bare spawn refusal.
@@ -1220,6 +1260,11 @@ impl RunManager {
                         Refusal::Ended => ENDED.to_owned(),
                         Refusal::ReadOnly => READ_ONLY.to_owned(),
                         Refusal::WriteOff => WRITE_OFF.to_owned(),
+                        Refusal::Brief(error) => error.text(),
+                        Refusal::Round(error) => error.text(),
+                        Refusal::Overlap { worker, path, held } => {
+                            overlap_text(worker, &path, &held)
+                        }
                         Refusal::WorkerCap(cap) => {
                             format!("worker limit reached: max_workers is {cap}")
                         }
@@ -1245,7 +1290,10 @@ impl RunManager {
                 let shown = reason.unwrap_or_else(|| status.label().to_owned());
                 return self.refused(pane, live, task, shown, text);
             }
-            let text = format!("worker {}: {}", id.0, status.label());
+            let mut text = format!("worker {}: {}", id.0, status.label());
+            if let Some(names) = live.run.brief_extra(id) {
+                text.push_str(&format!("; brief extra fields: {names}"));
+            }
             Outcome {
                 text,
                 is_error: false,
@@ -1373,6 +1421,9 @@ impl RunManager {
                     let lines = handoff.audit.iter().flat_map(|audit| audit.lines());
                     for line in lines {
                         text.push_str(&format!("; {line}"));
+                    }
+                    if !handoff.extra.is_empty() {
+                        text.push_str(&format!("; brief extra fields: {}", handoff.extra));
                     }
                     self.announce_handoff(pane, run, handoff);
                     fine(text)
@@ -1657,6 +1708,9 @@ impl RunManager {
             usage: live.run.usage(id),
             partial: live.run.usage_partial(id),
             overridden: false,
+            inherited: false,
+            clarifying: live.run.clarify_round(id),
+            split: live.run.split_chosen(id),
         };
         self.send(pane, OrchestraEvent::Worker(row));
     }
@@ -1710,14 +1764,14 @@ impl RunManager {
             trace.clone(),
             live.events.clone(),
             approver.unwrap_or_else(|| live.approver.clone()),
-            live.pending.clone(),
         );
+        let own = route.own.clone();
         live.routes.insert(id, route.clone());
         let proposer = live.review.proposer(id);
         trace.send(TraceItem::Begin);
         // A turn without tools still runs, as text, and the pane is told why.
         let session = match self.open_session(pane, key, &spec, proposer, &mut request, route) {
-            Ok(dispatch) => Some((live.pending.clone(), dispatch)),
+            Ok(dispatch) => Some((own.clone(), dispatch)),
             Err(why) => {
                 live.run.ran_without_tools(id);
                 self.send(
@@ -1746,6 +1800,15 @@ impl RunManager {
             && !live.review.corrects(id)
         {
             request.system = worker_system(&request.system);
+        } else if session.is_some()
+            && spec.task == Task::Simple
+            && !spec.writes()
+            && live.review.system(id).is_none()
+            && !live.review.corrects(id)
+        {
+            // Its Write was removed (a read-only goal): `simple.md` still asks
+            // for the write tools, so say they are not there.
+            request.system = read_only_worker_system(&request.system);
         }
         // The one message goes whole and Ollama cuts what passes its window
         // without saying so: the trace says it (#557). The runner stamps the
@@ -1762,6 +1825,7 @@ impl RunManager {
             runner: self.runner.clone(),
             request,
             session,
+            own,
             deadline: spec.deadline,
             trace,
         };
@@ -1812,8 +1876,9 @@ impl RunManager {
             // A writer stages in a batch of its own (W10, D7); the batch
             // review, its badge and its orphan are the pane's. A review
             // worker reads the batch of the worker it reviews, and the
-            // correction stages into it (S7b): both name their proposer.
-            stage_key: (families.contains(Family::Write) || proposer.is_some())
+            // correction stages into it (S7b): both name their proposer. A
+            // worker with Exec has one too: its command is judged by it (D19).
+            stage_key: (spec.keys_a_batch() || proposer.is_some())
                 .then(|| review::batch_of(pane, key.run, proposer.unwrap_or(key.worker))),
             // A worker never writes on a Windows drive: the grant is the
             // chat's, for its own turns (openspec `wsl-drive-access`).
@@ -1851,6 +1916,7 @@ impl RunManager {
             socket: started.socket.clone(),
             token: Secret::new(started.token.reveal()),
             unwire: started.end.clone(),
+            coordinator: false,
         }));
         Ok(None)
     }
@@ -1879,13 +1945,12 @@ impl RunManager {
                         live.run.on_event(now(), key.worker, event);
                     }
                 }
-                None => {
-                    live.run.on_tick(now());
-                }
+                // Its own clock passed, and only its own: a sibling that
+                // waits for the user or its review has stopped its clock,
+                // which the wall time since it started cannot tell (D6).
+                None => live.run.time_out(now(), key.worker),
             }
             self.sync(pane, live);
-            // A worker timed out by a sibling's tick keeps its task until its
-            // own turn ends, so each worker is told about at its own finish.
             self.disclose(pane, live, key.worker);
         });
         self.settle(pane, key.run);
@@ -1898,22 +1963,23 @@ impl RunManager {
         let host = self.tooling.as_ref().map(|tooling| &tooling.host);
         let batch = review::batch_of(pane, live.run.id(), id);
         let unproposed = || host.is_some_and(|host| host.unproposed(batch));
-        let (Some(what), Some(spec)) = (live.run.disclosure(id, unproposed), live.run.spec(id))
-        else {
+        let Some(spec) = live.run.spec(id) else {
             return;
         };
-        self.send(
-            pane,
-            OrchestraEvent::Disclosed {
-                run: live.run.id(),
-                worker: id,
-                workers: live.run.worker_count(),
-                kind: spec.task,
-                engine: spec.engine.clone(),
-                model: spec.model.clone(),
-                what,
-            },
-        );
+        for what in live.run.disclosures(id, unproposed) {
+            self.send(
+                pane,
+                OrchestraEvent::Disclosed {
+                    run: live.run.id(),
+                    worker: id,
+                    workers: live.run.worker_count(),
+                    kind: spec.task,
+                    engine: spec.engine.clone(),
+                    model: spec.model.clone(),
+                    what,
+                },
+            );
+        }
     }
 }
 
@@ -2019,6 +2085,38 @@ impl Orchestra for Bound {
         }
     }
 
+    fn cheap(&self, run: RunId, worker: WorkerId) -> bool {
+        let manager = self.manager.upgrade();
+        run == self.run
+            && manager.is_some_and(|manager| {
+                manager
+                    .on_run(self.pane, run, |live| live.run.cheap(worker))
+                    .unwrap_or(false)
+            })
+    }
+
+    /// `None` is never a missed pause: a worker holds a route from its launch
+    /// (when it starts running; a queued one has none, and no clock) until it ends (`finish`, a cancel, or a new turn dropping the ones that
+    /// are over), and only a worker that runs has a clock to stop. Every
+    /// `None` is therefore a run or worker that is gone (the app closing, a
+    /// replaced run, an ended or cancelled worker), whose deadline cannot fire
+    /// any more, so nothing is shown.
+    fn pause(&self, run: RunId, worker: WorkerId) -> Option<pending::Waiting> {
+        // The route the worker's approver already counts its asks on: a CLI
+        // worker's tool call is served on the hub's task, where the turn's
+        // task-local count is not seen.
+        let manager = self.manager.upgrade().filter(|_| run == self.run)?;
+        let own = manager.on_run(self.pane, run, |live| {
+            live.routes.get(&worker).map(|route| route.own.clone())
+        });
+        own.flatten().map(|own| own.enter())
+    }
+
+    fn live(&self, run: RunId) -> bool {
+        run == self.run
+            && (self.manager.upgrade()).is_some_and(|manager| manager.is_live(self.pane, run))
+    }
+
     fn corrects(&self, run: RunId, worker: WorkerId) -> bool {
         let manager = self.manager.upgrade();
         run == self.run
@@ -2039,6 +2137,30 @@ impl Orchestra for Bound {
         }
     }
 
+    fn ran(&self, run: RunId, worker: WorkerId, ran: Ran) {
+        if let Some(manager) = self.manager.upgrade() {
+            manager.on_run(self.pane, run, |live| live.run.ran(worker, ran));
+        }
+    }
+
+    fn clarify(&self, run: RunId, worker: WorkerId, what: &str) -> bool {
+        // Redacted and masked like a refusal's reason before the run keeps it.
+        let what = refusal_reason(what);
+        let manager = self.manager.upgrade();
+        manager
+            .and_then(|manager| {
+                manager.on_run(self.pane, run, |live| live.run.clarify(worker, &what))
+            })
+            .unwrap_or(false)
+    }
+
+    fn clarifying(&self, run: RunId, worker: WorkerId) -> bool {
+        let manager = self.manager.upgrade();
+        manager
+            .and_then(|manager| manager.on_run(self.pane, run, |live| live.run.clarifying(worker)))
+            .unwrap_or(false)
+    }
+
     fn receipt_line(&self, run: RunId, worker: WorkerId, current: &[Change]) -> Option<String> {
         let manager = self.manager.upgrade()?;
         (run == self.run)
@@ -2048,17 +2170,61 @@ impl Orchestra for Bound {
 
     fn applied(&self, run: RunId, worker: WorkerId, paths: &[String]) {
         if let Some(manager) = self.manager.upgrade() {
-            manager.on_run(self.pane, run, |live| live.run.applied(worker, paths));
+            manager.on_run(self.pane, run, |live| {
+                live.run.applied(worker, paths);
+                // The batch landed: the next one starts its corrections again.
+                live.review.corrections.remove(&worker);
+            });
+        }
+    }
+
+    fn over_limit(
+        &self,
+        run: RunId,
+        worker: WorkerId,
+        counts: Vec<(String, Count)>,
+    ) -> Option<Vec<(String, Count)>> {
+        let manager = self.manager.upgrade().filter(|_| run == self.run)?;
+        manager.on_run(self.pane, run, |live| live.run.over_limit(worker, &counts))
+    }
+
+    fn outside_brief(
+        &self,
+        run: RunId,
+        worker: WorkerId,
+        paths: Vec<String>,
+    ) -> Option<Vec<String>> {
+        let manager = self.manager.upgrade().filter(|_| run == self.run)?;
+        manager.on_run(self.pane, run, |live| {
+            live.run.outside_brief(worker, &paths)
+        })
+    }
+
+    fn split_chosen(&self, run: RunId, worker: WorkerId) -> bool {
+        let manager = self.manager.upgrade();
+        manager
+            .and_then(|manager| {
+                manager.on_run(self.pane, run, |live| live.run.split_chosen(worker))
+            })
+            .unwrap_or(false)
+    }
+
+    fn split(&self, run: RunId, worker: WorkerId, files: Vec<String>) {
+        if let Some(manager) = self.manager.upgrade().filter(|_| run == self.run) {
+            manager.on_run(self.pane, run, |live| live.run.split(worker, &files));
         }
     }
 }
 
 /// One worker turn: the adapter inside its session's task-locals, read
-/// through a fresh pipe and cut at the deadline.
+/// through a fresh pipe and cut at the deadline, which stops while the worker
+/// waits for the user (`own`, D5).
 struct Turn {
     runner: Runner,
     request: ChatRequest,
     session: Option<(Pending, Option<Arc<dyn Dispatch>>)>,
+    /// The worker's own count of asks (`Route.own`).
+    own: Pending,
     deadline: Duration,
     trace: Tracer,
 }
@@ -2072,6 +2238,7 @@ impl Turn {
             runner,
             request,
             session,
+            own,
             deadline,
             trace,
         } = self;
@@ -2080,10 +2247,18 @@ impl Turn {
         let (tx, rx) = mpsc::channel(TURN_CHANNEL);
         let (pending, dispatch) = session.map_or((None, None), |(p, d)| (Some(p), d));
         // The call sits inside the guarded future, as in a chat turn.
-        let adapter = Box::pin(async move { runner(request, tx).await });
+        let adapter: BoxFuture<'static, ()> = Box::pin(async move { runner(request, tx).await });
+        #[cfg(test)]
+        let adapter: BoxFuture<'static, ()> = match &dispatch {
+            Some(tools) => Box::pin(TEST_DISPATCH.scope(tools.clone(), adapter)),
+            None => adapter,
+        };
         let adapter = chat::in_session(adapter, pending, dispatch);
-        let ended = tokio::time::timeout(
+        // Its total limits pause too, at the three sites a chat's never do.
+        let adapter = Box::pin(pending::worker_turn(adapter));
+        let ended = pending::pausing_timeout(
             deadline,
+            &own,
             drive(adapter, rx, (&engine, model.as_deref()), &trace),
         )
         .await
@@ -2228,6 +2403,21 @@ fn nonce_bytes() -> Option<[u8; 8]> {
         .and_then(|mut file| file.read_exact(&mut bytes))
         .ok()?;
     Some(bytes)
+}
+
+/// The refusal of a `simple` brief whose outputs overlap a live worker's.
+fn overlap_text(worker: WorkerId, path: &str, held: &str) -> String {
+    let which = if path == held {
+        format!("{path} is already its output")
+    } else if path.len() > held.len() {
+        format!("{path} is under its output {held}")
+    } else {
+        format!("{path} holds its output {held}")
+    };
+    format!(
+        "outputs overlap worker {}: {which}; wait for it or pick other files",
+        worker.0
+    )
 }
 
 /// A refusal's reason as the coordinator gets it: one line, sanitized, with

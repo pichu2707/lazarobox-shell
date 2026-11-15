@@ -854,6 +854,8 @@ impl Chats {
         // The run of an orchestrator turn hears when the turn is over: it then
         // ends by itself once it has nothing left to do. An aborted turn says
         // nothing: Ctrl+C ended its run, a new turn replaced it.
+        // Only an orchestrator turn has a run: it is the coordinator.
+        let coordinator = run.is_some();
         let ended = run.zip(self.orchestra.clone());
         // Tell the engine's adapter which session is this turn's. Without a
         // session the request keeps `mcp: None` and the turn runs as text.
@@ -864,6 +866,7 @@ impl Chats {
                 socket: started.socket.clone(),
                 token: Secret::new(started.token.reveal()),
                 unwire: started.end.clone(),
+                coordinator,
             }));
         }
         let turn = run_turn(
@@ -1130,11 +1133,17 @@ impl Chats {
     pub fn apply_batch(&self, id: BatchId, drive_grant: Option<PathBuf>) -> Option<BatchEvent> {
         let pane = id.key.pane();
         let live = self.turns.get(&pane).is_some_and(|t| !t.is_finished());
+        // A worker's batch is only the user's to apply while its run lives.
+        let run_live = match id.key {
+            crate::core::ai::tools::stage::StageKey::Worker(_, worker) => (self.orchestra.as_ref())
+                .is_some_and(|orchestra| orchestra.is_live(pane, worker.run)),
+            crate::core::ai::tools::stage::StageKey::Pane(_) => true,
+        };
         Some(
             self.tooling
                 .as_ref()?
                 .host
-                .apply_batch(id, live, drive_grant),
+                .apply_batch_of(id, live, drive_grant, run_live),
         )
     }
 

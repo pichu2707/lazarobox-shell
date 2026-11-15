@@ -9,7 +9,7 @@ Terms: "the file" = `secrets.toml` in the lazarobox config folder. "Table" = a t
 ## Requirements
 
 ### Requirement: Location and ownership [S1]
-The file MUST be `secrets.toml` in the lazarobox config folder, the folder of `config.toml` (see configuration: `$XDG_CONFIG_HOME/lazarobox/`, else `$HOME/.config/lazarobox/`), so its default place is `~/.config/lazarobox/secrets.toml` (C6). It is edited by the user. lazarobox MUST NEVER create, write, rename, delete or change the mode of the file, from the menu or anywhere else. A missing file is not an error, produces no notice, and leaves every server with the values from lazarobox's own environment only. No value from the file is ever written to `config.toml`.
+The file MUST be `secrets.toml` in the lazarobox config folder, the folder of `config.toml` (see configuration: `$XDG_CONFIG_HOME/lazarobox/`, else `$HOME/.config/lazarobox/`), so its default place is `~/.config/lazarobox/secrets.toml` (C6). It is edited by the user. lazarobox MUST NEVER create, write, rename, delete or change the mode of the file, from the menu or anywhere else, except by the menu save of one value (openspec change `mcp-connectors`, Menu save) and by Connect Google's save of the values its plan lists, in one write with one `secrets.toml.bak` (config-menu, Connect Google), both after the user's confirmation. A missing file is not an error, produces no notice, and leaves every server with the values from lazarobox's own environment only. No value from the file is ever written to `config.toml`.
 
 #### Scenario: Default place [auto]
 - GIVEN `XDG_CONFIG_HOME` unset and `HOME=/h`
@@ -110,3 +110,29 @@ A problem with the file MUST be shown as a sanitized system line `mcp: <problem>
 - GIVEN a file with one bad key and one good key for `clarity`
 - WHEN `clarity` is started
 - THEN it starts with the good value and the chat shows the problem once
+
+### Requirement: OAuth client file read back [google-connect]
+`google-oauth-client.json` in the config folder MUST be readable back for Connect Google: the file the client form writes, and the JSON Google downloads for a Desktop client (`installed.client_id`, `installed.client_secret`, other keys ignored). It MUST be opened in the config folder judged as the secrets writer judges it (not a symlink, owned by the user, not writable by group or others) and judged on the open handle: a regular file, owned by the user, with one link, with no group or other permission bit, at most 16 KiB. The id MUST end in `.apps.googleusercontent.com` and both values MUST be printable ASCII, as the form checks them. A missing file (or a missing config folder, which is not created) is `None`, not an error. The secret MUST NEVER be drawn, logged or put in a notice; only the id is shown (`client: <id>`). Copying the id and the secret into `[google]` of `secrets.toml` happens only through Connect Google's plan and `y`.
+
+#### Scenario: The form's file and Google's download read back [google-connect, auto]
+- GIVEN `google-oauth-client.json` written by the form, then replaced by the JSON Google downloads with mode 0400
+- WHEN it is read back
+- THEN both give the same id and secret
+
+#### Scenario: A loose or foreign file is refused [google-connect, auto]
+- GIVEN the file with mode 0644, or a symlink to a good file, or a hard link to one, or owned by another user
+- WHEN it is read back
+- THEN it is refused with `google-oauth-client.json: mode must be 0600 (chmod 600 <path>)`, or the symlink, hard link or owner notice, and no notice holds the secret
+
+#### Scenario: Not a Desktop client [google-connect, auto]
+- GIVEN a file with only a `web` client
+- WHEN it is read back
+- THEN the notice is `google-oauth-client.json is not a Desktop OAuth client; save it again (o)`
+
+### Requirement: Several values in one save [google-connect]
+Connect Google's save MUST set every value of its plan in one write of `secrets.toml`, by the rules of the menu save of one value (each key keeps its place and comment, a missing key goes at the end of its table, a missing table at the end of the file), with one `secrets.toml.bak` generation, and the first refusal MUST write nothing. A value that already holds something MUST be kept, and the plan MUST say so (`Kept in secrets.toml`).
+
+#### Scenario: All or nothing [google-connect, auto]
+- GIVEN a plan with seven values, one of them for a key that holds a number in the file
+- WHEN it is saved
+- THEN the file is byte-identical and the notice names that key

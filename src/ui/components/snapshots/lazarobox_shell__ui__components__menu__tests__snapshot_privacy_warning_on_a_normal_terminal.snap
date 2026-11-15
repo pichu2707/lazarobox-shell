@@ -3,7 +3,7 @@ source: src/ui/components/menu.rs
 expression: shown
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ Models │ Tools │ Chat                           │
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
 │ Memory: save notes to engram                               │
 │ Saved notes leave lazarobox's private store (0600).        │
 │ They become readable by every local process and            │

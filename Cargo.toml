@@ -1,6 +1,6 @@
 [package]
 name = "lazarobox-shell"
-version = "1.16.0"
+version = "1.27.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Javi Lázaro <hola@javilazaro.es>"]
@@ -70,3 +70,12 @@ landlock = "=0.4.7"
 insta = "1"
 tempfile = "3"
 tokio = { version = "1.38", features = ["test-util"] }
+
+# Debug builds keep file and line numbers (backtraces, panics) but drop the
+# full debug info, which made up most of `target/debug/deps`. Dependencies
+# carry none: we do not step through them. Release is unchanged.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

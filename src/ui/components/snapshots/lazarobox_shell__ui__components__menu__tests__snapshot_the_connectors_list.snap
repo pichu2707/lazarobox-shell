@@ -1,0 +1,22 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(62, POPUP_H, &menu))"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
+│ Connect Google        Search Console + Gmail, Docs, Sheets │
+│ Analytics                                                  │
+│ Clarity                                           declared │
+│ GA4                                           not declared │
+│ Search Console                                not declared │
+│ Workspace                                                  │
+│ Google (Gmail, Docs, Sheets)                  not declared │
+│ Apps Script                                   not declared │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ j/k move · Enter open · Esc back                           │
+└────────────────────────────────────────────────────────────┘

@@ -3,7 +3,7 @@ source: src/ui/components/menu/tests/install.rs
 expression: show(&offer())
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings │ Models │ Tools │ Chat                           │
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
 │ llama-server installed                                     │
 │ llama-server is ready                                      │
 │ Download a model from Hugging Face?                        │

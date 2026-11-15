@@ -1,0 +1,22 @@
+---
+source: src/ui/components/menu.rs
+expression: screen
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
+│ Connect Google · Search Console and Workspace              │
+│ Services (s and w tick them)                               │
+│   [x] Search Console                                       │
+│   [ ] Google Workspace: Gmail read + drafts, Docs, Sheets  │
+│ route: lazarobox client (u uses your own client)           │
+│ client: lazarobox (fetched from www.javilazaro.es when you │
+│ link)                                                      │
+│ e-mail: not needed (Google Workspace is not ticked)        │
+│ n shows the plan · c copies the entries                    │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ j/k · s/w tick · e e-mail · o own · u route · n plan · Esc │
+└────────────────────────────────────────────────────────────┘

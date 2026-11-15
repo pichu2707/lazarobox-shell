@@ -10,10 +10,10 @@ use crate::core::ai::{
     chat::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
-            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, ISSUE_DRAFT_KEYS, MULTI_LINE, NO_CWD,
-            NON_UTF8, Origin, PANES_KEYS, Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS,
-            RUNNING, Reply, SEARCH_KEYS, drive_grant_prompt, exec_notice, grant_prompt,
-            run_sent_line, tool_grant_prompt,
+            FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, ISSUE_DRAFT_KEYS, LIMIT_KEYS, LimitFile,
+            MULTI_LINE, NO_CWD, NON_UTF8, OUTSIDE_KEYS, Origin, PANES_KEYS, Press, READ_KEYS,
+            RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS, drive_grant_prompt,
+            exec_notice, grant_prompt, run_sent_line, tool_grant_prompt,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -58,7 +58,7 @@ impl App {
         let mut effects = Vec::new();
         if !on {
             self.end_all_grants(github::TOOLS_ENDED);
-            effects.extend(self.end_all_write(write::TOOLS_ENDED));
+            effects.extend(self.end_all_write(write::WHY_TOOLS));
             // A dialog of `/github` or `/write` goes with them, and says so.
             let ids: Vec<PaneId> = self.panes.keys().copied().collect();
             for id in ids {
@@ -368,7 +368,7 @@ impl App {
         call: Option<(u64, CallId)>,
         target: PaneId,
         command: &str,
-        not_run: Option<&str>,
+        not_run: Option<&'static str>,
     ) -> Vec<Effect> {
         let mut effects = Vec::new();
         let decision = match self.typed_bytes(target, command) {
@@ -385,7 +385,7 @@ impl App {
                 // A run being settled in this pane is no longer the only thing
                 // in it.
                 self.note_typed(target);
-                Decision::Sent
+                not_run.map_or(Decision::Sent, Decision::SentNotRun)
             }
             Err(refused) => {
                 self.notice = Some(refused.notice);
@@ -626,7 +626,7 @@ impl App {
             // A worker's read outside its scope: the label names the worker,
             // its kind and `engine>model`, already sanitized.
             ApprovalAsk::WorkerRead { path, label, .. } => Some(ApprovalPrompt {
-                target: format!("worker {label}: send a file's text to the engine"),
+                target: worker_target(Some(label), "send a file's text to the engine"),
                 command: format!("read {path}"),
                 keys: READ_KEYS,
                 armed,
@@ -724,6 +724,7 @@ impl App {
                 timeout_secs,
                 cloud,
                 earlier,
+                worker,
             } => {
                 // One logical line per fact, so the folder and the script are
                 // rows `fits` checks, not a clipped head. Arguments are quoted
@@ -738,7 +739,11 @@ impl App {
                     command.push_str(line);
                 }
                 Some(ApprovalPrompt {
-                    target: "run a command in the sandbox".to_owned(),
+                    // A worker's names the worker first (D19); a chat's is as it was.
+                    target: worker_target(
+                        worker.as_ref().map(|(_, label)| label.as_str()),
+                        "run a command in the sandbox",
+                    ),
                     command,
                     keys: EXTERNAL_KEYS,
                     armed,
@@ -756,12 +761,42 @@ impl App {
             ApprovalAsk::Batch(_) | ApprovalAsk::Commit(_) | ApprovalAsk::Screen { .. } => None,
             // The label and the change were made one clean line when asked.
             ApprovalAsk::Consent { label, change, .. } => Some(ApprovalPrompt {
-                target: format!("worker {label}: review this high-risk change first?"),
+                target: worker_target(Some(label), "review this high-risk change first?"),
                 command: change.clone(),
                 keys: CONSENT_KEYS,
                 armed,
                 why: None,
                 notice: None,
+            }),
+            // Paths and label were made one clean line when asked.
+            ApprovalAsk::Limit {
+                label,
+                over,
+                outside,
+                ..
+            } if over.is_empty() => Some(ApprovalPrompt {
+                target: worker_target(Some(label), "write files outside the brief?"),
+                command: limit_text(over, outside),
+                keys: OUTSIDE_KEYS,
+                armed,
+                why: None,
+                notice: Some("declining discards the staged batch".to_owned()),
+            }),
+            ApprovalAsk::Limit {
+                label,
+                over,
+                outside,
+                ..
+            } => Some(ApprovalPrompt {
+                target: worker_target(Some(label), "line limit?"),
+                command: limit_text(over, outside),
+                keys: LIMIT_KEYS,
+                armed,
+                why: None,
+                notice: Some(format!(
+                    "the limit is {} counted lines in one file; split discards the staged batch",
+                    crate::core::ai::orchestra::limit::LIMIT
+                )),
             }),
             ApprovalAsk::Folder {
                 from,
@@ -809,6 +844,34 @@ impl App {
             ),
             None => format!("run in pane {number}"),
         })
+    }
+}
+
+/// What a limit ask lists: each file with its counted lines, then the files
+/// outside the brief.
+fn limit_text(over: &[LimitFile], outside: &[String]) -> String {
+    let mut parts: Vec<String> = over
+        .iter()
+        .map(|file| {
+            if file.every_line {
+                format!("{}: {} lines, every line counted", file.path, file.lines)
+            } else {
+                format!("{}: {} counted lines", file.path, file.lines)
+            }
+        })
+        .collect();
+    if !outside.is_empty() {
+        parts.push(format!("outside the brief: {}", outside.join(", ")));
+    }
+    parts.join("; ")
+}
+
+/// The first line of an ask's prompt: `what`, after `worker <label>: ` when a
+/// worker asks. The label is already one clean line.
+fn worker_target(label: Option<&str>, what: &str) -> String {
+    match label {
+        Some(label) => format!("worker {label}: {what}"),
+        None => what.to_owned(),
     }
 }
 

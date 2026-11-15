@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use super::Toolset;
+use super::brief::Brief;
 use crate::core::ai::chat::engine::Usage;
 use crate::core::ai::config::Task;
 use crate::core::ai::tools::registry::{Family, FamilySet};
@@ -20,15 +21,44 @@ pub struct WorkerSpec {
     /// ceiling at spawn time (D17).
     pub families: FamilySet,
     pub deadline: Duration,
+    /// The brief a `simple` worker was started from (W8b); `None` for every
+    /// other worker. `prompt` is built from it.
+    pub brief: Option<Brief>,
 }
 
 impl WorkerSpec {
+    /// The files the worker may write, when it has a brief.
+    pub fn outputs(&self) -> Option<&[String]> {
+        self.brief.as_ref().map(Brief::outputs)
+    }
+
     /// Whether the worker may stage changes: what a worker kind is compared
     /// by, not its name (D25).
     pub fn writes(&self) -> bool {
         self.families.contains(Family::Write)
     }
+
+    /// Whether the worker's tool session needs a batch key: it stages
+    /// (Write), or runs commands (Exec), whose refusal and output sink are
+    /// keyed by its batch (D19).
+    pub fn keys_a_batch(&self) -> bool {
+        self.writes() || self.families.contains(Family::Exec)
+    }
 }
+
+/// How lazarobox records that a worker's work ended on a call of its own
+/// (D3), not on text: a `simple` worker that asked for a clearer brief.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Closing {
+    /// `needs_specification`: the worker's question, cleaned to one line.
+    Clarify(String),
+    /// A split of the brief into two (W9b): the files over the limit. It
+    /// opens no clarification and counts as no round.
+    Split(Vec<String>),
+}
+
+/// The longest question kept, in characters.
+pub const CLARIFY_MAX: usize = 200;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WorkerStatus {

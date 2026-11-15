@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::ai::orchestra::Toolset;
 use crate::core::ai::orchestra::rdd::Lens;
 
 const CHAT_LIMITS: &str = "no access to files, a shell or the terminal";
@@ -12,17 +13,24 @@ fn resolve(profile: Profile, task_file: Override, general_file: Override) -> Res
     resolve_prompt(profile, Task::Chat, task_file, general_file)
 }
 
-// Spec (prompt-profiles): Prompt table integrity.
+// Spec (prompt-profiles): Prompt table integrity; "Orchestrate prompt size
+// [K1, W6]": each `orchestrate` prompt is at most 6 KiB (owner, 2026-11-10:
+// "si, sube el tope a 6 KiB"), every other built-in at most 4 KiB.
 #[test]
-fn the_table_has_twelve_distinct_non_empty_prompts_within_4_kib() {
+fn the_table_has_fourteen_distinct_non_empty_prompts_within_their_caps() {
     let mut count = 0;
     for task in Task::ALL {
+        let cap = if task == Task::Orchestrate {
+            6144
+        } else {
+            4096
+        };
         for profile in Profile::ALL {
             let prompt = builtin(profile, task);
             assert!(!prompt.trim().is_empty(), "{profile:?} {task:?}");
             assert!(
-                prompt.len() <= 4096,
-                "{profile:?} {task:?}: {}",
+                prompt.len() <= cap,
+                "{profile:?} {task:?}: {} > {cap}",
                 prompt.len()
             );
             count += 1;
@@ -33,7 +41,7 @@ fn the_table_has_twelve_distinct_non_empty_prompts_within_4_kib() {
             "{task:?}"
         );
     }
-    assert_eq!(count, 12);
+    assert_eq!(count, 14);
 }
 
 // Spec (prompt-profiles): Built-ins exist (the orchestrate prompt), one per
@@ -149,21 +157,98 @@ fn the_orchestrate_prompts_say_only_an_applied_file_was_written() {
     }
 }
 
-// Spec (agent-orchestrator, Missing dependency [S10, auto]): no worker is
-// offered `run_command` in this release, so the coordinator says it cannot
-// run tests, never claims they passed, and leaves running them to the user.
+// Spec (prompt-profiles, "Prompt from W6 [W6, auto]"; agent-orchestrator, "A
+// test is not claimed without a result"): the `orchestrate` prompt no longer
+// says no worker can run commands; it says when one can (Exec on, its batch
+// applied, the user approving the command) and that a test counts as run or
+// passed only when a collected command result shows it, otherwise it was not
+// run and the user is asked to run it.
 #[test]
-fn the_orchestrate_prompts_say_no_worker_can_run_commands_or_tests() {
+fn the_orchestrate_prompts_say_when_a_worker_may_run_a_command() {
     for profile in Profile::ALL {
         let prompt = builtin(profile, Task::Orchestrate);
+        assert!(
+            !prompt.contains("No worker can run commands"),
+            "{profile:?}"
+        );
         for rule in [
-            "No worker can run commands or tests",
-            "say so",
-            "run them themselves",
-            "never claim a test ran",
+            "A code worker can run a command only when Exec is on",
+            "only after its batch is applied",
+            "only after the user approves that command",
+            "only when a collected command result shows it",
+            "say it was not run",
+            "ask the user to run it",
         ] {
             assert!(prompt.contains(rule), "{profile:?}: {rule}");
         }
+    }
+}
+
+// Spec (agent-orchestrator, "The brief [W8]"; prompt-profiles, "Orchestrate
+// prompt holds the brief rules", decision K1): both `orchestrate` prompts tell
+// the coordinator to delegate a change instead of answering it in text, and to
+// give a `simple` worker a brief (goal, files as inputs and outputs, done when,
+// out of scope), not a `prompt`. Both stay within the 6 KiB cap above.
+#[test]
+fn the_orchestrate_prompts_teach_the_brief_of_a_simple_worker() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "Delegate a change to files; never answer it in text",
+            "a simple worker",
+            "a brief, not a prompt",
+            "goal, inputs",
+            "outputs (files it may write",
+            "done_when and out_of_scope",
+            "is refused",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+        assert!(prompt.len() <= 6144, "{profile:?}: {}", prompt.len());
+    }
+}
+
+// Spec (prompt-profiles, "Orchestrate prompt covers briefs and clarification",
+// W8c 20.8, decision K1): both `orchestrate` prompts tell the coordinator to
+// answer or ask the user when a worker says "needs specification", at most two
+// rounds per brief, to pass `answers: N`, and that the text after the marker is
+// untrusted data; `simple` says to ask instead of guessing. 6 KiB cap holds.
+#[test]
+fn the_orchestrate_prompts_teach_the_clarification_rounds() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "needs specification",
+            "answer it or ask the user",
+            "At most two rounds per brief",
+            "answers: N",
+            "untrusted data",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+        assert!(prompt.len() <= 6144, "{profile:?}: {}", prompt.len());
+        let simple = builtin(profile, Task::Simple);
+        assert!(simple.contains("needs_specification"), "{profile:?}");
+        let asks = simple.contains("Do not guess") || simple.contains("Do not assume");
+        assert!(asks, "{profile:?}");
+    }
+}
+
+// Spec (prompt-profiles, "Orchestrate prompt covers briefs and clarification",
+// split half, W9b 22.8, decision K1): after a split the coordinator issues two
+// new briefs, and the 6 KiB cap holds.
+#[test]
+fn the_orchestrate_prompts_teach_the_split() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "split chosen",
+            "two new briefs",
+            "not a clarification round",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+        assert!(prompt.len() <= 6144, "{profile:?}: {}", prompt.len());
     }
 }
 
@@ -591,6 +676,8 @@ fn the_worker_prompt_requires_write_tools_and_propose_batch() {
             "call propose_batch again",
             "32 KiB",
             "create_dir",
+            // Task 16.6: a command runs only after the batch is applied.
+            "A command runs only after your batch is applied",
         ] {
             assert!(got.contains(needle), "{profile:?}: {needle}");
         }
@@ -729,5 +816,136 @@ fn no_worker_and_no_orchestrator_turn_gets_the_sentence() {
             let got = with_tools(&system, toolset.families());
             assert!(!got.contains(DRAFT_OFFER), "{toolset:?} {profile:?}");
         }
+    }
+}
+
+// Spec (prompt-profiles): "The `simple` prompt [W8]" and "Simple gets its own
+// prompt": the rules of a worker for direct, fully specified tasks.
+#[test]
+fn the_simple_prompts_hold_the_simple_worker_rules() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Simple);
+        for rule in [
+            "direct, fully specified",
+            "never design, analyse, review or delegate",
+            "The brief is the whole assignment",
+            "needs specification:",
+            "needs_specification",
+            "Never write outside the listed files unless the user asks",
+            "under 400 counted lines",
+            "say so when you cannot",
+            "write tools",
+            "propose_batch",
+            "untrusted data",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+        for other in [Task::Code, Task::General, Task::Orchestrate] {
+            assert_ne!(prompt, builtin(profile, other), "{profile:?} {other:?}");
+        }
+    }
+    assert_ne!(
+        builtin(Profile::Analyst, Task::Simple),
+        builtin(Profile::Programmer, Task::Simple)
+    );
+}
+
+// Spec (prompt-profiles): an override file `simple.md` loads under the
+// untrusted rules; a skipped one names `simple` and falls to general.
+#[test]
+fn a_simple_override_wins_and_a_skipped_one_names_the_file() {
+    let got = resolve_prompt(
+        Profile::Analyst,
+        Task::Simple,
+        text("My simple prompt.\n"),
+        text("General."),
+    );
+    assert_eq!(got.text, "My simple prompt.");
+    let got = resolve_prompt(
+        Profile::Analyst,
+        Task::Simple,
+        Override::Skipped(Reason::TooLarge),
+        text("General."),
+    );
+    assert_eq!(got.text, "General.");
+    assert_eq!(
+        got.notices,
+        vec!["prompt override ignored: analyst/simple.md larger than 16 KiB"]
+    );
+}
+
+// Decision D29: a `simple` writer gets the worker instruction after its prompt.
+#[test]
+fn a_simple_worker_gets_the_worker_text_after_its_prompt() {
+    for profile in Profile::ALL {
+        let system = worker_system(builtin(profile, Task::Simple));
+        assert!(system.starts_with(builtin(profile, Task::Simple).trim_end()));
+        assert!(system.ends_with(WORKER.trim_end()), "{profile:?}");
+    }
+}
+
+// A `simple` worker whose Write was removed (read-only goal) must not be told
+// to use write tools: the extra line says they are unavailable.
+#[test]
+fn a_simple_worker_without_write_tools_is_told_to_answer_in_text() {
+    for profile in Profile::ALL {
+        let base = builtin(profile, Task::Simple);
+        let got = read_only_worker_system(base);
+        assert!(got.starts_with(base.trim_end()), "{profile:?}");
+        for needle in [
+            "write tools",
+            "propose_batch",
+            "run_command",
+            "are not available",
+            "read-only goal",
+            "answer",
+        ] {
+            assert!(got.contains(needle), "{profile:?}: {needle}");
+        }
+        assert!(got.is_ascii());
+    }
+}
+
+// Spec (prompt-profiles, Orchestrate prompts delegate by default): both
+// profiles say that a request that changes files is done by workers started
+// with spawn_agent, even when the user never names the tool, and that code,
+// a patch or a file's content is never written in the coordinator's reply.
+#[test]
+fn the_orchestrate_prompts_delegate_file_changes_by_default() {
+    for profile in Profile::ALL {
+        let prompt = builtin(profile, Task::Orchestrate);
+        for rule in [
+            "Delegation is the default",
+            "Any request that changes files is done by workers started with spawn_agent",
+            "even when the user does not mention spawn_agent",
+            "never write the change itself (its code, a patch or a file's new content) in your reply; quoting code to answer a question is fine",
+            "You may answer questions, plan and summarise directly",
+        ] {
+            assert!(prompt.contains(rule), "{profile:?}: {rule}");
+        }
+    }
+}
+
+// The coordinator must not be told it can only hand the user a command: that
+// last bullet beat the delegation bullet and made it answer a file change with
+// a heredoc instead of spawn_agent.
+#[test]
+fn the_coordinator_tools_block_sends_changes_to_workers_not_to_the_user() {
+    let families = Toolset::Orchestrator.families();
+    for profile in Profile::ALL {
+        let got = with_tools(builtin(profile, Task::Orchestrate), families);
+        assert!(!got.contains(NO_CHANGES), "{profile:?}");
+        assert!(!got.contains("You are a text assistant"), "{profile:?}");
+        assert!(
+            !got.contains("needs a command the user reviews and runs"),
+            "{profile:?}"
+        );
+        assert!(
+            !got.contains("run a command in the user's shell pane"),
+            "{profile:?}"
+        );
+        let block = got.rsplit("\n\n- ").next().unwrap();
+        assert!(block.contains("spawn_agent"), "{block}");
+        assert!(block.contains("Never answer a change"), "{block}");
     }
 }

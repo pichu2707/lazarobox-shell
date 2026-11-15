@@ -996,6 +996,7 @@ fn tools_on(engine: &str, session: bool) -> (ChatRequest, ChatRequest) {
                 socket: "/run/user/1000/lazarobox/s-1-1.sock".into(),
                 token: Secret::new("0123456789abcdef0123456789abcdef"),
                 unwire: Unwire::none(),
+                coordinator: false,
             })
         }),
     };
@@ -1569,6 +1570,7 @@ fn all_claude_flags() -> Vec<String> {
         socket: "/run/user/1000/lazarobox/s-1-1.sock".into(),
         token: Secret::new("0123456789abcdef0123456789abcdef"),
         unwire: Unwire::none(),
+        coordinator: false,
     };
     let wiring = crate::core::ai::tools::wiring::claude(
         std::path::Path::new("/usr/bin/lazarobox"),

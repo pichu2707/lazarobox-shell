@@ -2,7 +2,9 @@
 //! `mcp-secrets`, decision C6).
 //!
 //! The file sits next to `config.toml` and the user edits it: lazarobox never
-//! creates, writes or chmods it. Each top-level table is named after a server
+//! creates, writes or chmods it, except by the menu save of one value and
+//! Connect Google's save of the values its plan lists, after the user's `y`
+//! (see [`edit`], [`edit_all`] and `runtime::secrets_write`). Each top-level table is named after a server
 //! and holds that server's variables. A value reaches only the server whose
 //! name is its table, and only for a name its `[[ai.mcp.servers]]` entry lists
 //! in `env` ([`Secrets::lookup_for`]); the spawn code still drops `HOME`, the
@@ -30,6 +32,9 @@ use crate::core::config::config_path;
 
 /// The file name, in the folder of `config.toml`.
 pub const FILE: &str = "secrets.toml";
+
+/// The backup the menu save keeps of the file, one generation.
+pub const BACKUP: &str = "secrets.toml.bak";
 
 /// The largest file that is used; a larger one is not read at all.
 pub const MAX_BYTES: u64 = 64 * 1024;
@@ -118,7 +123,7 @@ impl Secrets {
             let Value::Table(values) = values else {
                 loaded.problems.push(clean(&format!(
                     "secrets.toml: {}: expected a table",
-                    shown(&server)
+                    redact_tokens(&shown(&server))
                 )));
                 continue;
             };
@@ -136,7 +141,7 @@ impl Secrets {
                 };
                 loaded.problems.push(clean(&format!(
                     "secrets.toml: {}.{key}: {problem}",
-                    shown(&server)
+                    redact_tokens(&shown(&server))
                 )));
             }
             loaded.secrets.tables.insert(server, kept);
@@ -169,12 +174,93 @@ impl Secrets {
     }
 }
 
+/// Every value the child of `server` gets (each name of its `env` through
+/// `lookup`, the file first and the host as fallback: what the child really
+/// receives), and the forms a log shows it in: percent-encoded (both cases of
+/// the hex digits) and JSON-escaped. What [`redact_values`] removes. An empty
+/// value is skipped.
+pub fn redact_list(server: &McpServer, lookup: &impl Fn(&str) -> Option<OsString>) -> Vec<String> {
+    let mut list: Vec<String> = Vec::new();
+    for name in &server.env {
+        let Some(value) = lookup(name) else { continue };
+        let value = value.to_string_lossy().into_owned();
+        if value.is_empty() {
+            continue;
+        }
+        let json = serde_json::to_string(&value).unwrap_or_default();
+        let json = json.trim_matches('"').to_owned();
+        let upper = percent_encode(&value);
+        let lower = percent_encode_lower(&value);
+        for form in [value, upper, lower, json] {
+            if !list.contains(&form) {
+                list.push(form);
+            }
+        }
+    }
+    list
+}
+
+fn percent_with(text: &str, digits: &[u8; 16]) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(char::from(digits[usize::from(byte >> 4)]));
+            out.push(char::from(digits[usize::from(byte & 15)]));
+        }
+    }
+    out
+}
+
+fn percent_encode(text: &str) -> String {
+    percent_with(text, b"0123456789ABCDEF")
+}
+
+fn percent_encode_lower(text: &str) -> String {
+    percent_with(text, b"0123456789abcdef")
+}
+
+/// What replaces a value in text that a server said.
+pub const REDACTED: &str = "[redacted]";
+
+/// `text` with every occurrence of each non-empty `values` entry replaced by
+/// [`REDACTED`], the longest value first so a value that holds another is not
+/// left half shown. Call it on the WHOLE text, before any cut: a cut may split
+/// a value and leave its start in view. Text a server says (stderr, an RPC
+/// error, a tool result) can echo a value in a shape no pattern knows. A value
+/// of one character, or of whitespace only, replaces every such character in
+/// the text: the text is mangled, never leaked.
+pub fn redact_values(text: &str, values: &[String]) -> String {
+    let mut ordered: Vec<&str> = values
+        .iter()
+        .map(String::as_str)
+        .filter(|v| !v.is_empty())
+        .collect();
+    ordered.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    // One pass, so a value that sits inside `[redacted]` is never matched.
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(first) = rest.chars().next() {
+        match ordered.iter().find(|v| rest.starts_with(**v)) {
+            Some(value) => {
+                out.push_str(REDACTED);
+                rest = &rest[value.len()..];
+            }
+            None => {
+                out.push(first);
+                rest = &rest[first.len_utf8()..];
+            }
+        }
+    }
+    out
+}
+
 /// The problem of text that is not UTF-8 or not TOML, by the line of byte
 /// `at`: never the parser's message, which can quote a value.
 fn syntax_problem(bytes: &[u8], at: usize) -> String {
-    let before = &bytes[..at.min(bytes.len())];
-    let line = before.iter().filter(|&&b| b == b'\n').count() + 1;
-    format!("secrets.toml: not valid TOML (line {line})")
+    format!("secrets.toml: not valid TOML (line {})", line_of(bytes, at))
 }
 
 /// A table or key name as a problem shows it: bare when TOML would write it
@@ -196,6 +282,27 @@ fn shown(name: &str) -> String {
         text
     }
 }
+
+mod client;
+mod lazarobox_client;
+mod save;
+mod text;
+pub use client::{
+    BAD_ID, BAD_SECRET, CLIENT_BACKUP, CLIENT_FILE, CLIENT_MAX, Client, client_json, read_client,
+    valid_id, valid_secret,
+};
+pub use lazarobox_client::{
+    CACHE_FILE, CLIENT_LINE, NOT_CONFIGURED_SCREEN, PROJECT_NUMBER, URL_PATH, Why, accept,
+    cache_path, failure_notice, fallback_notice, not_saved_notice, pinned,
+};
+pub use save::{Refusal, edit, edit_all, line_of};
+pub use text::SecretText;
+
+#[cfg(test)]
+mod client_tests;
+
+#[cfg(test)]
+mod text_tests;
 
 #[cfg(test)]
 mod tests;

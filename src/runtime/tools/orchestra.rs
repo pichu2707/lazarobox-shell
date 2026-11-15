@@ -19,12 +19,14 @@ use crate::{
         orchestra::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
+            commands::Ran,
+            limit::Count,
             review::{self, Assessment},
             tools::OrchCall,
         },
         tools::paths::SecretRoots,
     },
-    runtime::mcp::Outcome,
+    runtime::{mcp::Outcome, tools::pending::Waiting},
 };
 
 /// What the consent ask came back with.
@@ -35,6 +37,9 @@ pub enum Answered {
     Declined,
     /// Nobody answered: the ask was cancelled or expired, `reason` says how.
     Unanswered(String),
+    /// Nobody was asked: the author is cheap and its change is always
+    /// reviewed (D21).
+    Mandatory,
 }
 
 /// Why a path was not reviewed.
@@ -86,6 +91,24 @@ pub trait Orchestra: Send + Sync {
     /// records it (S7). Nothing is written by it.
     fn staged(&self, _run: RunId, _worker: WorkerId, _change: Change) {}
 
+    /// `worker` of `run` called a command that reached the user's ask, and
+    /// it ended as `ran` says (W6): `collect` shows it to the coordinator.
+    fn ran(&self, _run: RunId, _worker: WorkerId, _ran: Ran) {}
+
+    /// `worker` of `run` called `needs_specification` with `what` (W8c). The
+    /// run records it as the worker's closing. `false` when it was not
+    /// recorded (the worker is not running, was not offered the tool, or had
+    /// already closed).
+    fn clarify(&self, _run: RunId, _worker: WorkerId, _what: &str) -> bool {
+        false
+    }
+
+    /// Whether `worker` of `run` has called `needs_specification`: its write
+    /// and command tools are then refused.
+    fn clarifying(&self, _run: RunId, _worker: WorkerId) -> bool {
+        false
+    }
+
     /// The risk of the change set `worker` of `run` is about to propose,
     /// with whatever the orchestrator raised for the run (S7b, D16). The
     /// default is the path rules alone.
@@ -131,6 +154,28 @@ pub trait Orchestra: Send + Sync {
     /// scope: its review cannot count as clean.
     fn unread(&self, _run: RunId, _worker: WorkerId, _path: &str) {}
 
+    /// Whether `worker` of `run` is a cheap author (design D20), by the
+    /// engine and model it was spawned with, never the menu now: its staged
+    /// change is always reviewed, with no consent ask (D21). `false` (the
+    /// default) for an unknown run or worker.
+    fn cheap(&self, _run: RunId, _worker: WorkerId) -> bool {
+        false
+    }
+
+    /// Holds `worker`'s own count of asks that wait for the user (its route's,
+    /// D5) until the guard is dropped: its deadline does not run while the
+    /// consent and the model review of its batch last (D6). `None` (the
+    /// default) when the worker has no route here.
+    fn pause(&self, _run: RunId, _worker: WorkerId) -> Option<Waiting> {
+        None
+    }
+
+    /// Whether `run` is still the live run of its pane: a proposal of a run
+    /// that ended is refused, since the run already denied its batches.
+    fn live(&self, _run: RunId) -> bool {
+        true
+    }
+
     /// Whether `worker` is the correction of a review: it stages fixes but
     /// the worker whose change is under review proposes the batch.
     fn corrects(&self, _run: RunId, _worker: WorkerId) -> bool {
@@ -149,6 +194,43 @@ pub trait Orchestra: Send + Sync {
     /// The user's batch review applied a batch holding `paths` that `worker`
     /// of `run` proposed.
     fn applied(&self, _run: RunId, _worker: WorkerId, _paths: &[String]) {}
+
+    /// The files of the batch `worker` proposes (`counts`, per project path)
+    /// that go over the line limit with what it applied before (W9). Only a
+    /// `simple` worker has a cap: the default lists nothing. `None` when the
+    /// run cannot be reached: the lines cannot be counted, and the host must
+    /// not propose the batch unasked.
+    fn over_limit(
+        &self,
+        _run: RunId,
+        _worker: WorkerId,
+        _counts: Vec<(String, Count)>,
+    ) -> Option<Vec<(String, Count)>> {
+        Some(Vec::new())
+    }
+
+    /// The staged `paths` a `simple` worker's brief does not list among its
+    /// outputs (W9b, C). Only a `simple` worker has a brief to leave: the
+    /// default lists nothing. `None` when the run cannot be reached: the
+    /// files cannot be judged, and the batch is not proposed unasked.
+    fn outside_brief(
+        &self,
+        _run: RunId,
+        _worker: WorkerId,
+        _paths: Vec<String>,
+    ) -> Option<Vec<String>> {
+        Some(Vec::new())
+    }
+
+    /// Whether `worker` of `run` ended its work by choosing to split (W9b):
+    /// its write and command tools are then refused, with the split's text.
+    fn split_chosen(&self, _run: RunId, _worker: WorkerId) -> bool {
+        false
+    }
+
+    /// `worker` chose to split its brief: `files` are the files over the
+    /// limit. The run records it as the worker's closing (W9b).
+    fn split(&self, _run: RunId, _worker: WorkerId, _files: Vec<String>) {}
 }
 
 /// The run manager of a turn.

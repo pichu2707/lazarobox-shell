@@ -9,6 +9,7 @@ use super::{
     wrap::{expand_tabs, text_width, wrap_ranges, wrap_words},
     yank,
 };
+use crate::core::ai::orchestra::rounds::ROUNDS;
 use crate::core::ai::{config::Task, orchestra::worker::WorkerStatus};
 
 /// What a transcript line is, which decides its style.
@@ -150,10 +151,29 @@ pub fn kind_label(kind: Task, engine: &str, model: Option<&str>) -> String {
 /// A worker row as text: `review codex>gpt-5 running`, then how long it ran
 /// once it ended (`done 12.3s`).
 pub(super) fn worker_line(row: &WorkerRow) -> String {
-    let marker = if row.overridden { " (override)" } else { "" };
+    // The menu's own word for a task row left unassigned.
+    let marker = match (row.overridden, row.inherited) {
+        (true, _) => " (override)",
+        (false, true) => " (default)",
+        (false, false) => "",
+    };
     let mut line = format!("{}{marker} {}", worker_label(row), row.status.label());
     if let Some(elapsed) = row.elapsed {
         line.push_str(&format!(" {:.1}s", elapsed.as_secs_f64()));
+    }
+    if let Some(round) = row.clarifying
+        && row.status == WorkerStatus::Done
+    {
+        if round > ROUNDS {
+            line.push_str(&format!(
+                " needs specification, limit reached ({ROUNDS} rounds)"
+            ));
+        } else {
+            line.push_str(&format!(" needs specification, round {round} of {ROUNDS}"));
+        }
+    }
+    if row.split && row.status == WorkerStatus::Done {
+        line.push_str(" split, staged batch discarded");
     }
     // A done worker whose engine reported nothing says so; the number is
     // never estimated.

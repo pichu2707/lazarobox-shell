@@ -65,6 +65,9 @@ impl Lens {
 pub enum Consent {
     Granted,
     Declined,
+    /// No ask: the author is cheap and its change is always reviewed (D21).
+    /// Never the user's grant, and never given by the orchestrator.
+    Mandatory,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -399,6 +402,12 @@ pub struct Review {
     gaps: Vec<String>,
     /// Bytes of diff left out of the prompts, the most of any, for the receipt.
     cut_bytes: usize,
+    /// Why the review stopped before it could conclude (a reviewer refused,
+    /// no room for its workers), for the receipt.
+    stopped: Option<String>,
+    /// The corrections the worker's batch had already used when this review
+    /// found blockers it was not allowed to correct, for the receipt.
+    limit: Option<u32>,
 }
 
 impl Review {
@@ -414,6 +423,8 @@ impl Review {
             correction: Correction::Unused,
             gaps: Vec::new(),
             cut_bytes: 0,
+            stopped: None,
+            limit: None,
         }
     }
 
@@ -448,6 +459,27 @@ impl Review {
         }
     }
 
+    /// The review stopped before it could conclude, for `why`. The first
+    /// reason is kept.
+    pub fn note_stop(&mut self, why: &str) {
+        self.stopped.get_or_insert_with(|| why.to_owned());
+    }
+
+    /// No correction ran because `rounds` were already spent.
+    pub fn note_limit(&mut self, rounds: u32) {
+        self.limit = Some(rounds);
+    }
+
+    /// The rounds spent when the correction limit stopped this review.
+    pub fn limit(&self) -> Option<u32> {
+        self.limit
+    }
+
+    /// Why the review stopped before it could conclude, if it did.
+    pub fn stopped(&self) -> Option<&str> {
+        self.stopped.as_deref()
+    }
+
     pub fn gaps(&self) -> &[String] {
         &self.gaps
     }
@@ -470,7 +502,7 @@ impl Review {
         match self.consent {
             None => Err(ReviewError::ConsentFirst),
             Some(Consent::Declined) => Err(ReviewError::Declined),
-            Some(Consent::Granted) => Ok(()),
+            Some(Consent::Granted | Consent::Mandatory) => Ok(()),
         }
     }
 
@@ -709,7 +741,7 @@ impl Review {
         match self.consent {
             None => return Err(ReviewError::ConsentFirst),
             Some(Consent::Declined) => return Ok(Outcome::NotReviewed),
-            Some(Consent::Granted) => {}
+            Some(Consent::Granted | Consent::Mandatory) => {}
         }
         if !self.all_reported() {
             return Err(ReviewError::Pending);

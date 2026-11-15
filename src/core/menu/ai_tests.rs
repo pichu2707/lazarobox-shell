@@ -130,7 +130,7 @@ const SETTINGS_ORDER: [&str; 10] = [
     "Feedback",
 ];
 
-const MODELS_ORDER: [&str; 8] = [
+const MODELS_ORDER: [&str; 9] = [
     "Set all tasks",
     "general",
     "code",
@@ -138,6 +138,7 @@ const MODELS_ORDER: [&str; 8] = [
     "review",
     "summarize",
     "orchestrate",
+    "simple",
     "Hugging Face",
 ];
 
@@ -163,7 +164,7 @@ fn the_ai_descriptors_are_well_formed() {
     let labels: Vec<_> = MODELS_SECTION.items.iter().map(|i| i.label).collect();
     assert_eq!(labels, MODELS_ORDER);
     let mut paths: Vec<&str> = Vec::new();
-    for (item, task) in MODELS_SECTION.items[1..7].iter().zip(Task::ALL) {
+    for (item, task) in MODELS_SECTION.items[1..8].iter().zip(Task::ALL) {
         match item.kind {
             ItemKind::Assign(Some(t)) => {
                 assert_eq!(t, task);
@@ -189,7 +190,8 @@ fn the_ai_descriptors_are_well_formed() {
             "ai.tasks.chat",
             "ai.tasks.review",
             "ai.tasks.summarize",
-            "ai.tasks.orchestrate"
+            "ai.tasks.orchestrate",
+            "ai.tasks.simple"
         ]
     );
 }
@@ -197,6 +199,7 @@ fn the_ai_descriptors_are_well_formed() {
 // Spec: Task rows in order, Wrap (tab-local), Mouse row is selectable.
 #[test]
 fn navigation_visits_each_tab_in_order_and_wraps_inside_it() {
+    let _hidden = super::tabs_tests::Mcp::hidden();
     let mut m = menu(None, None, Some(machine()));
     for (rows, tab) in [
         (&SETTINGS_ORDER[..], 0),
@@ -333,6 +336,7 @@ fn ai_rows(menu: &MenuState) -> Vec<(&'static str, String)> {
 // Engine/Model/Status.
 #[test]
 fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
+    let _hidden = super::tabs_tests::Mcp::hidden();
     let m = assigned(&[(Task::General, "ollama", "llama3:8b")], Some(machine()));
     let got: Vec<_> = ai_rows(&m)
         .iter()
@@ -348,6 +352,7 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
             "review=(default)",
             "summarize=(default)",
             "orchestrate=(default) · not recommended",
+            "simple=(default)",
             "Hugging Face=not connected",
             "Tools=on",
             "Search=off",

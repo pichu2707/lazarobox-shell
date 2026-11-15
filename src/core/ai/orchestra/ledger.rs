@@ -128,6 +128,29 @@ pub struct Handoff {
     /// The check of the claimed files against the worker's ledger (W4); only
     /// a worker's handoff holds one.
     pub audit: Option<Audit>,
+    /// The names of the extra fields of a `simple` worker's brief, comma
+    /// separated; empty when it had none (W8b). Names lazarobox validated,
+    /// not worker text.
+    pub extra: String,
+    /// What a `simple` worker asked through `needs_specification`, one clean
+    /// line; empty when it did not (W8c). The worker's text, so inert data.
+    pub clarification: String,
+    /// The brief's clarification rounds and the split of its worker (W8c).
+    pub trail: Trail,
+}
+
+/// What a `simple` worker's handoff keeps of its brief's rounds (W8c, 20.7):
+/// the brief it belongs to (its first worker), the clarification rounds that
+/// brief has had up to and including this worker's, and the files of a split.
+/// Lazarobox's own counts; `split` holds worker-named paths, one line.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct Trail {
+    /// The id of the brief's first worker; 0 for a worker with no brief.
+    pub brief: u32,
+    pub rounds: u32,
+    pub split: String,
+    /// The brief asked a third time: `rounds` stops at the limit.
+    pub limit: bool,
 }
 
 impl Handoff {
@@ -161,6 +184,9 @@ impl Handoff {
             left: judgement.left,
             decisions: judgement.decisions,
             audit,
+            extra: facts.extra,
+            clarification: facts.clarification,
+            trail: facts.trail,
         }
     }
 
@@ -195,6 +221,11 @@ pub(super) struct Facts {
     pub ledger: Option<ChangeLedger>,
     /// The check of the worker's earlier handoff, whose claims stay.
     pub prior: Option<Audit>,
+    /// The extra fields of the worker's brief, by name.
+    pub extra: String,
+    /// The worker's recorded question (W8c); empty for none.
+    pub clarification: String,
+    pub trail: Trail,
 }
 
 /// Why a handoff was not stored.
@@ -254,6 +285,16 @@ impl Row {
             pending: terminal && handoff.is_none(),
             flags: Vec::new(),
         }
+    }
+
+    /// The row of a worker lazarobox started itself (D22): it has no handoff
+    /// to wait for, so an ended one is never pending.
+    pub(super) fn internal(mut self) -> Self {
+        if self.pending {
+            self.pending = false;
+            self.summary = "internal, no handoff".to_owned();
+        }
+        self
     }
 
     /// The row with the flags its handoff's check raised.

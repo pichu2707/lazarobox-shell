@@ -52,6 +52,7 @@ use crate::{
         },
         orchestra::{
             WorkerKey,
+            commands::{Ran, RanEnd},
             tools::{OrchCall, WAIT_MAX_SECS},
         },
         tools::{
@@ -463,12 +464,59 @@ impl Unprompted {
 /// What a review worker is told when it reads outside the run's scope.
 const OUT_OF_REVIEW_SCOPE: &str = "that path is outside the run's scope: the review cannot read it";
 
+/// What a worker is told when it writes or runs after `needs_specification`.
+const CLARIFYING: &str =
+    "you asked for a clearer brief: write and run nothing more; end with a short text";
+
+/// What a worker is told when it writes or runs after it chose to split.
+const SPLIT_CLOSED: &str =
+    "you chose to split the work: write and run nothing more; end with a short text";
+
+/// What refuses `call` when it is a write or a command of a worker that
+/// already ended its brief, by `needs_specification` or by a split: it is
+/// refused, before it asks and after it waited, with the text of its ending.
+fn closed(scope: &TurnScope, call: &Call) -> Option<&'static str> {
+    if !(call.is_write() || matches!(call, Call::RunCommand { .. })) {
+        return None;
+    }
+    let w = scope.read_scope.as_ref()?;
+    if !w.handle.clarifying(w.run, w.worker) {
+        return None;
+    }
+    Some(if w.handle.split_chosen(w.run, w.worker) {
+        SPLIT_CLOSED
+    } else {
+        CLARIFYING
+    })
+}
+
+/// What a worker is told when `needs_specification` recorded nothing.
+const NOT_RECORDED: &str = "your question was not recorded: a first one stands";
+
+/// What a worker is told once its question is recorded.
+const RECORDED: &str =
+    "recorded: the coordinator gets your question; write nothing more and end with a short text";
+
 /// What a correction worker is told when it proposes the batch.
 const CORRECTION_PROPOSES: &str = "a correction only stages its fixes: the worker whose change is under review proposes the batch";
 
-/// What the model is told when its command was typed.
-const TYPED_TEXT: &str = "The command was typed into the user's pane. Enter was not pressed: \
-                          the user runs it themselves.";
+/// What the model is told when its command was typed: it has not run, so there
+/// is no output and nothing has changed. `why` is what stopped `y` in `run`
+/// mode from running it, when there is one.
+fn typed_text(why: Option<&str>) -> String {
+    // Enter would reach the program that is running there.
+    let busy = why.is_some_and(|why| why.contains("running"));
+    let advice = if busy {
+        "the user must run it once the program in that pane has finished"
+    } else {
+        "Tell the user to press Enter in that pane to run it"
+    };
+    let why = why.map_or_else(String::new, |why| format!(" ({why})"));
+    format!(
+        "NOT RUN YET: the command was typed into the user's pane without Enter{why}. Nothing \
+         has changed: no file was written and no output exists. {advice}; do not say it is done."
+    )
+}
 
 /// The result of a command the app ran in the pane: the words of the report,
 /// with the output cleaned, redacted and wrapped here, off the UI thread.
@@ -618,15 +666,19 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     };
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The command is the sanitizer's, so the ask shows what would be typed.
-    let mut checked: Result<Call, Cow<'static, str>> = match &call {
+    // `if let` guards need a newer Rust than the MSRV, so the closing is a
+    // second element of the matched pair.
+    let mut checked: Result<Call, Cow<'static, str>> = match (&call, closed(&scope, &call)) {
         // What the turn does not offer is refused as the parse refuses it.
-        call if !scope.offers(call) => Err(refusal_text(ToolError::UnknownTool).into()),
-        Call::RunInPane { command } => command::validate(command)
+        (call, _) if !scope.offers(call) => Err(refusal_text(ToolError::UnknownTool).into()),
+        // A worker that asked for a clearer brief writes and runs nothing.
+        (_, Some(text)) => Err(text.into()),
+        (Call::RunInPane { command }, None) => command::validate(command)
             .map(|valid| Call::RunInPane {
                 command: valid.as_str().to_owned(),
             })
             .map_err(|refusal| refusal.reason().into()),
-        other => files::gate(&scope, other)
+        (other, None) => files::gate(&scope, other)
             .map(|()| other.clone())
             .map_err(Cow::from),
     };
@@ -756,16 +808,32 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
             }
             // A command is judged before it asks: a refusal never opens a prompt.
-            (Call::RunCommand { .. }, locality, _) => {
+            // A worker's ask names its session and label (D19): only the scope
+            // knows them, not the plan.
+            (Call::RunCommand { .. }, locality, read_scope) => {
                 match exec::plan(&host, &scope, valid).await {
                     Ok(plan) => {
                         ask = ask_for(valid, locality);
                         if let Some(ask) = ask.as_mut() {
                             exec::fill(&host, &plan, ask);
+                            if let ApprovalAsk::Exec { worker, .. } = ask {
+                                *worker = read_scope.as_ref().map(|w| (w.key(), w.ask_label()));
+                            }
                         }
                         pinned = plan.pin;
                     }
-                    Err(why) => checked = Err(why.into()),
+                    // A worker's refusal is also told in the pane, naming
+                    // the worker (W6): its row is in the worker's view.
+                    Err(why) => {
+                        if let Some(worker) = read_scope {
+                            let line = format!(
+                                "worker {}: run_command refused: {why}",
+                                worker.ask_label()
+                            );
+                            let _ = scope.events.send(StreamEvent::Notice(line)).await;
+                        }
+                        checked = Err(why.into());
+                    }
                 }
             }
             // A git verb is judged before it asks: a refusal opens no prompt. An
@@ -785,18 +853,26 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 checked = Err(CORRECTION_PROPOSES.into());
             }
             // A batch is sealed before the ask: the user reviews what was
-            // sealed. A high-risk change is reviewed first, with the user's
+            // sealed. A `simple` worker's file over the line limit asks first
+            // (W9b), then a high-risk change is reviewed first, with the user's
             // consent (S7b); the batch review follows whatever it found.
-            (Call::ProposeBatch, _, _) => {
-                review::before_batch(&host, &scope).await;
-                match files::seal(&host, &scope).await {
-                    Ok((batch, review)) => {
-                        ask = Some(ApprovalAsk::Batch(review));
-                        sealed = Some(batch);
+            (Call::ProposeBatch, _, _) => match limit::check(&host, &scope, &[]).await {
+                limit::Limited::Go(asked) => {
+                    review::before_batch(&host, &scope).await;
+                    // What the review staged is counted again before the seal.
+                    match limit::check(&host, &scope, &asked).await {
+                        limit::Limited::Go(_) => match files::seal(&host, &scope).await {
+                            Ok((batch, review)) => {
+                                ask = Some(ApprovalAsk::Batch(review));
+                                sealed = Some(batch);
+                            }
+                            Err(why) => checked = Err(why.into()),
+                        },
+                        limit::Limited::Stop(why) => checked = Err(why.into()),
                     }
-                    Err(why) => checked = Err(why.into()),
                 }
-            }
+                limit::Limited::Stop(why) => checked = Err(why.into()),
+            },
             // A search asks with how concrete the root it walks is: the
             // approval mode lets only the search of a concrete root go.
             (Call::Grep { .. }, locality, _) if scope.reads_ask(locality) => {
@@ -824,7 +900,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         github::Consent::Free => {}
                         github::Consent::Declined => declined = Some(github::DECLINED),
                         github::Consent::Ask(question, yes, no) => {
-                            ask = Some(question);
+                            ask = Some(*question);
                             github_keys = Some((yes, no));
                         }
                     }
@@ -899,6 +975,13 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
         slot: Some(slot),
     };
 
+    // A worker's command the user did not approve, whatever the answer, is
+    // recorded for the coordinator as denied (W6); one that ran is recorded
+    // by `exec::run`, which takes it from here.
+    let mut denied_command = match (&checked, &scope.read_scope) {
+        (Ok(call @ Call::RunCommand { .. }), Some(worker)) => Some((worker, exec::shown(call))),
+        _ => None,
+    };
     let (outcome, status, summary) = match checked {
         Err(reason) => ended(ToolStatus::Error, reason.to_string(), &reason),
         Ok(_) if declined.is_some() => {
@@ -915,6 +998,22 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             // can leave an orphan.
             if let Some(batch) = sealed.as_mut() {
                 batch.resumed();
+            }
+            // A parallel call of the same turn may have recorded the
+            // worker's `needs_specification` while this one waited: it is
+            // judged again, and a batch is denied and discarded as the
+            // user's `n` would.
+            if let Some(closing) = closed(&scope, &call) {
+                record_denied(denied_command.take());
+                let (outcome, status, summary) = match call {
+                    Call::ProposeBatch => {
+                        let no = Decision::Denied(closing);
+                        files::answered(&host, &scope, sealed.take(), no).await
+                    }
+                    _ => ended(ToolStatus::Denied, format!("denied: {closing}"), closing),
+                };
+                owed.answer(status, &summary);
+                return outcome;
             }
             let decision = match answer {
                 Answer::Decided(decision) => {
@@ -950,6 +1049,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
                 // Only a run is ever given a report.
                 Answer::Ran(_) if !matches!(call, Call::RunInPane { .. }) => {
+                    record_denied(denied_command.take());
                     let (outcome, status, summary) = ended(
                         ToolStatus::Denied,
                         format!("denied: {NOT_COMMAND}"),
@@ -965,6 +1065,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
                 // The frozen text the user read: it answers `read_pane` only.
                 Answer::Screen(text) => {
+                    record_denied(denied_command.take());
                     let (outcome, status, summary) = match &call {
                         Call::ReadPane { pane, .. } => screen_result(*pane, &text),
                         _ => ended(
@@ -997,16 +1098,23 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 ),
                 (Decision::Typed(number), Call::RunInPane { .. }) => ended(
                     ToolStatus::Ok,
-                    TYPED_TEXT.to_owned(),
-                    &format!("typed into pane {number} \u{2014} no Enter"),
+                    typed_text(None),
+                    &format!("typed into pane {number} \u{2014} not run"),
                 ),
-                (Decision::Sent, Call::RunInPane { .. }) => {
-                    ended(ToolStatus::Ok, TYPED_TEXT.to_owned(), "typed, no Enter")
+                (Decision::Sent | Decision::SentNotRun(_), Call::RunInPane { .. }) => {
+                    let why = match decision {
+                        Decision::SentNotRun(why) => Some(why),
+                        _ => None,
+                    };
+                    ended(ToolStatus::Ok, typed_text(why), "typed, not run")
                 }
                 // Only the frozen text releases a screen, never a plain `y` or
                 // a mode's answer.
                 (
-                    Decision::Sent | Decision::Typed(_) | Decision::Unprompted,
+                    Decision::Sent
+                    | Decision::SentNotRun(_)
+                    | Decision::Typed(_)
+                    | Decision::Unprompted,
                     Call::ReadPane { .. },
                 ) => ended(
                     ToolStatus::Denied,
@@ -1037,6 +1145,17 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         ended(ToolStatus::Error, reason.to_owned(), reason)
                     }
                 },
+                // The worker's question goes to its run, which records it.
+                (Decision::Sent, Call::NeedsSpecification { what }) => match &scope.read_scope {
+                    Some(worker) if worker.handle.clarify(worker.run, worker.worker, &what) => {
+                        ended(ToolStatus::Ok, RECORDED.to_owned(), "needs specification")
+                    }
+                    Some(_) => ended(ToolStatus::Error, NOT_RECORDED.to_owned(), NOT_RECORDED),
+                    None => {
+                        let reason = refusal_text(ToolError::UnknownTool);
+                        ended(ToolStatus::Error, reason.to_owned(), reason)
+                    }
+                },
                 // After the consent, if the engine needed one: `gh` starts here.
                 (Decision::Sent, Call::Github(gh)) => match github_plan.take() {
                     Some(planned) => github::run(&host, &scope, &gh, planned).await,
@@ -1051,6 +1170,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 (Decision::Sent, Call::ListPanes) => list_panes(listed.take().unwrap_or_default()),
                 // Only after `y`: the sandbox starts here and nowhere else.
                 (Decision::Sent, call @ Call::RunCommand { .. }) => {
+                    denied_command = None;
                     exec::run(&host, &scope, &call, pinned.take()).await
                 }
                 // Only after `y` on a cloud engine, at once on a local one.
@@ -1082,37 +1202,53 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     format!("denied: {NOT_APPROVED}"),
                     NOT_APPROVED,
                 ),
-                (Decision::Sent | Decision::Typed(_), call) => match (scoped, &call) {
-                    // Exactly what the scope allowed, paged like any read:
-                    // resolving the request again would reopen the race it
-                    // closed.
-                    //
-                    // A review worker (read-only, with its proposer's batch to
-                    // look at, S7b) reads through the staged view instead,
-                    // kept in the root: the staged text is not on disk.
-                    (_, Call::ReadFile { .. }) if scope.sees_stage() => {
-                        files::run_within(&host, &scope, call, Within::Root).await
-                    }
-                    (Some((roots, real)), Call::ReadFile { lines, .. }) => {
-                        let limits = host.limits.clone();
-                        match super::read_in_scope(roots, real, *lines, limits).await {
-                            Ok(text) => {
-                                let summary = format!("{} bytes", text.len());
-                                ended(ToolStatus::Ok, text, &summary)
-                            }
-                            Err(failure) => {
-                                let reason = failure.message();
-                                ended(ToolStatus::Error, reason.to_owned(), reason)
+                (Decision::Sent | Decision::SentNotRun(_) | Decision::Typed(_), call) => {
+                    match (scoped, &call) {
+                        // Exactly what the scope allowed, paged like any read:
+                        // resolving the request again would reopen the race it
+                        // closed.
+                        //
+                        // A review worker (read-only, with its proposer's batch to
+                        // look at, S7b) reads through the staged view instead,
+                        // kept in the root: the staged text is not on disk.
+                        (_, Call::ReadFile { .. }) if scope.sees_stage() => {
+                            files::run_within(&host, &scope, call, Within::Root).await
+                        }
+                        (Some((roots, real)), Call::ReadFile { lines, .. }) => {
+                            let limits = host.limits.clone();
+                            match super::read_in_scope(roots, real, *lines, limits).await {
+                                Ok(text) => {
+                                    let summary = format!("{} bytes", text.len());
+                                    ended(ToolStatus::Ok, text, &summary)
+                                }
+                                Err(failure) => {
+                                    let reason = failure.message();
+                                    ended(ToolStatus::Error, reason.to_owned(), reason)
+                                }
                             }
                         }
+                        _ => files::run(&host, &scope, call).await,
                     }
-                    _ => files::run(&host, &scope, call).await,
-                },
+                }
             }
         }
     };
+    record_denied(denied_command);
     owed.answer(status, &summary);
     outcome
+}
+
+/// Records a worker's command that was asked and did not run (W6).
+fn record_denied(command: Option<(&WorkerScope, (String, String))>) {
+    if let Some((worker, (program, command))) = command {
+        let end = RanEnd::Denied;
+        let ran = Ran {
+            program,
+            command,
+            end,
+        };
+        (worker.handle).ran(worker.run, worker.worker, ran);
+    }
 }
 
 /// Whether a denied draft is the turn's decline: the user said no, or the
@@ -1130,12 +1266,15 @@ mod files;
 mod gate;
 mod git;
 mod github;
+mod limit;
 pub(crate) use git::locate_git;
 mod orphan;
 mod review;
 
 #[cfg(test)]
 mod exec_tests;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use exec_tests::fake_toolchain;
 #[cfg(test)]
 mod external_tests;
 #[cfg(test)]

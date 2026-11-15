@@ -1,0 +1,29 @@
+---
+source: src/app/app_tests/orchestra_limit.rs
+expression: screen
+---
+                                       │› q
+                                       │
+                                       │hello
+                                       │
+                                       │› q
+                                       │
+                                       │» tool args
+                                       │
+                                       │waiting for your answer…
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │worker simple ollama>llama3: line limit?
+                                       │src/a.rs: 450 counted lines; notes.xyz:
+                                       │500 lines, every line counted; outside t
+                                       │he brief: src/b.rs
+                                       │the limit is 400 counted lines in one fi
+                                       │le; split discards the staged batch
+                                       │y keep · n or Esc split
+ ◐ CHAT  /launch                 ⠋ thinking llama3:8b 0s  ollama › llama3:8b

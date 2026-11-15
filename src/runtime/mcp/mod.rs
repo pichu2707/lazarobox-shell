@@ -26,6 +26,14 @@
 pub mod active;
 pub mod client;
 pub mod external;
+pub mod google_link;
+pub mod link;
+pub mod presence;
+pub mod probe;
+#[cfg(test)]
+mod redact_more_tests;
+#[cfg(test)]
+mod redact_tests;
 mod session;
 pub mod shim;
 

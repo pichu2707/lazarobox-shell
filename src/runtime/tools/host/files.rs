@@ -19,11 +19,13 @@ use crate::{
     core::ai::{
         chat::{
             approval::Reach,
-            review::{BatchReview, ReviewDoc, TOO_LARGE},
+            engine::StreamEvent,
+            review::{BatchReview, RUN_ENDED, ReviewDoc, TOO_LARGE},
         },
         orchestra::{
             WorkerKey,
             changes::{Change, StagedDiff, StagedText, diff_hash},
+            limit::{Count, count},
         },
         tools::{
             Call, ToolError,
@@ -166,9 +168,23 @@ pub(super) async fn seal(
         }
     };
     let env = host.scope_env(scope);
-    tokio::task::spawn_blocking(move || seal_in(stages, key, label, &env))
+    let sealed = tokio::task::spawn_blocking(move || seal_in(stages, key, label, &env))
         .await
-        .unwrap_or_else(|_| Err(COULD_NOT.to_owned()))
+        .unwrap_or_else(|_| Err(COULD_NOT.to_owned()))?;
+    // The run may have ended while this call was in flight: it denied its
+    // batches already, so this one is dropped, not shown. Checked after the
+    // seal, so either the run's end drops it or this check does.
+    if let Some(worker) = scope.read_scope.as_ref()
+        && !worker.handle.live(worker.run)
+    {
+        let _ = lock(&host.stages).discard(sealed.0.id);
+        let _ = scope
+            .events
+            .send(StreamEvent::Notice(RUN_ENDED.into()))
+            .await;
+        return Err(RUN_ENDED.to_owned());
+    }
+    Ok(sealed)
 }
 
 fn seal_in(
@@ -615,6 +631,45 @@ pub(super) fn staged_changes(stages: &Mutex<Stages>, key: StageKey, env: &ToolEn
         .collect()
 }
 
+/// The counted lines each staged file of the batch of `key` adds over what is
+/// on the disk, by project path (W9, the counter's contract). Folders have none.
+pub(super) fn staged_counts(
+    stages: &Mutex<Stages>,
+    key: StageKey,
+    env: &ToolEnv,
+) -> Vec<(String, Count)> {
+    let stages = lock(stages);
+    let Some(batch) = stages.batch(key) else {
+        return Vec::new();
+    };
+    let files = batch
+        .entries()
+        .iter()
+        .filter_map(|staged| match &staged.entry {
+            Entry::File { text, base } => {
+                let path = ledger_path(env, &staged.target.real);
+                let counted = count(&path, base.as_deref(), text);
+                Some((path, counted))
+            }
+            Entry::Dir => None,
+        });
+    files.collect()
+}
+
+/// Drops the batch of `key` (a split, W9b). How many files it held: folders
+/// are dropped too but are no file to tell the user about.
+pub(super) fn discard_files(stages: &Mutex<Stages>, key: StageKey) -> usize {
+    let mut stages = lock(stages);
+    let held = stages.batch(key).map_or(0, |batch| {
+        let files = batch.entries().iter();
+        files
+            .filter(|s| matches!(s.entry, Entry::File { .. }))
+            .count()
+    });
+    stages.discard_key(key);
+    held
+}
+
 /// What a review may be shown of the batch of `key`: the files `allow` lets
 /// it read, and the other paths (and folders, which have no text) named only.
 /// Those are the files the review's read tools show it through the staged
@@ -819,7 +874,7 @@ pub(super) async fn answered(
         Decision::Denied(reason) => return denied(reason),
         // A batch is only ever sent or denied by the user, never typed, busy
         // or answered by the approval mode.
-        Decision::Busy(_) | Decision::Typed(_) | Decision::Unprompted => {
+        Decision::Busy(_) | Decision::Typed(_) | Decision::SentNotRun(_) | Decision::Unprompted => {
             return denied(NOT_APPROVED);
         }
     }

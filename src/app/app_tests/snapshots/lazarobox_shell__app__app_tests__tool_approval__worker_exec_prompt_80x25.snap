@@ -1,0 +1,29 @@
+---
+source: src/app/app_tests/tool_approval.rs
+expression: screen
+---
+                                       │› q
+                                       │
+                                       │hello
+                                       │
+                                       │› q
+                                       │
+                                       │» tool args
+                                       │
+                                       │waiting for your answer…
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │worker 2/3 code ollama>llama3:8b: run a
+                                       │cargo test
+                                       │in .
+                                       │timeout 120 s · network is on · a test c
+                                       │an read .env and send it out
+                                       │the output goes to the model
+                                       │runs project code: build.rs, tests, Carg
+                                       │o.toml and .cargo/config
+                                       │y call it · n deny
+ ◐ CHAT  /launch                 ⠋ thinking llama3:8b 0s  ollama › llama3:8b

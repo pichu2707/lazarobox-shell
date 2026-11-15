@@ -3,13 +3,15 @@
 //! may read or write (mode 0600 or stricter). Called off the UI thread, on
 //! each start of a chat's user servers, so an edit applies at the next start.
 //!
-//! Nothing here ever creates, writes, renames or chmods the file.
+//! Nothing here ever creates, writes, renames or chmods the file. The one
+//! exception is the menu save of one value and the deletion of its backup,
+//! in `runtime::secrets_write` (C6 amended).
 
 use std::{
     fs::OpenOptions,
     io::{ErrorKind, Read},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use crate::core::ai::mcp_secrets::{
@@ -23,6 +25,18 @@ pub fn load(path: &Path) -> Loaded {
         Ok(Some(bytes)) => Secrets::parse(&bytes),
         Ok(None) => Loaded::default(),
         Err(problem) => Loaded::problem(problem),
+    }
+}
+
+/// [`load`] off the UI thread, shared by a chat start and the probe. A read
+/// that panicked uses no value and says so, like a file that cannot be read;
+/// `None` (no config folder) is no values and no problem.
+pub async fn load_for_start(path: Option<PathBuf>) -> Loaded {
+    match path {
+        Some(path) => tokio::task::spawn_blocking(move || load(&path))
+            .await
+            .unwrap_or_else(|_| Loaded::problem(UNREADABLE.to_owned())),
+        None => Loaded::default(),
     }
 }
 

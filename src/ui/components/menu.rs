@@ -200,6 +200,7 @@ fn mark_text(mark: &Mark) -> &str {
         Mark::Plain => "",
         Mark::Downloaded => "✓",
         Mark::DownloadRequired => "download required",
+        Mark::NotServed => "not served",
         Mark::Checking => "checking…",
         Mark::NotInList => NOT_IN_LIST,
         Mark::Status(text) => text,
@@ -212,6 +213,7 @@ const CLIP_MARK_FROM: usize = 40;
 /// Suffixes of a task-row value that must survive clipping, outermost last.
 const REQUIRED_MARK: &str = " · download required";
 const NOT_RECOMMENDED_MARK: &str = " · not recommended";
+const NOT_SERVED_MARK: &str = " · not served";
 
 /// The label a limit being typed gives way to when its value needs the room.
 const EDIT_LABEL: &str = "Edit";
@@ -226,13 +228,13 @@ fn tail(value: &str, room: usize) -> String {
 }
 
 /// `value` within `room` cells: a long model name is clipped, its trailing
-/// ` · download required` and ` · not recommended` marks are kept whole.
+/// ` · download required`, ` · not served` and ` · not recommended` marks are kept whole.
 fn fit(value: &str, room: usize) -> String {
     if cells(value) <= room {
         return value.to_owned();
     }
     let mut head = value;
-    for mark in [NOT_RECOMMENDED_MARK, REQUIRED_MARK] {
+    for mark in [NOT_RECOMMENDED_MARK, REQUIRED_MARK, NOT_SERVED_MARK] {
         head = head.strip_suffix(mark).unwrap_or(head);
     }
     let marks = &value[head.len()..];
@@ -1080,6 +1082,20 @@ mod tests {
         assert_eq!(fit("plain value that is long", 8), "plain v…");
     }
 
+    #[test]
+    fn fit_keeps_the_not_served_mark_whole_on_a_narrow_row() {
+        let value = "llamacpp › a-very-long-model-name.gguf · not served";
+        let out = fit(value, 22);
+        assert!(out.ends_with(" · not served"), "{out}");
+        assert_eq!(cells(&out), 22);
+        assert_eq!(fit(value, cells(value)), value);
+    }
+
+    #[test]
+    fn a_not_served_row_draws_its_mark_text() {
+        assert_eq!(mark_text(&Mark::NotServed), "not served");
+    }
+
     // Review W1: the cursor on a task row shows the task hint, no h/l.
     #[test]
     fn snapshot_task_row_hint_after_a_finished_detection() {
@@ -1649,6 +1665,7 @@ mod tests {
 
     #[test]
     fn the_bar_is_body_row_zero_with_the_hint_on_a_normal_terminal() {
+        let _hidden = crate::core::menu::tabs_tests::Mcp::hidden();
         for menu in [mixed(), ai_tab()] {
             let l = lines(&draw(62, POPUP_H, &menu));
             assert!(
@@ -1701,7 +1718,7 @@ mod tests {
         );
         let ai = lines(&draw(62, POPUP_H, &ai_tab()));
         assert!(ai[2].starts_with("│ Set all tasks"), "{}", ai[2]);
-        assert!(ai[9].starts_with("│ Hugging Face"), "{}", ai[9]);
+        assert!(ai[10].starts_with("│ Hugging Face"), "{}", ai[10]);
     }
 
     // Spec (config-menu): the caution line of a family that can change files
@@ -1893,6 +1910,7 @@ mod tests {
     // Spec: Thresholds of the four-tab bar.
     #[test]
     fn the_four_tab_bar_degrades_at_its_thresholds() {
+        let _hidden = crate::core::menu::tabs_tests::Mcp::hidden();
         let menu = mixed();
         let whole = " Settings │ Models │ Tools │ Chat ";
         assert!(bar(49, &menu).contains(whole) && bar(49, &menu).contains("⇥ Tab · 1-5"));
@@ -1948,6 +1966,7 @@ mod tests {
     // Spec: Hidden Connectors shows a notice, in the footer, until the next key.
     #[test]
     fn snapshot_the_hidden_connectors_notice_replaces_the_footer() {
+        let _hidden = crate::core::menu::tabs_tests::Mcp::hidden();
         let mut menu = ai_tab();
         goto(&mut menu, "code");
         press(&mut menu, &[KeyCode::Char('4')]);
@@ -1957,6 +1976,285 @@ mod tests {
         press(&mut menu, &[KeyCode::Char('j')]);
         let shown = text(&draw(62, POPUP_H, &menu));
         assert!(!shown.contains("No connectors yet"), "{shown}");
+    }
+
+    // ---- the Connectors tab and area (S4) ------------------------------
+
+    fn server(name: &str) -> crate::core::ai::config::McpServer {
+        crate::core::ai::config::McpServer {
+            name: name.to_owned(),
+            command: "x".to_owned(),
+            args: Vec::new(),
+            env: Vec::new(),
+            project: None,
+            enabled: true,
+        }
+    }
+
+    /// The Connectors tab of a menu that loaded `clarity` at startup.
+    fn connectors_tab() -> MenuState {
+        let path = std::path::PathBuf::from("/home/ana/.config/lazarobox/config.toml");
+        let mut menu = mixed().with_connectors(vec![server("clarity")], Vec::new(), Some(path));
+        press(&mut menu, &[KeyCode::Char('4')]);
+        menu
+    }
+
+    /// The area open, on the catalog entry `at` (the Connect Google row
+    /// comes first, so the cursor moves `at + 1` rows).
+    fn connectors_entry(at: usize) -> MenuState {
+        let mut menu = connectors_tab();
+        press(&mut menu, &[KeyCode::Enter]);
+        for _ in 0..=at {
+            press(&mut menu, &[KeyCode::Char('j')]);
+        }
+        press(&mut menu, &[KeyCode::Enter]);
+        menu
+    }
+
+    // Spec (config-menu, Connectors row): The Connectors tab.
+    #[test]
+    fn snapshot_the_connectors_tab() {
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &connectors_tab())));
+    }
+
+    // Spec (mcp-connect, Entry list): Groups and order.
+    #[test]
+    fn snapshot_the_connectors_list() {
+        let mut menu = connectors_tab();
+        press(&mut menu, &[KeyCode::Enter]);
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
+    /// The Connect Google screen (its row is the first), the client read.
+    fn connect_google() -> MenuState {
+        let mut menu = connectors_tab();
+        press(&mut menu, &[KeyCode::Enter, KeyCode::Enter]);
+        menu.google_client(Ok(Some("123-abc.apps.googleusercontent.com".to_owned())));
+        menu
+    }
+
+    /// Its plan for both services, as the runtime answers it.
+    fn connect_google_plan() -> MenuState {
+        use crate::core::{
+            ai::{
+                mcp_catalog::{connect::Preview, entry, snippet},
+                mcp_secrets::SecretText,
+            },
+            config_append::Connect,
+        };
+        let mut menu = connect_google();
+        press(&mut menu, &[KeyCode::Char('e')]);
+        menu.on_paste("ana@example.com");
+        press(&mut menu, &[KeyCode::Enter, KeyCode::Char('n')]);
+        let value = |text: &str| {
+            let mut value = SecretText::new();
+            value.push_str(text);
+            value
+        };
+        let set = [
+            (
+                "gsc",
+                "GSC_OAUTH_CLIENT_SECRETS_FILE",
+                "/home/ana/.config/lazarobox/google-oauth-client.json",
+            ),
+            ("gsc", "GSC_CONFIG_DIR", "/home/ana/.config/mcp-gsc"),
+            ("gsc", "GSC_SKIP_OAUTH", "false"),
+            (
+                "google",
+                "GOOGLE_OAUTH_CLIENT_ID",
+                "123-abc.apps.googleusercontent.com",
+            ),
+            ("google", "GOOGLE_OAUTH_CLIENT_SECRET", "GOCSPX-never-drawn"),
+            ("google", "USER_GOOGLE_EMAIL", "ana@example.com"),
+            ("google", "WORKSPACE_MCP_DISABLE_LOCAL_FILES", "true"),
+        ];
+        let ids = ["gsc", "google"];
+        let snippets: Vec<String> = ids.iter().map(|id| snippet(entry(id).unwrap())).collect();
+        menu.google_plan(Ok(Box::new(Preview {
+            write: Connect {
+                set: set.iter().map(|(t, n, v)| (*t, *n, value(v))).collect(),
+                snippets: snippets.join("\n"),
+                names: ids.to_vec(),
+                expected: Some([0; 32]),
+            },
+            kept: Vec::new(),
+            installs: ids.iter().map(|id| entry(id).unwrap().install).collect(),
+            declared: Vec::new(),
+            blocked: None,
+        })));
+        menu
+    }
+
+    // Spec (google-connect S5): the services, the client, the e-mail, the
+    // checklist; then the same screen scrolled to its end.
+    #[test]
+    fn snapshot_the_connect_google_screen() {
+        let mut menu = connect_google();
+        let top = text(&draw(62, POPUP_H, &menu));
+        for _ in 0..40 {
+            press(&mut menu, &[KeyCode::Char('j')]);
+        }
+        let end = text(&draw(62, POPUP_H, &menu));
+        insta::assert_snapshot!(format!("{top}\n{end}"));
+    }
+
+    // Spec (gsc-lazarobox-client, Client route): Search Console alone on the
+    // lazarobox client: its client line, no own client, no checklist, and the
+    // popup keeps its size.
+    #[test]
+    fn snapshot_the_connect_google_lazarobox_route() {
+        let mut menu = connect_google();
+        menu.set_client_pin(Some("123456789012"));
+        press(&mut menu, &[KeyCode::Char('w')]);
+        let screen = text(&draw(62, POPUP_H, &menu));
+        assert!(!screen.contains("123-abc") && !screen.contains("GOCSPX"));
+        insta::assert_snapshot!(screen);
+    }
+
+    // A Link failure is one clipped footer line: the instruction comes first
+    // and is drawn whole, whatever the cause.
+    #[test]
+    fn a_link_failure_footer_draws_its_instruction_whole() {
+        use crate::core::ai::{
+            mcp_catalog::{entry, snippet},
+            mcp_secrets::{Why, failure_notice},
+        };
+        let why = "javilazaro.es request failed: Could not resolve host: www.javilazaro.es";
+        for (notice, cause) in [
+            (
+                failure_notice(&Why::NotConfigured),
+                "lazarobox: not configured",
+            ),
+            (failure_notice(&Why::Foreign), "lazarobox: refused ("),
+            (
+                failure_notice(&Why::Curl(why.to_owned())),
+                "lazarobox: not fetched (",
+            ),
+        ] {
+            let mut menu = connect_google();
+            let secrets = "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/h/.config/lazarobox/lazarobox-google-client.json\"\nGSC_CONFIG_DIR = \"/h/.config/mcp-gsc\"\nGSC_SKIP_OAUTH = \"false\"\n";
+            menu.presence_reply(
+                crate::core::ai::mcp_catalog::presence::Presence::read(
+                    Ok(snippet(entry("gsc").unwrap())),
+                    &crate::core::ai::mcp_secrets::Secrets::parse(secrets.as_bytes()),
+                )
+                .with_home(Some("/h".to_owned()))
+                .with_token(|_| false),
+            );
+            press(&mut menu, &[KeyCode::Char('g')]);
+            menu.link_reply(Err(notice.clone()), None);
+            let shown = text(&draw(62, POPUP_H, &menu));
+            assert!(shown.contains("own client: Esc, f on gsc"), "{shown}");
+            assert!(shown.contains(cause), "{shown}");
+        }
+    }
+
+    // The same with no pin: the route is shown disabled, never hidden.
+    #[test]
+    fn snapshot_the_connect_google_lazarobox_route_without_a_pin() {
+        let mut menu = connect_google();
+        press(&mut menu, &[KeyCode::Char('w')]);
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
+    // Spec (google-connect S5.6): the plan before `y`, top and end; the
+    // client secret is masked.
+    #[test]
+    fn snapshot_the_connect_google_plan() {
+        let mut menu = connect_google_plan();
+        let top = text(&draw(62, POPUP_H, &menu));
+        for _ in 0..40 {
+            press(&mut menu, &[KeyCode::Char('j')]);
+        }
+        let end = text(&draw(62, POPUP_H, &menu));
+        assert!(!format!("{top}{end}").contains("GOCSPX"));
+        insta::assert_snapshot!(format!("{top}\n{end}"));
+    }
+
+    // Spec (mcp-connect, Entry screen): guide, snippet, files, actions.
+    #[test]
+    fn snapshot_the_connectors_entry_screen_top() {
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &connectors_entry(0))));
+    }
+
+    // Spec: a long screen scrolls inside the body.
+    #[test]
+    fn snapshot_the_connectors_entry_screen_scrolled() {
+        let mut menu = connectors_entry(1);
+        for _ in 0..14 {
+            press(&mut menu, &[KeyCode::Char('j')]);
+        }
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
+    // Spec (mcp-connect, Secret fields): the field list, then the masked field.
+    #[test]
+    fn snapshot_the_secret_field_list_and_the_masked_field() {
+        let mut menu = connectors_entry(0);
+        press(&mut menu, &[KeyCode::Char('f')]);
+        let list = text(&draw(62, POPUP_H, &menu));
+        press(&mut menu, &[KeyCode::Enter]);
+        menu.on_paste("sk-abcdefghijklmnopqrstuvwxyz");
+        let field = text(&draw(62, POPUP_H, &menu));
+        assert!(!field.contains("abcdef"), "{field}");
+        insta::assert_snapshot!(format!("{list}\n{field}"));
+    }
+
+    // Spec (mcp-connect, Install and login): the prompt shows the command.
+    #[test]
+    fn snapshot_the_login_prompt_shows_the_full_command() {
+        let mut menu = connectors_entry(1);
+        press(&mut menu, &[KeyCode::Char('l')]);
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
+    // Spec: The popup keeps its size.
+    #[test]
+    fn the_popup_has_the_same_height_on_every_connectors_view() {
+        let screen = crate::core::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
+        let height = |menu: &MenuState| {
+            menu.popup_layout(&Config::default(), screen)
+                .unwrap()
+                .popup
+                .height
+        };
+        let mut list = connectors_tab();
+        press(&mut list, &[KeyCode::Enter]);
+        let views = [
+            mixed(),
+            connectors_tab(),
+            list,
+            connectors_entry(0),
+            connectors_entry(1),
+            connect_google(),
+            connect_google_plan(),
+        ];
+        let heights: Vec<u16> = views.iter().map(height).collect();
+        assert!(heights.iter().all(|h| *h == heights[0]), "{heights:?}");
+        for menu in &views {
+            let drawn = lines(&draw(62, POPUP_H, menu));
+            assert_eq!(drawn.len(), usize::from(POPUP_H));
+        }
+    }
+
+    #[test]
+    fn the_connectors_views_draw_at_every_size_without_panic() {
+        for menu in [
+            connectors_tab(),
+            connectors_entry(0),
+            connectors_entry(1),
+            connect_google(),
+            connect_google_plan(),
+        ] {
+            for (w, h) in [(0, 0), (1, 1), (24, 7), (40, 12), (62, POPUP_H), (200, 80)] {
+                draw(w, h, &menu);
+            }
+        }
     }
 
     #[test]

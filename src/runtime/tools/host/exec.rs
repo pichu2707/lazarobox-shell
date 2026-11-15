@@ -28,6 +28,7 @@ use crate::{
             approval_rows::clip,
         },
         jail::JailSupport,
+        orchestra::commands::{Ran, RanEnd},
         sanitize::clean,
         toolchain::{Layout, Refusal, Vars, env::scrub, toolchain_spec},
         tools::{
@@ -56,6 +57,8 @@ pub(super) const NO_JAIL: &str = "commands need the Linux sandbox (Landlock ABI 
 /// Says how to go on, so a small model retries after proposing (#439).
 const PROPOSE_FIRST: &str = "staged changes are not proposed: propose them first with propose_batch, then call this tool again";
 const IN_REVIEW: &str = "a batch is waiting for the user's review";
+/// A worker's command before its own batch was applied (W6).
+const NOT_APPLIED: &str = "your changes are not applied: stage them and propose them first with propose_batch; a command runs only after the user applied your batch";
 /// Text the prompt could not show exactly as it will run.
 const UNSHOWABLE: &str = "command cannot be shown safely";
 const COULD_NOT: &str = "could not run";
@@ -161,11 +164,24 @@ pub(super) async fn plan(host: &ToolHost, scope: &TurnScope, call: &Call) -> Res
         return Err(NO_JAIL.into());
     }
     let (env, origin, args) = (host.scope_env(scope), scope.origin.clone(), args.clone());
+    let worker = scope.read_scope.is_some();
     let stages = host.stages.clone();
     let judged = tokio::task::spawn_blocking(move || {
-        let found = inspect(&env, &origin, &args)?;
-        staged(&stages, key)?;
-        Ok::<_, Cow<'static, str>>(found)
+        // What the worker's own batch says, judged first: a folder it staged
+        // is not on disk, and the disk check would blame the path.
+        let pending: Option<Cow<'static, str>> = match staged(&stages, key) {
+            Err(why) => Some(why.into()),
+            // A worker's command runs only after its own batch was applied (W6).
+            Ok(()) if worker && !lock(&stages).applied(key) => Some(NOT_APPLIED.into()),
+            Ok(()) => None,
+        };
+        let under: Vec<PathBuf> = lock(&stages).batch(key).map_or_else(Vec::new, |batch| {
+            (batch.entries().iter())
+                .map(|entry| entry.target.real.clone())
+                .collect()
+        });
+        let found = inspect(&env, &origin, &args, pending.clone(), &under)?;
+        pending.map_or(Ok::<_, Cow<'static, str>>(found), Err)
     })
     .await
     .map_err(|_| COULD_NOT)??;
@@ -286,16 +302,18 @@ fn inspect(
     env: &ToolEnv,
     origin: &Path,
     args: &Value,
+    pending: Option<Cow<'static, str>>,
+    staged_paths: &[PathBuf],
 ) -> Result<(RunRequest, PathBuf, PathBuf, Option<Pin>), Cow<'static, str>> {
     let (roots, root) = root_of(env, origin)?;
     let rel = match args["cwd"].as_str() {
         Some(text) => plain_relative(text).ok_or(REFUSED)?,
         None => PathBuf::new(),
     };
-    let cwd = fs::canonicalize(root.join(rel))
+    let cwd = fs::canonicalize(root.join(&rel))
         .ok()
         .filter(|cwd| cwd.starts_with(&root) && cwd.is_dir() && roots.judge_real(cwd))
-        .ok_or(REFUSED)?;
+        .ok_or_else(|| not_a_folder(env, &roots, &root.join(&rel), &rel, pending, staged_paths))?;
     let package = Package::read(&cwd);
     // A manager walks up to a parent `package.json` that nothing here would
     // show or pin, so a script runs only from the folder that has its own.
@@ -315,6 +333,34 @@ fn inspect(
     }
     let pin = pin(&request, &package);
     Ok((request, root, cwd, pin))
+}
+
+/// Why `target` (`root` plus the plain relative `rel`) cannot be the folder of
+/// a command. A refused place (a secret, a hidden name) is the bare refusal
+/// whether it exists or not, judged on the path as written, so the text is no
+/// oracle for what exists. Any other path gets one text whatever is there
+/// (nothing, a file, a link out), or what the worker's own batch says when
+/// that batch stages the folder or something below it.
+fn not_a_folder(
+    env: &ToolEnv,
+    roots: &SecretRoots,
+    target: &Path,
+    rel: &Path,
+    pending: Option<Cow<'static, str>>,
+    staged_paths: &[PathBuf],
+) -> Cow<'static, str> {
+    if !roots.judge_real(target) {
+        return REFUSED.into();
+    }
+    if let Some(why) = pending.filter(|_| staged_paths.iter().any(|at| at.starts_with(target))) {
+        return why;
+    }
+    format!(
+        "{REFUSED}: the folder {}/ is not a folder inside the chat's folder (paths are relative to the chat's folder {})",
+        rel.display(),
+        super::files::chat_folder(env)
+    )
+    .into()
 }
 
 /// A command runs against the disk, never against staged content.
@@ -438,7 +484,35 @@ pub(super) async fn run(
     call: &Call,
     asked: Option<Pin>,
 ) -> (Outcome, ToolStatus, String) {
-    let fail = |why: &str| ended(ToolStatus::Error, why.to_owned(), why);
+    let (done, end) = attempt(host, scope, call, asked).await;
+    // A worker's command reaches the coordinator through `collect` (W6).
+    if let Some(worker) = &scope.read_scope {
+        let end = end.unwrap_or_else(|| RanEnd::Error(done.2.clone()));
+        let (program, command) = shown(call);
+        let ran = Ran {
+            program,
+            command,
+            end,
+        };
+        (worker.handle).ran(worker.run, worker.worker, ran);
+    }
+    done
+}
+
+/// The program of a command and its whole line, for a worker's record.
+pub(super) fn shown(call: &Call) -> (String, String) {
+    let program = call.command().map(|(program, ..)| program.to_owned());
+    (program.unwrap_or_default(), call.argument().into_owned())
+}
+
+/// [`run`], with how the command ended when it ran.
+async fn attempt(
+    host: &ToolHost,
+    scope: &TurnScope,
+    call: &Call,
+    asked: Option<Pin>,
+) -> ((Outcome, ToolStatus, String), Option<RanEnd>) {
+    let fail = |why: &str| (ended(ToolStatus::Error, why.to_owned(), why), None);
     // Without a nonce the output cannot be wrapped, so nothing may start.
     let Some(nonce) = new_nonce() else {
         return fail(COULD_NOT);
@@ -460,11 +534,9 @@ pub(super) async fn run(
     done.unwrap_or_else(fail)
 }
 
-async fn go(
-    host: &ToolHost,
-    plan: Plan,
-    nonce: &str,
-) -> Result<(Outcome, ToolStatus, String), &'static str> {
+type Done = ((Outcome, ToolStatus, String), Option<RanEnd>);
+
+async fn go(host: &ToolHost, plan: Plan, nonce: &str) -> Result<Done, &'static str> {
     let Some(helper) = host.exec.helper.clone() else {
         return Err(NO_SANDBOX);
     };
@@ -489,14 +561,14 @@ async fn go(
     // dropped hands its changes over through the sink.
     let ran = match run_jailed(job, &*read).await {
         Ok(ran) => ran,
-        Err(_) => return Ok(failed(COULD_NOT, unreported.drain(), nonce)),
+        Err(_) => return Ok((failed(COULD_NOT, unreported.drain(), nonce), None)),
     };
     let mut changes = ran.changes;
     changes.extend(unreported.drain());
     // Only the helper's own status channel says the jail was not applied: the
     // program's output (and its exit 125) can be forged by the program.
     if ran.not_enforced.is_some() {
-        return Ok(failed(NOT_ENFORCED, changes, nonce));
+        return Ok((failed(NOT_ENFORCED, changes, nonce), None));
     }
     let capture = &ran.done.capture;
     let outcome = RunOutcome::new(argv_text, ran.done.ended, capture, ran.done.duration);
@@ -508,7 +580,11 @@ async fn go(
     if !ran.leftovers.is_empty() {
         text.push_str("\nsome private temporary files could not be removed");
     }
-    Ok(ended(ToolStatus::Ok, text, &summary))
+    let end = RanEnd::Ended {
+        facts: outcome.facts(),
+        tail: outcome.digest,
+    };
+    Ok((ended(ToolStatus::Ok, text, &summary), Some(end)))
 }
 
 /// An error result that still says what the run changed.

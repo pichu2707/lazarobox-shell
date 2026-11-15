@@ -357,6 +357,32 @@ fn a_double_slash_escapes_write() {
     assert_eq!(parse_command("//write"), Command::Escaped("/write".into()));
 }
 
+// ---- /exec (D16: the same path as /write) ----------------------------------
+
+#[test]
+fn the_exact_token_exec_is_the_command() {
+    assert_eq!(parse_command("/exec"), Command::Exec);
+    assert_eq!(parse_command("  /exec \n"), Command::Exec);
+}
+
+#[test]
+fn exec_with_anything_after_it_is_refused_with_usage() {
+    assert_eq!(parse_command("/exec x"), Command::ExecArgs);
+    assert_eq!(parse_command("/exec\tx y"), Command::ExecArgs);
+}
+
+#[test]
+fn exec_is_case_sensitive_and_other_text_is_plain() {
+    assert_eq!(parse_command("/Exec"), Command::Plain);
+    assert_eq!(parse_command("/execs"), Command::Plain);
+    assert_eq!(parse_command("please /exec it"), Command::Plain);
+}
+
+#[test]
+fn a_double_slash_escapes_exec() {
+    assert_eq!(parse_command("//exec"), Command::Escaped("/exec".into()));
+}
+
 #[test]
 fn a_double_slash_escapes_github() {
     assert_eq!(

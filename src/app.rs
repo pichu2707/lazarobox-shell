@@ -63,6 +63,7 @@ mod auto_run;
 mod chat;
 mod chat_copy;
 mod compact;
+mod connector;
 mod context;
 mod cost;
 mod folder;
@@ -85,6 +86,7 @@ mod run_store;
 mod run_view;
 mod screen;
 mod scroll;
+mod star;
 mod summary;
 mod tags;
 mod tool;
@@ -319,6 +321,34 @@ pub enum AppEvent {
     IssueSent(crate::core::menu::feedback::SendReply),
     /// The opener of `Effect::OpenUrl` failed on this link.
     OpenFailed(String),
+    /// The start-up check of the GitHub star prompt answered (once a run).
+    StarChecked(crate::core::star::Due),
+    /// What became of `Effect::StarRepo`.
+    Starred(crate::core::star::StarReply),
+    /// The probe numbered `.0` ended (see `Effect::McpProbe`). A report whose
+    /// number is not the last asked for is a superseded probe's and is dropped.
+    McpProbe(u64, crate::core::ai::mcp_catalog::checks::Probed),
+    /// What `Effect::LoadPresence` read.
+    McpPresence(crate::core::ai::mcp_catalog::presence::Presence),
+    /// What became of `Effect::SaveSecret`: the notice, saved or refused.
+    SecretSaved(Result<String, String>),
+    /// What became of `Effect::DeleteBackup`.
+    BackupDeleted(Result<String, String>),
+    /// What became of `Effect::ConnectGoogle`: its one-line notice, which
+    /// never holds a value.
+    GoogleConnected(crate::core::config_append::Connected),
+    /// The Connect Google plan of `Effect::PlanGoogle`, or why there is none.
+    GooglePlan(Result<Box<crate::core::ai::mcp_catalog::connect::Preview>, String>),
+    /// What `Effect::LoadPresence` read of the OAuth client file, for the
+    /// Connect Google screen: its id (never the secret), `None` when there
+    /// is no file, or why it is refused.
+    GoogleClient(Result<Option<String>, String>),
+    /// The link session of `google` moved on: the link to open, or its end.
+    McpLink(crate::core::ai::mcp_catalog::link::Step),
+    /// The answer to `Effect::LinkGsc`: the login line to confirm, or the
+    /// notice of the check that failed; and the notice that the saved copy
+    /// of the lazarobox client was used because the fetch failed.
+    GscLine(Result<String, String>, Option<String>),
     /// What became of the `Effect::CopyLocal` numbered `seq`: `Err` carries
     /// the short reason.
     Clipboard {
@@ -378,6 +408,59 @@ pub enum Effect {
     /// answers with one `AppEvent::IssueSent`. Only emitted on the user's
     /// Ctrl+S or Enter, one at a time.
     SendIssue(Box<crate::core::menu::feedback::Request>),
+    /// Star the repository with the user's `gh` (goal #744): only on the
+    /// user's `g` on the star prompt. Off the loop; the runtime marks the
+    /// prompt answered and answers with one `AppEvent::Starred`.
+    StarRepo,
+    /// Write the star mark: answered for good (`false`: the page was opened
+    /// or named), or dismissed by the running version now (`true`).
+    StarMark {
+        dismissed: bool,
+    },
+    /// Probe this declared MCP server, after the user's `y`; the runtime
+    /// answers with one `AppEvent::McpProbe`. One at a time.
+    McpProbe(u64, Box<crate::core::ai::config::McpServer>),
+    /// Stop the MCP probe that runs (Esc).
+    CancelMcpProbe,
+    /// The Connectors area opened: read `config.toml` and `secrets.toml`
+    /// (read only); the runtime answers with one `AppEvent::McpPresence`.
+    LoadPresence,
+    /// Save one value of `secrets.toml` (mcp-secrets, Menu save): sent only by
+    /// a confirmed secret field. The runtime answers with one
+    /// `AppEvent::SecretSaved`.
+    SaveSecret {
+        server: &'static str,
+        name: &'static str,
+        value: crate::core::ai::mcp_secrets::SecretText,
+    },
+    /// Write the OAuth client file (mcp-secrets, OAuth client file): sent only
+    /// by a confirmed client form. The answer is one `AppEvent::SecretSaved`.
+    SaveClient {
+        id: String,
+        secret: crate::core::ai::mcp_secrets::SecretText,
+        replace: bool,
+    },
+    /// Delete `secrets.toml.bak` (the user's `y`); the answer is one
+    /// `AppEvent::BackupDeleted`.
+    DeleteBackup,
+    /// Connect Google's write after the user's `y` (openspec change
+    /// `google-connect`): the values in `secrets.toml`, then the entries
+    /// appended to `config.toml`. The answer is one `AppEvent::GoogleConnected`.
+    ConnectGoogle(Box<crate::core::config_append::Connect>),
+    /// Read the client file, `config.toml` and `secrets.toml` with the
+    /// writer's checks and plan Connect Google (nothing is written); the
+    /// answer is one `AppEvent::GooglePlan`.
+    PlanGoogle(crate::core::ai::mcp_catalog::connect::Ask),
+    /// Check the client file and `uv` for Link with Google on `gsc` and build
+    /// its login line (nothing is started); the answer is one
+    /// `AppEvent::GscLine`.
+    LinkGsc(crate::core::ai::mcp_catalog::gsc::Plan),
+    /// Start the link session of `google` (the user's `y`): the runtime answers
+    /// with `AppEvent::McpLink` steps. It takes the slot of the probe.
+    LinkGoogle {
+        server: Box<crate::core::ai::config::McpServer>,
+        ask: crate::core::ai::mcp_catalog::link::Ask,
+    },
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
     /// Like `DetectEngines`, but the codex model listing is read again even
@@ -836,6 +919,9 @@ enum NewPane {
         path: std::ffi::OsString,
     },
     Chat(Box<ChatState>),
+    /// A shell tab in `$HOME` for the install or login of a connector. What
+    /// is typed into it is kept by [`App::start_connector`].
+    Connector,
 }
 
 /// A pane's content and the size it was last laid out at (for a PTY pane, the
@@ -1061,6 +1147,12 @@ pub struct App {
     cwd_readable: bool,
     /// The first-run prefix probe of this terminal, when the runtime set one.
     probe: Option<Probe>,
+    /// The connector lines waiting for their shell to speak (see
+    /// `app/connector.rs`) and this session's MCP probe reports.
+    typing: Vec<connector::Typing>,
+    mcp_probes: std::collections::HashMap<String, crate::core::ai::mcp_catalog::checks::Probed>,
+    /// The number of the last probe asked for.
+    mcp_probe_seq: u64,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
     /// A fresh engram session id, injected so the core does no IO: the
@@ -1129,6 +1221,8 @@ pub struct App {
     offer_shown: bool,
     /// The chat the offer was shown in: the outcome of the start is told there.
     offer_pane: Option<PaneId>,
+    /// The GitHub star prompt of this run (see `star.rs`).
+    star: star::StarPrompt,
     /// The chat showing the provider notice of the orchestrator, until it is
     /// accepted or dismissed (agent-orchestrator D12).
     orch_notice: Option<PaneId>,
@@ -1215,6 +1309,9 @@ impl App {
             tool_glyph: ToolGlyph::default(),
             cwd_readable: cfg!(target_os = "linux"),
             probe: None,
+            typing: Vec::new(),
+            mcp_probes: std::collections::HashMap::new(),
+            mcp_probe_seq: 0,
             clock: Instant::now,
             session_id: || None,
             token_check: || false,
@@ -1246,6 +1343,7 @@ impl App {
             server_offer: ServerOffer::new(),
             offer_shown: false,
             offer_pane: None,
+            star: star::StarPrompt::default(),
             orch_notice: None,
             orch_saves: 0,
             no_server: None,
@@ -2109,7 +2207,14 @@ impl App {
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),
             // Events for panes that no longer exist are dropped.
             // A chat pane has no PTY, so no PTY event is meant for it either.
-            AppEvent::Pty(id, event) if self.is_shell(id) => self.on_pty(id, event),
+            AppEvent::Pty(id, event) if self.is_shell(id) => {
+                let spoke = matches!(event, PtyEvent::Output(_));
+                let mut effects = self.on_pty(id, event);
+                if spoke {
+                    effects.extend(self.type_connector(id));
+                }
+                effects
+            }
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
             AppEvent::Run(id, event) => self.on_run(id, event),
@@ -2246,7 +2351,49 @@ impl App {
             AppEvent::InstallWarning(warning) => self.on_install_warning(warning),
             AppEvent::InstallNewer(notice) => self.on_install_newer(notice),
             AppEvent::HfAccount(reply) => self.on_account_reply(reply),
+            AppEvent::McpProbe(id, report) => self.on_mcp_probe(id, report),
+            AppEvent::McpPresence(presence) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.presence_reply(presence);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            AppEvent::SecretSaved(reply) => self.on_secret_reply(reply, true),
+            AppEvent::BackupDeleted(reply) => self.on_secret_reply(reply, false),
+            AppEvent::GoogleConnected(done) => {
+                self.dirty = true;
+                match self.menu.as_mut() {
+                    Some(menu) => {
+                        let command = menu.google_connected(done);
+                        self.on_menu_command(command)
+                    }
+                    None => {
+                        self.notice = Some(done.notice().to_owned());
+                        Vec::new()
+                    }
+                }
+            }
+            // With the menu closed nobody waits for a plan or a client line.
+            AppEvent::GooglePlan(reply) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.google_plan(reply);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            AppEvent::GoogleClient(reply) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.google_client(reply);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            AppEvent::McpLink(step) => self.on_mcp_link(step),
+            AppEvent::GscLine(reply, notice) => self.on_gsc_line(reply, notice),
             AppEvent::OpenFailed(url) => self.on_open_failed(&url),
+            AppEvent::StarChecked(due) => self.on_star_checked(due),
+            AppEvent::Starred(reply) => self.on_starred(&reply),
             AppEvent::Clipboard { seq, result } => self.on_clipboard(seq, result),
             AppEvent::IssueSent(reply) => match self.menu.as_mut() {
                 Some(menu) => {
@@ -2376,6 +2523,11 @@ impl App {
                 .with_opener(self.opener)
                 .with_sandbox(self.jail.runs_commands())
                 .with_build_machine(self.build_machine.unwrap_or_default())
+                .with_connectors(
+                    self.ai.mcp_servers().to_vec(),
+                    self.mcp_probes.values().cloned().collect(),
+                    self.config_path.clone(),
+                )
                 .with_feedback(crate::core::menu::feedback::Facts {
                     engines: self
                         .engines
@@ -2414,12 +2566,15 @@ impl App {
                     saved_over =
                         Some((self.ai.managed().cloned(), self.ai.managed_options().idle()));
                     let github = self.ai.toggle(crate::core::ai::config::ToolToggle::Github);
-                    let write = self.ai.toggle(crate::core::ai::config::ToolToggle::Write);
+                    let saved = write::GRANTS.map(|toggle| self.ai.toggle(toggle));
                     self.ai = menu.ai_draft();
-                    // A saved Write toggle that changed makes the grant moot or
-                    // unwanted: it ends either way.
-                    if write != self.ai.toggle(crate::core::ai::config::ToolToggle::Write) {
-                        lowered = self.end_all_write(write::TOGGLE_ENDED);
+                    // A saved Write or Exec toggle that changed makes its grant
+                    // moot or unwanted: it ends either way.
+                    for (toggle, before) in write::GRANTS.into_iter().zip(saved) {
+                        if before != self.ai.toggle(toggle) {
+                            let why = write::toggle_why(toggle);
+                            lowered.extend(self.end_all_tool_grants(&[toggle], &why));
+                        }
                     }
                     // Turning the saved toggle off takes the tools from every chat.
                     if github && !self.ai.toggle(crate::core::ai::config::ToolToggle::Github) {
@@ -2543,6 +2698,33 @@ impl App {
                 vec![Effect::OpenUrl(url)]
             }
             MenuCommand::SendIssue(issue) => vec![Effect::SendIssue(issue)],
+            MenuCommand::Probe(server) => self.start_mcp_probe(server),
+            MenuCommand::CancelProbe => vec![Effect::CancelMcpProbe],
+            MenuCommand::LoadPresence => vec![Effect::LoadPresence],
+            MenuCommand::SaveSecret {
+                server,
+                name,
+                value,
+            } => vec![Effect::SaveSecret {
+                server,
+                name,
+                value,
+            }],
+            MenuCommand::SaveClient {
+                id,
+                secret,
+                replace,
+            } => vec![Effect::SaveClient {
+                id,
+                secret,
+                replace,
+            }],
+            MenuCommand::DeleteBackup => vec![Effect::DeleteBackup],
+            MenuCommand::LinkGsc(plan) => vec![Effect::LinkGsc(plan)],
+            MenuCommand::LinkGoogle { server, ask } => vec![Effect::LinkGoogle { server, ask }],
+            MenuCommand::Connector(line) => self.start_connector(line),
+            MenuCommand::PlanGoogle(ask) => vec![Effect::PlanGoogle(ask)],
+            MenuCommand::ConnectGoogle(write) => vec![Effect::ConnectGoogle(write)],
             MenuCommand::None => Vec::new(),
         }
     }
@@ -2565,6 +2747,40 @@ impl App {
             mode,
             sound: plays_sound(mode, sound),
         }]
+    }
+
+    /// The answer of a save or of the backup deletion: the menu says it and
+    /// reads the files again; with the menu closed the notice says it.
+    fn on_secret_reply(&mut self, reply: Result<String, String>, save: bool) -> Vec<Effect> {
+        let Some(menu) = self.menu.as_mut() else {
+            self.notice = Some(reply.unwrap_or_else(|notice| notice));
+            self.dirty = true;
+            return Vec::new();
+        };
+        let command = if save {
+            menu.secret_reply(reply)
+        } else {
+            menu.backup_reply(reply)
+        };
+        self.dirty = true;
+        self.on_menu_command(command)
+    }
+
+    /// The checks of Link with Google answered: the menu prompts with the line
+    /// or says why not; with the menu closed a refusal is said in the notice.
+    fn on_gsc_line(&mut self, reply: Result<String, String>, said: Option<String>) -> Vec<Effect> {
+        self.dirty = true;
+        match (self.menu.as_mut(), reply) {
+            (Some(menu), reply) => {
+                let command = menu.link_reply(reply, said);
+                self.on_menu_command(command)
+            }
+            (None, Err(notice)) => {
+                self.notice = Some(notice);
+                Vec::new()
+            }
+            (None, Ok(_)) => Vec::new(),
+        }
     }
 
     /// The browser did not open `url`: the link is copied instead and the
@@ -2708,7 +2924,13 @@ impl App {
             return Vec::new();
         }
         if self.focused_is_chat() {
-            return self.on_chat_key(key, repeat);
+            // The star prompt sees the key first: `g` answers it, any other
+            // key dismisses it and still goes to the chat.
+            let (mut effects, answered) = self.answer_star(self.tab().focus, &key, repeat);
+            if !answered {
+                effects.extend(self.on_chat_key(key, repeat));
+            }
+            return effects;
         }
         let Some(pty) = self.focused_pty() else {
             return Vec::new();
@@ -2775,6 +2997,8 @@ impl App {
                 | PrefixAction::DiscardRun
                 | PrefixAction::RunInPane
                 | PrefixAction::ToggleApproval
+                | PrefixAction::OpenExecGrant
+                | PrefixAction::OpenWriteGrant
                 | PrefixAction::EditTags,
             ) => InputMode::Terminal,
             Step::Run(
@@ -2809,6 +3033,8 @@ impl App {
                 | PrefixAction::Summarize
                 | PrefixAction::ToggleMemory
                 | PrefixAction::RunInPane
+                | PrefixAction::OpenExecGrant
+                | PrefixAction::OpenWriteGrant
                 | PrefixAction::ToggleApproval,
             ) if self.refuse_over_folder() => Vec::new(),
             // They would replace the transcript of a worker.
@@ -2818,6 +3044,8 @@ impl App {
                 | PrefixAction::Summarize
                 | PrefixAction::RunInPane
                 | PrefixAction::ToggleMemory
+                | PrefixAction::OpenExecGrant
+                | PrefixAction::OpenWriteGrant
                 | PrefixAction::ToggleApproval,
             ) if self.refuse_over_run_view() => Vec::new(),
             // They would replace the conversation and hide a waiting confirm.
@@ -2860,6 +3088,12 @@ impl App {
             Step::Run(PrefixAction::DiscardRun) => self.discard_run(),
             Step::Run(PrefixAction::RunInPane) => self.run_in_pane(),
             Step::Run(PrefixAction::ToggleApproval) => self.toggle_approval(),
+            Step::Run(PrefixAction::OpenExecGrant) => {
+                self.grant_key(crate::core::ai::config::ToolToggle::Exec)
+            }
+            Step::Run(PrefixAction::OpenWriteGrant) => {
+                self.grant_key(crate::core::ai::config::ToolToggle::Write)
+            }
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
@@ -2968,6 +3202,13 @@ impl App {
                 spec.env_os.push(("PATH".into(), path.clone()));
                 spec
             }
+            // Home, else the root, as for an update; `~` in the line is the
+            // shell's own. The environment is the shell's: no `BROWSER` is
+            // set (D18).
+            NewPane::Connector => {
+                let home = self.home.as_deref().filter(|h| (self.dir_exists)(h));
+                self.spawn_spec(Some(home.unwrap_or(Path::new("/")).to_path_buf()), size)
+            }
             NewPane::Shell | NewPane::Chat(_) => self.spawn_spec(cwd, size),
         }
     }
@@ -3045,7 +3286,7 @@ impl App {
 
     fn new_state(&self, kind: NewPane, size: PaneSize) -> PaneState {
         match kind {
-            NewPane::Shell => PaneState::new(size, self.hostname.as_deref()),
+            NewPane::Shell | NewPane::Connector => PaneState::new(size, self.hostname.as_deref()),
             NewPane::Update {
                 program,
                 args,
@@ -3505,6 +3746,10 @@ impl App {
 
     fn on_resize(&mut self, cols: u16, rows: u16) -> Vec<Effect> {
         self.term = (cols, rows);
+        // An open menu wraps its text to this width now, not at the next key.
+        if let Some(menu) = self.menu.as_mut() {
+            menu.set_term(cols, rows);
+        }
         self.refresh_screen();
         let effects = self.relayout();
         self.dirty = true;
@@ -8937,7 +9182,7 @@ mod app_tests {
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
         to_level_two(&mut a);
-        let before = a.menu().cloned();
+        let mut before = a.menu().cloned();
         a.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Exited));
         a.update(AppEvent::SpawnFailed(pid(9), "boom".into()));
         a.update(AppEvent::Resize {
@@ -8945,6 +9190,8 @@ mod app_tests {
             rows: 30,
         });
         assert_still_open(&a);
+        // Only the size the menu wraps to follows the resize.
+        before.as_mut().unwrap().set_term(100, 30);
         assert_eq!(a.menu().cloned(), before);
         // One Esc goes back to level 1, not out of the picker.
         a.update(esc());
@@ -9055,6 +9302,7 @@ mod app_tests {
     mod orchestra_gates;
     /// The handoffs of a run in engram, and the degraded mode.
     mod orchestra_handoffs;
+    mod orchestra_limit;
     /// The one-time provider notice of an orchestrating pane.
     mod orchestra_notice;
     /// The run-scoped override picked from a failure alert.
@@ -9075,6 +9323,10 @@ mod app_tests {
     /// The full-pane transcript of a worker (S9).
     mod orchestra_view;
 
+    /// `/exec`, its dialog and where the grant ends.
+    mod exec_grant;
+    /// Where the `/exec` grant ends and what it widens.
+    mod exec_grant_end;
     /// The auto-run block after a GitHub read.
     mod github_block;
     /// `/github` and its dialog.
@@ -9083,6 +9335,8 @@ mod app_tests {
     mod github_grant;
     /// The hint that suggests `/github`.
     mod github_hint;
+    /// The keys that open the `/exec` and `/write` dialogs.
+    mod grant_keys;
     mod issue_draft;
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;
@@ -9177,6 +9431,9 @@ mod app_tests {
     /// The update notice: statusline mark and menu note.
     mod update;
 
+    /// The GitHub star prompt (goal #744).
+    mod star;
+
     /// Enter on the Updates row: the install pane and the copy fallback.
     mod update_install;
 
@@ -9186,6 +9443,10 @@ mod app_tests {
     /// A Hugging Face download from the llamacpp picker (config-menu).
     mod hf_download;
     mod ollama_download;
+
+    /// Install and login panes of a connector, probe replies (mcp-connect).
+    mod connectors;
+    mod connectors_area;
 
     /// The Hugging Face account row of the Models tab (config-menu).
     mod hf_account;

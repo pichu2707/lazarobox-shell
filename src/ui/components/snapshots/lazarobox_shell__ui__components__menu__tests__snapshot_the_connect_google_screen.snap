@@ -1,0 +1,40 @@
+---
+source: src/ui/components/menu.rs
+expression: "format!(\"{top}\\n{end}\")"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
+│ Connect Google · Search Console and Workspace              │
+│ Services (s and w tick them)                               │
+│   [x] Search Console                                       │
+│   [x] Google Workspace: Gmail read + drafts, Docs, Sheets  │
+│ client: 123-abc.apps.googleusercontent.com                 │
+│ e-mail: not set — press e                                  │
+│ n shows the plan · c copies the entries                    │
+│ Google Cloud, once (1-9 open the links)                    │
+│   [1] Create a Google Cloud project                        │
+│   [2] Enable the Search Console API                        │
+│   [3] Enable the Gmail API                                 │
+│   [4] Enable the Google Docs API                           │
+│   [5] Enable the Google Sheets API                         │
+│                                                            │
+│ j/k scroll · s/w tick · e e-mail · o client · n plan · Esc │
+└────────────────────────────────────────────────────────────┘
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ Models │ Tools │ Connectors │ Chat              │
+│ Connect Google · Search Console and Workspace              │
+│   [1] Create a Google Cloud project                        │
+│   [2] Enable the Search Console API                        │
+│   [3] Enable the Gmail API                                 │
+│   [4] Enable the Google Docs API                           │
+│   [5] Enable the Google Sheets API                         │
+│   [6] Enable the Google Drive API                          │
+│   [7] Audience: add your Google account as a test user     │
+│       (else Google answers Error 403: access_denied), then │
+│       publish the app so tokens do not expire after 7 days │
+│   [8] Credentials: create an OAuth client ID of type       │
+│       Desktop app, then save its id and secret here with o │
+│   [9] The step-by-step guide (in Spanish)                  │
+│                                                            │
+│ j/k scroll · s/w tick · e e-mail · o client · n plan · Esc │
+└────────────────────────────────────────────────────────────┘

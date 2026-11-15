@@ -39,16 +39,16 @@ use super::{
     session::{Line, read_line},
 };
 use crate::core::ai::{
+    mcp_secrets::redact_values,
     sanitize::clean,
     tools::{
         ExternalTool,
         label::OUTPUT_CAP,
         mcp::{Frame, MAX_LINE_BYTES, OLDER_VERSIONS, PROTOCOL_VERSION},
+        servers::MAX_TOOLS,
     },
 };
 
-/// Most tools kept from one server.
-const MAX_TOOLS: usize = 64;
 /// Most characters kept of a tool description.
 const DESCRIPTION_MAX: usize = 1024;
 /// Most bytes of a tool schema; a bigger one is replaced by a bare object.
@@ -59,6 +59,14 @@ const SCHEMA_DEPTH: usize = 32;
 const MESSAGE_MAX: usize = 200;
 /// How long a `notifications/cancelled` may take to be written.
 const CANCEL_WRITE: Duration = Duration::from_secs(1);
+
+/// What `tools/list` gave: the tools kept, and how many the filter admitted
+/// before the cap (what the probe reports).
+#[derive(Debug)]
+pub struct Listed {
+    pub tools: Vec<ExternalTool>,
+    pub admitted: usize,
+}
 
 /// How long each kind of wait may last.
 #[derive(Clone, Copy, Debug)]
@@ -122,6 +130,9 @@ pub struct McpClient {
     /// Set while a frame is being written. A write cut short by a timeout or
     /// a cancel never clears it, which marks the stream as holding half a frame.
     writing: bool,
+    /// The values of `secrets.toml` this server was given: removed from what
+    /// it says (an error message) before that text is cut or shown.
+    redact: Vec<String>,
 }
 
 /// How one request ended, before the cancel notice is written.
@@ -146,7 +157,15 @@ impl McpClient {
             timeouts,
             dead: false,
             writing: false,
+            redact: Vec::new(),
         }
+    }
+
+    /// Stops removing this server's values from what its calls return. For a
+    /// caller that reads a sign-in link holding the client id and redacts
+    /// whatever it shows by itself.
+    pub fn keep_results_whole(&mut self) {
+        self.redact.clear();
     }
 
     /// `initialize` with the pinned revision, then `notifications/initialized`.
@@ -180,6 +199,16 @@ impl McpClient {
     /// first page is read: a `nextCursor` is ignored, since the cap is smaller
     /// than any page worth following.
     pub async fn list_tools(&mut self) -> Result<Vec<ExternalTool>, ClientError> {
+        Ok(self.list_tools_with(|_| true).await?.tools)
+    }
+
+    /// [`McpClient::list_tools`] where `keep` decides, by the server's own
+    /// name, which tools are registered. It runs BEFORE the [`MAX_TOOLS`] cut,
+    /// so a tool it refuses never takes the place of one it admits.
+    pub async fn list_tools_with(
+        &mut self,
+        keep: impl Fn(&str) -> bool,
+    ) -> Result<Listed, ClientError> {
         let limit = self.timeouts.handshake;
         let result = self
             .request("tools/list", Value::Null, limit, std::future::pending())
@@ -188,7 +217,16 @@ impl McpClient {
             .get("tools")
             .and_then(Value::as_array)
             .ok_or(ClientError::Protocol("no tools array"))?;
-        Ok(tools.iter().filter_map(read_tool).take(MAX_TOOLS).collect())
+        let admitted: Vec<ExternalTool> = tools
+            .iter()
+            .filter_map(read_tool)
+            .filter(|t| keep(&t.name))
+            .collect();
+        let count = admitted.len();
+        Ok(Listed {
+            tools: admitted.into_iter().take(MAX_TOOLS).collect(),
+            admitted: count,
+        })
     }
 
     /// Calls the tool `raw` (the server's own name for it). Never fails: a
@@ -200,18 +238,30 @@ impl McpClient {
         arguments: Value,
         cancel: impl Future<Output = ()>,
     ) -> Outcome {
-        let limit = self.timeouts.call;
-        let params = json!({"name": raw, "arguments": arguments});
-        match self.request("tools/call", params, limit, cancel).await {
-            Ok(result) => Outcome {
-                is_error: result.get("isError") == Some(&Value::Bool(true)),
-                text: content_text(&result),
-            },
+        match self.call_checked(raw, arguments, cancel).await {
+            Ok(outcome) => outcome,
             Err(error) => Outcome {
                 text: format!("mcp error: {}", error.reason()),
                 is_error: true,
             },
         }
+    }
+
+    /// [`McpClient::call`] that keeps why a call got no result, so a caller
+    /// can tell a timeout from a server that stopped.
+    pub async fn call_checked(
+        &mut self,
+        raw: &str,
+        arguments: Value,
+        cancel: impl Future<Output = ()>,
+    ) -> Result<Outcome, ClientError> {
+        let limit = self.timeouts.call;
+        let params = json!({"name": raw, "arguments": arguments});
+        let result = self.request("tools/call", params, limit, cancel).await?;
+        Ok(Outcome {
+            is_error: result.get("isError") == Some(&Value::Bool(true)),
+            text: content_text(&result, &self.redact),
+        })
     }
 
     /// Writes one frame. Any failure kills the client; a write that is
@@ -313,8 +363,13 @@ impl McpClient {
                 Ok(Frame::Error {
                     id: got, message, ..
                 }) if got == *id => {
+                    // Redacted before the cut, so a cut cannot leave the start of
+                    // a value; again after `clean`, which can join the pieces
+                    // of one.
+                    let message = redact_values(&message, &self.redact);
+                    let message = redact_values(&clean(&message), &self.redact);
                     return Err(ClientError::Remote(
-                        clean(&message).chars().take(MESSAGE_MAX).collect(),
+                        message.chars().take(MESSAGE_MAX).collect(),
                     ));
                 }
                 Ok(Frame::Request { id, method, .. }) => {
@@ -393,7 +448,7 @@ fn clean_value(value: &Value, depth: usize) -> Option<Value> {
 /// The text of a call result: its text blocks, one per line, and a marker for
 /// any other kind. Cleaned and capped at [`OUTPUT_CAP`] here as well; the untrusted
 /// wrapper is the host's.
-fn content_text(result: &Value) -> String {
+fn content_text(result: &Value, redact: &[String]) -> String {
     let blocks = result.get("content").and_then(Value::as_array);
     let text = blocks
         .into_iter()
@@ -413,7 +468,11 @@ fn content_text(result: &Value) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let mut text = clean(&text);
+    // The values this server was given are removed before the text is cleaned
+    // and cut (a cut must not leave the start of one), and again after
+    // `clean`, which can join the pieces of one.
+    let text = redact_values(&text, redact);
+    let mut text = redact_values(&clean(&text), redact);
     let mut end = text.len().min(OUTPUT_CAP);
     while !text.is_char_boundary(end) {
         end -= 1;

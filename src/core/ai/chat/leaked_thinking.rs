@@ -1,13 +1,21 @@
 //! Reasoning a local model leaked into its answer text. After a tool round,
 //! `qwen3` on Ollama sometimes writes the rest of its reasoning as answer
 //! text, closed by a bare `</think>`. In a round after tools the answer is
-//! held until that tag or the end of the round: what comes before the tag is
-//! reasoning, what comes after is the answer.
+//! held until that tag, [`HOLD_CAP`] held bytes or the end of the round: what
+//! comes before the tag is reasoning, what comes after is the answer. A tag
+//! quoted in inline code (`` `</think>` ``) is not a close tag, and past the
+//! cap the text streams as the answer, tags included, so a quoted tag cannot
+//! hide an answer longer than the cap.
 
 /// The tag that closes leaked reasoning.
 const CLOSE: &str = "</think>";
 /// The tag that may open it.
 const OPEN: &str = "<think>";
+
+/// Held bytes past which a round's text goes out as the answer: about two
+/// thousand tokens, longer than the reasoning a model leaks after a tool
+/// round, and the most of an answer that waits before it starts to stream.
+pub const HOLD_CAP: usize = 8 * 1024;
 
 /// One piece of a round's answer text, sorted.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -42,7 +50,7 @@ impl LeakedThinking {
             return answer(part.to_owned());
         }
         self.held.push_str(part);
-        if let Some(at) = self.held.find(CLOSE) {
+        if let Some(at) = close_tag(&self.held) {
             self.holding = false;
             let held = std::mem::take(&mut self.held);
             let before = held[..at].trim();
@@ -66,6 +74,14 @@ impl LeakedThinking {
         self.holding = false;
         answer(std::mem::take(&mut self.held))
     }
+}
+
+/// Where the first close tag of `held` starts, skipping one quoted as
+/// inline code (right after a backtick).
+fn close_tag(held: &str) -> Option<usize> {
+    held.match_indices(CLOSE)
+        .map(|(at, _)| at)
+        .find(|&at| !held[..at].ends_with('`'))
 }
 
 fn answer(text: String) -> Vec<Piece> {
@@ -134,6 +150,28 @@ mod tests {
             [Piece::Answer("a</think>b".into())]
         );
         assert_eq!(split.finish(), []);
+    }
+
+    #[test]
+    fn a_close_tag_quoted_in_backticks_stays_in_the_answer() {
+        let mut split = LeakedThinking::new(true, 1 << 20);
+        assert_eq!(
+            all(
+                &mut split,
+                &["Qwen closes it with `</thi", "nk>`, then answers."]
+            ),
+            [Piece::Answer(
+                "Qwen closes it with `</think>`, then answers.".into()
+            )]
+        );
+        let mut split = LeakedThinking::new(true, 1 << 20);
+        assert_eq!(
+            all(&mut split, &["The tag `</think>` ends it.\n</think>\nDone"]),
+            [
+                Piece::Reasoning("The tag `</think>` ends it.".into()),
+                Piece::Answer("Done".into()),
+            ]
+        );
     }
 
     #[test]

@@ -10,8 +10,417 @@ baseline.
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-11-14
+
 ### Added
 
+- **Ask for a GitHub star.** After the chat answered on at least five
+  distinct days, the focused idle chat asks once per run on its hint line:
+  `g` stars the repository with your own `gh` (`gh api -X PUT
+  user/starred/pichu2707/lazarobox-shell`), or opens its page without `gh`
+  or when the star fails; any other key dismisses it and is still typed. A
+  star or an opened page is final; a dismissal is asked again only by a
+  newer version and after 60 days. With a logged-in `gh`, startup first reads
+  whether you already starred it. Never during a turn or a pending approval;
+  the star is only sent on `g`. The answer is kept in `star.json` (mode 0600)
+  next to `chat.db`; `[notices] star = false` turns off the check and the
+  prompt.
+
+### Fixed
+
+- Local models: in a round after a tool, the answer is held to find reasoning
+  leaked before a bare `</think>` for at most 8 KiB, not 1 MiB, so a long
+  answer starts to stream instead of appearing whole at the end; past that
+  point a `</think>` stays in the answer. A `</think>` quoted in backticks no
+  longer moves the text before it to the reasoning.
+
+### Security
+
+- The read, search and git tools also refuse, at any depth, `token.json` and
+  every file named `*.pem`, `*.key`, `client_secret*.json` or
+  `service-account*.json`: private keys, TLS certificates, and Google OAuth
+  clients, tokens and service account keys. A public certificate in a `.pem`
+  file is refused too, as the name cannot tell it from a key. The chat cannot
+  write them either. In `run` mode, an `rg` or `grep -r` whose walk meets one
+  of them, ignored folders such as `node_modules/` included, asks instead of
+  running.
+
+## [1.26.0] - 2026-11-13
+
+### Added
+
+- **Link Search Console with the lazarobox client.** With Search Console ticked
+  alone, Connect Google plans `GSC_OAUTH_CLIENT_SECRETS_FILE` on a Desktop
+  OAuth client that Link with Google fetches from `www.javilazaro.es` on every
+  Link and keeps in `lazarobox-google-client.json` next to `secrets.toml` (mode
+  0600, no `.bak`), with no Google Cloud step. `u` chooses your own client
+  instead (`o` too), Workspace always uses your own client, and Enter on the
+  `GSC_OAUTH_CLIENT_SECRETS_FILE` row of the `gsc` entry switches between the
+  two. If the fetch fails, a valid saved copy is used with a notice; with none,
+  Link stops with a notice that offers your own client. The route stays off
+  (with its notice) in builds without the project number. The request is one
+  `GET` that reveals your IP address and the version (`User-Agent`), made only
+  on Link with this client; the README "Sin telemetría" lists say so. Users
+  already linked with their own client are untouched.
+
+### Security
+
+- The read, search and git tools also refuse, at any depth, the SSH private
+  keys with their default names (`id_rsa`, `id_dsa`, `id_ecdsa`,
+  `id_ecdsa_sk`, `id_ed25519`, `id_ed25519_sk`) and `credentials.json`, so a
+  copy inside a project no longer reaches the model. The `.pub` files stay
+  readable. Like `.npmrc` and `.envrc`, the chat cannot write them either. In
+  `run` mode, an `rg` or `grep -r` whose walk meets one of them, ignored
+  folders such as `vendor/` included, asks instead of running.
+
+## [1.25.0] - 2026-11-12
+
+### Added
+
+- **Connect Google** in the `Connectors` area (the first row): one screen that
+  sets up Search Console and Google Workspace (Gmail read and drafts, Docs,
+  Sheets) with your own Desktop OAuth client. It lists the one-time Google Cloud
+  steps with a link each (`1` to `9`: project, the five APIs, test user and
+  publishing, the Desktop client), two services ticked by default (`s`, `w`; one
+  already declared shows `already declared` and is left alone), the client
+  (`client: <id>`, or `missing — press o` to open the client form) and your
+  Google e-mail (`e`). `n` reads `google-oauth-client.json`, `config.toml` and
+  `secrets.toml` as they are, with the checks of the secrets writer, and shows
+  the plan without writing anything: the entries to append, the values to set
+  (the client secret masked), the values kept, the install lines, and most
+  refusals. `y` writes it. Then `i` installs both pinned servers in one new tab
+  after its prompt, and `g` links Search Console, then Google Workspace, through
+  their existing flows. `c` copies the entries to paste by hand when they could
+  not be added. `google-oauth-client.json` is now read back (the form's file or
+  the one Google downloads), only when it is a regular file of yours with no
+  group or other access; its secret is never shown.
+
+### Changed
+
+- The menu may now write `config.toml`, in one case only: after `y` on the plan
+  of Connect Google, it appends the catalog entries of `gsc` and `google` that
+  are not declared at the end of the file. The old file is kept as
+  `config.toml.bak`; the bytes before the entries never change; no entry is
+  ever changed or removed. The append is refused, with a notice and nothing
+  written, when `config.toml` is a symlink, not yours, hard-linked, writable by
+  group or others, changed since the plan was shown, or would not parse with
+  the same servers plus the new ones (an inline `ai.mcp.servers = [...]` list).
+  The values of the plan are saved in `secrets.toml` in one write, with one
+  `secrets.toml.bak`.
+
+### Fixed
+
+- Link with Google for Search Console (`g` on `gsc`) now opens the browser on WSL. The
+  OAuth flow opened it through Python's `webbrowser`, which picks `xdg-open` there and
+  fails silently when WSL has no Linux browser, so the link waited with nothing open.
+  The login line now passes the program lazarobox opens links with as `BROWSER`
+  (`wslview` or `rundll32.exe` on WSL).
+
+## [1.24.0] - 2026-11-12
+
+### Added
+
+- `docs/conectores.md`: a step-by-step guide (in Spanish) to connect Clarity, GA4,
+  Search Console, Google Workspace and Apps Script from the `Connectors` area. Every
+  connector guide in the area now ends with a link to it, and the README points to
+  it and describes the `secrets.toml` menu save, the `.bak` copy and the OAuth
+  client file.
+
+## [1.23.0] - 2026-11-12
+
+### Added
+
+- `g` on the `google` entry (Gmail, Docs, Sheets) in the `Connectors` area links
+  your Google account. After you answer `y` to `start workspace-mcp and ask
+  Google to link <your e-mail>?`, lazarobox starts the declared server as a
+  chat would, asks it for its sign-in link and opens that link (or copies it
+  and shows it). It accepts only a link on `accounts.google.com` that carries
+  your own client id and a local callback port; anything else is refused with
+  a notice. The server stays alive to receive the answer of Google, so the
+  entry turns `linked` when its credentials file changes (checked by `stat`:
+  lazarobox never opens it, and never stores a Google token). Esc cancels, and
+  five minutes without an answer ends the wait; the server is always stopped.
+  A `google` entry that names `WORKSPACE_MCP_CREDENTIALS_DIR` or
+  `GOOGLE_MCP_CREDENTIALS_DIR` is refused with a notice, because its tokens
+  would be kept outside the folder the tools refuse to read.
+
+## [1.22.0] - 2026-11-12
+
+### Changed
+
+- A chat or probe of the `gsc` server (Search Console) that uses OAuth is now
+  refused, with a visible notice, when it has no token yet (an empty token
+  file counts as none), when `GSC_CONFIG_DIR` is not an absolute path, or when
+  that folder is outside `~/.config/mcp-gsc`, which the tools already refuse to
+  read. Without this, the first call would wait for a browser login that
+  cannot open. The tools no longer read `~/Library/Application Support/mcp-gsc`
+  on macOS.
+
+### Added
+
+- In the `Connectors` area, `o` in the values of `ga4` or `gsc` opens a form for
+  your Desktop OAuth client: the client id is shown as you type it and the
+  client secret is masked. It writes `google-oauth-client.json` (mode 0600) in
+  the lazarobox config folder, the file the `ga4` login reads, with the same
+  safety checks as `secrets.toml`. An existing file is replaced only after you
+  answer `y`, and its previous bytes stay in `google-oauth-client.json.bak`.
+- `gsc` (Search Console) in the `Connectors` area has two ways again: OAuth with
+  your own Desktop client, and a service account (`w` chooses one). In the
+  OAuth way, `g` shows the exact command that signs you in (it uses the
+  server's own login, outside any chat, with the token folder the chats use and
+  a private umask, so the token is created readable only by you)
+  and runs it in a new tab only after you answer `y`; the entry shows
+  `linked` or `not linked` by whether the token file exists, and lazarobox
+  never opens that file.
+
+## [1.21.0] - 2026-11-12
+
+### Added
+
+- The `Connectors` area can save a value into `secrets.toml` for you: `f` on an
+  entry opens its values, and Enter on one opens a masked field where you type
+  or paste it (confidential values always show as `••••••••`, never their
+  length or any character). Saving keeps your comments and every other line,
+  writes `secrets.toml` with mode 0600, keeps the previous file as
+  `secrets.toml.bak` until you delete it with `d`, and asks before it replaces
+  a value or when your declared command is not the catalog's. The value reaches
+  the server at the next chat start; it never goes to a model, a log or the
+  transcript.
+
+### Fixed
+
+- With ORCH on, the claude coordinator no longer answers a file change with a
+  shell command and the code. Its tools block told it "you cannot change files
+  yourself; any change needs a command the user reviews and runs", after the
+  delegation rule; it now says a worker started with `spawn_agent` makes every
+  change.
+
+## [1.20.0] - 2026-11-11
+
+### Added
+
+- The `Connectors` area lists a `Workspace` group: `google` (Gmail, Docs and
+  Sheets through workspace-mcp 2.4.1) and `apps-script` (clasp 3.4.1). For
+  `google`, lazarobox registers only 8 Gmail tools (search, read, attachment,
+  draft and labels) and never `send_gmail_message` nor `start_google_auth`, so
+  replies are drafts you send from Gmail. Search Console (`gsc`) is pinned to
+  mcp-search-console 0.4.2 and `reauthenticate` is no longer offered to the
+  model; GA4 pins only its 10 read tools. Linking from
+  the menu comes in a later release.
+- Windows Terminal under WSL has a test record (`docs/terminals/windows-terminal/`)
+  and counts as a recorded terminal. `Alt+Enter` is taken by Windows Terminal
+  for fullscreen: use `Ctrl+J` for a newline in the chat, or unbind the key.
+- WezTerm (Windows build with its WSL domain) has a test record
+  (`docs/terminals/wezterm/`) and counts as a recorded terminal. As in Windows
+  Terminal, `Alt+Enter` is taken for fullscreen: use `Ctrl+J`, or disable the
+  default assignment in `wezterm.lua`.
+
+### Changed
+
+- With ORCH on, the coordinator now delegates by default: a request that
+  changes files is done by workers started with `spawn_agent`, even when you
+  do not mention it, and the coordinator no longer writes the code in its
+  reply (quoting code to answer a question is still fine). It still answers
+  questions, plans and summarises directly.
+
+### Fixed
+
+- The orchestrator's model review no longer starts a correction worker for
+  every re-proposal. Each proposal had its own "one correction", so a small
+  local model that kept finding trivial blockers caused dozens of them. A
+  worker's proposals now share at most three corrections until one of its
+  batches is applied; after that the review still reports, a line and the
+  receipt say the correction limit was reached and how many rounds ran, and
+  the batch goes to your review with its blockers open.
+
+- A worker's first `run_command` in a folder it had only staged was answered
+  with a bare `path not available`, and the same call ran once its batch was
+  applied. It now gets the real reason (`propose them first`) when its own
+  batch stages that folder, and a `cwd` that is not a folder is named in the
+  refusal, the same text whatever is there. Secret and hidden places keep the
+  bare refusal.
+
+- A llama.cpp server that serves its model under another id (for example the
+  GGUF path, because `llama-server` runs without `--alias`) no longer reads
+  `download required`: llama.cpp cannot download anything. The chat now says
+  that the server at `127.0.0.1:<port>` does not serve the configured model,
+  to start `llama-server` with `--alias <model>` or set the model to the
+  served name, and then lists up to three ids it serves. The task row and the model list read
+  `not served`.
+
+## [1.19.0] - 2026-11-11
+
+### Added
+
+- Google Search Console joins the `Connectors` area (`gsc`), connected with a
+  service account: `GSC_CREDENTIALS_PATH` (a path, in `secrets.toml`) and
+  `GSC_SKIP_OAUTH = "true"`, no login step, and `GSC_ALLOW_DESTRUCTIVE` is
+  never declared. See "Conectar un servicio" in the README.
+
+### Fixed
+
+- A review that cannot start while the author keeps re-proposing no longer
+  floods the pane: the same notice (and its blocked receipt) is one line with
+  a count, `(22 times)`. A different cause is still its own line.
+- A command typed into a pane without Enter (`y` on a half-typed line in `run`
+  mode, `ask`, `auto`) is now reported to the model as `NOT RUN YET`, with the
+  reason, instead of a result that read as done, so it no longer claims a file
+  was written when nothing ran. The result row says `typed, not run`.
+- When an orchestrator run ends (`run_timeout_mins`, a stop or a cancel), the
+  batch reviews and asks of its workers still on screen close with `review
+  closed: the run ended; nothing was written`, and a late `y` no longer writes
+  a batch the run had already denied.
+- A worker whose task row is unassigned (for example `simple`, which runs on
+  `general`) now says `(default)` on its row in the orchestra panel, like the
+  AI menu row does, instead of showing only `engine>model`.
+- An orchestrator turn whose coordinator cannot get its tools (for example the
+  jail refuses the tools program because its folder is writable by group) now
+  ends before the model is called, with a visible error naming the cause and
+  the fix, instead of sending a text-only turn where the coordinator says it
+  has no `spawn_agent` tool. The advice fits the cause: permissions only for
+  a path others can write, otherwise to assign another engine. Plain tool
+  chats and workers still degrade to text with the notice.
+- Orchestrator notices name the right thing: the Write-off refusal says "a
+  worker that writes files" (it also fires for a `simple` brief with
+  `outputs`), and the "needs specification" line of a clarification round
+  names the original brief, as the run-stop message does.
+
+## [1.18.0] - 2026-11-11
+
+### Added
+
+- The `Connectors` tab of the menu (key `4`) is visible now. Its one row,
+  `Connectors`, opens a list of the catalog services (Microsoft Clarity and
+  Google Analytics 4) with their state: `not declared`, `disabled`, `values
+  missing: <NAMES>`, `declared` and the last probe of the session. The list
+  reads `config.toml` and `secrets.toml` each time it opens (names only, never
+  a value) and says `restart lazarobox to use it in chats` when the file has
+  servers that the running chats did not load. The area writes nothing.
+- Each service of the `Connectors` area has its own screen: the guide and its
+  warnings, the exact `[[ai.mcp.servers]]` entry to paste, the `secrets.toml`
+  table to fill (names only, `set` or `not set`), the file paths and the
+  actions. `i` installs and `l` logs in by typing the command, shown whole
+  after a `y` prompt, into a new shell tab and sending Enter; `p` probes the
+  declared server after a `y` and Esc stops it. Nothing runs without the `y`.
+  See "Conectar un servicio" in the README.
+- A `simple` worker is started from a brief (`goal`, `inputs`, `outputs`,
+  `done_when`, `out_of_scope`) instead of free text. An incomplete brief or a
+  path outside the project creates no worker and says so in the pane and to
+  the coordinator; its `outputs` decide whether the worker writes, and a
+  `simple` that writes is refused on a read-only goal or with Write off.
+- A `simple` whose `outputs` overlap a queued or running worker's is refused,
+  naming that worker. A brief's extra fields are flagged as `brief extra
+  fields: <names>` in the spawn result, in `collect` and in the handoff. The
+  `orchestrate` prompts now tell the coordinator to delegate a change and to
+  give a `simple` worker a brief.
+- A `simple` worker can call `needs_specification` when its brief is not
+  enough. It can then write and run nothing more; its row says `needs
+  specification`, the pane names the worker and the brief, the coordinator
+  gets the question inside the untrusted-data wrapper (with a lazarobox line
+  saying the tool was called) and the handoff stores it as `clarification`.
+- A brief has at most two clarification rounds. While a worker's question is
+  open, a new `simple` spawn must carry `answers: N` (the worker's id) or it
+  is refused naming N, in the pane too; the row says `round n of 2`, and the
+  handoff keeps the round and the brief. A third question stops the run with
+  a line naming the brief and the limit. The turn cap still ends a run stuck
+  waiting, and its line names the open clarification. The `orchestrate`
+  prompts teach the coordinator the rule.
+- A `simple` worker whose batch leaves a file above 400 counted lines asks
+  you before the batch is reviewed or proposed, and before the mandatory
+  review: `y` keeps the batch whole, `n` or Esc split the work and discard
+  the staged batch, with the count shown (`split chosen: N staged files
+  discarded`). The worker ends, and the coordinator is told to issue two new
+  briefs; a split is not a clarification round. No approval mode and no
+  timer answers it, and the worker's clock stops while it waits. Test
+  files have no cap; an unknown language counts every line and says so. After
+  a split `collect` marks the discarded files `discarded`; a batch whose lines
+  cannot be counted is not proposed.
+- The same ask names the files a `simple` worker staged that its brief does
+  not list (`outside the brief: ...`), inside the run's scope; a secret path
+  or one outside the chat's folder is still refused at staging, never asked.
+  When the ask lists only such files, `n` or Esc decline: the batch is
+  discarded (`writes outside the brief declined: N staged files discarded`),
+  and that is neither a split nor a clarification round. After a split the
+  worker's row says `split, staged batch discarded`.
+- `Ctrl+Space x` opens the `/exec` dialog and `Ctrl+Space f` the `/write`
+  dialog (`w` is the window group). A key never grants: only your `y` in the
+  dialog does. A refusal shows the command's line, the composer draft is kept,
+  and outside a chat a notice says Exec (or Write) is for chat panes.
+- `/exec` turns Exec on for one chat, on the same path as `/write`: type it
+  in the composer and a dialog names Exec and the folder and says every
+  command still asks. Only a lowercase `y` grants it; `n` and Esc say `Exec
+  stays off`. The grant lives in that chat's memory, leaves the saved Exec
+  toggle and `config.toml` alone, and reaches the next message and, in an
+  orchestrating chat, the next `code` worker (a running worker keeps its
+  tools). It ends with a system line when the folder changes, tools turn
+  off, the saved Exec toggle changes or a conversation is resumed, and
+  ending it does not touch a `/write` grant. A model call, a worker, a
+  tool result or pasted text cannot open or answer the dialog.
+- With ORCH on, a worker on a local engine (Ollama or llama.cpp with a model
+  that stays on the machine; an Ollama `*-cloud` model is not local) always
+  has its staged change reviewed before your batch review, at every risk
+  tier and with no consent ask, by the model of the Review row (the
+  effective assignment). The receipt says `consent: mandatory`. The author is
+  judged by the engine it was spawned with, not the menu now. If the Review
+  row's engine cannot run, its worker ends `refused`, the run stops with the
+  failure alert, and the batch reaches you `not reviewed` with the reason in
+  the receipt; no other engine is tried. The review's workers (the lenses, the
+  refuter and a correction) are internal: they never count against
+  `max_workers`, so a review never lacks room, but a run can start more model
+  calls than the visible cap, which can cost money on a cloud Review row.
+  Each review start spawns at most 5 internal workers (two lenses, the
+  refuter, a correction and its check), and a review starts for each proposal
+  of an author, so a re-proposal repeats it; `max_parallel`, the worker
+  deadlines, the run's wall clock and `max_turns` still bound it.
+  They still show in the worker rows and are never waited on for a handoff.
+- A review says one notice at its start, in the transcript: when author and
+  reviewer are the same model; when the Review row is a local model (it can
+  miss what a larger model catches); and when the staged diff goes to a
+  reviewer on another engine than the author's (or a local author's diff to a
+  cloud one), naming it.
+- A new `simple` task for direct, fully specified work. The Models tab gets a
+  `simple` row (`[ai.tasks.simple]`) after `orchestrate`; unassigned it uses
+  `general`, `Set all tasks` leaves it alone, and a local server engine on it
+  is not marked `not recommended`. With ORCH on, the coordinator can start a
+  `simple` worker with `spawn_agent`: it gets the read, write and
+  `run_command` tools under the menu's Write and Exec switches, its own
+  prompt (override file `simple.md`), and on a read-only goal it starts
+  with the read tools only (no write, no `run_command`) instead of being
+  refused. An older build ignores
+  the new table.
+
+### Changed
+
+- The model review of a worker's own batch, consent included, no longer
+  counts against the worker's deadline (`worker_timeout_secs`); review
+  workers keep their own deadline. A review that stops before it concludes
+  now says why in its receipt and in the batch review line.
+
+### Fixed
+
+- A write refused after a split said the worker had asked for a clearer brief;
+  it now says the worker chose to split.
+- A worker whose clock was stopped (waiting for you or for its review) was
+  ended `timed_out` when another worker of the run timed out, by the wall
+  time since it started. Each worker is now timed out by its own clock only.
+
+## [1.17.0] - 2026-11-10
+
+### Added
+
+- With ORCH on, a `code` worker gets `run_command` when Exec is on in the AI
+  menu (the menu stays a ceiling: no other worker kind and never the
+  coordinator gets it). Its command runs only after its batch was approved
+  and applied, against the disk; before that it is refused with `propose
+  them first`, and the pane now says so (`worker 2/3 code ollama>llama3:8b:
+  run_command refused: ...`), as it does for a busy pane. Every command asks
+  you, labelled with the worker, in every mode. What each one gave reaches
+  the coordinator through `collect`: how it ended (its exit line, or denied)
+  as lazarobox's own record by program name, which the worker's text cannot
+  pass for, and its arguments and the cleaned, capped end of its output as
+  untrusted data, after the files changed. The coordinator prompt now says a
+  test counts as run or passed only when such a result shows it; otherwise it
+  says the test was not run and asks you to run it.
 - With ORCH on, the coordinator now gets `list_panes` and `read_pane`, with
   exactly the asks a chat gets: `list_panes` asks on a cloud engine and runs
   free on a local one, `read_pane` asks on every call and engine, and no
@@ -64,6 +473,25 @@ baseline.
   must lie inside the scanned model folders with links followed, and it
   removes only files and folders left empty. The managed llama-server's model
   and a model a task uses are refused.
+
+### Changed
+
+- With ORCH on, the time a worker waits for your answer (its batch review or
+  a read ask, even one queued behind another worker's) no longer counts
+  against its deadline (`worker_timeout_secs`): its clock stops while you
+  decide and goes on when you answer, and its work time still counts. Only
+  its own asks stop it, never a sibling's. Its turn's total limit stops the
+  same way on the server, Ollama and CLI paths; a chat turn keeps its
+  15-minute total as before. The run wall clock (`run_timeout_mins`) still
+  counts while you decide. A CLI still cuts one tool call at 900 s by itself:
+  that ends the wait (the model gets a tool error and goes on, and the
+  worker's clock resumes), and the run wall clock still bounds the worker.
+- With ORCH on, a worker's command ask is labelled like its read ask: the
+  prompt shows `worker 2/3 code ollama>llama3:8b: run a command in the
+  sandbox` above the program, its arguments, the folder and the network and
+  `.env` notice. It waits in the worker queue behind the ask shown, your
+  answer reaches only the worker that asked, and cancelling that worker
+  withdraws it. A chat's own command ask is unchanged.
 
 ### Fixed
 
@@ -2481,7 +2909,18 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.16.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.27.0...HEAD
+[1.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.26.0...v1.27.0
+[1.26.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.25.0...v1.26.0
+[1.25.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.24.0...v1.25.0
+[1.24.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.23.0...v1.24.0
+[1.23.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.22.0...v1.23.0
+[1.22.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.21.0...v1.22.0
+[1.21.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.20.0...v1.21.0
+[1.20.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.19.0...v1.20.0
+[1.19.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.18.0...v1.19.0
+[1.18.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.17.0...v1.18.0
+[1.17.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.2...v1.16.0
 [1.15.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.15.0...v1.15.1

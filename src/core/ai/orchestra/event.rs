@@ -69,6 +69,14 @@ pub struct WorkerRow {
     /// The worker runs on a run override (the app sets it; the run manager
     /// never does).
     pub overridden: bool,
+    /// The worker's task row is unassigned and it runs on `general`'s engine
+    /// (the menu's `(default)`; the app sets it, the run manager never does).
+    pub inherited: bool,
+    /// The worker ended on a call of `needs_specification` (W8c): its row
+    /// says it needs specification, in this round of its brief.
+    pub clarifying: Option<u32>,
+    /// The worker ended on a split the user chose (W9b): its row says so.
+    pub split: bool,
 }
 
 /// A continuation turn (S4, D8): turn `turn` of at most `max` of run `run`

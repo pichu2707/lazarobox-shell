@@ -94,10 +94,21 @@ enum Script {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     // only the Linux-only write tests use it
     Held(&'static str),
+    /// Waits until the test releases it, then fails with the message, as a
+    /// CLI whose tool call was cut at its per-call cap gives up.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    // only the Linux-only clock tests use it
+    HeldThenFail(&'static str),
     /// Streams a thousand small pieces, then ends.
     Many,
     /// Streams the text, then hangs like a process that never ends.
     SaysThenHangs(&'static str),
+    /// A local author: a server engine's turn writes `a.txt` through the
+    /// tools of its session, proposes the batch and answers `done`; a lens
+    /// turn answers `NONE` after `lens`; any other turn hangs.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    // only the Linux-only write tests use it
+    LocalAuthor { lens: Duration },
 }
 
 /// What the fake engine saw.
@@ -108,6 +119,11 @@ struct Seen {
     dropped: AtomicBool,
     /// Lets a `Held` turn answer.
     release: Notify,
+    /// The pending count each turn's timers read (`pending::TURN`), in
+    /// request order.
+    timers: Mutex<Vec<Option<Pending>>>,
+    /// What a `LocalAuthor`'s `propose_batch` returned, in order.
+    proposed: Mutex<Vec<Outcome>>,
 }
 
 impl Seen {
@@ -162,6 +178,9 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
         let first = n == 1;
         let mine = mine.clone();
         Box::pin(async move {
+            // What the adapter's first-byte, idle and total limits watch.
+            let timers = crate::runtime::tools::pending::current();
+            mine.timers.lock().unwrap().push(timers);
             let (text, end) = match script {
                 Script::FailOnce(error) if first => {
                     ("", StreamEvent::Error(ChatError::Failed(error.into())))
@@ -268,11 +287,34 @@ fn fake(script: Script) -> (Runner, Arc<Seen>) {
                     mine.release.notified().await;
                     (text, StreamEvent::Done(Finish::Stop))
                 }
+                Script::HeldThenFail(error) => {
+                    mine.release.notified().await;
+                    ("", StreamEvent::Error(ChatError::Failed(error.into())))
+                }
                 Script::Many => {
                     for _ in 0..1000 {
                         let _ = tx.send(StreamEvent::Delta("0123456789".into())).await;
                     }
                     ("", StreamEvent::Done(Finish::Stop))
+                }
+                Script::LocalAuthor { lens } if is_lens(&request) => {
+                    tokio::time::sleep(lens).await;
+                    ("NONE", StreamEvent::Done(Finish::Stop))
+                }
+                Script::LocalAuthor { .. } => {
+                    let Ok(tools) = TEST_DISPATCH.try_with(Arc::clone) else {
+                        let _dropped = OnDrop(mine);
+                        return std::future::pending().await;
+                    };
+                    let write = crate::core::ai::tools::Call::WriteFile {
+                        path: "a.txt".into(),
+                        content: "one\n".into(),
+                    };
+                    let wrote = tools.call(write).await;
+                    assert!(!wrote.is_error, "{wrote:?}");
+                    let proposed = tools.call(crate::core::ai::tools::Call::ProposeBatch).await;
+                    mine.proposed.lock().unwrap().push(proposed);
+                    ("done", StreamEvent::Done(Finish::Stop))
                 }
                 Script::SaysThenHangs(text) => {
                     let _ = tx.send(StreamEvent::Delta(text.into())).await;
@@ -845,6 +887,9 @@ async fn a_review_worker_runs_on_the_review_assignment_and_ends_done() {
             usage: None,
             partial: false,
             overridden: false,
+            inherited: false,
+            clarifying: None,
+            split: false,
         })
     };
     assert_eq!(lab.next().await, row(WorkerStatus::Running));
@@ -2661,12 +2706,32 @@ impl Lab {
     }
 
     fn start_writing_run(&self, waits: &Arc<Waits>, deadline: Duration) -> (RunId, OrchHandle) {
+        self.start_writing_run_with(waits, deadline, FamilySet::ALL)
+    }
+
+    /// [`Lab::start_writing`] under the menu ceiling `ceiling`.
+    fn start_writing_with(
+        &self,
+        waits: &Arc<Waits>,
+        deadline: Duration,
+        ceiling: FamilySet,
+    ) -> OrchHandle {
+        self.start_writing_run_with(waits, deadline, ceiling).1
+    }
+
+    fn start_writing_run_with(
+        &self,
+        waits: &Arc<Waits>,
+        deadline: Duration,
+        ceiling: FamilySet,
+    ) -> (RunId, OrchHandle) {
         let pending = Pending::new();
         let scope = OrchScope {
             origin: self.app(),
             approver: waits.approver(pane(), 7, pending.clone()),
             pending,
             deadline,
+            ceiling,
             ..self.scope(codex_code(), &["~/dev/app"])
         };
         let (run, handle) = self.manager.start(pane(), scope).unwrap();
@@ -2705,10 +2770,11 @@ fn reply_text(reply: &Value) -> &str {
 
 const TEN_MINUTES: Duration = Duration::from_secs(600);
 
-// Spec (agent-orchestrator, Worker toolsets [S7]; Read-only subset): a
-// `code` worker is offered the read tools and the coding-tools write tools,
-// never `run_in_pane`, an orchestration tool or a user server tool; every
-// other kind keeps exactly the three read tools.
+// Spec (agent-orchestrator, Worker toolsets [S7]; Read-only subset; "A code
+// worker with run_command [W6]"): a `code` worker is offered the read tools,
+// the coding-tools write tools and, with Exec on, `run_command`; never
+// `run_in_pane`, an orchestration tool or a user server tool; every other
+// kind keeps exactly the three read tools.
 #[tokio::test]
 async fn a_code_worker_is_offered_the_write_tools_and_no_more() {
     let lab = writing_lab(Script::Hang);
@@ -2738,9 +2804,11 @@ async fn a_code_worker_is_offered_the_write_tools_and_no_more() {
             "create_dir",
             "write_file",
             "edit_file",
-            "propose_batch"
+            "propose_batch",
+            "run_command"
         ]
     );
+    assert!(!names.iter().any(|name| name == "run_in_pane"));
     for task in Task::SET_ALL {
         let want = if task == Task::Code {
             Toolset::Code
@@ -2866,6 +2934,146 @@ async fn a_code_workers_batch_waits_for_the_users_review() {
     }
 }
 
+/// How a run ends under a batch review in `a_run_that_ends_under_a_batch_review`.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+enum RunEnd {
+    /// The wall clock passes.
+    Expiry,
+    /// The user stops the run.
+    Cancel,
+}
+
+// A run that ends while a `code` worker's batch waits for the review leaves
+// nothing to answer or to apply: the ask is denied, the answer finds no wait,
+// the batch is not kept as an orphan for a later `y`, and nothing is written.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_batch_review_open_when_the_run_ends_writes_nothing() {
+    for end in [RunEnd::Expiry, RunEnd::Cancel] {
+        a_run_that_ends_under_a_batch_review(end).await;
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn a_run_that_ends_under_a_batch_review(end: RunEnd) {
+    let mut lab = writing_lab(Script::Held("done"));
+    let waits = Waits::new();
+    let pending = Pending::new();
+    let wall = match end {
+        RunEnd::Expiry => Duration::from_millis(1500),
+        RunEnd::Cancel => TEN_MINUTES,
+    };
+    let scope = OrchScope {
+        origin: lab.app(),
+        approver: waits.approver(pane(), 7, pending.clone()),
+        pending,
+        deadline: TEN_MINUTES,
+        limits: RunLimits {
+            wall,
+            ..RunLimits::default()
+        },
+        ..lab.scope(codex_code(), &["~/dev/app"])
+    };
+    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    lab.open_steps(run);
+    handle.call(spawn(Task::Code, "write a")).await;
+    let mut client = worker_client(&lab.seen).await;
+    let call = tool_call(
+        1,
+        "write_file",
+        json!({"path": "a.txt", "content": "one\n"}),
+    );
+    let staged = exchange(&mut client, call).await;
+    assert!(reply_text(&staged).starts_with("staged a.txt"), "{staged}");
+    let propose = format!("{}\n", tool_call(2, "propose_batch", json!({})));
+    client.1.write_all(propose.as_bytes()).await.unwrap();
+    let id = loop {
+        let event = timeout(Duration::from_secs(5), lab.turn.1.recv()).await;
+        if let StreamEvent::ToolCall {
+            id,
+            approval: Some(_),
+            ..
+        } = event.unwrap().unwrap()
+        {
+            break id;
+        }
+    };
+    if matches!(end, RunEnd::Cancel) {
+        lab.manager.cancel(pane());
+    }
+    loop {
+        let event = timeout(Duration::from_secs(10), lab.next()).await.unwrap();
+        if event == (OrchestraEvent::Ended { run }) {
+            break;
+        }
+    }
+    let worker = SessionKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
+    );
+    assert!(
+        !waits.decide(worker, 7, id, Decision::Sent),
+        "{end:?}: no ask waits once the run ended"
+    );
+    assert!(
+        lab.host().review_batch(pane(), false).is_none(),
+        "{end:?}: the denied batch is not kept as an orphan"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !lab.app().join("a.txt").exists(),
+        "{end:?}: nothing written"
+    );
+}
+
+// Defense in depth: the apply refuses a batch whose worker's ask was denied
+// when its run is no longer live, and says so; nothing is written.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_apply_refuses_the_batch_of_a_run_that_is_not_live() {
+    let mut lab = writing_lab(Script::Held("done"));
+    let waits = Waits::new();
+    let (run, handle) = lab.start_writing_run(&waits, TEN_MINUTES);
+    handle.call(spawn(Task::Code, "write a")).await;
+    let mut client = worker_client(&lab.seen).await;
+    let call = tool_call(
+        1,
+        "write_file",
+        json!({"path": "a.txt", "content": "one\n"}),
+    );
+    exchange(&mut client, call).await;
+    let propose = format!("{}\n", tool_call(2, "propose_batch", json!({})));
+    client.1.write_all(propose.as_bytes()).await.unwrap();
+    loop {
+        let event = timeout(Duration::from_secs(5), lab.turn.1.recv()).await;
+        if let StreamEvent::ToolCall {
+            approval: Some(_), ..
+        } = event.unwrap().unwrap()
+        {
+            break;
+        }
+    }
+    let key = crate::core::ai::tools::stage::StageKey::Worker(
+        pane(),
+        WorkerKey {
+            run,
+            worker: WorkerId(1),
+        },
+    );
+    let id = lab.host().batch_id_for_test(key).unwrap();
+    let event = lab.host().apply_batch_of(id, false, None, false);
+    let crate::core::ai::chat::review::BatchEvent::Done { shown, told } = event else {
+        panic!("{event:?}");
+    };
+    assert_eq!(shown, crate::core::ai::chat::review::RUN_ENDED);
+    assert_eq!(told, None);
+    assert!(!lab.app().join("a.txt").exists(), "nothing was written");
+}
+
 // A HOME reached through a link (macOS `/var` is `/private/var`) is still the
 // same folder: a `code` worker's write inside the scope is staged.
 // Needs the write primitives (`openat2`, `renameat2`): Linux only; elsewhere a
@@ -2885,39 +3093,6 @@ async fn a_write_is_staged_when_home_is_reached_through_a_link() {
     let reply = exchange(&mut client, call).await;
     assert!(reply_text(&reply).starts_with("staged a.txt"), "{reply}");
     assert!(!lab.home.path().join("dev/app/a.txt").exists());
-}
-
-// Spec (agent-orchestrator, Worker toolsets [S7]): the review time counts
-// against the worker's deadline. A worker that times out while its batch
-// waits for the user leaves the batch as an orphan the user can still
-// review; nothing is written.
-// Needs the write primitives (`openat2`, `renameat2`): Linux only; elsewhere a
-// write is refused as `path not available` by design.
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn a_worker_timed_out_in_review_leaves_its_batch_as_an_orphan() {
-    let lab = writing_lab(Script::Hang);
-    let handle = lab.start_writing(&Waits::new(), Duration::from_millis(1500));
-    handle.call(spawn(Task::Code, "write a")).await;
-    let mut client = worker_client(&lab.seen).await;
-    let call = tool_call(
-        1,
-        "write_file",
-        json!({"path": "a.txt", "content": "one\n"}),
-    );
-    exchange(&mut client, call).await;
-    let propose = format!("{}\n", tool_call(2, "propose_batch", json!({})));
-    client.1.write_all(propose.as_bytes()).await.unwrap();
-    // A timeout halts the run like any failure.
-    assert_eq!(handle.call(wait(1)).await, fine("1: awaiting_user"));
-    let status = lock(&lab.manager.runs)[&pane()].run.status(WorkerId(1));
-    assert_eq!(status, Some(WorkerStatus::TimedOut));
-    let host = lab.host();
-    let (_, review) = host
-        .review_batch(pane(), false)
-        .expect("an orphan to review");
-    assert_eq!(review.counts(), "1 file, +1 -0");
-    assert!(!lab.app().join("a.txt").exists());
 }
 
 /// The next disclosure the lab's pane received.
@@ -3421,7 +3596,7 @@ async fn a_read_only_goal_refuses_a_code_worker_with_a_reason() {
         .await;
     assert_eq!(
         handle.call(spawn(Task::Code, "edit it")).await,
-        error("code workers are not spawned for a read-only goal")
+        error(crate::core::ai::orchestra::steps::READ_ONLY)
     );
     assert!(
         lab.sent()
@@ -3920,7 +4095,7 @@ async fn asks_denied_in_one_gap_are_said_once_per_worker() {
     };
     let trace = Tracer::new(events, pane(), key);
     let (turn, seen) = mpsc::channel(TURN_CHANNEL);
-    let route = Route::new(key, trace, turn, Arc::new(Unwired), Pending::new());
+    let route = Route::new(key, trace, turn, Arc::new(Unwired));
     drop(seen);
     for id in 1..=3 {
         route.deliver(ask_call(id, key)).await;
@@ -3928,11 +4103,7 @@ async fn asks_denied_in_one_gap_are_said_once_per_worker() {
     assert_eq!(notices(&mut app).len(), 1);
     // The next turn attaches and goes away again: a new gap.
     let (turn, seen) = mpsc::channel(TURN_CHANNEL);
-    route.retarget(
-        turn,
-        &(Arc::new(Unwired) as Arc<dyn Approver>),
-        &Pending::new(),
-    );
+    route.retarget(turn, &(Arc::new(Unwired) as Arc<dyn Approver>));
     drop(seen);
     route.deliver(ask_call(4, key)).await;
     assert_eq!(notices(&mut app).len(), 1);
@@ -3950,11 +4121,11 @@ async fn an_ask_lost_to_a_moved_route_says_the_orchestrator_moved_on() {
     let trace = Tracer::new(events, pane(), key);
     let (turn, seen) = mpsc::channel(TURN_CHANNEL);
     let old = turn.clone();
-    let route = Route::new(key, trace, turn, Arc::new(Unwired), Pending::new());
+    let route = Route::new(key, trace, turn, Arc::new(Unwired));
     drop(seen);
     let (new_turn, _keep) = mpsc::channel(TURN_CHANNEL);
     let next: Arc<dyn Approver> = Arc::new(Unwired);
-    route.retarget(new_turn, &next, &Pending::new());
+    route.retarget(new_turn, &next);
     // Both asks were sent on the old channel, from before the route moved.
     route.send_from(ask_call(1, key), old.clone(), 0).await;
     route.send_from(ask_call(2, key), old, 0).await;
@@ -4025,16 +4196,69 @@ async fn attach_does_not_revive_a_worker_that_ended() {
 
 // Re-review fix (4.1b): an ask of a surviving worker pauses the timers of the
 // NEW orchestrator turn and of the worker's own turn (which watches the
-// pending count it was started with) while the user answers it.
+// worker's own count, `Route.own`, D5) while the user answers it.
 #[tokio::test]
 async fn a_surviving_workers_ask_counts_for_both_turns_timers() {
-    let (lab, waits, run, mut client, _old, worker_side) = surviving_worker().await;
+    let (lab, waits, run, mut client, _old, _) = surviving_worker().await;
     let (scope, mut next, turn_side) = turn_scope(&lab, &waits, 8);
     lab.manager.attach(pane(), run, scope).unwrap();
     let id = raised(&mut client, &mut next, 1).await;
     assert_eq!(turn_side.count(), 1, "the new orchestrator turn");
-    assert_eq!(worker_side.count(), 1, "the worker's own timers");
+    let worker_side = lab
+        .manager
+        .on_run(pane(), run, |live| live.routes[&WorkerId(1)].own.count())
+        .unwrap();
+    assert_eq!(worker_side, 1, "the worker's own count");
+    // The count the worker's turn timers actually read is that same count.
+    let timers = lab.seen.timers.lock().unwrap()[0].clone();
+    let timers = timers.expect("the worker turn runs with a count");
+    assert_eq!(timers.count(), 1, "the worker's own timers");
     assert!(waits.decide(worker_session(run), 8, id, Decision::Denied("no")));
+}
+
+// `pause` answers `None` only for a worker that has no clock to stop (D5): one
+// that is unknown, of another run, or cancelled. A running worker always gets
+// its guard, and dropping it gives the clock back.
+#[tokio::test]
+async fn a_running_worker_pauses_and_a_gone_one_has_no_clock_to_pause() {
+    let (lab, run, handle) = held_lab().await;
+    let own = |lab: &Lab| {
+        lab.manager
+            .on_run(pane(), run, |live| live.routes[&WorkerId(1)].own.count())
+            .unwrap()
+    };
+    let paused = handle.pause(run, WorkerId(1));
+    assert!(paused.is_some(), "a running worker pauses");
+    assert_eq!(own(&lab), 1);
+    drop(paused);
+    assert_eq!(own(&lab), 0, "the guard gives the clock back");
+
+    assert!(handle.pause(run, WorkerId(9)).is_none(), "unknown worker");
+    assert!(
+        handle.pause(RunId(run.0 + 1), WorkerId(1)).is_none(),
+        "another run"
+    );
+    handle.call(OrchCall::Cancel { id: WorkerId(1) }).await;
+    assert!(
+        handle.pause(run, WorkerId(1)).is_none(),
+        "a cancelled worker has no deadline left"
+    );
+}
+
+// A worker whose turn ended through `finish` has no route and no clock left.
+#[tokio::test]
+async fn a_worker_that_finished_has_no_clock_to_pause() {
+    let (lab, run, handle) = held_lab().await;
+    assert!(handle.pause(run, WorkerId(1)).is_some());
+    let key = WorkerKey {
+        run,
+        worker: WorkerId(1),
+    };
+    let done = WorkerEvent::Done {
+        text: "ok".to_owned(),
+    };
+    lab.manager.finish(pane(), key, Some(vec![done]));
+    assert!(handle.pause(run, WorkerId(1)).is_none());
 }
 
 // Review 2, 4: the orchestrator reads why a document change was refused.
@@ -4419,6 +4643,122 @@ async fn a_blocker_that_survives_the_correction_stays_open_with_no_second_one() 
     );
 }
 
+/// [`reviewed_with`] where the same worker proposes the same batch `times`
+/// times (the author re-proposes after each batch review).
+async fn reproposed(
+    by: fn(&ChatRequest) -> Option<&'static str>,
+    times: usize,
+) -> (Lab, RunId, OrchHandle, Vec<Vec<Change>>) {
+    let lab = lab_with(Script::By(by), |m, home| RunManager {
+        scratch: |_| false,
+        restage: Some(restaged_differently),
+        diff: Some(staged_text),
+        ..tooled(m, home)
+    });
+    let (run, handle) = lab.begin(lab.scope(codex_both(), &[])).unwrap();
+    handle.call(spawn(Task::Code, "write a")).await;
+    lab.seen.first().await;
+    let mut sets = Vec::new();
+    for _ in 0..times {
+        let changes = lock_change();
+        let assessment = handle.assess(run, &changes);
+        let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Mandatory);
+        let ended = timeout(Duration::from_secs(10), done).await;
+        sets.push(ended.expect("the review ended").expect("a review"));
+    }
+    (lab, run, handle, sets)
+}
+
+// Spec (Corrections of a batch are bounded): a worker that proposes the same
+// batch again and again, with the blocker standing each time, gets at most
+// three corrections; the fourth proposal gets none.
+#[tokio::test]
+async fn repeated_proposals_of_one_batch_get_a_bounded_number_of_corrections() {
+    let (lab, _run, _handle, _) = reproposed(blocker_stays, 6).await;
+    let fixes = lab
+        .seen
+        .requests()
+        .iter()
+        .filter(|r| is_correction(r))
+        .count();
+    assert_eq!(fixes, 3, "corrections over six proposals");
+}
+
+// Spec (Corrections of a batch are bounded): the review that reaches the
+// bound says so, with how many rounds ran.
+#[tokio::test]
+async fn the_correction_limit_is_said_with_the_rounds_that_ran() {
+    let (mut lab, _run, _handle, _) = reproposed(blocker_stays, 4).await;
+    let lines = review_lines(&mut lab);
+    let said: Vec<_> = lines
+        .iter()
+        .filter(|l| l.contains("correction limit"))
+        .collect();
+    assert_eq!(said.len(), 1, "{lines:?}");
+    assert!(said[0].contains("3 correction rounds"), "{said:?}");
+    assert!(said[0].contains("worker 1"), "{said:?}");
+}
+
+// Spec (Corrections are bounded): only an apply of the worker's own batch
+// starts the count again. A rejection of the batch calls nothing on the run,
+// and another worker's apply is not this worker's.
+#[tokio::test]
+async fn neither_a_rejection_nor_a_siblings_apply_resets_the_count() {
+    let (lab, run, handle, _) = reproposed(blocker_stays, 3).await;
+    handle.applied(run, WorkerId(2), &["other.rs".to_owned()]);
+    let changes = lock_change();
+    let assessment = handle.assess(run, &changes);
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Mandatory);
+    timeout(Duration::from_secs(10), done)
+        .await
+        .unwrap()
+        .unwrap();
+    let fixes = lab
+        .seen
+        .requests()
+        .iter()
+        .filter(|r| is_correction(r))
+        .count();
+    assert_eq!(fixes, 3, "no fourth correction");
+}
+
+// Spec (Corrections of a batch are bounded): at the bound the batch goes on
+// to the user's review with its blockers open, as it was staged.
+#[tokio::test]
+async fn a_batch_at_the_correction_limit_reaches_the_user_with_its_blockers_open() {
+    let (lab, run, _handle, sets) = reproposed(blocker_stays, 4).await;
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept.len(), 4);
+    let last = &kept[3];
+    assert_eq!(last.outcome, Some(Ended::BlockersOpen));
+    assert_eq!(last.review.open().len(), 1, "the blocker is not dropped");
+    assert_eq!(last.review.correction_targets(), None, "no correction ran");
+    // Handed back as it was staged, for the batch review: nothing applied.
+    assert_eq!(sets[3], lock_change());
+}
+
+// Spec (Corrections of a batch are bounded): a batch that lands starts the
+// count again.
+#[tokio::test]
+async fn an_applied_batch_starts_the_correction_count_again() {
+    let (lab, run, handle, _) = reproposed(blocker_stays, 3).await;
+    handle.applied(run, WorkerId(1), &["Cargo.lock".to_owned()]);
+    let changes = lock_change();
+    let assessment = handle.assess(run, &changes);
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Mandatory);
+    timeout(Duration::from_secs(10), done)
+        .await
+        .unwrap()
+        .unwrap();
+    let fixes = lab
+        .seen
+        .requests()
+        .iter()
+        .filter(|r| is_correction(r))
+        .count();
+    assert_eq!(fixes, 4);
+}
+
 fn inferred(request: &ChatRequest) -> Option<&'static str> {
     if is_lens(request) && user_of(request).contains("lens: risk") {
         Some("FINDING severe change inferred: may race")
@@ -4446,19 +4786,27 @@ async fn an_unanswered_inferred_claim_is_not_upheld_and_the_review_is_incomplete
     );
 }
 
-// S3 limits: a review that cannot start its workers (max_workers) says so,
-// leaves the change unreviewed and does not fail the worker.
+// D22 (17.5): the review workers are internal, so a run whose `max_workers`
+// is already used by its author still reviews (before, a review needed room
+// for three more workers and was left unreviewed).
 #[tokio::test]
-async fn a_review_over_the_worker_cap_stops_visibly() {
+async fn a_review_runs_with_the_worker_cap_used_up() {
     let limits = RunLimits {
-        workers: 3,
+        workers: 1,
         ..RunLimits::default()
     };
     let (mut lab, run, _handle) = reviewed(quiet, Answered::Granted, limits).await;
     let kept = lab.manager.reviews(pane(), run);
-    assert_eq!(kept[0].outcome, None);
+    assert!(kept[0].outcome.is_some(), "the review concluded");
+    assert!(
+        lab.seen.requests().len() >= 3,
+        "the code worker and the lenses"
+    );
     let lines = review_lines(&mut lab);
-    assert!(lines.iter().any(|l| l.contains("max_workers")), "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("max_workers")),
+        "{lines:?}"
+    );
 }
 
 // The orchestrator raises the tier; it cannot lower it, and a passive or an
@@ -4756,26 +5104,6 @@ async fn the_correction_stays_marked_and_the_readers_are_cleaned() {
     assert!(state.viewers.is_empty() && state.systems.is_empty());
 }
 
-// W4: a review that cannot fit its workers (two lenses and the refuter) does
-// not start any, and says why.
-#[tokio::test]
-async fn a_review_that_cannot_fit_its_workers_starts_none() {
-    let limits = RunLimits {
-        workers: 3,
-        ..RunLimits::default()
-    };
-    let (mut lab, run, _handle) = reviewed(quiet, Answered::Granted, limits).await;
-    assert_eq!(lab.seen.requests().len(), 1, "only the code worker");
-    assert_eq!(lab.manager.reviews(pane(), run)[0].outcome, None);
-    let lines = review_lines(&mut lab);
-    assert!(
-        lines
-            .iter()
-            .any(|l| l.contains("could not start") && l.contains("max_workers")),
-        "{lines:?}"
-    );
-}
-
 // W5: a run that is gone cannot review, and its assessment is not passive.
 #[tokio::test]
 async fn a_review_of_a_gone_run_cannot_start_and_its_assessment_is_high() {
@@ -4890,13 +5218,12 @@ async fn a_run_halted_during_a_review_ends_it_incomplete() {
     assert!(lines.iter().any(|l| l.contains("halted")), "{lines:?}");
 }
 
-// W-A: with no room for a correction and its check (workers 4: code, two
-// lenses, one left), the correction is skipped, said, and the blocker stays
-// open.
+// D22 (17.5): a correction and its check are internal too: they run with
+// `max_workers` used up by the author and the lenses.
 #[tokio::test]
-async fn a_correction_without_room_for_its_check_is_skipped_visibly() {
+async fn a_correction_and_its_check_need_no_room_under_the_worker_cap() {
     let limits = RunLimits {
-        workers: 4,
+        workers: 1,
         ..RunLimits::default()
     };
     let (mut lab, run, _handle) = reviewed_with(
@@ -4906,71 +5233,60 @@ async fn a_correction_without_room_for_its_check_is_skipped_visibly() {
         Some(restaged_differently),
     )
     .await;
-    assert!(lab.seen.requests().iter().all(|r| !is_correction(r)));
-    assert_eq!(
+    assert!(lab.seen.requests().iter().any(is_correction));
+    assert_ne!(
         lab.manager.reviews(pane(), run)[0].outcome,
         Some(Ended::BlockersOpen)
     );
     let lines = review_lines(&mut lab);
     assert!(
-        lines.iter().any(|l| l.contains("correction was skipped")),
+        !lines.iter().any(|l| l.contains("correction was skipped")),
         "{lines:?}"
     );
 }
 
-fn correction_held(request: &ChatRequest) -> Option<&'static str> {
-    if is_correction(request) {
-        None
-    } else {
-        blocker_then_fixed(request)
-    }
+/// Draws served so far by [`fourth_draw_fails`].
+static DRAWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A nonce source that fails only its fourth draw: two lenses (a severe blocker
+/// needs no refuter), the
+/// correction, then its check.
+fn fourth_draw_fails() -> Option<[u8; 8]> {
+    let drawn = DRAWS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    (drawn != 3).then_some([7; 8])
 }
 
-// W-A: a check that cannot start (the last slot was taken meanwhile) keeps
-// the blockers open and says so; the review is not lost.
+// W-A (kept after D22 removed the room rule): a correction check that cannot
+// start keeps the blockers open and says so; the review is not lost.
 #[tokio::test]
 async fn a_check_that_cannot_start_keeps_the_blockers_open() {
-    let limits = RunLimits {
-        workers: 5,
-        ..RunLimits::default()
-    };
-    let lab = lab_with(Script::By(correction_held), |m, home| RunManager {
-        scratch: |_| false,
-        restage: Some(restaged_differently),
-        ..tooled(m, home)
+    DRAWS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let mut lab = lab_with(Script::By(blocker_then_fixed), |m, home| {
+        RunManager {
+            scratch: |_| false,
+            restage: Some(restaged_differently),
+            diff: Some(staged_text),
+            ..tooled(m, home)
+        }
+        .with_nonce(fourth_draw_fails)
     });
-    let scope = OrchScope {
-        limits,
-        ..lab.scope(codex_both(), &[])
-    };
-    let (run, handle) = lab.begin(scope).unwrap();
+    let (run, handle) = lab.begin(lab.scope(codex_both(), &[])).unwrap();
     handle.call(spawn(Task::Code, "write a")).await;
     lab.seen.first().await;
     let changes = lock_change();
     let assessment = handle.assess(run, &changes);
-    let review = handle.review(run, WorkerId(1), changes, assessment, Answered::Granted);
-    let task = tokio::spawn(review);
-    until("the correction started", || {
-        lab.seen.requests().iter().any(is_correction)
-    })
-    .await;
-    // Something else takes the last slot before the check is started.
-    handle.call(spawn(Task::Review, "x")).await;
-    let done = WorkerEvent::Done {
-        text: "staged".to_owned(),
-    };
-    let key = WorkerKey {
-        run,
-        worker: WorkerId(4),
-    };
-    lab.manager.finish(pane(), key, Some(vec![done]));
-    let ended = timeout(Duration::from_secs(5), task).await;
-    assert!(ended.expect("the review ended").unwrap().is_ok());
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Granted);
+    assert!(
+        timeout(Duration::from_secs(10), done)
+            .await
+            .unwrap()
+            .is_ok()
+    );
+    assert!(lab.seen.requests().iter().any(is_correction));
     assert_eq!(
         lab.manager.reviews(pane(), run)[0].outcome,
         Some(Ended::BlockersOpen)
     );
-    let mut lab = lab;
     let lines = review_lines(&mut lab);
     assert!(
         lines
@@ -5295,7 +5611,7 @@ async fn a_routes_tool_rows_reach_the_app_as_trace() {
     };
     let trace = Tracer::new(events, pane(), key);
     let (turn, mut seen) = mpsc::channel(TURN_CHANNEL);
-    let route = Route::new(key, trace, turn, Arc::new(Unwired), Pending::new());
+    let route = Route::new(key, trace, turn, Arc::new(Unwired));
     let tx = Route::forward(&route);
     let call = StreamEvent::ToolCall {
         id: CallId(4),
@@ -5825,6 +6141,10 @@ fn write_off() -> FamilySet {
     FamilySet::ALL.without(Family::Write)
 }
 
+fn exec_off() -> FamilySet {
+    FamilySet::ALL.without(Family::Exec)
+}
+
 // Spec (agent-orchestrator, "Code worker refused with Write off"): a `code`
 // spawn with Write off makes no worker and starts no process, the coordinator
 // gets the refusal, the pane is told the same line, and the run goes on.
@@ -5851,6 +6171,41 @@ async fn a_code_spawn_with_write_off_is_refused_shown_and_never_launched() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(lab.seen.requests().is_empty(), "no process was started");
     // The run is not paused: the next spawn is a worker like any other.
+    assert_eq!(
+        handle.call(spawn(Task::Review, "look")).await,
+        fine("worker 1: running")
+    );
+}
+
+// Spec (agent-orchestrator, "Missing done-when refused", "A refusal before a
+// worker does not pause the run"): a `simple` spawn with no `done when` makes
+// no worker and no process; the coordinator and the pane get the same text,
+// naming the field; the run goes on.
+#[tokio::test]
+async fn a_simple_spawn_with_a_missing_field_is_refused_shown_and_never_launched() {
+    use crate::core::ai::orchestra::brief::Brief;
+    let mut lab = lab(Script::Hang);
+    let scope = lab.scope(codex_review(), &[]);
+    let (run, handle) = lab.begin(scope).unwrap();
+    let brief = Brief {
+        goal: "add a flag".into(),
+        inputs: vec!["src/a.rs".into()],
+        out_of_scope: "docs".into(),
+        ..Brief::default()
+    };
+    let refused = handle.call(OrchCall::SpawnSimple { brief }).await;
+    assert!(refused.is_error, "{refused:?}");
+    assert!(refused.text.contains("done when"), "{}", refused.text);
+    assert_eq!(
+        refusal(&mut lab).await,
+        OrchestraEvent::SpawnRefused {
+            run,
+            kind: Task::Simple,
+            reason: refused.text,
+        }
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(lab.seen.requests().is_empty(), "no process was started");
     assert_eq!(
         handle.call(spawn(Task::Review, "look")).await,
         fine("worker 1: running")
@@ -5940,13 +6295,42 @@ async fn a_ceiling_update_applies_from_the_next_spawn_only() {
     assert_eq!(requests[0].families, Toolset::Code.families());
 }
 
-// Spec ("Exec off means no run_command"): a forged `run_command` from a
-// `code` worker is refused as a result, and nothing is asked.
+// Spec ("Exec off means no run_command"): with Exec off a `code` worker is
+// offered no `run_command`, and a forged one is refused as a result with
+// nothing asked.
 #[tokio::test]
 async fn a_forged_run_command_from_a_code_worker_is_refused_without_an_ask() {
     let mut lab = writing_lab(Script::Hang);
     let waits = Waits::new();
-    let handle = lab.start_writing(&waits, TEN_MINUTES);
+    let handle = lab.start_writing_with(&waits, TEN_MINUTES, exec_off());
+    handle.call(spawn(Task::Code, "write it")).await;
+    let request = lab.seen.first().await;
+    assert!(!request.families.contains(Family::Exec));
+    let mut client = worker_client(&lab.seen).await;
+    let listed = exchange(
+        &mut client,
+        json!({"jsonrpc": "2.0", "id": 9, "method": "tools/list"}),
+    )
+    .await;
+    let names = listed["result"]["tools"].to_string();
+    assert!(!names.contains("run_command"), "{names}");
+    assert!(names.contains("write_file"), "{names}");
+    let call = tool_call(
+        1,
+        "run_command",
+        json!({"program": "cargo", "args": ["test"]}),
+    );
+    let reply = exchange(&mut client, call).await;
+    assert_eq!(reply["result"]["isError"], json!(true), "{reply}");
+    assert!(lab.turn.1.try_recv().is_err(), "no ask reached the turn");
+}
+
+// The same forged call with the old, malformed arguments: still refused.
+#[tokio::test]
+async fn a_malformed_run_command_from_a_code_worker_is_refused_without_an_ask() {
+    let mut lab = writing_lab(Script::Hang);
+    let waits = Waits::new();
+    let handle = lab.start_writing_with(&waits, TEN_MINUTES, exec_off());
     handle.call(spawn(Task::Code, "write it")).await;
     let mut client = worker_client(&lab.seen).await;
     let call = tool_call(1, "run_command", json!({"command": "ls"}));
@@ -6139,7 +6523,140 @@ async fn a_degraded_code_worker_with_call_text_gives_the_coordinator_no_line() {
     assert!(!got.text.contains("lazarobox:"), "{got:?}");
 }
 
+mod cheap;
 mod claims;
+mod clock;
+#[cfg(target_os = "linux")]
+mod commands;
 mod gate_wait;
 mod gates;
 mod parallel;
+mod rounds;
+
+// Owner decision 2026-11-11 (W8a): on a read-only goal a `simple` worker is
+// started with the read tools only, and its first request tells it so.
+#[tokio::test]
+async fn a_simple_worker_on_a_read_only_goal_launches_with_read_tools_and_a_note() {
+    let assigned = [
+        (Task::Orchestrate, "claude", "opus"),
+        (Task::Simple, "ollama", "llama3:8b"),
+    ];
+    let engines = vec![found("claude", &[]), found("ollama", &["llama3:8b"])];
+    let lab = lab_with(Script::Hang, tooled);
+    let (_, handle) = lab.start(roster(&assigned, engines, JAIL));
+    handle
+        .call(step_call(Step::Authorize, Mark::Grant(Grant::ReadOnly)))
+        .await;
+    assert_eq!(
+        handle.call(spawn(Task::Simple, "explain a.rs")).await,
+        fine("worker 1: running")
+    );
+    let request = lab.seen.first().await;
+    // Read, and `needs_specification` (W8c): a stripped worker may still ask.
+    let reads = FamilySet::EMPTY.with(Family::Read).with(Family::Clarify);
+    assert_eq!(request.families, reads);
+    assert!(
+        request.system.contains("not available to you"),
+        "{}",
+        request.system
+    );
+}
+
+fn simple_roster() -> Roster {
+    let assigned = [
+        (Task::Orchestrate, "claude", "opus"),
+        (Task::Simple, "ollama", "llama3:8b"),
+    ];
+    let engines = vec![found("claude", &[]), found("ollama", &["llama3:8b"])];
+    roster(&assigned, engines, JAIL)
+}
+
+fn writing_brief(output: &str) -> crate::core::ai::orchestra::brief::Brief {
+    crate::core::ai::orchestra::brief::Brief {
+        goal: "add a flag".into(),
+        inputs: vec!["src/a.rs".into()],
+        outputs: Some(vec![output.into()]),
+        done_when: "it parses".into(),
+        out_of_scope: "docs".into(),
+        ..Default::default()
+    }
+}
+
+// Spec ("Extra field flagged"; D10): the spawn result says which brief fields
+// were extra, and a second brief writing the same file is refused naming the
+// worker, with the same text in the pane.
+#[tokio::test]
+async fn a_simple_spawn_flags_extra_fields_and_refuses_an_overlapping_output() {
+    let mut lab = writing_lab(Script::Hang);
+    let scope = OrchScope {
+        origin: lab.app(),
+        ceiling: FamilySet::ALL,
+        ..lab.scope(simple_roster(), &["~/dev/app"])
+    };
+    let (run, handle) = lab.begin(scope).unwrap();
+    let mut first = writing_brief("src/b.rs");
+    first.extra = vec![("priority".into(), "high".into())];
+    assert_eq!(
+        handle.call(OrchCall::SpawnSimple { brief: first }).await,
+        fine("worker 1: running; brief extra fields: priority")
+    );
+    let refused = handle
+        .call(OrchCall::SpawnSimple {
+            brief: writing_brief("src/b.rs"),
+        })
+        .await;
+    assert!(refused.is_error, "{refused:?}");
+    assert!(
+        refused.text.contains("overlap worker 1"),
+        "{}",
+        refused.text
+    );
+    assert!(refused.text.contains("src/b.rs"), "{}", refused.text);
+    assert_eq!(
+        refusal(&mut lab).await,
+        OrchestraEvent::SpawnRefused {
+            run,
+            kind: Task::Simple,
+            reason: refused.text,
+        }
+    );
+    let other = handle
+        .call(OrchCall::SpawnSimple {
+            brief: writing_brief("src/c.rs"),
+        })
+        .await;
+    assert!(!other.is_error, "{other:?}");
+}
+
+// Review: the handoff ack of a worker whose brief had extra fields says so; a
+// directory output names itself when it covers the new file.
+#[tokio::test]
+async fn the_handoff_ack_flags_extra_fields_and_a_directory_is_named_in_the_overlap() {
+    let lab = writing_lab(Script::Answer("done"));
+    let scope = OrchScope {
+        origin: lab.app(),
+        ceiling: FamilySet::ALL,
+        ..lab.scope(simple_roster(), &["~/dev/app"])
+    };
+    let (_, handle) = lab.begin(scope).unwrap();
+    let mut first = writing_brief("src/");
+    first.extra = vec![("priority".into(), "high".into())];
+    handle.call(OrchCall::SpawnSimple { brief: first }).await;
+    let refused = handle
+        .call(OrchCall::SpawnSimple {
+            brief: writing_brief("src/b.rs"),
+        })
+        .await;
+    assert!(
+        refused.text.contains("src/b.rs is under its output src/"),
+        "{}",
+        refused.text
+    );
+    handle.call(wait(1)).await;
+    let ack = handle.call(handoff(1, Verdict::OnCourse)).await;
+    assert!(
+        ack.text.ends_with("; brief extra fields: priority"),
+        "{}",
+        ack.text
+    );
+}

@@ -29,6 +29,9 @@ fn row(id: u32, status: WorkerStatus) -> WorkerRow {
         usage: None,
         partial: false,
         overridden: false,
+        inherited: false,
+        clarifying: None,
+        split: false,
     }
 }
 

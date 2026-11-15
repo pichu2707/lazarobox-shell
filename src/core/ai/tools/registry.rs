@@ -29,6 +29,9 @@ pub enum Family {
     /// `gh_issue_draft`: opens the Feedback form with the model's draft. It
     /// runs no `gh`: only the user's Ctrl+S in the form sends anything.
     IssueDraft,
+    /// `needs_specification`: a `simple` worker says its brief is not enough
+    /// (W8c). No toggle and not in any menu set: only that toolset has it.
+    Clarify,
 }
 
 /// Which families are on: a bitset, one bit per [`Family`]. The single gate
@@ -443,7 +446,7 @@ mod tests {
         assert!(without["properties"].get("timeout_secs").is_none());
     }
 
-    const EVERY_FAMILY: [Family; 11] = [
+    const EVERY_FAMILY: [Family; 12] = [
         Family::Read,
         Family::Search,
         Family::Write,
@@ -455,6 +458,7 @@ mod tests {
         Family::Orchestra,
         Family::Github,
         Family::IssueDraft,
+        Family::Clarify,
     ];
 
     // Spec (agent-tools, tool families): one bit per family, so the two git

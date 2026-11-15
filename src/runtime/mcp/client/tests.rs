@@ -168,6 +168,55 @@ async fn at_most_64_tools_are_kept() {
 }
 
 #[tokio::test]
+async fn the_filter_runs_before_the_cap_and_counts_what_it_admits() {
+    let (mut client, mut fake) = pair(timeouts());
+    // 10 tools the filter refuses come first: they must not take a place.
+    let many: Vec<Value> = (0..80)
+        .map(|i| json!({"name": format!("{}{i}", if i < 10 { "no" } else { "t" })}))
+        .collect();
+    let keep = |name: &str| !name.starts_with("no");
+    let (listed, ()) = tokio::join!(client.list_tools_with(keep), fake.answer_list(json!(many)));
+    let listed = listed.unwrap();
+    assert_eq!(listed.admitted, 70);
+    assert_eq!(listed.tools.len(), 64);
+    assert_eq!(listed.tools[0].name, "t10");
+}
+
+#[tokio::test]
+async fn the_gmail_filter_and_hidden_tools_of_a_declared_google_run_before_the_cap() {
+    use crate::core::ai::{config::McpServer, mcp_catalog::admits};
+    let server = |name: &str| McpServer {
+        name: name.to_owned(),
+        command: "x".to_owned(),
+        args: Vec::new(),
+        env: Vec::new(),
+        project: None,
+        enabled: true,
+    };
+    let mut names = vec![
+        "send_gmail_message".to_owned(),
+        "start_google_auth".to_owned(),
+    ];
+    names.extend((0..6).map(|i| format!("odd_gmail_{i}")));
+    names.extend((0..62).map(|i| format!("t{i}")));
+    let many: Vec<Value> = names.iter().map(|n| json!({ "name": n })).collect();
+    for (declared, kept) in [("google", 62), ("mail", 64)] {
+        let (mut client, mut fake) = pair(timeouts());
+        let s = server(declared);
+        let (listed, ()) = tokio::join!(
+            client.list_tools_with(|tool| admits(&s, tool)),
+            fake.answer_list(json!(many))
+        );
+        let listed = listed.unwrap();
+        assert_eq!(listed.tools.len(), kept, "{declared}");
+        assert_eq!(listed.admitted, if declared == "google" { 62 } else { 70 });
+        let has = |n: &str| listed.tools.iter().any(|t| t.name == n);
+        assert_eq!(has("send_gmail_message"), declared != "google");
+        assert_eq!(has("t61"), declared == "google");
+    }
+}
+
+#[tokio::test]
 async fn hostile_metadata_is_sanitized_and_capped() {
     let (mut client, mut fake) = pair(timeouts());
     let huge = "x".repeat(100 * 1024);
@@ -701,4 +750,32 @@ async fn keys_that_collide_after_stripping_replace_the_schema() {
 async fn schema_strings_keep_newlines_and_tabs() {
     let schema = schema_of(json!({"type": "object", "title": "a\n\tb"})).await;
     assert_eq!(schema["title"], "a\n\tb");
+}
+
+// S6b2: the link session tells a timeout from a server that stopped.
+#[tokio::test]
+async fn a_checked_call_keeps_the_answer_the_timeout_and_the_hang_up() {
+    let (mut client, mut fake) = pair(timeouts());
+    let serve = async {
+        let (id, _) = fake.request("tools/call").await;
+        fake.reply(id, json!({"content": [{"type": "text", "text": "hi"}]}))
+            .await;
+    };
+    let (got, ()) = tokio::join!(client.call_checked("t", json!({}), never()), serve);
+    assert_eq!(got.unwrap().text, "hi");
+
+    let (mut client, mut fake) = pair(Timeouts {
+        handshake: WAIT,
+        call: Duration::from_millis(100),
+    });
+    let (got, _) = tokio::join!(
+        client.call_checked("t", json!({}), never()),
+        fake.request("tools/call")
+    );
+    assert_eq!(got.unwrap_err(), ClientError::Timeout);
+
+    let (mut client, fake) = pair(timeouts());
+    drop(fake);
+    let got = client.call_checked("t", json!({}), never()).await;
+    assert_eq!(got.unwrap_err(), ClientError::Closed);
 }

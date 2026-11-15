@@ -491,8 +491,8 @@ The save MUST also own `ai.tools.approval`, with the same rules as `ai.tools.ena
 - WHEN it is parsed by `Config::parse`
 - THEN the approval mode equals the draft and no notice is produced
 
-### Requirement: MCP server lists are never written
-The save MUST NEVER add, change, reorder or remove any `ai.mcp.*` key, the global `[[ai.mcp.servers]]` entries and the per-project extras included: they are edited by hand. Every byte of them, including arrays of tables, comments, unknown keys and invalid entries, MUST be preserved by every save, and a collision or an error inside them MUST NOT block the save of other keys. No secret is ever written, and no environment value is ever written.
+### Requirement: MCP server lists are never changed
+The save MUST NEVER add, change, reorder or remove any `ai.mcp.*` key, the global `[[ai.mcp.servers]]` entries and the per-project extras included: they are edited by hand. Every byte of them, including arrays of tables, comments, unknown keys and invalid entries, MUST be preserved by every save, and a collision or an error inside them MUST NOT block the save of other keys. No secret is ever written, and no environment value is ever written. The only write of the server list is not a save: Connect Google (config-menu, Connect Google; openspec change `google-connect`) MAY append, after the user's `y` on its plan, the catalog entries of `gsc` and `google` that are not declared, at the end of `config.toml`. That append MUST keep the old bytes as a prefix (adding at most a line break and one empty line before the entries), MUST write `config.toml.bak` with the old bytes first, MUST NEVER change, reorder or remove an existing entry, and MUST be refused, writing nothing, unless the result parses with every old server unchanged followed by exactly the new ones.
 
 #### Scenario: Servers preserved [auto]
 - GIVEN a file with two `[[ai.mcp.servers]]` entries, comments between them, and a changed statusline position
@@ -508,6 +508,16 @@ The save MUST NEVER add, change, reorder or remove any `ai.mcp.*` key, the globa
 - GIVEN a file with no `ai.mcp`
 - WHEN any save succeeds
 - THEN the file gains no `ai.mcp` table
+
+#### Scenario: Connect Google appends and keeps every old byte [google-connect, auto]
+- GIVEN a file with comments and one `[[ai.mcp.servers]]` entry named `docs`
+- WHEN Connect Google writes a plan that appends `gsc` and `google`
+- THEN the old bytes are a prefix of the new file, `config.toml.bak` holds the old bytes, and the parsed servers are `docs`, `gsc`, `google`
+
+#### Scenario: An inline server list is never appended to [google-connect, auto]
+- GIVEN `[ai.mcp]` with `servers = [{ name = "docs", command = "x" }]`
+- WHEN Connect Google plans or writes an append
+- THEN the file is byte-identical, no `config.toml.bak` is written, and the notice is `config.toml: the entries would not parse after it (an inline ai.mcp.servers list?)`
 
 ### Requirement: Family toggle keys are owned
 The five family keys under `[ai.tools]` (see configuration, Family toggle keys) MUST be owned by the config menu like `ai.tools.enabled`: saving writes only a key whose value changed, through the existing comment-preserving edit, and leaves every other key, table and comment byte for byte as it was. A key the user never changed MUST NOT be added to the file. A save MUST NOT write any MCP server list or any secret.

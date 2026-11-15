@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::json;
 
@@ -6,16 +6,12 @@ use super::{
     fake::{host_env, lab, timeouts},
     *,
 };
-use crate::runtime::proc::process_state;
+use crate::runtime::proc::{stopped, wait_gone};
 
 const LONG: Duration = Duration::from_secs(10);
 
 async fn never() {
     std::future::pending::<()>().await;
-}
-
-fn gone(pid: libc::pid_t) -> bool {
-    matches!(process_state(pid), None | Some('Z'))
 }
 
 #[tokio::test]
@@ -124,17 +120,15 @@ async fn shutdown_stops_every_server() {
                 .unwrap()
         })
         .collect();
-    assert!(pids.iter().all(|p| !gone(*p)), "both run");
+    assert!(pids.iter().all(|p| !stopped(*p)), "both run");
     // Through an `Arc`, as the host holds it; a call after it is refused.
     let set = std::sync::Arc::new(set);
     set.shutdown().await;
     let after = set.call("one__a", json!({}), never()).await;
     assert!(after.is_error, "{after:?}");
-    let end = Instant::now() + LONG;
-    while !pids.iter().all(|p| gone(*p)) && Instant::now() < end {
-        tokio::time::sleep(Duration::from_millis(20)).await;
+    for pid in &pids {
+        assert!(wait_gone(*pid).await, "both are stopped");
     }
-    assert!(pids.iter().all(|p| gone(*p)), "both are stopped");
 }
 
 #[tokio::test]
@@ -297,4 +291,159 @@ async fn each_server_gets_only_its_own_tables_values() {
     );
     assert!(has(&envs[1], "GOOGLE_CLOUD_PROJECT=my-project"), "{envs:?}");
     assert!(!names(&envs[1]).contains(&"CLARITY_API_TOKEN"), "{envs:?}");
+}
+
+// Spec mcp-catalog, Not linked is refused at chat start; OAuth way without a
+// usable GSC_CONFIG_DIR (6b1.5).
+const GSC_ENV: [&str; 4] = [
+    "GSC_OAUTH_CLIENT_SECRETS_FILE",
+    "GSC_CONFIG_DIR",
+    "GSC_CREDENTIALS_PATH",
+    "GSC_SKIP_OAUTH",
+];
+
+fn gsc_values(dir: &str) -> Secrets {
+    secrets(&format!(
+        "[gsc]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/c.json\"\nGSC_CONFIG_DIR = \"{dir}\"\nGSC_SKIP_OAUTH = \"false\"\n"
+    ))
+}
+
+async fn gsc_start(lab: &super::fake::Lab, name: &str, file: &Secrets) -> ExternalSet {
+    let server = lab.recorder(name, &GSC_ENV);
+    let set = ExternalSet::start_with(&[&server], &lab.home, host_env, file, timeouts(LONG)).await;
+    set.shutdown().await;
+    set
+}
+
+#[tokio::test]
+async fn gsc_with_oauth_values_and_no_token_is_not_spawned_and_says_so_once() {
+    let lab = lab();
+    let dir = lab.home.join(".config/mcp-gsc");
+    let set = gsc_start(&lab, "gsc", &gsc_values(dir.to_str().unwrap())).await;
+    assert_eq!(
+        set.notices(),
+        ["mcp: gsc unavailable: not linked; open Connectors and use Link with Google"]
+    );
+    assert!(lab.env_of("gsc").is_empty(), "the server was spawned");
+}
+
+#[tokio::test]
+async fn gsc_with_a_token_starts_normally() {
+    let lab = lab();
+    let dir = lab.home.join(".config/mcp-gsc");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("token.json"), "{}").unwrap();
+    let set = gsc_start(&lab, "gsc", &gsc_values(dir.to_str().unwrap())).await;
+    assert!(set.notices().is_empty(), "{:?}", set.notices());
+    assert!(has(
+        &lab.env_of("gsc"),
+        &format!("GSC_CONFIG_DIR={}", dir.display())
+    ));
+}
+
+#[tokio::test]
+async fn gsc_without_a_usable_config_dir_is_not_spawned() {
+    let lab = lab();
+    for dir in ["", "~/.config/mcp-gsc", "relative"] {
+        let set = gsc_start(&lab, "gsc", &gsc_values(dir)).await;
+        assert_eq!(
+            set.notices(),
+            ["mcp: gsc unavailable: fill the OAuth values in Connectors (f)"],
+            "{dir:?}"
+        );
+        assert!(lab.env_of("gsc").is_empty(), "{dir:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_service_account_way_and_another_name_start_without_a_token() {
+    let lab = lab();
+    let key = secrets("[gsc]\nGSC_CREDENTIALS_PATH = \"/k.json\"\nGSC_SKIP_OAUTH = \"true\"\n");
+    let set = gsc_start(&lab, "gsc", &key).await;
+    assert!(set.notices().is_empty(), "{:?}", set.notices());
+    assert!(!lab.env_of("gsc").is_empty());
+    // Another name gets neither the hidden tool nor the check (documented).
+    let other = secrets(
+        "[search]\nGSC_OAUTH_CLIENT_SECRETS_FILE = \"/c.json\"\nGSC_SKIP_OAUTH = \"false\"\n",
+    );
+    let set = gsc_start(&lab, "search", &other).await;
+    assert!(set.notices().is_empty(), "{:?}", set.notices());
+    assert!(!lab.env_of("search").is_empty());
+}
+
+// W4: an empty token file is not a link (the server would run its flow).
+#[tokio::test]
+async fn an_empty_token_file_counts_as_not_linked() {
+    let lab = lab();
+    let dir = lab.home.join(".config/mcp-gsc");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("token.json"), "").unwrap();
+    let set = gsc_start(&lab, "gsc", &gsc_values(dir.to_str().unwrap())).await;
+    assert_eq!(
+        set.notices(),
+        ["mcp: gsc unavailable: not linked; open Connectors and use Link with Google"]
+    );
+    assert!(lab.env_of("gsc").is_empty(), "the server was spawned");
+}
+
+// W2: a token folder the tools could read is not started.
+#[tokio::test]
+async fn a_token_folder_outside_the_denied_ones_is_not_spawned() {
+    let lab = lab();
+    let dir = lab.home.join("projects/tokens");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("token.json"), "{}").unwrap();
+    let set = gsc_start(&lab, "gsc", &gsc_values(dir.to_str().unwrap())).await;
+    assert_eq!(
+        set.notices(),
+        [
+            "mcp: gsc unavailable: GSC_CONFIG_DIR must be under ~/.config/mcp-gsc; fix it in Connectors (f)"
+        ]
+    );
+    assert!(lab.env_of("gsc").is_empty());
+}
+
+// S6b2 review: a credentials folder in the entry would put the tokens outside
+// the folder the tools refuse to read, so a start is refused, as for gsc.
+#[tokio::test]
+async fn google_naming_a_credentials_folder_is_not_spawned_and_says_so() {
+    let lab = lab();
+    for name in [
+        "WORKSPACE_MCP_CREDENTIALS_DIR",
+        "GOOGLE_MCP_CREDENTIALS_DIR",
+    ] {
+        let server = lab.recorder("google", &["USER_GOOGLE_EMAIL", name]);
+        let set = ExternalSet::start_with(
+            &[&server],
+            &lab.home,
+            host_env,
+            &Secrets::default(),
+            timeouts(LONG),
+        )
+        .await;
+        set.shutdown().await;
+        assert_eq!(
+            set.notices(),
+            [
+                "mcp: google unavailable: WORKSPACE_MCP_CREDENTIALS_DIR / GOOGLE_MCP_CREDENTIALS_DIR are not supported; remove them from the entry"
+            ],
+            "{name}"
+        );
+        assert!(
+            lab.env_of("google").is_empty(),
+            "{name}: the server was spawned"
+        );
+    }
+    // Another name is not covered, as for the other google checks.
+    let other = lab.recorder("search", &["WORKSPACE_MCP_CREDENTIALS_DIR"]);
+    let set = ExternalSet::start_with(
+        &[&other],
+        &lab.home,
+        host_env,
+        &Secrets::default(),
+        timeouts(LONG),
+    )
+    .await;
+    set.shutdown().await;
+    assert!(set.notices().is_empty());
 }

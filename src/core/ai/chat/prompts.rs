@@ -60,6 +60,8 @@ pub fn builtin(profile: Profile, task: Task) -> &'static str {
             include_str!("prompts/programmer/orchestrate.md"),
             include_str!("prompts/programmer/orchestrate_odd.md")
         ),
+        (Profile::Analyst, Task::Simple) => include_str!("prompts/analyst/simple.md"),
+        (Profile::Programmer, Task::Simple) => include_str!("prompts/programmer/simple.md"),
     }
 }
 
@@ -147,6 +149,12 @@ const NO_TOOLS: &str = "You are a text assistant. You have no access to files, a
 /// tools by purpose, not by the name an engine gives them.
 const TOOLS: &str = include_str!("prompts/tools.md");
 
+/// What the coordinator's turn says about its tools instead of [`TOOLS`]:
+/// that block tells a model with no write tool to hand the user a command,
+/// which beat the delegation bullet of the coordinator prompt (it is the last
+/// one) and made claude answer a file change with a heredoc.
+const COORDINATOR_TOOLS: &str = include_str!("prompts/coordinator_tools.md");
+
 /// The sentence of [`TOOLS`] that says the model cannot change files.
 const NO_CHANGES: &str =
     "You cannot change files yourself; any change needs a command the user reviews and runs.";
@@ -184,6 +192,7 @@ pub fn with_tools(system: &str, families: FamilySet) -> String {
         .map(|(_, ability)| *ability)
         .collect();
     let block = match abilities.split_last() {
+        _ if families.contains(Family::Orchestra) => COORDINATOR_TOOLS.trim_end().to_owned(),
         Some((last, [])) => coding(last),
         Some((last, rest)) => coding(&format!("{} and {last}", rest.join(", "))),
         None => TOOLS.trim_end().to_owned(),
@@ -219,6 +228,17 @@ const WORKER: &str = include_str!("prompts/worker.md");
 /// keeps its prompt byte for byte, and a user's override still comes first.
 pub fn worker_system(system: &str) -> String {
     format!("{}\n\n{}", system.trim_end(), WORKER.trim_end())
+}
+
+/// What a `simple` worker whose Write was removed (a read-only goal) is told
+/// after its prompt, which otherwise asks for the write tools: they are not
+/// offered, so its findings go in its answer.
+const NO_WRITE_TOOLS: &str = "Note: this is a read-only goal, so the write tools, propose_batch and run_command are not available to you. Ignore the instruction to use them and put your findings in your answer instead.";
+
+/// `system` for a `simple` worker that has no write tools. Only `launch`
+/// calls this; the user's override still comes first.
+pub fn read_only_worker_system(system: &str) -> String {
+    format!("{}\n\n{NO_WRITE_TOOLS}", system.trim_end())
 }
 
 /// The system line for a skipped override file.

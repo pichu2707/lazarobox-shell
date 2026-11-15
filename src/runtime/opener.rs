@@ -57,6 +57,15 @@ impl Opener {
             })
     }
 
+    /// The opener's program name, such as `rundll32.exe`: one of the
+    /// host's [`candidates`], found on `PATH`.
+    pub fn name(&self) -> &str {
+        self.program
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or_default()
+    }
+
     /// Starts the opener on `url`. A link [`is_link_url`] refuses is never
     /// handed over. `failed` runs, on the reaping thread, when the opener
     /// exits with an error within [`LAUNCH`]: it found no browser (an SSH
@@ -70,11 +79,7 @@ impl Opener {
                 "not a web link",
             ));
         }
-        let name = self
-            .program
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or_default();
+        let name = self.name();
         let mut child = spawn_retrying(|| {
             Command::new(&self.program)
                 .args(leading_args(name))
