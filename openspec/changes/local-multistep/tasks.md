@@ -95,6 +95,17 @@ Does S1 need splitting? No, not up front. The design counts ~374 (eval.rs 170, s
 - [ ] 7.2 [manual] Curate at most one real transcript per task from the `_DUMP` output into `tests/fixtures/ollama/eval/` (throwaway repo only), check `fixtures_are_clean` passes; optional for S1.
 - [x] 7.3 Gate: `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`; `rm -rf target` of the worktree after the checks (AGENTS.md).
 
+### S1 hardening (before the first live baseline; test/eval-hardening)
+
+- [x] H1 `parse_errors_list_every_tool_error_variant`: an exhaustive match (no wildcard) pins `PARSE_ERRORS` to every `ToolError`, so `mark_failed`'s order pairing cannot shift when a variant is added.
+- [x] H2 Live pre-check `sandbox_probe`: runs `pytest --version` through the real helper path before any model call and fails naming the cause (a nonzero `exit code N` counts, it is not an error outcome); offline tests with a passing, a failing and an injected failing runner.
+- [x] H3 `helper_age_warning`: the live test prints a warning when `target/debug/lazarobox` is older than the test binary (`cargo test --lib` does not rebuild it).
+- [x] H4 Offline test: in a live-style rig (StandIn helper) `run_command` and `git_add` go through the `Judge`; orchestration tools stay `recorded`.
+- [x] H5 `table::accept` refuses with `nothing rose` instead of an empty list (the only production change).
+- [x] H6 `_DUMP` files are `<scenario>-<model>-<n>.json`, `n` claimed with `create_new` (`write_dump`), so a run never overwrites another.
+- [x] H7 A test step means the test passes: `eval::COMMAND_OK` (`exit code 0 `, pinned against real `RunOutcome::facts`) is required to complete a `run_command` step; a command that ran and did not exit 0 (nonzero, timeout, signal, cancel) is `RunResult.failed`, shown as `failed:pytest` in the table, distinct from `missing:pytest`. Spec text updated ("run and pass"); replay fixture `fib-pytest-fails.json` (canned pytest exits 1). Production: `eval.rs` and `table.rs`.
+- [x] H8 (review) `helper_age_warning` compares the helper with the newest of `src/`, `Cargo.toml`, `Cargo.lock` (not with the test binary, which cargo links after the helper). The pre-check probes `pytest --version` and `python3 -m pytest --version` through the sandboxed dispatch and fails only when neither works. Note: the `run_command` allow-list has no `python3`, so the second form is refused by the host today; only a `pytest` on the PATH can pass the probe. `Expect.must_pass` replaces the tool-name rule of H7.
+
 ## S2 HTTP 400 disambiguation (C6) - ~40-80 lines
 
 - [x] S2.1 RED: Other 400 is not a tools refusal, Unreadable 400 body (empty, non-JSON, truncated), Long error body capped at 200, Notice does not echo the message (`SECRET-TOKEN-123`), Tools refusal still degrades silently (per turn, nothing remembered), using the fixture `400-no-tools.txt` from 1.3.

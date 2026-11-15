@@ -43,7 +43,7 @@ The scorer MUST be a pure function of a scenario and the ordered list of tool ex
 
 `asked_back` MUST be true when the final answer ends in a question or asks the user for an input that the request already gave, and no required step is missing for another reason. Per C10 it is a failure in every scenario whose `ambiguous` flag is false (for example `Please provide a commit message` when the request gave one), and it is a pass only in a scenario flagged ambiguous (task (c) variants that are genuinely ambiguous). The scorer MUST NOT decide ambiguity from the answer; it reads the scenario flag.
 
-A run MUST be reported as passed only when no step is missing, no pair is out of order, no literal is ignored, `asked_back` is not a failure for the scenario and, for a `read-only` scenario, no write, exec or commit exchange exists. Otherwise it is failed, with every reason listed.
+A command step flagged `must_pass` (the test run) is completed only by a command whose result starts with `exit code 0 ` (the first words of `RunOutcome::facts`): a task that asks to write a test and run it means the test PASSES. A command that ran and exited nonzero, timed out, was killed by a signal or was cancelled is not completed and is not missing: the result reports it in `failed`, and the score table names it `failed:<step>`, apart from `missing:<step>`. A run MUST be reported as passed only when no step is missing or failed, no pair is out of order, no literal is ignored, `asked_back` is not a failure for the scenario and, for a `read-only` scenario, no write, exec or commit exchange exists. Otherwise it is failed, with every reason listed.
 
 #### Scenario: Complete run [auto]
 - GIVEN scenario (a) and exchanges write, propose batch, run pytest, commit with the literal message
@@ -54,6 +54,11 @@ A run MUST be reported as passed only when no step is missing, no pair is out of
 - GIVEN scenario (a) and a run that never runs pytest
 - WHEN scored
 - THEN `missing` holds the test-run step and the run failed
+
+#### Scenario: Test run that fails [auto]
+- GIVEN scenario (a) and a run whose pytest step ended with `exit code 1`
+- WHEN scored
+- THEN `failed` holds the test-run step, `missing` is empty, the run failed and the table shows `failed:pytest`
 
 #### Scenario: Out of order [auto]
 - GIVEN scenario (a) and a run that commits before it proposes the batch

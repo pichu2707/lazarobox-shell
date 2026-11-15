@@ -43,6 +43,9 @@ impl Category {
 #[derive(Clone, Copy)]
 pub struct Expect {
     pub label: &'static str,
+    /// A command step that completes only when the command exited 0 (a test
+    /// run); otherwise any result that is not a refusal completes it.
+    pub must_pass: bool,
     pub tool: &'static str,
     pub args: fn(&Value) -> bool,
 }
@@ -79,6 +82,9 @@ pub struct Scenario {
 pub struct RunResult {
     pub completed: Vec<&'static str>,
     pub missing: Vec<&'static str>,
+    /// Command steps that ran but did not exit 0 (a nonzero exit, a timeout,
+    /// a signal or a cancel): not missing, and not completed either.
+    pub failed: Vec<&'static str>,
     pub out_of_order: Vec<(&'static str, &'static str)>,
     pub ignored: Vec<&'static str>,
     pub asked_back: bool,
@@ -95,6 +101,7 @@ impl RunResult {
         }
         !self.asked_back
             && self.missing.is_empty()
+            && self.failed.is_empty()
             && self.out_of_order.is_empty()
             && self.ignored.is_empty()
             && self.forbidden.is_empty()
@@ -129,6 +136,19 @@ pub fn refused(result: &str) -> bool {
     REFUSALS.iter().any(|prefix| result.starts_with(prefix))
 }
 
+/// The start of the result of a command that exited 0: the first words of
+/// `RunOutcome::facts` (pinned by a test with real outcomes).
+pub const COMMAND_OK: &str = "exit code 0 ";
+
+/// Whether `exchange` is a call of `step`'s tool that was not refused. A
+/// command step (`run_command`) also needs the command to have exited 0.
+fn matches(step: &Expect, e: &ToolExchange, must_pass: bool) -> bool {
+    e.name == step.tool
+        && (step.args)(&e.arguments)
+        && !refused(&e.result)
+        && (!must_pass || !step.must_pass || e.result.starts_with(COMMAND_OK))
+}
+
 /// Whether the answer ends in a question or asks the user for an input.
 pub fn asked_back(answer: &str) -> bool {
     const ASKS: [&str; 4] = [
@@ -147,13 +167,25 @@ fn carries(arguments: &Value, text: &str) -> bool {
     arguments.to_string().contains(&quoted[1..quoted.len() - 1])
 }
 
+/// The steps with no completing exchange that, when `ran`, have an exchange
+/// that ran without passing (`failed`), else have none at all (`missing`).
+fn unfinished(
+    scenario: &Scenario,
+    at: &[(&'static str, Option<usize>)],
+    exchanges: &[ToolExchange],
+    ran: bool,
+) -> Vec<&'static str> {
+    let step = |label: &str| scenario.steps.iter().find(|s| s.label == label).unwrap();
+    (at.iter())
+        .filter(|(_, i)| i.is_none())
+        .filter(|(l, _)| exchanges.iter().any(|e| matches(step(l), e, false)) == ran)
+        .map(|(l, _)| *l)
+        .collect()
+}
+
 /// Scores one run: the tool exchanges of its turn and its final answer.
 pub fn score(scenario: &Scenario, exchanges: &[ToolExchange], answer: &str) -> RunResult {
-    let first = |step: &Expect| {
-        exchanges
-            .iter()
-            .position(|e| e.name == step.tool && (step.args)(&e.arguments) && !refused(&e.result))
-    };
+    let first = |step: &Expect| exchanges.iter().position(|e| matches(step, e, true));
     let at: Vec<_> = scenario.steps.iter().map(|s| (s.label, first(s))).collect();
     let index = |label: &str| at.iter().find(|(l, _)| *l == label).and_then(|(_, i)| *i);
     let completed = at.iter().filter(|(_, i)| i.is_some()).map(|(l, _)| *l);
@@ -169,11 +201,8 @@ pub fn score(scenario: &Scenario, exchanges: &[ToolExchange], answer: &str) -> R
     });
     RunResult {
         completed: completed.clone().collect(),
-        missing: at
-            .iter()
-            .filter(|(_, i)| i.is_none())
-            .map(|(l, _)| *l)
-            .collect(),
+        missing: unfinished(scenario, &at, exchanges, false),
+        failed: unfinished(scenario, &at, exchanges, true),
         out_of_order: (scenario.order.iter())
             .filter(|(a, b)| matches!((index(a), index(b)), (Some(a), Some(b)) if b < a))
             .copied()

@@ -89,6 +89,10 @@ pub(super) fn exchanges_from_body(body: &Value) -> Vec<ToolExchange> {
     list
 }
 
+/// A `fail` value for [`Rig::new`]: the canned `run_command` exits 1 (a
+/// result, not an error), the way a failing pytest does.
+pub(super) const EXIT_NONZERO: &str = "run_command exits 1";
+
 /// One call that reached the dispatch, in order, and whether it failed.
 pub(super) struct Done {
     pub(super) name: String,
@@ -234,7 +238,7 @@ impl Dispatch for Canned {
         let fixed = match &call {
             Call::Orchestra(_) => Some(("", "recorded")),
             _ if self.live => None,
-            Call::RunCommand { .. } => Some(("run_command", "exit code 0: 1 passed")),
+            Call::RunCommand { .. } => Some(("run_command", "exit code 0 after 0.4s\n1 passed")),
             Call::GitAdd { .. } => Some(("git_commit", "staged 2 paths")),
             Call::GitCommit { .. } => Some(("git_commit", "committed abc1234")),
             git if git.uses_git() => Some(("", "nothing to report")),
@@ -253,6 +257,11 @@ impl Dispatch for Canned {
             Outcome {
                 text: format!("denied: {NOT_IN_SCENARIO}"),
                 is_error: true,
+            }
+        } else if self.fail == Some(EXIT_NONZERO) && call.name() == "run_command" {
+            Outcome {
+                text: "exit code 1 after 0.4s\n1 failed".to_owned(),
+                is_error: false,
             }
         } else if self.fail == Some(call.name()) {
             Outcome {
@@ -670,6 +679,143 @@ pub(super) fn dump(scenario: &Scenario, body: &Value, answer: &str, roots: &[&Pa
     text + "\n"
 }
 
+/// The result of running one trivial command (`program args`, allowed by the
+/// run_command table) through `dispatch`, the same path every `run_command` of
+/// a run takes. The live test passes `pytest --version`, so a pytest missing
+/// from the PATH shows too. `Err` names the cause, so a
+/// sandbox that cannot run anything (no Landlock on the kernel, a helper that
+/// fails) stops the live test before any model call instead of scoring every
+/// command as a failed step.
+pub(super) async fn sandbox_probe(
+    dispatch: &dyn Dispatch,
+    program: &str,
+    args: &[&str],
+) -> Result<(), String> {
+    let call = Call::RunCommand {
+        args: json!({"program": program, "args": args}),
+    };
+    let out = dispatch.call(call).await;
+    // A command that ran and failed is not an error outcome: it reads
+    // `exit code N after ...`, which is how a helper that dies shows.
+    if out.is_error || !out.text.starts_with("exit code 0 ") {
+        return Err(format!(
+            "the sandbox helper cannot run a command (is Landlock available on this kernel?): {}",
+            out.text
+        ));
+    }
+    Ok(())
+}
+
+/// The newest modification time under `dir`, recursively.
+fn newest(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut best = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        let time = if path.is_dir() {
+            newest(&path)
+        } else {
+            entry.metadata().and_then(|m| m.modified()).ok()
+        };
+        best = best.max(time);
+    }
+    best
+}
+
+/// A warning when a source file under `root` (`src/`, `Cargo.toml`,
+/// `Cargo.lock`) is newer than `helper`: `cargo test --lib` does not rebuild
+/// `target/debug/lazarobox`, so the live run would use a stale sandbox helper.
+/// The test binary's own age says nothing (cargo links it after the helper).
+/// `None` when the helper is fresh or a time is unknown.
+pub(super) fn helper_age_warning(helper: &Path, root: &Path) -> Option<String> {
+    let built = std::fs::metadata(helper).and_then(|m| m.modified()).ok()?;
+    let files = ["Cargo.toml", "Cargo.lock"].map(|f| {
+        std::fs::metadata(root.join(f))
+            .and_then(|m| m.modified())
+            .ok()
+    });
+    let source = files
+        .into_iter()
+        .chain([newest(&root.join("src"))])
+        .max()??;
+    (source > built).then(|| {
+        format!(
+            "WARNING: the sources are newer than {}: run `cargo build` or the sandbox helper is stale",
+            helper.display()
+        )
+    })
+}
+
+/// Probes every `forms` of running pytest (`program args`) through `dispatch`
+/// and fails only when none works. `Ok` names the form that works, and says
+/// when the first one (the bare `pytest`) does not.
+pub(super) async fn pytest_probe(
+    dispatch: &dyn Dispatch,
+    forms: &[(&str, &[&str])],
+) -> Result<String, String> {
+    let mut failures = Vec::new();
+    for (program, args) in forms {
+        let form = format!("{program} {}", args.join(" "));
+        match sandbox_probe(dispatch, program, args).await {
+            Ok(()) if failures.is_empty() => return Ok(form),
+            Ok(()) => {
+                return Ok(format!(
+                    "pytest not on the sandboxed PATH; {form} works ({})",
+                    failures.join("; ")
+                ));
+            }
+            Err(why) => failures.push(format!("{form}: {why}")),
+        }
+    }
+    Err(failures.join("\n"))
+}
+
+/// The live pre-check of the sandbox: a throwaway rig in `Mode::Live` runs one
+/// command. Panics naming the cause. Linux only, like `live_helper`.
+#[cfg(target_os = "linux")]
+pub(super) async fn live_sandbox_check() {
+    let scenario = &scenarios::WRITE_AND_TEST;
+    let folder = Folder::new(&throwaway_root(), scenario);
+    let rig = Rig::new(scenario, &folder, None, Mode::Live);
+    let forms: [(&str, &[&str]); 2] = [
+        ("pytest", &["--version"]),
+        ("python3", &["-m", "pytest", "--version"]),
+    ];
+    match pytest_probe(&*rig.dispatch(), &forms).await {
+        Ok(form) => eprintln!("sandbox pre-check: {form}"),
+        Err(why) => panic!("{why}"),
+    }
+}
+
+/// Writes one `_DUMP` run as `<scenario>-<model>-<n>.json` in `dir` (created
+/// when missing): `n` is the first free number from 1, claimed with
+/// `create_new`, so a run never overwrites another, even after files were
+/// deleted from the folder or another process writes there.
+pub(super) fn write_dump(
+    dir: &Path,
+    scenario: &str,
+    model: &str,
+    text: &str,
+) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    for n in 1.. {
+        let path = dir.join(format!("{scenario}-{model}-{n:03}.json"));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes())?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the counter does not end")
+}
+
 /// A proxy that records the body of every request and forwards it to Ollama,
 /// so the exchanges of a run can be read from its last request.
 pub(super) async fn proxy(upstream: &'static str) -> (u16, Arc<Mutex<Vec<Value>>>) {
@@ -951,4 +1097,51 @@ fn the_user_name_is_matched_as_a_word_and_short_names_are_skipped() {
     assert!(leaks(&body("hello someone."), "/home/zzzz", "someone").contains(&"user"));
     assert!(leaks(&body("someones file"), "/home/zzzz", "someone").is_empty());
     assert!(leaks(&body("hello root"), "/home/zzzz", "root").is_empty());
+}
+
+// Hardening: the `_DUMP` name never collides, even with files deleted.
+#[test]
+fn a_dump_never_overwrites_another_run() {
+    let dir = throwaway_root().join(format!("dump-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let first = write_dump(&dir, "write-and-test", "qwen3-14b", "one").unwrap();
+    let second = write_dump(&dir, "write-and-test", "qwen3-14b", "two").unwrap();
+    let third = write_dump(&dir, "write-and-test", "qwen3-14b", "three").unwrap();
+    std::fs::remove_file(&first).unwrap();
+    let fourth = write_dump(&dir, "write-and-test", "qwen3-14b", "four").unwrap();
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), "two");
+    assert_eq!(std::fs::read_to_string(&third).unwrap(), "three");
+    assert_eq!(std::fs::read_to_string(&fourth).unwrap(), "four");
+    assert_ne!(fourth, second);
+    assert_ne!(fourth, third);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Hardening: every `ToolError` is a parse error (the loop answers its text
+/// and the call never reaches the dispatch), so `PARSE_ERRORS` must list them
+/// all, or `mark_failed` would pair the records with the wrong exchanges. The
+/// match below has no wildcard: a new variant does not compile until it gets a
+/// slot here, and the test then fails until `PARSE_ERRORS` holds it there.
+#[test]
+fn parse_errors_list_every_tool_error_variant() {
+    const SLOTS: usize = 13;
+    let slot = |e: ToolError| match e {
+        ToolError::UnknownTool => 0,
+        ToolError::NotAnObject => 1,
+        ToolError::MissingArgument => 2,
+        ToolError::WrongType => 3,
+        ToolError::ExtraArgument => 4,
+        ToolError::TooLong => 5,
+        ToolError::PaneRange => 6,
+        ToolError::ScrollbackRange => 7,
+        ToolError::DraftKind => 8,
+        ToolError::DraftEmpty => 9,
+        ToolError::DraftTitleLong => 10,
+        ToolError::DraftTitleLines => 11,
+        ToolError::DraftBodyLong => 12,
+    };
+    assert_eq!(PARSE_ERRORS.len(), SLOTS, "PARSE_ERRORS misses a variant");
+    for (at, error) in PARSE_ERRORS.into_iter().enumerate() {
+        assert_eq!(slot(error), at, "{error:?} is not where the match says");
+    }
 }

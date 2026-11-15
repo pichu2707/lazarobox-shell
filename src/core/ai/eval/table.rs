@@ -43,6 +43,7 @@ impl Run {
     fn reasons(&self) -> Vec<(&'static str, String)> {
         let r = &self.result;
         let mut list: Vec<_> = r.missing.iter().map(|l| ("missing", (*l).into())).collect();
+        list.extend(r.failed.iter().map(|l| ("failed", (*l).into())));
         let pairs = r
             .out_of_order
             .iter()
@@ -89,8 +90,8 @@ impl Row {
         for run in self.runs.iter().filter(|run| !run.passed()) {
             let mut seen: Vec<String> = Vec::new();
             for (kind, detail) in run.reasons() {
-                let name = if kind == "missing" {
-                    format!("missing:{detail}")
+                let name = if kind == "missing" || kind == "failed" {
+                    format!("{kind}:{detail}")
                 } else {
                     kind.to_owned()
                 };
@@ -150,7 +151,8 @@ pub fn median(secs: &[u64]) -> u64 {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Verdict {
     Accepted,
-    /// The combinations that fell below passing; empty when nothing rose.
+    /// The combinations that fell below passing, or `nothing rose` when none fell
+    /// and none rose.
     Refused(Vec<String>),
     /// Combinations at exactly 4 of 5 on one side: run their 5 runs again.
     Repeat(Vec<String>),
@@ -189,7 +191,7 @@ pub fn accept(before: &[Row], after: &[Row]) -> Verdict {
         (_, false, ..) => Verdict::Repeat(up),
         (_, _, true, _) => Verdict::Accepted,
         (.., false) => Verdict::Repeat(down),
-        _ => Verdict::Refused(fell),
+        _ => Verdict::Refused(vec!["nothing rose".to_owned()]),
     }
 }
 
