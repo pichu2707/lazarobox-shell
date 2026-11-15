@@ -670,6 +670,36 @@ pub(super) fn dump(scenario: &Scenario, body: &Value, answer: &str, roots: &[&Pa
     text + "\n"
 }
 
+/// Writes one `_DUMP` run as `<scenario>-<model>-<n>.json` in `dir` (created
+/// when missing): `n` is the first free number from 1, claimed with
+/// `create_new`, so a run never overwrites another, even after files were
+/// deleted from the folder or another process writes there.
+pub(super) fn write_dump(
+    dir: &Path,
+    scenario: &str,
+    model: &str,
+    text: &str,
+) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    for n in 1.. {
+        let path = dir.join(format!("{scenario}-{model}-{n:03}.json"));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes())?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the counter does not end")
+}
+
 /// A proxy that records the body of every request and forwards it to Ollama,
 /// so the exchanges of a run can be read from its last request.
 pub(super) async fn proxy(upstream: &'static str) -> (u16, Arc<Mutex<Vec<Value>>>) {
@@ -951,4 +981,22 @@ fn the_user_name_is_matched_as_a_word_and_short_names_are_skipped() {
     assert!(leaks(&body("hello someone."), "/home/zzzz", "someone").contains(&"user"));
     assert!(leaks(&body("someones file"), "/home/zzzz", "someone").is_empty());
     assert!(leaks(&body("hello root"), "/home/zzzz", "root").is_empty());
+}
+
+// Hardening: the `_DUMP` name never collides, even with files deleted.
+#[test]
+fn a_dump_never_overwrites_another_run() {
+    let dir = throwaway_root().join(format!("dump-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let first = write_dump(&dir, "write-and-test", "qwen3-14b", "one").unwrap();
+    let second = write_dump(&dir, "write-and-test", "qwen3-14b", "two").unwrap();
+    let third = write_dump(&dir, "write-and-test", "qwen3-14b", "three").unwrap();
+    std::fs::remove_file(&first).unwrap();
+    let fourth = write_dump(&dir, "write-and-test", "qwen3-14b", "four").unwrap();
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), "two");
+    assert_eq!(std::fs::read_to_string(&third).unwrap(), "three");
+    assert_eq!(std::fs::read_to_string(&fourth).unwrap(), "four");
+    assert_ne!(fourth, second);
+    assert_ne!(fourth, third);
+    let _ = std::fs::remove_dir_all(&dir);
 }

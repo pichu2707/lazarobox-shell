@@ -38,6 +38,7 @@
 //! never from your projects.
 
 use std::{
+    path::Path,
     process::Command,
     sync::Mutex,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -50,7 +51,7 @@ use tokio::{
     time::timeout,
 };
 
-use super::eval_harness::{Folder, Mode, Rig, dump, live_helper, proxy, throwaway_root};
+use super::eval_harness::{Folder, Mode, Rig, dump, live_helper, proxy, throwaway_root, write_dump};
 use crate::{
     core::ai::eval::{
         Scenario,
@@ -153,10 +154,10 @@ async fn one(
                 }
             })
             .collect();
-        let n = std::fs::read_dir(&dir).map_or(0, Iterator::count);
         let text = dump(scenario, &last, &answer, &[&folder.repo, &folder.home]);
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(format!("{dir}/{n:03}-{}-{name}.json", scenario.id), text);
+        if let Err(why) = write_dump(Path::new(&dir), scenario.id, &name, &text) {
+            eprintln!("could not write the dump in {dir}: {why}");
+        }
     }
     judge.run(&last, &answer, time)
 }
