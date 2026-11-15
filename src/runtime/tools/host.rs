@@ -455,6 +455,14 @@ enum Unprompted {
 }
 
 impl Unprompted {
+    /// The server's approval level this answer carries, if any.
+    fn level(self) -> Option<McpApproval> {
+        match self {
+            Self::Level(level) => Some(level),
+            _ => None,
+        }
+    }
+
     fn of_read(reach: Reach, cloud: bool) -> Self {
         match (reach, cloud) {
             (Reach::Root, true) => Self::InRoot,
@@ -1183,8 +1191,8 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         tool,
                         args,
                     },
-                ) if let Unprompted::Level(level) = unprompted => {
-                    routed_external(&scope, &name, (&server, &tool), args, Some(level)).await
+                ) if unprompted.level().is_some() => {
+                    routed_external(&scope, &name, (&server, &tool), args, unprompted.level()).await
                 }
                 // `offers` let it through only with a run manager to go to.
                 (Decision::Sent, Call::Orchestra(call)) => match &scope.orchestra {
