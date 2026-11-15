@@ -254,6 +254,8 @@ pub enum OrchestraEvent {
     Waits {
         run: RunId,
         step: Step,
+        /// The gate that stands: the app offers it to lift.
+        gate: Gate,
         /// The steps already closed, so the notice says nothing was lost.
         closed: Vec<Step>,
     },

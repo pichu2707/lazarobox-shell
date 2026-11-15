@@ -234,6 +234,7 @@ fn an_unavailable_engine_is_refused_and_halts_the_run_with_no_fallback() {
         Instant::now(),
         Run::new(RunId(1), roster(no_jail), Duration::from_secs(600)),
     );
+    run.lift_gates();
     let id = run.spawn(t0, Task::Review, "p").unwrap();
     assert_eq!(run.status(id), Some(WorkerStatus::Refused));
     let Some(RunState::Halted {
@@ -1146,6 +1147,7 @@ fn a_cancelled_or_timed_out_worker_counts_as_missing_a_refused_one_does_not() {
     assert!(run.total_partial());
 
     let (t0, mut run) = (Instant::now(), run_with_deadline(Duration::from_secs(5)));
+    run.lift_gates();
     let id = run.spawn(t0, Task::Review, "p").unwrap();
     run.time_out(t0 + Duration::from_secs(6), id);
     assert_eq!(run.status(id), Some(WorkerStatus::TimedOut));
@@ -1156,6 +1158,7 @@ fn a_cancelled_or_timed_out_worker_counts_as_missing_a_refused_one_does_not() {
         Instant::now(),
         Run::new(RunId(2), roster(none), Duration::from_secs(600)),
     );
+    run.lift_gates();
     let id = run.spawn(t0, Task::Review, "p").unwrap();
     assert_eq!(run.status(id), Some(WorkerStatus::Refused));
     assert!(!run.usage_partial(id), "it never ran");

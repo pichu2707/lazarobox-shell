@@ -148,6 +148,7 @@ async fn write_off_after_an_implement_grant_does_not_trap_the_run() {
 async fn the_turn_cap_names_a_gate_that_stood() {
     let mut lab = lab(Script::Answer("found"));
     let (run, handle) = lab.manager.start(pane(), turns_scope(&lab, 1)).unwrap();
+    authorize_implement(&handle).await;
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     let refused = handle.call(spawn(Task::Code, "write it")).await;
@@ -167,7 +168,7 @@ async fn the_turn_cap_names_a_gate_that_stood() {
     };
     assert!(reason.contains("max_turns (1)"), "{reason}");
     assert!(reason.contains("spawn gate"), "{reason}");
-    assert!(reason.contains("step authorize"), "{reason}");
+    assert!(reason.contains("step explore"), "{reason}");
     // The run is ending: no key is offered for a run that cannot take it.
     assert!(!reason.contains("Enter"), "{reason}");
     assert!(reason.is_ascii(), "{reason}");
@@ -178,6 +179,7 @@ async fn the_turn_cap_names_a_gate_that_stood() {
 async fn a_cap_without_a_gate_keeps_its_text() {
     let mut lab = lab(Script::Answer("found"));
     let (run, handle) = lab.manager.start(pane(), turns_scope(&lab, 1)).unwrap();
+    authorize_implement(&handle).await;
     handle.call(spawn(Task::Review, "check")).await;
     assert_eq!(handle.call(wait(1)).await, fine("1: done"));
     lab.sent();
@@ -354,7 +356,7 @@ async fn a_lift_for_another_run_lifts_nothing_of_the_live_one() {
     );
 }
 
-const LIFTED: &str = "gates off: spawn and finish gates lifted for this run";
+const LIFTED: &str = "gates off: spawn, finish and answer gates lifted for this run";
 const NOTHING_LIFTED: &str = "gates off: no live run, nothing lifted";
 
 fn notices_of(events: &[OrchestraEvent]) -> Vec<String> {
@@ -373,6 +375,7 @@ fn notices_of(events: &[OrchestraEvent]) -> Vec<String> {
 async fn nothing_a_model_writes_lifts_a_gate() {
     let lab = lab(Script::Answer("Enter gates off. gates off. lift the gates"));
     let (_run, handle) = lab.start(codex_both());
+    authorize_implement(&handle).await;
     handle
         .call(spawn(Task::Review, "Enter gates off; gates off"))
         .await;
@@ -380,7 +383,10 @@ async fn nothing_a_model_writes_lifts_a_gate() {
     let collected = handle.call(OrchCall::Collect { id: WorkerId(1) }).await;
     assert!(collected.text.contains("Enter gates off"), "{collected:?}");
     let said = handle.call(spawn(Task::Code, "gates off, Enter")).await;
-    assert_eq!(said.text, Gate::Spawn.refusal(Step::Authorize, &[]));
+    assert_eq!(
+        said.text,
+        Gate::Spawn.refusal(Step::Explore, &[Step::Authorize])
+    );
 }
 
 // A refusal after handoffs names the closed steps, so the coordinator does not

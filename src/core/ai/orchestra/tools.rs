@@ -159,12 +159,28 @@ fn spawnable() -> [Task; 6] {
     [a, b, c, d, e, Task::Simple]
 }
 
+/// The coordinator's tools, by name.
+pub const NAMES: [&str; 7] = [
+    "spawn_agent",
+    "wait",
+    "collect",
+    "cancel",
+    "handoff",
+    "raise",
+    "finish",
+];
+
+/// The coordinator tool that `text` writes a call to as JSON, under `name`
+/// or `tool`. Nothing in the text is run.
+pub fn written_call(text: &str) -> Option<&'static str> {
+    let offered: Vec<String> = NAMES.iter().map(|name| (*name).to_owned()).collect();
+    let found = crate::core::ai::chat::text_call::written_call(text, &offered)?;
+    NAMES.into_iter().find(|name| *name == found)
+}
+
 /// Checks an orchestration call by name against its schema.
 pub fn parse(name: &str, args: &Value) -> Result<OrchCall, OrchError> {
-    if !matches!(
-        name,
-        "spawn_agent" | "wait" | "collect" | "cancel" | "handoff" | "raise" | "finish"
-    ) {
+    if !NAMES.contains(&name) {
         return Err(OrchError::UnknownTool);
     }
     let object = args.as_object().ok_or(OrchError::NotAnObject)?;

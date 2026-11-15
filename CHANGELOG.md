@@ -22,6 +22,26 @@ baseline.
   are redacted like the transcript. A run that could not be saved now says the
   trail may be missing. Older builds ignore the new column.
 
+### Fixed
+
+- **With ORCH on, nothing runs before `authorize`.** The spawn gate now refuses
+  a worker of every kind, not only a `code` worker, while step `authorize` is
+  open: a `review` or read-only `simple` worker started before the user's goal
+  was authorized. Writers keep the full gate. (#503)
+- **A coordinator that stops before handing off is asked once, not
+  accepted.** When an orchestrator turn ends with no tool call while
+  `authorize` is open (or an `implement` grant has no writer yet), the pane
+  shows `answer gate: ...` and the coordinator gets one re-ask per open step,
+  counted against `max_turns`. A spent re-ask waits for your reply with
+  `Enter gates off`. A `read_only` answer is allowed and no longer shows the
+  `no worker ran` notice. (#503, #441)
+- **A call written as `{"tool": ...}` text gets the same reminder as one
+  written with `name`,** and a turn that still ends on a written call is
+  re-asked by tool name instead of being taken as an answer. Nothing in the
+  text is ever run. (#441)
+- **`Enter gates off` now lifts the answer gate too** and the transcript says
+  so.
+
 ## [1.28.2] - 2026-11-15
 
 ### Fixed

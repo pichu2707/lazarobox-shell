@@ -63,7 +63,7 @@ fn reviewers(
         },
         ..lab.scope(codex_review(), &[])
     };
-    let (run, handle) = lab.manager.start(pane(), scope).unwrap();
+    let (run, handle) = lab.begin(scope).unwrap();
     (run, handle, rx)
 }
 

@@ -39,8 +39,12 @@ const COORDINATE_PROSE: &str =
     include_str!("../../../tests/fixtures/ollama/eval/coordinate-prose.json");
 const COORDINATE_TEXT: &str =
     include_str!("../../../tests/fixtures/ollama/eval/coordinate-text-call.json");
+const COORDINATE_TOOL_KEY: &str =
+    include_str!("../../../tests/fixtures/ollama/eval/coordinate-tool-key.json");
 
 struct Replayed {
+    /// How many requests the model server got.
+    requests: usize,
     run: Run,
     folder: Folder,
     last: Value,
@@ -56,6 +60,7 @@ async fn replay(raw: &str, fail: Option<&'static str>) -> Replayed {
     let answer = rig.drive(fake.port, &Timeouts::SERVER).await;
     let last = fake.bodies().last().cloned().expect("a request");
     Replayed {
+        requests: fake.bodies().len(),
         run: judge.run(&last, &answer, Duration::ZERO),
         folder,
         last,
@@ -180,6 +185,26 @@ async fn a_coordinator_that_writes_the_calls_as_text_completes_nothing() {
     let replayed = replay(COORDINATE_TEXT, None).await;
     assert!(!replayed.run.passed());
     only(&replayed.run.result, &all, &[], &[]);
+}
+
+// Spec (chat-engines, "The `tool` key gets the reminder"): a call written as
+// `{"tool": ..}` is reminded once, like the `name` form, and the model's
+// reply to the reminder is the second request. Nothing in the text is run.
+#[tokio::test]
+async fn a_coordinator_that_writes_a_tool_key_call_is_reminded_once() {
+    let all = ["authorize", "explore", "resolve", "classify", "spawn"];
+    let replayed = replay(COORDINATE_TOOL_KEY, None).await;
+    assert_eq!(replayed.requests, 2, "one reminder");
+    let reminder = crate::core::ai::chat::text_call::reminder("spawn_agent");
+    assert!(
+        replayed.last.to_string().contains(&reminder),
+        "{}",
+        replayed.last
+    );
+    assert!(!replayed.run.passed());
+    only(&replayed.run.result, &all, &[], &[]);
+    // The `name` form of the same call gets the same single reminder.
+    assert_eq!(replay(COORDINATE_TEXT, None).await.requests, 2);
 }
 
 // Spec (Fixture curation): the repository is public, so a fixture holds

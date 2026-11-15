@@ -23,6 +23,7 @@ mod cli;
 mod external;
 pub mod live;
 pub mod managed;
+mod tail;
 
 pub use cli::check_install;
 #[cfg(test)]
@@ -34,7 +35,10 @@ pub(crate) use cli::{
 pub use live::LiveServers;
 pub use managed::{Lease, Managed};
 
-use self::external::{Externals, Start};
+use self::{
+    external::{Externals, Start},
+    tail::Tail,
+};
 use super::{
     loopback::{Timeouts, post_stream},
     mcp::{Dispatch, Hub, Started, external::Slot},
@@ -59,7 +63,10 @@ use crate::core::{
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         config::McpServer,
-        orchestra::{RunId, SessionKey, run::UserChoice},
+        orchestra::{
+            RunId, SessionKey,
+            run::{TurnEnd, UserChoice},
+        },
         sanitize::{StreamSanitizer, Utf8Stream, clean},
         tools::{
             report::RunReport,
@@ -568,7 +575,7 @@ async fn run_turn(
     channel: (mpsc::Sender<StreamEvent>, mpsc::Receiver<StreamEvent>),
     pending: Option<Pending>,
     dispatch: Option<Arc<dyn Dispatch>>,
-) {
+) -> TurnEnd {
     let Turn {
         pane,
         turn,
@@ -596,6 +603,7 @@ async fn run_turn(
     let mut running = true;
     let mut listening = true;
     let mut pipe = Pipe::new();
+    let mut tail = Tail::default();
     loop {
         let event = tokio::select! {
             _ = &mut run, if running => {
@@ -619,12 +627,13 @@ async fn run_turn(
         // adapter and SIGKILL its group before the polite stop is over. Only
         // `Chats::shutdown` (or the engine ending) stops it then.
         for event in out {
+            tail.see(&event);
             if listening && app.send((pane, turn, event)).await.is_err() {
                 listening = false;
             }
         }
         if ended {
-            return;
+            return tail.end();
         }
     }
 }
@@ -765,7 +774,7 @@ impl Chats {
             old.abort();
         }
         let channel = mpsc::channel(TURN_CHANNEL);
-        let task = tokio::spawn(run_turn(
+        let turn = run_turn(
             self.runner.clone(),
             self.tx.clone(),
             Turn {
@@ -778,7 +787,10 @@ impl Chats {
             channel,
             None,
             None,
-        ));
+        );
+        let task = tokio::spawn(async move {
+            turn.await;
+        });
         self.turns.insert(pane, task);
     }
 
@@ -884,9 +896,9 @@ impl Chats {
             dispatch,
         );
         let task = tokio::spawn(async move {
-            turn.await;
+            let end = turn.await;
             if let Some((run, manager)) = ended {
-                manager.turn_ended(pane, run);
+                manager.turn_ended_as(pane, run, end);
             }
         });
         self.turns.insert(pane, task);
@@ -1272,6 +1284,8 @@ mod ollama;
 mod ollama_live;
 #[cfg(test)]
 mod ollama_tests;
+#[cfg(test)]
+mod tail_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

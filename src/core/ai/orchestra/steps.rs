@@ -70,13 +70,15 @@ pub const WRITE_OFF: &str = "worker not started: a worker that writes files need
 pub const WRITE_OFF_CORRECTION: &str =
     "Write is off; type /write in this chat so the next review can correct";
 
-/// The two transitions a step gate guards (agent-orchestrator [W3], D23).
+/// The transitions a step gate guards (agent-orchestrator [W3], D23).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Gate {
     /// A write-capable worker needs the steps before `implement` closed.
     Spawn,
     /// A run granted `implement` needs a write-capable worker before `finish`.
     Finish,
+    /// A turn that ends with no tool call needs the step it stopped before.
+    Answer,
 }
 
 impl Gate {
@@ -84,6 +86,7 @@ impl Gate {
         match self {
             Self::Spawn => "spawn",
             Self::Finish => "finish",
+            Self::Answer => "answer",
         }
     }
 
@@ -94,6 +97,7 @@ impl Gate {
     /// a coordinator cannot think its handoffs were lost. Under `ERROR_CAP`
     /// for every step.
     pub fn refusal(self, step: Step, closed: &[Step]) -> String {
+        let at = step;
         let step = step.label();
         match self {
             Self::Spawn => format!(
@@ -107,7 +111,64 @@ impl Gate {
                  the user it cannot start (Write off, worker cap). Only the user can lift the \
                  gate (Enter gates off)"
             ),
+            Self::Answer => answer_text(Some(at), closed, None),
         }
+    }
+}
+
+/// What the coordinator reads when a turn ended with no tool call (the answer
+/// gate): `step` is the open step it stopped before, if any, and `written`
+/// the coordinator tool whose call it wrote as text.
+pub fn answer_text(step: Option<Step>, closed: &[Step], written: Option<&str>) -> String {
+    let gap = |step: Step| {
+        format!(
+            "step {} is not closed ({})",
+            step.label(),
+            closed_text(closed)
+        )
+    };
+    match (step, written) {
+        (_, Some(tool)) => {
+            let head = format!(
+                "answer gate: you wrote a call to {tool} as text; nothing was run. \
+                 Make a real tool call."
+            );
+            match step {
+                Some(step) => format!("{head} Step {}.", &gap(step)[5..]),
+                None => head,
+            }
+        }
+        (Some(Step::Authorize), None) => format!(
+            "answer gate: your turn ended without a tool call and {}. Text, prose or a call \
+             written as JSON does nothing. Call the handoff tool now: step authorize, scope \
+             read_only to answer yourself or implement to change files.",
+            gap(Step::Authorize)
+        ),
+        (Some(Step::Implement), None) => format!(
+            "answer gate: your turn ended without a tool call and {}. Spawn the code worker now.",
+            gap(Step::Implement)
+        ),
+        (Some(step), None) => format!(
+            "answer gate: your turn ended without a tool call and {}. Call handoff for {} now.",
+            gap(step),
+            step.label()
+        ),
+        (None, None) => "answer gate: your turn ended without a tool call.".to_owned(),
+    }
+}
+
+/// The pane's line for the same re-ask.
+pub fn answer_line(step: Option<Step>, written: Option<&str>) -> String {
+    match (step, written) {
+        (_, Some(tool)) => format!(
+            "answer gate: the coordinator wrote a {tool} call as text; nothing was run; asked it to make a real tool call"
+        ),
+        (Some(Step::Authorize), None) => "answer gate: the coordinator answered before handing off authorize; asked it to hand off authorize first".to_owned(),
+        (Some(step), None) => format!(
+            "answer gate: the coordinator stopped before step {}; asked it to go on",
+            step.label()
+        ),
+        (None, None) => "answer gate: the coordinator stopped; asked it to go on".to_owned(),
     }
 }
 

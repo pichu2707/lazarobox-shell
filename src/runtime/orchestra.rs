@@ -81,7 +81,7 @@ use crate::core::{
             rounds::ROUNDS,
             run::{
                 CancelOutcome, CollectError, NextTurn, NotHalted, Refusal, Roster, Run, RunLimits,
-                RunState, StepDone, UserChoice, WorkerEvent,
+                RunState, StepDone, TurnEnd, UserChoice, WorkerEvent,
             },
             scope::{Dropped, ReadScope},
             steps::{Gate, Mark, READ_ONLY, Step, StepError, WRITE_OFF, WRITE_OFF_CORRECTION},
@@ -284,13 +284,18 @@ enum Next {
     Settle,
     Go(OrchestraEvent),
     Stop(String),
-    /// The run stays open for the user's reply (a spawn gate stands).
+    /// The run stays open for the user's reply (a gate stands).
     Wait(OrchestraEvent),
+    /// The answer gate re-asks: the pane's line, then the continuation.
+    Reask {
+        line: OrchestraEvent,
+        go: OrchestraEvent,
+    },
 }
 
 /// What the coordinator is told with the reply to a run that waited for it
 /// after the user lifted its step gates.
-pub const LIFT_NOTE: &str = "lazarobox: the user lifted the step gates for this run: spawn and finish are not gated now; spawn the worker again if the work still stands.";
+pub const LIFT_NOTE: &str = "lazarobox: the user lifted the step gates for this run: spawn, finish and turn ends are not gated now; spawn the worker again if the work still stands.";
 
 /// What `collect` answers when no nonce can be drawn: unwrapped text never
 /// goes out.
@@ -901,21 +906,25 @@ impl RunManager {
     /// running and no failure waits for the user: at once, or when its last
     /// worker finishes (user decision, 2026-10-29). A run that ended or was
     /// replaced ignores it.
-    pub fn turn_ended(self: &Arc<Self>, pane: PaneId, run: RunId) {
+    pub fn turn_ended_as(self: &Arc<Self>, pane: PaneId, run: RunId, end: TurnEnd) {
         let next = self.on_run(pane, run, |live| {
-            let next = self.next_turn(live);
+            let next = self.next_turn(live, end);
             if matches!(next, Next::Settle) {
                 self.tell_undelegated(pane, live);
             }
             // A run that continues waits for the turn the app starts: it must
             // not end under it when its last worker finishes meanwhile.
-            live.turn_over = !matches!(next, Next::Go(_));
+            live.turn_over = !matches!(next, Next::Go(_) | Next::Reask { .. });
             live.waiting = matches!(next, Next::Wait(_));
             next
         });
         match next {
             Some(Next::Settle) => self.settle(pane, run),
             Some(Next::Go(event) | Next::Wait(event)) => self.send(pane, event),
+            Some(Next::Reask { line, go }) => {
+                self.send(pane, line);
+                self.send(pane, go);
+            }
             Some(Next::Stop(reason)) => {
                 let live = lock(&self.runs).remove(&pane);
                 if let Some(live) = live {
@@ -925,6 +934,13 @@ impl RunManager {
             }
             None => {}
         }
+    }
+
+    /// [`RunManager::turn_ended_as`] for a turn that did not end in an
+    /// answer (tests of the runs that never reach the answer gate).
+    #[cfg(test)]
+    pub fn turn_ended(self: &Arc<Self>, pane: PaneId, run: RunId) {
+        self.turn_ended_as(pane, run, TurnEnd::default());
     }
 
     /// Tells the app, once, that `live` answered with no worker (D27).
@@ -938,15 +954,44 @@ impl RunManager {
     /// What follows the orchestrator turn of `live` (D8): the continuation
     /// built from the run ledger, wrapped as data under a nonce drawn for it
     /// (never a worker transcript), the stop at `max_turns`, or nothing.
-    fn next_turn(&self, live: &mut Live) -> Next {
+    fn next_turn(&self, live: &mut Live, end: TurnEnd) -> Next {
         let max = live.run.limits().turns;
-        match live.run.next_turn() {
+        match live.run.next_turn_after(end) {
             NextTurn::Settle => Next::Settle,
             NextTurn::Wait(step) => Next::Wait(OrchestraEvent::Waits {
                 run: live.run.id(),
                 step,
+                gate: live.run.last_gate().map_or(Gate::Spawn, |(gate, _)| gate),
                 closed: live.run.steps().closed_steps(),
             }),
+            NextTurn::Reask { step, written } => {
+                let (text, line) = live.run.reask_texts(step, written);
+                let run = live.run.id();
+                let line = OrchestraEvent::GateRefused {
+                    run,
+                    gate: Gate::Answer,
+                    step,
+                    reason: refusal_reason(&line),
+                };
+                match (self.nonce)() {
+                    Some(bytes) => {
+                        let ledger = live.run.run_ledger(&live.goal).render();
+                        let ledger = label::wrap(&label::nonce_from(bytes), &ledger);
+                        let turn = live.run.turns();
+                        let text = format!("{text}\n\n{ledger}");
+                        let go = OrchestraEvent::Continue(Continuation {
+                            run,
+                            turn,
+                            max,
+                            text,
+                        });
+                        Next::Reask { line, go }
+                    }
+                    None => Next::Stop(format!(
+                        "run stopped: the ledger cannot go to the orchestrator ({NO_NONCE})"
+                    )),
+                }
+            }
             NextTurn::Capped(taken) => {
                 let gate = live
                     .run
@@ -1163,7 +1208,7 @@ impl RunManager {
             .map(|live| live.run.lift_gates())
             .is_some();
         let text = if lifted {
-            "gates off: spawn and finish gates lifted for this run"
+            "gates off: spawn, finish and answer gates lifted for this run"
         } else {
             "gates off: no live run, nothing lifted"
         };

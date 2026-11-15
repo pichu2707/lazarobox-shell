@@ -28,6 +28,7 @@ fn waiting() -> (App, u64) {
     a.update(event(OrchestraEvent::Waits {
         run: RUN,
         step: Step::Explore,
+        gate: Gate::Spawn,
         closed: vec![Step::Authorize],
     }));
     a.update(finish(turn));
@@ -189,6 +190,7 @@ fn waits_event() -> OrchestraEvent {
     OrchestraEvent::Waits {
         run: RUN,
         step: Step::Explore,
+        gate: Gate::Spawn,
         closed: vec![Step::Authorize],
     }
 }
@@ -243,4 +245,35 @@ fn an_engine_error_after_the_wait_keeps_it_and_the_reply_attaches() {
     assert_eq!(chat_of(&a).waiting_run(), Some(RUN));
     let effects = ask(&mut a, "retry");
     assert_eq!(attach_of(&effects), Some(Some(RUN)), "{effects:?}");
+}
+
+// The answer gate waits with no refusal line before it (a spent re-ask): the
+// `Waits` itself offers the gates, Enter lifts them and names `answer`.
+#[test]
+fn an_answer_wait_offers_the_gates_and_enter_lifts_them() {
+    let (mut a, turn) = running();
+    // An earlier refusal of another gate made the run known; the wait names
+    // the gate that stands now, and the offer follows it.
+    a.update(event(refused_event()));
+    a.update(event(OrchestraEvent::Waits {
+        run: RUN,
+        step: Step::Authorize,
+        gate: Gate::Answer,
+        closed: vec![],
+    }));
+    a.update(finish(turn));
+    let offer = chat_of(&a).gate_offer().expect("the gates are offered");
+    assert_eq!(
+        (offer.run, offer.gate, offer.step),
+        (RUN, Gate::Answer, Step::Authorize)
+    );
+    let later = NOW_MS.with(|n| n.get()) + 1000;
+    let effects = at(&mut a, later, plain(KeyCode::Enter));
+    assert!(
+        effects.contains(&Effect::OrchGatesOff {
+            pane: chat_id(),
+            run: RUN,
+        }),
+        "{effects:?}"
+    );
 }
