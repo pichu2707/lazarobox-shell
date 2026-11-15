@@ -165,7 +165,7 @@ The old process MUST NOT restore the host terminal before `exec`: raw mode and t
 - THEN `stty -a` prints the same
 
 ### Requirement: Failures never lose panes silently [S6]
-A failure before `exec` MUST change nothing. A failed `exec` MUST keep the old process running with every pane, and show `reload failed: <error>; still running X.Y.Z`. When the new process cannot read the reload state or panics while adopting, on Linux it MUST run the old binary through its descriptor with the same reload state; elsewhere it MUST start with a single new shell and show and, after its next quit, print `reload failed: the panes could not be kept (<reason>)`. Adoption MUST be all-or-nothing in two passes: the new process MUST validate every entry before it takes ownership of any master, and a failure after that point MUST NOT close a master or signal a child before the fallback has run; where there is no fallback, the loss MUST be shown as a visible notice. The new process MUST keep the reload state descriptor open until adoption succeeded and the fallback MUST rewind it to offset 0 before `execveat`. A pane that cannot be adopted with its last screen and the line `[the program in this pane ended during the reload]`. When scope 1's `exec` fails after the teardown, the old process MUST rebuild the layout from its own reload state with new shells.
+A failure before `exec` MUST change nothing. A failed `exec` MUST keep the old process running with every pane, and show `reload failed: <error>; still running X.Y.Z`. When the new process cannot read the reload state or panics while adopting, on Linux it MUST run the old binary through its descriptor with the same reload state; elsewhere it MUST start with a single new shell and show and, after its next quit, print `reload failed: the panes could not be kept (<reason>)`. Adoption MUST be all-or-nothing in two passes: the new process MUST validate the whole state before it takes ownership of any master (a state-level failure fails the whole adoption; an entry whose pid or descriptor is invalid is only marked, and handled after the point of no return), and a failure after that point MUST NOT close a master or signal a child before the fallback has run; where there is no fallback, the loss MUST be shown as a visible notice. Before the point of no return (adoption fully succeeded, state descriptor closed) the new process MUST NOT start a reader or writer thread, read from, write to or resize any master, and it MUST keep close-on-exec cleared on every adopted master, the state descriptor and the old-binary descriptor; only after it may it set close-on-exec on the masters. The new process MUST keep the reload state descriptor open until adoption succeeded and the fallback MUST rewind it to offset 0 before `execveat`. A pane that cannot be adopted MUST stay shown with its last screen and the line `[the program in this pane ended during the reload]`. If the fallback `execveat` itself fails (provisional), the new process MUST NOT exit: it MUST keep every master open, show `reload failed and the previous lazarobox could not be restarted: <cause>; your shells are still running but not shown; quit to end them` on its first screen, print the same to stderr after quit, and end the children on quit as a normal quit does. When scope 1's `exec` fails after the teardown, the old process MUST rebuild the layout from its own reload state with new shells.
 
 #### Scenario: exec fails [auto]
 - GIVEN an `exec` that returns `ENOENT`
@@ -187,10 +187,25 @@ A failure before `exec` MUST change nothing. A failed `exec` MUST keep the old p
 - WHEN the new process handles it
 - THEN no master was closed and no child signalled, the first pane's threads are stopped, the old binary runs and all three panes are adopted there; on a platform without the fallback the notice `reload failed: the panes could not be kept (<reason>)` is visible on the first screen
 
+#### Scenario: Nothing reads before the point of no return [auto, linux, real exec]
+- GIVEN a reload state of two panes whose children keep writing, and a failure in pass 2 after the first handle is built
+- WHEN the new process falls back to the old binary
+- THEN no thread read either master, every byte the children wrote is still in the PTY and shows once in the old binary, and no master was resized
+
+#### Scenario: Close-on-exec stays cleared until success [auto, linux, real exec]
+- GIVEN the new process in pass 2
+- WHEN its descriptors' flags are read before and after the point of no return
+- THEN the masters, the state descriptor and the old-binary descriptor are not close-on-exec before it, and after it the masters are close-on-exec and the other two are closed
+
+#### Scenario: The fallback exec fails [auto, linux, real exec] (provisional)
+- GIVEN a new process that cannot adopt and whose old-binary descriptor refuses `execveat`
+- WHEN it handles the failure
+- THEN it is still running, every shell is alive with its master open, the first screen shows `reload failed and the previous lazarobox could not be restarted: …`, and quitting ends the shells and prints the same line to stderr
+
 #### Scenario: One pane cannot be adopted [auto]
 - GIVEN a reload state whose pane 2 pid now has another start time
 - WHEN the new process adopts
-- THEN pane 2 shows its last screen and `[the program in this pane ended during the reload]`, and the other panes are adopted
+- THEN pane 2 shows its last screen and `[the program in this pane ended during the reload]`, and the other panes are adopted; nothing was closed or signalled for pane 2 before the point of no return
 
 ### Requirement: Platforms [S5b]
 Scope 2 MUST be offered on Linux, WSL2 included (assumption, Open question 4). On other platforms the reload MUST run scope 1.
