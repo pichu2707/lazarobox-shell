@@ -78,17 +78,18 @@ pub const RESULTS_CAP: usize = 256 * 1024;
 pub const DROPPED: &str = "result dropped: the tool output limit of this turn was reached";
 /// What the model is told when a call panicked.
 pub const FAILED: &str = "the tool failed";
-/// How a rejected `tools` field shows in the error of an Ollama reply: any 400.
-const REJECTED: &str = "HTTP 400";
+/// How an Ollama reply that refused `tools` starts: the status, then the JSON
+/// body, whose `error` says the model does not support tools.
+const REJECTED: &str = "HTTP 400: ";
 /// The line a pane gets once when its llama.cpp server refuses `tools` and the
 /// turn goes on as text. The chat keeps one copy of a line per pane.
 pub const NO_TOOLS_NOTICE: &str =
     "llama-server refused tools (start it with --jinja): answering as plain text";
 
-/// The line a pane gets once when Ollama answers 400 to `tools` and the turn
-/// goes on as text. Any 400 matches, so the line does not name a cause.
+/// The line a pane gets once when Ollama answers that the model has no tools and the turn
+/// goes on as text. It never repeats the server message.
 pub const OLLAMA_NO_TOOLS_NOTICE: &str =
-    "Ollama answered 400 to a request with tools: retrying without them";
+    "Ollama says this model does not support tools: answering as plain text";
 
 /// The wire a tool loop speaks: Ollama's own (`/api/chat`, NDJSON) or the
 /// OpenAI chat-completions one (`/v1/chat/completions`, SSE) of llama.cpp.
@@ -108,13 +109,19 @@ impl Profile {
     }
 
     /// Whether the error text of a reply says the server refused `tools`.
-    /// Ollama answers a plain 400. llama-server answers a 4xx or 5xx whose
+    /// Ollama answers a 400 whose JSON `error` says `does not support tools`
+    /// (any case); any other 400 is a real error. llama-server answers a 4xx or 5xx whose
     /// message names the `--jinja` flag (recorded: 500 `tools param requires
     /// --jinja flag`); a template exception or any other 4xx/5xx is a real
     /// error. The status prefix keeps an in-stream error from matching.
     pub(super) fn rejected(self, text: &str) -> bool {
         match self {
-            Profile::Ollama => text.starts_with(REJECTED),
+            Profile::Ollama => text.strip_prefix(REJECTED).is_some_and(|body| {
+                serde_json::from_str::<serde_json::Value>(body)
+                    .ok()
+                    .and_then(|v| v.get("error")?.as_str().map(str::to_lowercase))
+                    .is_some_and(|error| error.contains("does not support tools"))
+            }),
             Profile::OpenAi => {
                 let lower = text.to_lowercase();
                 (text.starts_with("HTTP 4") || text.starts_with("HTTP 5"))
