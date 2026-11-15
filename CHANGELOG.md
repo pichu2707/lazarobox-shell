@@ -10,6 +10,21 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **Per-server approval level for MCP servers.** Each `[[ai.mcp.servers]]`
+  entry takes `approval = "ask" | "reads" | "all"` (set it in `config.toml`).
+  `ask` (the default, also for a missing or invalid value, which shows a
+  notice) asks `y` on every call. `reads` runs without asking only the tools
+  the catalog classes as read, and only when the declared name is a catalog
+  entry AND its `command` equals the catalog's; every other call asks. `all`
+  runs every tool of that server without asking, writes included. A
+  conversation that read GitHub text still asks for every call, workers never
+  get a user server's tools, and the Gmail send filter holds at every level.
+  The start line says the level (`mcp: started gsc · approval: reads`) and
+  the row of a call that ran unasked begins `unasked (approval = reads): `;
+  its result is still untrusted data.
+
 ## [1.27.0] - 2026-11-14
 
 ### Added
