@@ -448,6 +448,9 @@ enum Unprompted {
     /// A local read outside the root, which runs free in `ask` and `auto`
     /// as it always has, or the search of a concrete root: run as it is.
     AsIs,
+    /// A user tool whose server's own approval level lets it run unasked
+    /// (design D30), found by the host from the set it started.
+    Level,
 }
 
 impl Unprompted {
@@ -537,6 +540,22 @@ fn ran(call: &Call, report: &RunReport) -> (Outcome, ToolStatus, String, Option<
 /// the result wrapped as untrusted data under `nonce` (D14), which also caps
 /// it. The nonce is needed BEFORE the call: with none there is no wrapper, and
 /// a tool must not run for a result that would be withheld.
+/// Routes the call the user approved, or the server's level let go, to its
+/// server: what was approved must be what is routed.
+async fn routed_external(
+    scope: &TurnScope,
+    name: &str,
+    (server, tool): (&str, &str),
+    args: serde_json::Value,
+) -> (Outcome, ToolStatus, String) {
+    match scope.external.get() {
+        Some(set) if set.qualified().raw_of(name) == Some((server, tool)) => {
+            call_external(set, name, args, super::new_nonce()).await
+        }
+        _ => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
+    }
+}
+
 async fn call_external(
     set: &ExternalSet,
     name: &str,
@@ -917,6 +936,19 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     ask = ask_for(valid, locality);
                 }
             }
+            // A user tool of a chat or coordinator turn: the ask carries its
+            // server's level when that level lets the call run unasked (D30).
+            // A worker (`Some` scope) never gets one: its set is empty (D31).
+            (Call::External { name, .. }, locality, None) => {
+                ask = ask_for(valid, locality);
+                let level = scope.external.get().and_then(|set| set.unasked_level(name));
+                if let (Some(ApprovalAsk::External { unasked, .. }), Some(level)) =
+                    (ask.as_mut(), level)
+                {
+                    *unasked = Some(level);
+                    unprompted = Unprompted::Level;
+                }
+            }
             (valid, locality, _) => ask = ask_for(valid, locality),
         }
     }
@@ -1130,13 +1162,20 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         tool,
                         args,
                     },
-                ) => match scope.external.get() {
-                    // What the user approved must be what is routed.
-                    Some(set) if set.qualified().raw_of(&name) == Some((&server, &tool)) => {
-                        call_external(set, &name, args, super::new_nonce()).await
-                    }
-                    _ => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
-                },
+                ) => routed_external(&scope, &name, (&server, &tool), args).await,
+                // The server's level, not the user's `y`: only when this
+                // host's own ask carried it (D30). Never for a worker.
+                (
+                    Decision::Unprompted,
+                    Call::External {
+                        name,
+                        server,
+                        tool,
+                        args,
+                    },
+                ) if unprompted == Unprompted::Level => {
+                    routed_external(&scope, &name, (&server, &tool), args).await
+                }
                 // `offers` let it through only with a run manager to go to.
                 (Decision::Sent, Call::Orchestra(call)) => match &scope.orchestra {
                     Some(handle) => orchestrate(handle, call).await,

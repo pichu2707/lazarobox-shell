@@ -493,3 +493,59 @@ fn every_install_and_login_line_is_one_plain_line() {
         }
     }
 }
+
+// Spec (mcp-servers, mcp-catalog): the level answers the ask, by a pure rule.
+mod unasked {
+    use super::*;
+    use crate::core::ai::config::McpApproval;
+
+    fn server(name: &str, command: &str, level: McpApproval) -> McpServer {
+        McpServer {
+            command: command.to_owned(),
+            approval: level,
+            ..declared(name)
+        }
+    }
+
+    fn catalog_command(name: &str) -> &'static str {
+        entry(name).unwrap().command
+    }
+
+    #[test]
+    fn all_runs_every_tool_and_ask_runs_none_whatever_the_catalog_says() {
+        for (name, command) in [
+            ("ga4", catalog_command("ga4")),
+            ("ga4", "other"),
+            ("custom", "x"),
+        ] {
+            for tool in ["run_report", "create_property_annotation", "unlisted"] {
+                let all = server(name, command, McpApproval::All);
+                let ask = server(name, command, McpApproval::Ask);
+                assert!(unasked(&all, tool), "{name} {command} {tool}");
+                assert!(!unasked(&ask, tool), "{name} {command} {tool}");
+            }
+        }
+    }
+
+    #[test]
+    fn reads_runs_a_catalog_read_tool_of_the_catalog_server_only() {
+        let ga4 = server("ga4", catalog_command("ga4"), McpApproval::Reads);
+        assert_eq!(class("ga4", "run_report"), Class::Read);
+        assert!(unasked(&ga4, "run_report"));
+        // A write tool, and a tool the catalog does not list, still ask.
+        assert!(!unasked(&ga4, "create_property_annotation"));
+        assert!(!unasked(&ga4, "unlisted_tool"));
+    }
+
+    #[test]
+    fn reads_asks_when_the_name_is_not_a_catalog_entry() {
+        let custom = server("custom", catalog_command("ga4"), McpApproval::Reads);
+        assert!(!unasked(&custom, "run_report"));
+    }
+
+    #[test]
+    fn reads_asks_when_the_command_is_not_the_catalogs() {
+        let ga4 = server("ga4", "my-own-server", McpApproval::Reads);
+        assert!(!unasked(&ga4, "run_report"));
+    }
+}

@@ -381,6 +381,7 @@ fn the_other_asks_answer_after_the_short_delay() {
             server: "s".into(),
             tool: "t".into(),
             args: "{}".into(),
+            unasked: None,
         },
     ];
     for ask in asks {

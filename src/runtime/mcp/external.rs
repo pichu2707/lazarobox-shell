@@ -29,8 +29,8 @@ use super::{
     client::{ClientError, Listed, McpClient, Timeouts},
 };
 use crate::core::ai::{
-    config::McpServer,
-    mcp_catalog::{admits, gsc, link},
+    config::{McpApproval, McpServer},
+    mcp_catalog::{admits, gsc, link, unasked},
     mcp_secrets::{Secrets, redact_list, redact_values},
     sanitize::clean,
     tools::servers::{Qualified, qualify},
@@ -57,6 +57,9 @@ pub struct ExternalSet {
     /// `None` once stopped.
     clients: Vec<(String, Mutex<Option<McpClient>>)>,
     qualified: Qualified,
+    /// The declaration of each server that started: its approval level and
+    /// the command that the level's rule compares (design D29, D30).
+    servers: Vec<McpServer>,
     /// Why a server is missing, one line each.
     unavailable: Vec<String>,
 }
@@ -142,13 +145,15 @@ impl ExternalSet {
             .collect();
         let started: Vec<_> = stream::iter(starts).buffered(START_AT_ONCE).collect().await;
         let mut clients = Vec::new();
+        let mut kept = Vec::new();
         let mut listed = Vec::new();
         let mut unavailable = Vec::new();
-        for (name, result) in started {
+        for (server, (name, result)) in servers.iter().zip(started) {
             match result {
                 Ok((client, Listed { tools, .. })) => {
                     listed.push((name.clone(), tools));
                     clients.push((name, Mutex::new(Some(client))));
+                    kept.push((*server).clone());
                 }
                 Err(reason) => unavailable.push(format!("mcp: {name} unavailable: {reason}")),
             }
@@ -160,8 +165,18 @@ impl ExternalSet {
         Self {
             qualified: qualify(&pairs),
             clients,
+            servers: kept,
             unavailable,
         }
+    }
+
+    /// The level under which the call to `qualified` runs without a `y`, or
+    /// `None` when it asks (design D29, D30). Routed as a call is, by the
+    /// registry the model was offered, never by splitting the name.
+    pub fn unasked_level(&self, qualified: &str) -> Option<McpApproval> {
+        let (server, tool) = self.qualified.raw_of(qualified)?;
+        let declared = self.servers.iter().find(|s| s.name == server)?;
+        unasked(declared, tool).then_some(declared.approval)
     }
 
     /// The tools offered, under their qualified names.

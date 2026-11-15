@@ -145,6 +145,7 @@ fn others() -> Vec<ApprovalAsk> {
             server: "s".into(),
             tool: "t".into(),
             args: "{}".into(),
+            unasked: None,
         },
     ]
 }

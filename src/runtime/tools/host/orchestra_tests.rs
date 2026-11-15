@@ -45,13 +45,13 @@ use crate::runtime::tools::{
 };
 
 /// A run manager that answers every call with `answer` and remembers them.
-struct Fake {
+pub(super) struct Fake {
     answer: &'static str,
     calls: Mutex<Vec<OrchCall>>,
 }
 
 impl Fake {
-    fn new(answer: &'static str) -> Arc<Self> {
+    pub(super) fn new(answer: &'static str) -> Arc<Self> {
         Arc::new(Self {
             answer,
             calls: Mutex::new(Vec::new()),
@@ -98,7 +98,7 @@ fn server_tool() -> Call {
 }
 
 /// A worker turn of run 1 on `locality`: read-only tools and a read scope.
-fn worker(
+pub(super) fn worker(
     locality: Locality,
     home: &Path,
     handle: Arc<dyn Orchestra>,
@@ -115,7 +115,7 @@ fn worker(
 }
 
 /// An orchestrator turn: read tools, the orchestration tools and `handle`.
-fn orchestrator(
+pub(super) fn orchestrator(
     home: &Path,
     handle: Option<Arc<dyn Orchestra>>,
 ) -> (TurnScope, mpsc::Receiver<StreamEvent>) {

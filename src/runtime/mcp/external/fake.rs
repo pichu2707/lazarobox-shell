@@ -149,3 +149,12 @@ pub(crate) fn timeouts(call: Duration) -> Timeouts {
         call,
     }
 }
+
+/// Makes `set` remember that `name` was declared with `command`: a fake runs
+/// as `/bin/sh`, while the catalog's own server runs its own command, which
+/// the rule of `reads` compares (design D29).
+pub(crate) fn declared_with(set: &mut super::ExternalSet, name: &str, command: &str) {
+    for server in set.servers.iter_mut().filter(|s| s.name == name) {
+        server.command = command.to_owned();
+    }
+}

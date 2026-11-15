@@ -688,7 +688,68 @@ fn external(server: &str, tool: &str, args: &str) -> ApprovalAsk {
         server: server.into(),
         tool: tool.into(),
         args: args.into(),
+        unasked: None,
     }
+}
+
+fn unasked_external() -> ApprovalAsk {
+    ApprovalAsk::External {
+        server: "fs".into(),
+        tool: "read".into(),
+        args: "path=~/x".into(),
+        unasked: Some(crate::core::ai::config::McpApproval::All),
+    }
+}
+
+fn tool_rows(a: &App) -> usize {
+    use crate::core::ai::chat::Entry;
+    let entries = chat(a, id2()).entries();
+    entries
+        .iter()
+        .filter(|e| matches!(e, Entry::Tool(row) if row.name() == "tool"))
+        .count()
+}
+
+// Spec (mcp-servers, A pending approval does not block an unasked call, A call
+// that runs unasked is still visible): the server's level answers the ask with
+// no prompt, whatever waits, and the call keeps its transcript row.
+#[test]
+fn an_unasked_user_tool_runs_with_no_prompt_and_keeps_its_row() {
+    let (mut a, turn) = live();
+    assert_eq!(announce(&mut a, turn, 1, run("cd x")), Vec::new());
+    let shown = pending(&a);
+    assert!(shown.is_some());
+    assert_eq!(
+        announce(&mut a, turn, 2, unasked_external()),
+        vec![decision(turn, 2, Decision::Unprompted)]
+    );
+    assert_eq!(pending(&a), shown, "the waiting ask is untouched");
+    assert_eq!(tool_rows(&a), 2, "both calls have a row");
+}
+
+// Spec (mcp-servers): tools turned off mid-turn deny before the level is
+// read, and the call is still recorded.
+#[test]
+fn tools_turned_off_deny_an_unasked_call_before_its_level_is_read() {
+    let (mut a, turn) = live();
+    a.ai.set_tools_enabled(false);
+    assert_eq!(
+        announce(&mut a, turn, 1, unasked_external()),
+        vec![decision(turn, 1, Decision::Denied("tools are off"))]
+    );
+    assert_eq!(pending(&a), None);
+    assert_eq!(tool_rows(&a), 1);
+}
+
+// Spec (mcp-servers): a call of a turn that is over is denied the same way.
+#[test]
+fn a_finished_turn_denies_an_unasked_call_before_its_level_is_read() {
+    let (mut a, turn) = live();
+    a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
+    assert_eq!(
+        announce(&mut a, turn, 1, unasked_external()),
+        vec![decision(turn, 1, Decision::Denied("the turn is over"))]
+    );
 }
 
 #[test]

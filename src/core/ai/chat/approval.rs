@@ -21,7 +21,7 @@ use crate::core::ai::{
         review::{self, BatchReview, CommitReview, ScreenReview},
         review_view::ReviewView,
     },
-    config::{ApprovalMode, Task, ToolToggle},
+    config::{ApprovalMode, McpApproval, Task, ToolToggle},
     orchestra::WorkerKey,
     sanitize::clean,
     tools::{
@@ -131,6 +131,10 @@ pub enum ApprovalAsk {
         server: String,
         tool: String,
         args: String,
+        /// The server's own approval level when the host found it lets this
+        /// call run without a `y` (design D30): [`ask_for`] puts `None`; only
+        /// the host sets it, from the set it started, never from the model.
+        unasked: Option<McpApproval>,
     },
     /// Run `program` with `args` in the sandbox, in `cwd` (relative to the
     /// root, `.` for the root). All three are exactly what will run: the host
@@ -427,6 +431,7 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             server: shown_name(server),
             tool: shown_name(tool),
             args: shown_args(args),
+            unasked: None,
         }),
         Call::Grep { pattern, dir } if locality == Locality::Cloud => {
             let dir = flat(dir.as_deref().unwrap_or("."), SEARCH_SHOWN).0;
@@ -876,6 +881,11 @@ fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
 /// exactly as the same chat read. A command, a user tool, a batch and the ask
 /// of an edit are never answered here.
 pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode, blocked: bool) -> Option<Decision> {
+    // A user tool is answered by its server's level alone, in every mode: the
+    // host set `unasked` from its own start. A blocked conversation asks.
+    if let ApprovalAsk::External { unasked, .. } = ask {
+        return (unasked.is_some() && !blocked).then_some(Decision::Unprompted);
+    }
     // A conversation that read GitHub text asks for every cloud read and
     // search, in every mode. The guard's own refusal and a path that cannot be
     // shown keep their answers: neither opens anything.
@@ -1444,6 +1454,7 @@ mod tests {
             server: "s".into(),
             tool: "t".into(),
             args: "{}".into(),
+            unasked: None,
         };
         assert_eq!(
             route(&run_ask(), Origin::Tool, ApprovalMode::Ask, FREE),
@@ -2143,6 +2154,7 @@ mod tests {
                 server: "s".into(),
                 tool: "t".into(),
                 args: "{}".into(),
+                unasked: None,
             },
             ApprovalAsk::read("~/a"),
         ];
@@ -2151,6 +2163,50 @@ mod tests {
                 assert_eq!(answers_itself(&ask, mode, false), None, "{mode:?} {ask:?}");
             }
         }
+    }
+
+    // Spec (agent-tools, approval model): a server's level is the only
+    // automatic approval of a user tool; the mode never answers it, and a
+    // blocked conversation asks whatever the level.
+    #[test]
+    fn a_unasked_user_tool_is_answered_in_every_mode_but_never_when_blocked() {
+        use crate::core::ai::config::{ApprovalMode::*, McpApproval};
+        let ext = |unasked| ApprovalAsk::External {
+            server: "s".into(),
+            tool: "t".into(),
+            args: "{}".into(),
+            unasked,
+        };
+        for level in [McpApproval::Reads, McpApproval::All] {
+            for mode in [Ask, Auto, Run] {
+                assert_eq!(
+                    answers_itself(&ext(Some(level)), mode, false),
+                    Some(Decision::Unprompted),
+                    "{mode:?} {level:?}"
+                );
+                assert_eq!(
+                    answers_itself(&ext(Some(level)), mode, true),
+                    None,
+                    "blocked {mode:?} {level:?}"
+                );
+                assert_eq!(answers_itself(&ext(None), mode, false), None, "{mode:?}");
+            }
+        }
+    }
+
+    // Spec (agent-tools): the default level asks, and the ask carries no level.
+    #[test]
+    fn ask_for_a_user_tool_carries_no_level() {
+        let call = Call::External {
+            name: "gsc__run_report".into(),
+            server: "gsc".into(),
+            tool: "run_report".into(),
+            args: serde_json::json!({}),
+        };
+        let Some(ApprovalAsk::External { unasked, .. }) = ask_for(&call, Locality::Local) else {
+            panic!("a user tool always asks");
+        };
+        assert_eq!(unasked, None);
     }
 
     // Spec (agent-tools, approval model): grep asks on Cloud, runs free on Local.
@@ -2434,6 +2490,7 @@ mod tests {
                 server: "s".into(),
                 tool: "t".into(),
                 args: "{}".into(),
+                unasked: None,
             },
         ] {
             let mut a = Approvals::default();
@@ -2552,6 +2609,7 @@ mod tests {
                     server: "fs".into(),
                     tool: "write".into(),
                     args: r#"path: "~/x""#.into(),
+                    unasked: None,
                 })
             );
         }
