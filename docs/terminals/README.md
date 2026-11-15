@@ -16,6 +16,7 @@ change a result, so each record names both.
 | zutty | recorded | [zutty/](zutty/README.md) |
 | Windows Terminal (WSL) | recorded | [windows-terminal/](windows-terminal/README.md) |
 | WezTerm | recorded (Windows build, WSL domain) | [wezterm/](wezterm/README.md) |
+| tmux | recorded (3.5a, private server, no GUI emulator) | [tmux/](tmux/README.md) |
 
 Only a terminal listed in `RECORDED_TERMINALS` (`src/core/desktop.rs`) is
 reported as "has a record" by `install-desktop`. Adding a terminal means a
@@ -37,6 +38,14 @@ folder here, a filled record, and that constant, in the same change.
   by default, so it never reaches lazarobox. Use `Ctrl+J`, or add
   `{ key = "Enter", mods = "ALT", action = wezterm.action.DisableDefaultAssignment }`
   to `config.keys`.
+
+- **tmux and Ctrl+B.** tmux's default prefix is `Ctrl+B`, so it never
+  reaches lazarobox. Press it twice for one `Ctrl+B`, or move the tmux prefix
+  (`set -g prefix C-a`).
+- **tmux and copy.** With the default `set-clipboard external`, tmux drops the
+  OSC 52 that `y` sends: use `set -g set-clipboard on`, or have `wl-copy` or
+  `xclip` installed. Truecolor needs `set -as terminal-features 'xterm*:RGB'`
+  when the outer `TERM` is `xterm-256color`.
 
 ## Record header
 
