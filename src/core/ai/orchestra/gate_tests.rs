@@ -566,3 +566,164 @@ fn an_internal_review_worker_is_never_gated() {
     assert_eq!(run.spawn_internal(now, Task::Review, "p"), Ok(WorkerId(1)));
     assert_eq!(run.last_gate(), None);
 }
+
+// The answer gate (agent-orchestrator, "Gates on step state are visible and
+// bounded"): what follows a turn that ended with no tool call.
+mod answer {
+    use super::*;
+    use crate::core::ai::orchestra::run::{NextTurn, TurnEnd};
+
+    const TEXT: TurnEnd = TurnEnd {
+        answered: true,
+        written: None,
+    };
+
+    fn written(tool: &'static str) -> TurnEnd {
+        TurnEnd {
+            answered: true,
+            written: Some(tool),
+        }
+    }
+
+    fn reask(step: Step, written: Option<&'static str>) -> NextTurn {
+        NextTurn::Reask { step, written }
+    }
+
+    #[test]
+    fn a_text_end_before_authorize_is_re_asked_for_authorize() {
+        let mut run = run();
+        assert_eq!(run.next_turn_after(TEXT), reask(Step::Authorize, None));
+        assert_eq!(run.last_gate(), Some((Gate::Answer, Step::Authorize)));
+    }
+
+    #[test]
+    fn an_implement_grant_without_a_writer_is_re_asked_at_the_next_open_step() {
+        let mut run = run();
+        authorize(&mut run, Grant::Implement);
+        assert_eq!(run.next_turn_after(TEXT), reask(Step::Explore, None));
+        close(&mut run, Step::Explore, Mark::None);
+        assert_eq!(run.next_turn_after(TEXT), reask(Step::Resolve, None));
+    }
+
+    #[test]
+    fn an_end_after_a_writer_started_is_not_re_asked() {
+        let mut run = run();
+        close_early(&mut run);
+        let id = run.spawn(Instant::now(), Task::Code, "p").unwrap();
+        run.on_event(
+            Instant::now(),
+            id,
+            WorkerEvent::Done {
+                text: "ok".to_owned(),
+            },
+        );
+        run.fallbacks();
+        assert_eq!(run.next_turn_after(TEXT), NextTurn::Settle);
+    }
+
+    #[test]
+    fn a_read_only_answer_settles_but_a_written_call_is_re_asked() {
+        let mut plain = run();
+        authorize(&mut plain, Grant::ReadOnly);
+        assert_eq!(plain.next_turn_after(TEXT), NextTurn::Settle);
+        let mut call = run();
+        authorize(&mut call, Grant::ReadOnly);
+        assert_eq!(
+            call.next_turn_after(written("spawn_agent")),
+            reask(Step::Explore, Some("spawn_agent"))
+        );
+    }
+
+    #[test]
+    fn lifted_gates_a_pending_worker_and_an_unanswered_turn_are_not_re_asked() {
+        let mut lifted = run();
+        lifted.lift_gates();
+        assert_eq!(lifted.next_turn_after(TEXT), NextTurn::Settle);
+        let mut unanswered = run();
+        assert_eq!(
+            unanswered.next_turn_after(TurnEnd::default()),
+            NextTurn::Settle
+        );
+        let mut pending = run();
+        authorize(&mut pending, Grant::ReadOnly);
+        pending.spawn(Instant::now(), Task::Review, "p").unwrap();
+        assert_eq!(
+            pending.next_turn_after(written("wait")),
+            NextTurn::Continue(2)
+        );
+    }
+
+    #[test]
+    fn a_standing_spawn_refusal_takes_the_wait_not_a_re_ask() {
+        let mut run = run();
+        let _ = run.spawn(Instant::now(), Task::Code, "p");
+        assert_eq!(run.next_turn_after(TEXT), NextTurn::Wait(Step::Authorize));
+    }
+
+    #[test]
+    fn each_step_gets_one_re_ask_then_the_run_waits_and_a_reply_clears_nothing() {
+        let mut run = run();
+        assert_eq!(run.next_turn_after(TEXT), reask(Step::Authorize, None));
+        assert_eq!(run.next_turn_after(TEXT), NextTurn::Wait(Step::Authorize));
+        assert_eq!(run.last_gate(), Some((Gate::Answer, Step::Authorize)));
+        // The user's reply starts clean; a text-only turn waits again.
+        run.forget_gate();
+        assert_eq!(run.next_turn_after(TEXT), NextTurn::Wait(Step::Authorize));
+        authorize(&mut run, Grant::Implement);
+        assert_eq!(run.next_turn_after(TEXT), reask(Step::Explore, None));
+        assert_eq!(run.next_turn_after(TEXT), NextTurn::Wait(Step::Explore));
+    }
+
+    #[test]
+    fn a_re_ask_and_a_wait_each_count_a_turn_and_the_cap_names_the_gate() {
+        let mut run = run().with_limits(RunLimits {
+            turns: 3,
+            ..Default::default()
+        });
+        assert_eq!(run.next_turn_after(TEXT), reask(Step::Authorize, None));
+        assert_eq!(run.turns(), 2);
+        assert_eq!(run.next_turn_after(TEXT), NextTurn::Wait(Step::Authorize));
+        assert_eq!(run.turns(), 3);
+        assert_eq!(run.next_turn_after(TEXT), NextTurn::Capped(3));
+        assert_eq!(run.last_gate(), Some((Gate::Answer, Step::Authorize)));
+    }
+
+    #[test]
+    fn the_authorize_handoff_ends_the_gate_for_that_step() {
+        let mut run = run();
+        assert_eq!(run.next_turn_after(TEXT), reask(Step::Authorize, None));
+        authorize(&mut run, Grant::ReadOnly);
+        assert_eq!(run.next_turn_after(TEXT), NextTurn::Settle);
+        assert_eq!(run.last_gate(), None);
+    }
+
+    #[test]
+    fn the_re_ask_texts_name_the_step_and_a_written_call_without_a_gap() {
+        let mut run = run();
+        let (text, line) = run.reask_texts(Step::Authorize, None);
+        assert!(
+            text.contains("step authorize is not closed (closed: none)"),
+            "{text}"
+        );
+        assert!(line.contains("before handing off authorize"), "{line}");
+        authorize(&mut run, Grant::ReadOnly);
+        let (text, line) = run.reask_texts(Step::Explore, Some("handoff"));
+        assert_eq!(
+            text,
+            "answer gate: you wrote a call to handoff as text; nothing was run. Make a real tool call."
+        );
+        assert!(line.contains("wrote a handoff call as text"), "{line}");
+    }
+
+    #[test]
+    fn undelegated_is_false_after_a_read_only_grant_and_true_with_the_gates_lifted() {
+        let mut read_only = run();
+        assert!(read_only.undelegated());
+        authorize(&mut read_only, Grant::ReadOnly);
+        assert!(!read_only.undelegated());
+        let mut lifted = run();
+        authorize(&mut lifted, Grant::Implement);
+        lifted.lift_gates();
+        assert!(lifted.undelegated());
+    }
+}

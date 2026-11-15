@@ -961,10 +961,10 @@ async fn an_orchestrator_turn_without_a_session_ends_its_run() {
     assert!(seen.lock().unwrap().is_empty(), "no engine is contacted");
 }
 
-// S9 (user decision, 2026-10-29): when an orchestrator turn that spawned
-// nothing ends, its run ends by itself.
+// An orchestrator turn that ended in `Done` with `authorize` open reaches its
+// run as an answered end: the answer gate re-asks instead of ending the run.
 #[tokio::test]
-async fn the_end_of_an_orchestrator_turn_ends_its_idle_run() {
+async fn the_end_of_an_answered_orchestrator_turn_reaches_the_answer_gate() {
     use crate::{
         core::ai::{
             chat::engine::{Availability, OrchSend},
@@ -1001,23 +1001,29 @@ async fn the_end_of_an_orchestrator_turn_ends_its_idle_run() {
         .expect("the turn ends")
         .expect("an event");
     assert_eq!((at, turn, event), (pane(1), 1, done()));
-    // A turn that made no worker is told first (D27), then the run ends.
+    // The turn ended in `Done` with `authorize` open: the answer gate re-asks
+    // once (the pane's line, then the continuation) and the run stays open.
     let (at, event) = timeout(Duration::from_secs(5), ended.recv())
         .await
-        .expect("the run says no worker ran")
+        .expect("the gate line")
         .expect("an event");
     assert_eq!(at, pane(1));
     assert!(
-        matches!(event, OrchestraEvent::Undelegated { .. }),
+        matches!(
+            event,
+            OrchestraEvent::GateRefused {
+                gate: crate::core::ai::orchestra::steps::Gate::Answer,
+                ..
+            }
+        ),
         "{event:?}"
     );
-    let (at, event) = timeout(Duration::from_secs(5), ended.recv())
+    let (_, event) = timeout(Duration::from_secs(5), ended.recv())
         .await
-        .expect("the run ends with its turn")
+        .expect("the re-ask")
         .expect("an event");
-    assert_eq!(at, pane(1));
-    assert!(matches!(event, OrchestraEvent::Ended { .. }), "{event:?}");
-    assert!(manager.scope(pane(1)).is_none());
+    assert!(matches!(event, OrchestraEvent::Continue(_)), "{event:?}");
+    assert!(manager.scope(pane(1)).is_some(), "the run stays open");
 }
 
 // agent-orchestrator / No prompt at run start, Refused origin gives no root:

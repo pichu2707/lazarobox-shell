@@ -442,7 +442,12 @@ impl App {
             }
             // The turn ended with the spawn gate standing: the run stays open
             // for the reply, and the pane says why (W3, option B).
-            OrchestraEvent::Waits { run, step, closed } => {
+            OrchestraEvent::Waits {
+                run,
+                step,
+                gate,
+                closed,
+            } => {
                 // A `Waits` that comes after the run ended or was cancelled
                 // marks nothing.
                 if chat.orch_run() == Some(run) && !chat.run_cancelled(run) {
@@ -452,6 +457,7 @@ impl App {
                         step.label(),
                         closed_text(&closed)
                     ));
+                    chat.offer_gates(GateOffer { run, gate, step });
                 }
             }
             // A worker turn that runs as text: said before it starts.

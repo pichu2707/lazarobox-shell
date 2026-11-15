@@ -17,7 +17,9 @@ use super::limit::{Count, Written};
 use super::receipt::{self, Evidence};
 use super::review;
 use super::rounds::{ROUNDS, RoundError};
-use super::steps::{Gate, Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF};
+use super::steps::{
+    Gate, Grant, Mark, READ_ONLY, Step, StepError, Steps, WRITE_OFF, answer_line, answer_text,
+};
 use super::textcall;
 use super::worker::{CLARIFY_MAX, Closing, ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
@@ -104,6 +106,21 @@ pub enum NextTurn {
     /// this step: the run stays open for the user's reply, who may lift the
     /// gates (W3, option B). The reply turn is counted here.
     Wait(Step),
+    /// The turn ended with no tool call while `step` is open (or a call was
+    /// written as text): the next turn opens with a re-ask, once per step.
+    Reask {
+        step: Step,
+        written: Option<&'static str>,
+    },
+}
+
+/// What the runtime knows about how an orchestrator turn ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct TurnEnd {
+    /// The turn ended in `Done`, not in an error or an interrupt.
+    pub answered: bool,
+    /// The coordinator tool whose call the final text wrote as JSON.
+    pub written: Option<&'static str>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -314,6 +331,9 @@ pub struct Run {
     /// The step a refused spawn was waiting on: `implement` for a writer,
     /// `explore` for every other worker.
     spawn_target: Step,
+    /// The steps already re-asked once (the answer gate): a user reply never
+    /// clears it, so a spent step waits instead of looping.
+    reasked: Vec<Step>,
 }
 
 impl Run {
@@ -338,6 +358,7 @@ impl Run {
             gates_lifted: false,
             last_gate: None,
             spawn_target: Step::Implement,
+            reasked: Vec::new(),
         }
     }
 
@@ -473,7 +494,14 @@ impl Run {
     /// Whether the run made no worker and was not cancelled: an orchestrator
     /// turn that ends now answered in text alone (agent-orchestrator [W1]).
     pub fn undelegated(&self) -> bool {
-        self.slots.is_empty() && self.state != RunState::Cancelled
+        self.slots.is_empty()
+            && self.state != RunState::Cancelled
+            && self.steps.grant() != Some(Grant::ReadOnly)
+    }
+
+    /// Whether a worker that writes was ever spawned.
+    fn wrote(&self) -> bool {
+        (self.slots.iter()).any(|slot| slot.spec.toolset.families().contains(Family::Write))
     }
 
     pub fn status(&self, id: WorkerId) -> Option<WorkerStatus> {
@@ -1571,9 +1599,7 @@ impl Run {
         }
         // A run granted `implement` is not done before a code worker ran. A
         // spawn that was refused made no slot, so it does not count (W3).
-        let ran =
-            (self.slots.iter()).any(|slot| slot.spec.toolset.families().contains(Family::Write));
-        if !self.gates_lifted && self.steps.grant() == Some(Grant::Implement) && !ran {
+        if !self.gates_lifted && self.steps.grant() == Some(Grant::Implement) && !self.wrote() {
             self.last_gate = Some((Gate::Finish, Step::Implement));
             return Err(FinishError::Gate);
         }
@@ -1596,7 +1622,18 @@ impl Run {
     /// The orchestrator turn ended. A run still `Open` with a worker queued or
     /// running, or a finished worker with no handoff, continues in a new turn
     /// until `max_turns` turns were taken (D8); the turn is counted here.
+    #[cfg(test)]
     pub fn next_turn(&mut self) -> NextTurn {
+        self.next_turn_after(TurnEnd::default())
+    }
+
+    /// [`Run::next_turn`] with how the turn ended, for the answer gate.
+    pub fn next_turn_after(&mut self, end: TurnEnd) -> NextTurn {
+        // The answer gate is recomputed at every turn end: it stands only
+        // while a gap does.
+        if matches!(self.last_gate, Some((Gate::Answer, _))) {
+            self.last_gate = None;
+        }
         // A brief that asked a third time ends the run (D4).
         let third = self.slots.iter().find(|slot| {
             let asked = matches!(slot.closing, Some(Closing::Clarify(_)));
@@ -1621,6 +1658,26 @@ impl Run {
             self.turns += 1;
             return NextTurn::Wait(step);
         }
+        if self.state == RunState::Open
+            && !pending
+            && !self.gates_lifted
+            && end.answered
+            && let Some(step) = self.answer_gap(end.written)
+        {
+            self.last_gate = Some((Gate::Answer, step));
+            if self.turns >= self.limits.turns {
+                return NextTurn::Capped(self.turns);
+            }
+            self.turns += 1;
+            if self.reasked.contains(&step) {
+                return NextTurn::Wait(step);
+            }
+            self.reasked.push(step);
+            return NextTurn::Reask {
+                step,
+                written: end.written,
+            };
+        }
         if self.state != RunState::Open || !pending {
             return NextTurn::Settle;
         }
@@ -1629,6 +1686,26 @@ impl Run {
         }
         self.turns += 1;
         NextTurn::Continue(self.turns)
+    }
+
+    /// The step a turn that ended with no tool call stopped before: none
+    /// when the answer is allowed. A written call is never an answer.
+    fn answer_gap(&self, written: Option<&str>) -> Option<Step> {
+        let open = self.steps.next_open();
+        match self.steps.grant() {
+            None => Some(Step::Authorize),
+            Some(Grant::Implement) if !self.wrote() && open.is_some() => open,
+            _ => written.map(|_| open.unwrap_or(Step::Close)),
+        }
+    }
+
+    /// The text the next turn opens with and the pane's line for a re-ask of
+    /// `step`. The step sentence is left out when only a written call stops
+    /// the turn.
+    pub fn reask_texts(&self, step: Step, written: Option<&str>) -> (String, String) {
+        let gap = (self.answer_gap(None) == Some(step)).then_some(step);
+        let text = answer_text(gap, &self.steps.closed_steps(), written);
+        (text, answer_line(gap, written))
     }
 
     /// What the orchestrator said when it finished the run.
