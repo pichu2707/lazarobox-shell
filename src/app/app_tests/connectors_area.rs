@@ -847,7 +847,7 @@ fn a_level_change_is_an_effect_only_after_y_and_a_paste_never_reaches_it() {
 #[test]
 fn the_reply_of_a_level_change_is_said_and_the_files_are_read_again() {
     let mut a = on_entry();
-    let done = "approval: clarity set to reads in config.toml; the previous file stays in config.toml.bak; restart lazarobox to use it in chats".to_owned();
+    let done = "approval: clarity → reads · restart · config.toml.bak".to_owned();
     assert_eq!(
         tap(&mut a, AppEvent::ApprovalSet(Ok(done.clone()))),
         [Effect::LoadPresence]

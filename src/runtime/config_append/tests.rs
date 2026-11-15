@@ -463,8 +463,25 @@ fn an_approval_change_backs_up_the_old_bytes_and_keeps_the_mode() {
     assert_eq!(lab.names(), ["config.toml", "config.toml.bak"]);
     assert_eq!(
         approval_notice("gsc", McpApproval::Reads, Ok(true)),
-        Ok("approval: gsc set to reads in config.toml; the previous file stays in config.toml.bak; restart lazarobox to use it in chats".to_owned())
+        Ok("approval: gsc → reads · restart · config.toml.bak".to_owned())
     );
+}
+
+// mcp-connect: the success notice fits the footer of the 60-column popup.
+#[test]
+fn the_success_notice_fits_the_popup_footer_for_every_catalog_server() {
+    // The footer is a space and the notice, clipped to the popup's inner width.
+    let room = usize::from(crate::core::menu::WANT_WIDTH_AI) - 2 - 1;
+    for entry in crate::core::ai::mcp_catalog::entries() {
+        for level in [McpApproval::Ask, McpApproval::Reads, McpApproval::All] {
+            let notice = approval_notice(entry.id, level, Ok(true)).unwrap();
+            assert!(notice.chars().count() <= room, "{notice}");
+            assert!(
+                notice.contains(BACKUP) && notice.contains("restart"),
+                "{notice}"
+            );
+        }
+    }
 }
 
 // mcp-connect: The change is refused without a write
