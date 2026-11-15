@@ -84,3 +84,25 @@ fn a_consent_waits_its_turn_in_the_queue() {
     assert!(second.target.contains("code codex>gpt"), "{second:?}");
     assert!(!second.armed, "a promoted ask is armed afresh");
 }
+
+// Acceptance judges (S1b): the run-level consent is one clean line and keys
+// that say what each answer does.
+#[test]
+fn the_judge_consent_prompt_is_one_line_naming_the_models() {
+    let (mut a, turn) = live();
+    let text =
+        crate::core::ai::orchestra::judge::consent_text(&["claude \u{203a} opus".to_owned()]);
+    let ask = ApprovalAsk::JudgeConsent {
+        run: crate::core::ai::orchestra::RunId(1),
+        text,
+    };
+    assert_eq!(answers_itself(&ask, ApprovalMode::Auto, false), None);
+    announce(&mut a, turn, 1, ask);
+    let prompt = a.approval_prompt(id2()).unwrap();
+    assert!(prompt.target.contains("judge"), "{prompt:?}");
+    assert!(prompt.command.contains("opus") && !prompt.command.contains('\n'));
+    assert!(
+        prompt.keys.contains("y judge") && prompt.keys.contains("n skip"),
+        "{prompt:?}"
+    );
+}

@@ -561,6 +561,15 @@ pub fn changed(before: &StagedDiff, after: &StagedDiff) -> Vec<(String, Span)> {
     out
 }
 
+/// The text of the run's judge consent (D10): the level rule and the models
+/// that would judge, as one clean line.
+pub fn consent_text(models: &[String]) -> String {
+    let rule = "one judge for a small change, two for several files, 16 KB or more, \
+                or a medium or high tier";
+    let models: Vec<String> = models.iter().map(|model| plain_line(model)).collect();
+    plain_line(&format!("{rule} \u{b7} {}", models.join(", ")))
+}
+
 /// The prompt of a judge: the criteria and the norms lead the staged change
 /// and its diff, all wrapped as untrusted data together, so a criterion
 /// cannot gain the rank of an instruction and a cut diff stays a gap.

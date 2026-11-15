@@ -774,3 +774,18 @@ fn only_the_two_staged_texts_count_never_a_claim() {
     let got = changed(&before, &after);
     assert_eq!(got, [("src/a.rs".to_owned(), Span::Lines(1, 1))]);
 }
+
+// Spec (Consent for the judges): one clean line naming the rule and the models.
+#[test]
+fn the_consent_text_names_the_level_rule_and_the_models_in_one_clean_line() {
+    let models = [
+        "claude \u{203a} opus".to_owned(),
+        "ollama\u{7}\u{1b}[31m > llama3".to_owned(),
+    ];
+    let text = consent_text(&models);
+    assert!(!text.chars().any(char::is_control), "{text:?}");
+    for want in ["one judge", "two", "16 KB", "claude", "opus", "llama3"] {
+        assert!(text.contains(want), "{want} missing in {text:?}");
+    }
+    assert!(consent_text(&[]).contains("one judge"));
+}
