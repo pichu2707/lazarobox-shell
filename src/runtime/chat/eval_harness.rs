@@ -381,6 +381,8 @@ pub(super) enum Mode {
     /// Fixed texts: CI needs no sandbox, python3 or git.
     Replay,
     /// For real, in the lab, through the sandbox helper (the built binary).
+    /// Linux only, like the live harness that uses it.
+    #[cfg(target_os = "linux")]
     Live,
     /// For real, through a script that does not sandbox: offline tests.
     StandIn(PathBuf),
@@ -388,6 +390,7 @@ pub(super) enum Mode {
 
 /// The `lazarobox` binary that serves `__jail-exec`: the one `cargo build`
 /// leaves next to the test binaries.
+#[cfg(target_os = "linux")]
 pub(super) fn live_helper() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     let helper = exe
@@ -422,6 +425,7 @@ impl Rig {
         let home = folder.home.clone().into();
         let host = match &mode {
             Mode::Replay => ToolHost::new(Some(home), None, None, Limits::default()),
+            #[cfg(target_os = "linux")]
             Mode::Live => ToolHost::with_helper(home, live_helper(), false),
             Mode::StandIn(helper) => ToolHost::with_helper(home, helper.clone(), true),
         };
