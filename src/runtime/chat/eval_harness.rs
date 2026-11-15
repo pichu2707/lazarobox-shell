@@ -1000,3 +1000,32 @@ fn a_dump_never_overwrites_another_run() {
     assert_ne!(fourth, third);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Hardening: every `ToolError` is a parse error (the loop answers its text
+/// and the call never reaches the dispatch), so `PARSE_ERRORS` must list them
+/// all, or `mark_failed` would pair the records with the wrong exchanges. The
+/// match below has no wildcard: a new variant does not compile until it gets a
+/// slot here, and the test then fails until `PARSE_ERRORS` holds it there.
+#[test]
+fn parse_errors_list_every_tool_error_variant() {
+    const SLOTS: usize = 13;
+    let slot = |e: ToolError| match e {
+        ToolError::UnknownTool => 0,
+        ToolError::NotAnObject => 1,
+        ToolError::MissingArgument => 2,
+        ToolError::WrongType => 3,
+        ToolError::ExtraArgument => 4,
+        ToolError::TooLong => 5,
+        ToolError::PaneRange => 6,
+        ToolError::ScrollbackRange => 7,
+        ToolError::DraftKind => 8,
+        ToolError::DraftEmpty => 9,
+        ToolError::DraftTitleLong => 10,
+        ToolError::DraftTitleLines => 11,
+        ToolError::DraftBodyLong => 12,
+    };
+    assert_eq!(PARSE_ERRORS.len(), SLOTS, "PARSE_ERRORS misses a variant");
+    for (at, error) in PARSE_ERRORS.into_iter().enumerate() {
+        assert_eq!(slot(error), at, "{error:?} is not where the match says");
+    }
+}
