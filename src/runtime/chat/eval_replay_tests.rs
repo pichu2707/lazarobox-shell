@@ -358,6 +358,10 @@ fn pytest_rig(scenario: &'static Scenario, folder: &Folder) -> Rig {
 // the Judge (a scenario without them is denied and flagged), and the
 // orchestration tools stay `recorded`.
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "run_command through the stand-in helper needs the Linux sandbox, like the live harness"
+)]
 async fn in_the_live_rig_commands_and_git_add_go_through_the_judge() {
     let write = &scenarios::WRITE_AND_TEST;
     let folder = Folder::new(&throwaway_root(), write);
@@ -403,6 +407,10 @@ async fn in_the_live_rig_commands_and_git_add_go_through_the_judge() {
 // Hardening: a sandbox that cannot run a command (no Landlock) must fail the
 // pre-check naming the cause, not score every run_command as a failed step.
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "run_command through the stand-in helper needs the Linux sandbox, like the live harness"
+)]
 async fn the_probe_passes_when_the_helper_runs_a_command() {
     let scenario = &scenarios::WRITE_AND_TEST;
     let folder = Folder::new(&throwaway_root(), scenario);
@@ -414,6 +422,10 @@ async fn the_probe_passes_when_the_helper_runs_a_command() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "run_command through the stand-in helper needs the Linux sandbox, like the live harness"
+)]
 async fn the_probe_names_the_cause_when_the_helper_cannot_run_a_command() {
     let scenario = &scenarios::WRITE_AND_TEST;
     let folder = Folder::new(&throwaway_root(), scenario);
