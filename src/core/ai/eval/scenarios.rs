@@ -24,11 +24,13 @@ const ANY: fn(&Value) -> bool = |_| true;
 
 const BATCH: Expect = Expect {
     label: "batch",
+    must_pass: false,
     tool: "propose_batch",
     args: ANY,
 };
 const PYTEST: Expect = Expect {
     label: "pytest",
+    must_pass: true,
     tool: "run_command",
     args: runs_pytest,
 };
@@ -42,11 +44,13 @@ pub const WRITE_AND_TEST: Scenario = Scenario {
     steps: &[
         Expect {
             label: "write",
+            must_pass: false,
             tool: "write_file",
             args: |a| path_ends(a, "fib.py"),
         },
         Expect {
             label: "write-test",
+            must_pass: false,
             tool: "write_file",
             args: |a| path_ends(a, "test_fib.py"),
         },
@@ -54,6 +58,7 @@ pub const WRITE_AND_TEST: Scenario = Scenario {
         PYTEST,
         Expect {
             label: "commit",
+            must_pass: false,
             tool: "git_commit",
             args: ANY,
         },
@@ -86,6 +91,7 @@ pub const EDIT_EXISTING: Scenario = Scenario {
     steps: &[
         Expect {
             label: "edit",
+            must_pass: false,
             tool: "edit_file",
             args: |a| path_ends(a, "calc.py"),
         },
@@ -109,6 +115,7 @@ pub const READ_ONLY: Scenario = Scenario {
     )],
     steps: &[Expect {
         label: "read",
+        must_pass: false,
         tool: "read_file",
         args: |a| path_ends(a, "text_utils.py"),
     }],
@@ -142,26 +149,31 @@ pub const COORDINATE: Scenario = Scenario {
     steps: &[
         Expect {
             label: "authorize",
+            must_pass: false,
             tool: "handoff",
             args: |a| closes(a, "authorize") && a["scope"] == "implement",
         },
         Expect {
             label: "explore",
+            must_pass: false,
             tool: "handoff",
             args: |a| closes(a, "explore"),
         },
         Expect {
             label: "resolve",
+            must_pass: false,
             tool: "handoff",
             args: |a| closes(a, "resolve"),
         },
         Expect {
             label: "classify",
+            must_pass: false,
             tool: "handoff",
             args: |a| closes(a, "classify") && a["size"] == "small",
         },
         Expect {
             label: "spawn",
+            must_pass: false,
             tool: "spawn_agent",
             args: |a| {
                 a["kind"] == "simple" && a["outputs"].as_array().is_some_and(|o| !o.is_empty())

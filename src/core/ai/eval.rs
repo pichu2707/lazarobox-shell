@@ -43,6 +43,9 @@ impl Category {
 #[derive(Clone, Copy)]
 pub struct Expect {
     pub label: &'static str,
+    /// A command step that completes only when the command exited 0 (a test
+    /// run); otherwise any result that is not a refusal completes it.
+    pub must_pass: bool,
     pub tool: &'static str,
     pub args: fn(&Value) -> bool,
 }
@@ -143,7 +146,7 @@ fn matches(step: &Expect, e: &ToolExchange, must_pass: bool) -> bool {
     e.name == step.tool
         && (step.args)(&e.arguments)
         && !refused(&e.result)
-        && (!must_pass || step.tool != "run_command" || e.result.starts_with(COMMAND_OK))
+        && (!must_pass || !step.must_pass || e.result.starts_with(COMMAND_OK))
 }
 
 /// Whether the answer ends in a question or asks the user for an input.

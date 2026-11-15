@@ -184,6 +184,7 @@ fn asking_back_with_every_detail_given_fails() {
 fn asking_back_in_an_ambiguous_request_passes() {
     const STEP: Expect = Expect {
         label: "write",
+        must_pass: false,
         tool: "write_file",
         args: |_| true,
     };
@@ -475,4 +476,27 @@ fn only_a_real_exit_zero_outcome_starts_with_the_success_prefix() {
         ..none
     }));
     assert!(!ended(none));
+}
+
+// Hardening: the exit-0 rule is the step's own flag, not its tool name: a step
+// that expects a command whose exit does not matter completes on any exit.
+#[test]
+fn a_command_step_without_must_pass_completes_on_any_exit() {
+    const STEP: Expect = Expect {
+        label: "lint",
+        must_pass: false,
+        tool: "run_command",
+        args: |_| true,
+    };
+    let scenario = Scenario {
+        steps: &[STEP],
+        order: &[],
+        literals: &[],
+        forbid: &[],
+        ..READ_ONLY
+    };
+    let failing = pytest_ending("exit code 1 after 0.4s\n1 failed");
+    let result = score(&scenario, &[failing], "Done.");
+    assert_eq!(result.completed, ["lint"], "{result:?}");
+    assert!(result.failed.is_empty() && result.missing.is_empty());
 }
