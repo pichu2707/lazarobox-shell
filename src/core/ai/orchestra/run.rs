@@ -311,6 +311,9 @@ pub struct Run {
     /// The last gate that refused and the step it saw; cleared when that gate
     /// passes, so the turn cap names only a gate that still stands.
     last_gate: Option<(Gate, Step)>,
+    /// The step a refused spawn was waiting on: `implement` for a writer,
+    /// `explore` for every other worker.
+    spawn_target: Step,
 }
 
 impl Run {
@@ -334,6 +337,7 @@ impl Run {
             feature: None,
             gates_lifted: false,
             last_gate: None,
+            spawn_target: Step::Implement,
         }
     }
 
@@ -364,6 +368,22 @@ impl Run {
             };
             self.handoff_step(step, mark, note).expect("fixture step");
         }
+    }
+
+    /// Test fixture: closes `authorize` with a `read_only` grant, so a read
+    /// worker may spawn and `finish` is not gated.
+    #[cfg(test)]
+    pub(crate) fn read_only_for_tests(&mut self) {
+        let note = Judgement {
+            verdict: super::ledger::Verdict::OnCourse,
+            reason: "fixture".to_owned(),
+            done: "fixture".to_owned(),
+            left: String::new(),
+            decisions: String::new(),
+        };
+        let grant = Mark::Grant(Grant::ReadOnly);
+        self.handoff_step(Step::Authorize, grant, note)
+            .expect("fixture step");
     }
 
     /// The user lifts both step gates for this run, all or nothing (W3, D24).
@@ -906,11 +926,18 @@ impl Run {
         if gated && self.public_count() >= self.limits.workers {
             return Err(Refusal::WorkerCap(self.limits.workers));
         }
-        if writer && gated && !self.gates_lifted {
-            // `Implement` has no `Locked` or `NotLarge` case: only an open
-            // step in front of it can refuse.
-            if let Err(StepError::Order { open, .. }) = self.steps.check(Step::Implement) {
+        if gated && !self.gates_lifted {
+            // A writer needs every step before `implement`; any other worker
+            // only needs `authorize`. Neither target has a `Locked` or
+            // `NotLarge` case: only an open step in front can refuse.
+            let target = if writer {
+                Step::Implement
+            } else {
+                Step::Explore
+            };
+            if let Err(StepError::Order { open, .. }) = self.steps.check(target) {
                 self.last_gate = Some((Gate::Spawn, open));
+                self.spawn_target = target;
                 return Err(Refusal::Gate(open));
             }
         }
@@ -943,8 +970,10 @@ impl Run {
             internal: !gated,
         });
         let id = WorkerId(self.slots.len() as u32);
-        if writer {
-            // A code worker exists: neither gate stands any more.
+        let read_gate = self.spawn_target == Step::Explore;
+        if writer || (read_gate && matches!(self.last_gate, Some((Gate::Spawn, _)))) {
+            // A code worker exists, or a read worker started past a gate that
+            // only waited on `authorize`: that gate stands no more.
             self.last_gate = None;
         }
         self.enqueue(now, id, refusal, false);
@@ -1424,7 +1453,7 @@ impl Run {
         // The spawn gate that last refused now stands at the next open step,
         // or no longer stands: the turn cap names only what is true.
         if matches!(self.last_gate, Some((Gate::Spawn, _))) {
-            self.last_gate = match self.steps.check(Step::Implement) {
+            self.last_gate = match self.steps.check(self.spawn_target) {
                 Err(StepError::Order { open, .. }) => Some((Gate::Spawn, open)),
                 _ => None,
             };

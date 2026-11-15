@@ -26,7 +26,11 @@ fn run_of(each: &[(Task, &str, &str)], parallel: usize) -> Run {
         parallel,
         ..RunLimits::default()
     };
-    Run::new(RunId(1), Roster::new(roster), Duration::from_secs(600)).with_limits(limits)
+    let mut run =
+        Run::new(RunId(1), Roster::new(roster), Duration::from_secs(600)).with_limits(limits);
+    // Every worker kind waits for `authorize` (W3): these tests are not about it.
+    run.close_steps_for_tests();
+    run
 }
 
 const LOCAL: [(Task, &str, &str); 2] = [

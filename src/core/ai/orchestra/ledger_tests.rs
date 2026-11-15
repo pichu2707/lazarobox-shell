@@ -22,10 +22,14 @@ fn run() -> Run {
         model: Some("gpt".to_owned()),
     };
     let roster = Roster::new(vec![(Task::Review, ready.clone()), (Task::Code, ready)]);
-    Run::new(RunId(7), roster, Duration::from_secs(600)).with_limits(super::run::RunLimits {
-        parallel: 4,
-        ..Default::default()
-    })
+    let mut run =
+        Run::new(RunId(7), roster, Duration::from_secs(600)).with_limits(super::run::RunLimits {
+            parallel: 4,
+            ..Default::default()
+        });
+    // Every worker kind waits for `authorize` (W3): these tests are not about it.
+    run.lift_gates();
+    run
 }
 
 /// A worker of `task` that ended `done` with `text` as its transcript.

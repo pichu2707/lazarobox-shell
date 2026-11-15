@@ -197,8 +197,8 @@ fn read_only_is_refused_while_a_code_worker_runs() {
 fn read_only_refuses_the_queued_code_workers() {
     let mut run = run().with_limits(RunLimits::default());
     let now = Instant::now();
-    let review = run.spawn(now, Task::Review, "a").expect("spawn");
     run.close_steps_for_tests();
+    let review = run.spawn(now, Task::Review, "a").expect("spawn");
     let code = run.spawn(now, Task::Code, "b").expect("spawn");
     let second = run.spawn(now, Task::Review, "c").expect("spawn");
     assert_eq!(run.status(code), Some(WorkerStatus::Queued));

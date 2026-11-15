@@ -424,11 +424,13 @@ impl Scoped {
             engine: "claude".into(),
             model: Some("opus".into()),
         };
-        let run = Run::new(
+        let mut run = Run::new(
             RunId(1),
             Roster::new(vec![(Task::Review, ready)]),
             Duration::from_secs(600),
         );
+        // A review worker waits for `authorize` (W3); these tests are not about it.
+        run.close_steps_for_tests();
         Arc::new(Self {
             scope,
             run: Mutex::new(run),

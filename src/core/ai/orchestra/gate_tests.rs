@@ -3,8 +3,10 @@
 //! `implement` closed, and `finish` after an `implement` grant needs a
 //! write-capable worker.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
+use super::brief::Brief;
 use super::ledger::{FinishError, Judgement, Verdict};
 use super::run::{Refusal, Roster, Run, RunLimits, RunState, UserChoice, WorkerEvent};
 use super::steps::{Gate, Grant, Mark, Size, Step, WRITE_OFF};
@@ -102,11 +104,12 @@ fn a_code_spawn_passes_once_the_steps_through_classify_are_closed() {
     assert_eq!(run.spawn(Instant::now(), Task::Code, "p"), Ok(WorkerId(1)));
 }
 
-// The gate is on the worker's role: reading and summarising never wait for
-// the steps.
+// Past `authorize`, the gate is on the worker's role: reading and summarising
+// never wait for the other steps.
 #[test]
-fn only_a_write_capable_role_is_gated() {
+fn only_a_write_capable_role_is_gated_past_authorize() {
     let mut run = run();
+    authorize(&mut run, Grant::Implement);
     let now = Instant::now();
     for task in [Task::Review, Task::Summarize, Task::General] {
         assert!(run.spawn(now, task, "p").is_ok(), "{task:?}");
@@ -122,6 +125,7 @@ fn the_gate_comes_after_read_only_and_the_cap_and_before_write_off() {
     let now = Instant::now();
 
     let mut paused = run();
+    authorize(&mut paused, Grant::Implement);
     let id = paused.spawn(now, Task::Review, "p").unwrap();
     paused.on_event(
         now,
@@ -144,6 +148,7 @@ fn the_gate_comes_after_read_only_and_the_cap_and_before_write_off() {
         workers: 1,
         ..Default::default()
     });
+    authorize(&mut capped, Grant::Implement);
     capped.spawn(now, Task::Review, "p").unwrap();
     assert_eq!(
         capped.spawn(now, Task::Code, "p"),
@@ -329,6 +334,7 @@ fn an_internal_code_worker_is_not_gated_and_never_rechecked() {
 #[test]
 fn a_queued_internal_code_worker_starts_from_the_queue_with_steps_open() {
     let mut run = Run::new(RunId(3), roster(), Duration::from_secs(60));
+    authorize(&mut run, Grant::Implement);
     let now = Instant::now();
     let first = run.spawn(now, Task::Review, "p").unwrap();
     let queued = run.spawn_internal(now, Task::Code, "fix").unwrap();
@@ -466,4 +472,97 @@ fn the_spawn_refusal_fits_the_cap_with_every_earlier_step_closed() {
         assert!(text.len() <= ERROR_CAP && text.is_ascii(), "{text}");
         assert!(text.ends_with("(Enter gates off)"), "{text}");
     }
+}
+
+fn read_brief() -> Brief {
+    Brief {
+        goal: "explain the flag".to_owned(),
+        inputs: vec!["src/a.rs".to_owned()],
+        outputs: None,
+        done_when: "it is explained".to_owned(),
+        out_of_scope: "docs".to_owned(),
+        ..Brief::default()
+    }
+}
+
+fn read_simple(run: &mut Run) -> Result<WorkerId, Refusal> {
+    run.spawn_simple(Instant::now(), read_brief(), Path::new("/work/app"))
+}
+
+// Spec (W3, A read worker is refused before authorize; Every worker kind is
+// covered): nothing starts while `authorize` is open, whatever the kind.
+#[test]
+fn every_worker_kind_is_refused_while_authorize_is_open() {
+    let mut run = run();
+    let now = Instant::now();
+    for task in [
+        Task::Review,
+        Task::Summarize,
+        Task::General,
+        Task::Chat,
+        Task::Code,
+    ] {
+        assert_eq!(
+            run.spawn(now, task, "p"),
+            Err(Refusal::Gate(Step::Authorize)),
+            "{task:?}"
+        );
+    }
+    assert_eq!(read_simple(&mut run), Err(Refusal::Gate(Step::Authorize)));
+    assert_eq!(run.status(WorkerId(1)), None);
+    assert_eq!(run.last_gate(), Some((Gate::Spawn, Step::Authorize)));
+}
+
+// Spec (Read workers start after authorize read_only).
+#[test]
+fn read_workers_start_after_authorize_read_only() {
+    let mut run = run();
+    authorize(&mut run, Grant::ReadOnly);
+    assert_eq!(
+        run.spawn(Instant::now(), Task::Review, "p"),
+        Ok(WorkerId(1))
+    );
+    assert_eq!(read_simple(&mut run), Ok(WorkerId(2)));
+}
+
+// Spec (Writers keep the full gate): a review starts while a code worker
+// waits at `explore`.
+#[test]
+fn a_writer_is_refused_at_explore_while_a_review_starts() {
+    let mut run = run();
+    authorize(&mut run, Grant::Implement);
+    let now = Instant::now();
+    assert_eq!(
+        run.spawn(now, Task::Code, "p"),
+        Err(Refusal::Gate(Step::Explore))
+    );
+    assert_eq!(run.spawn(now, Task::Review, "p"), Ok(WorkerId(1)));
+    assert_eq!(run.last_gate(), Some((Gate::Spawn, Step::Explore)));
+}
+
+// A refused read spawn leaves no stale gate once authorize closes: the turn
+// settles instead of waiting.
+#[test]
+fn a_refused_read_spawn_leaves_no_stale_gate_after_authorize() {
+    use super::run::NextTurn;
+    let mut run = run();
+    let _ = run.spawn(Instant::now(), Task::Review, "p");
+    assert_eq!(run.last_gate(), Some((Gate::Spawn, Step::Authorize)));
+    authorize(&mut run, Grant::ReadOnly);
+    assert_eq!(run.last_gate(), None);
+    assert_eq!(
+        run.spawn(Instant::now(), Task::Review, "p"),
+        Ok(WorkerId(1))
+    );
+    assert_eq!(run.last_gate(), None);
+    assert_ne!(run.next_turn(), NextTurn::Wait(Step::Authorize));
+}
+
+// A.7: lenses, refuter, corrector and judges are lazarobox's own spawns.
+#[test]
+fn an_internal_review_worker_is_never_gated() {
+    let mut run = run();
+    let now = Instant::now();
+    assert_eq!(run.spawn_internal(now, Task::Review, "p"), Ok(WorkerId(1)));
+    assert_eq!(run.last_gate(), None);
 }
