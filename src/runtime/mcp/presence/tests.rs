@@ -6,6 +6,9 @@ const CONFIG: &str = "# mine\n[[ai.mcp.servers]]\nname = \"clarity\"\ncommand = 
 
 fn files(secrets_mode: u32) -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
+    // The config folder must not be group/other-writable; a tempdir inherits
+    // group-write under `umask 002`, so pin the mode.
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let config = dir.path().join("config.toml");
     let secrets = dir.path().join("secrets.toml");
     std::fs::write(&config, CONFIG).unwrap();

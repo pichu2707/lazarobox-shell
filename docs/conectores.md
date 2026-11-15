@@ -39,6 +39,7 @@ Los detalles, en [Conectar Google en un paso](#conectar-google-en-un-paso). Para
 - [Search Console](#search-console)
 - [Google Workspace: Gmail, Docs y Hojas](#google-workspace-gmail-docs-y-hojas)
 - [Apps Script](#apps-script)
+- [Cuántas llamadas piden confirmación (`approval`)](#cuántas-llamadas-piden-confirmación-approval)
 - [Nivel de aprobación por servicio (`a`)](#nivel-de-aprobación-por-servicio-a)
 - [Riesgos de un vistazo](#riesgos-de-un-vistazo)
 - [Cómo desconectar un servicio](#cómo-desconectar-un-servicio)
@@ -368,15 +369,28 @@ lazarobox solo acepta un enlace de `accounts.google.com` que lleve **tu** id de 
 4. Pulsa `l` (`clasp login`), confirma con `y` y completa el navegador. No hay `env`, así que no hay `f` ni tabla en `secrets.toml`.
 5. Pulsa `p`: `mcp: started apps-script (5 tools)`.
 
-## Nivel de aprobación por servicio (`a`)
+## Cuántas llamadas piden confirmación (`approval`)
 
-Por defecto cada llamada a una herramienta de un servidor tuyo espera tu `y` (nivel `ask`). Cada servicio declarado puede tener su propio nivel en la clave `approval` de su entrada `[[ai.mcp.servers]]`; desde el área Connectors lo ves y lo cambias con la tecla `a`.
+Por defecto cada llamada a una herramienta de un servicio pide tu `y`. Si un servicio de solo lectura te interrumpe demasiado, puedes relajarlo servidor por servidor con la clave `approval` de su entrada en `config.toml` (a mano, o con la tecla `a` del área Connectors: ver más abajo):
 
-| Nivel | Qué se ejecuta sin preguntar |
-|---|---|
-| `ask` (por defecto) | Nada: cada llamada pide `y`. |
-| `reads` | Solo las herramientas que el catálogo clasifica como lectura, y solo si el servidor declarado es el del catálogo (mismo `command`). El resto, incluida una herramienta que el catálogo no lista, sigue pidiendo `y`. |
-| `all` | Toda herramienta que el servidor registra, **escrituras incluidas**. |
+```toml
+[[ai.mcp.servers]]
+name = "gsc"
+command = "mcp-search-console"
+args = ["..."]
+approval = "reads"
+```
+
+- `"ask"` (por defecto): pide `y` en cada llamada. Una clave que falta equivale a `"ask"`.
+- `"reads"`: las herramientas que el catálogo marca como de lectura (por ejemplo `run_report` en `ga4`) se ejecutan sin preguntar; las de escritura y las que el catálogo no conoce siguen pidiendo `y`. Solo vale para el servidor del catálogo: el `name` debe ser el de la entrada y el `command` debe ser el mismo; un servidor propio que se llama `gsc` pero lanza otro comando siempre pregunta. La indicación `readOnlyHint` del propio servidor se ignora. Al arrancar, la línea `mcp: started gsc · approval: reads` lo confirma (y añade `, but every call asks (not the catalog's server)` si no es el del catálogo).
+- `"all"`: todas las herramientas de ese servidor se ejecutan sin preguntar, **también las que escriben o borran**. Úsalo solo en un servidor de pruebas o en uno en el que confíes del todo: un texto malicioso en un resultado (un correo, una página) podría dirigir al modelo a llamar una herramienta de escritura sin que lo veas antes.
+- Un valor inválido (`approval = "siempre"`) avisa al arrancar y equivale a `"ask"`; la entrada y las demás se mantienen.
+
+Qué no cambia: los _workers_ nunca reciben las herramientas de tus servidores; una conversación que ya leyó texto de GitHub sigue pidiendo `y` en cada llamada, sea cual sea el nivel; el filtro que oculta las herramientas de enviar de Gmail y `start_google_auth` sigue activo; el resultado llega al modelo como dato no fiable y un comando que sugiera sigue necesitando su propio `y`. Cada llamada sin pregunta queda en la transcripción, con la fila `unasked (approval = reads): ...`. El nivel se lee al arrancar el chat: reinicia lazarobox tras editar `config.toml`.
+
+### Verlo y cambiarlo desde el menú (`a`)
+
+En lugar de editar `config.toml` a mano, el área Connectors muestra el nivel de cada servicio declarado y lo cambia con la tecla `a`. Los tres niveles son los de arriba.
 
 Cómo se usa:
 
@@ -384,12 +398,8 @@ Cómo se usa:
 2. Pulsa `a`: propone el siguiente nivel (`ask`, `reads`, `all`, `ask`) y **no escribe nada**. Solo una `y` suelta confirma; `n`, Esc, `Ctrl+y` o cualquier otra tecla cancelan.
 3. Con `y`, lazarobox cambia solo la línea `approval` de esa entrada en `config.toml` (si no existía, la añade tras la última clave de la entrada; elegir `ask` la quita), guarda el archivo anterior como `config.toml.bak` y avisa. Los chats que ya estaban abiertos conservan su nivel: reinicia lazarobox para usarlo.
 
-Lo que debes saber antes de subir el nivel:
+Antes de subir el nivel, recuerda lo que `all` ejecuta sin preguntar (ver arriba): el resultado de cada llamada se marca `unasked (approval = <nivel>)`, pero ya se ejecutó.
 
-- Con `all`, el modelo puede escribir, enviar o borrar con ese servidor **sin que lo veas antes**. Cada llamada sigue apareciendo en el chat, y su resultado se marca `unasked (approval = <nivel>)`, pero ya se ejecutó. Úsalo solo en un servidor desechable o en el que confíes del todo.
-- Una conversación con el bloqueo de GitHub activo pide `y` en todo servidor, sea cual sea el nivel.
-- Los workers del orquestador nunca reciben un servidor tuyo, así que el nivel no les afecta.
-- La lista de herramientas de Gmail de `google` y las herramientas ocultas (`start_google_auth`, `reauthenticate`) siguen sin registrarse en ningún nivel.
 - El menú se niega, con un aviso y sin escribir, si `config.toml` cambió desde que viste la pantalla (`changed on disk`), no es TOML válido, es un enlace simbólico o de solo lectura, pasa de 256 KiB, declara `ai.mcp.servers` en línea, ya no tiene la entrada o la declara dos veces (`declared more than once; set approval by hand`). Una entrada limitada a un proyecto (`project`) tampoco se edita desde el menú: ponle `approval` a mano.
 
 ## Riesgos de un vistazo
@@ -401,7 +411,7 @@ Lo que debes saber antes de subir el nivel:
 | GSC | Con `name = "gsc"`. Las herramientas de escritura (sitemaps) piden `y`; añadir y borrar propiedades está desactivado. Un token caducado puede colgar una llamada hasta Esc: enlaza de nuevo. |
 | Google Workspace | Con `name = "google"`. Lista de 8 herramientas de Gmail, solo borradores. `gmail.compose` puede enviar a nivel de API. `drive.readonly` lee todo el Drive. Tokens en texto plano. |
 | Apps Script | Cuatro herramientas de escritura. `push_files` ejecuta código con los permisos del script. |
-| Todos | Cada llamada pide `y`, también en modo `auto`. Los resultados llegan al modelo como datos no fiables. |
+| Todos | Por defecto cada llamada pide `y`, también en modo `auto` (con `approval = "reads"` o `"all"` en `config.toml` un servicio puede relajarlo: ver la sección anterior). Los resultados llegan al modelo como datos no fiables. |
 
 ## Cómo desconectar un servicio
 

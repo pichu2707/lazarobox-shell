@@ -36,3 +36,9 @@ Mode: Strict TDD (`cargo test`). Delivery: ask-on-risk, stacked-to-main if split
 - Environment: `runtime::mcp::presence::tests::the_client_id_follows_the_presence_and_never_the_secret` fails under umask 002 (tempdir group-writable); passes under `umask 022`. Not caused by this change.
 
 ### Remaining: U5 (9.13-9.15), U6 (9.16-9.19), U7 (9.20-9.22)
+
+## Review fixes (after S9a review)
+
+- Added `an_unasked_call_is_cancelled_with_its_turn` (host/external_tests.rs): aborting the turn task while an unasked call is in flight sends nothing more and answers the row as not Ok. No bug found.
+- Moved the `call_external` doc paragraph back above `call_external`; `routed_external` keeps its own doc.
+- design.md D29: noted that only `command` is compared, not `args` (accepted).

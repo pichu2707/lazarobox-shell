@@ -1,0 +1,216 @@
+# Reload In Place Specification
+
+## Purpose
+
+Replace the running lazarobox with the newly installed binary in the same process, after an update, without stopping what runs in the panes (issue #598; owner: "y el dos si es posible hacerlo creo que además nos beneficia más que no tener que parar todo lo que se está haciendo para la actualización"). Scope 2 keeps each pane's process and screen; scope 1 (the stepping stone and the fallback) keeps the tabs, layout and folders and starts new shells. Slice tags: [S1] reload state and layout, [S2] scope 1, [S3] screen snapshot, [S4] PTY freeze and adoption, [S5a] busy check and watcher, [S5b] adoption, [S6] fallbacks. Scenario tags: [auto] = `cargo test` (pure, fake PTY, or a unix PTY with a real `exec` of the test binary); [manual] = real terminal. Items marked "assumption" are proposals pending the open questions in design.md.
+
+Naming: the reload state is unrelated to the orchestrator's `handoff` module (src/app/handoff.rs), which saves a run's handoffs to engram.
+
+Terms: "old process" = lazarobox before `exec`; "new process" = the same process after `exec` of the new binary; "reload state" = the state the old process passes to the new one (design D3); "live pane" = a PTY pane whose child has not been reaped.
+
+## Requirements
+
+### Requirement: Reload starts only from a probed, trusted new binary [S2]
+A reload MUST run the binary at the path lazarobox was started from (the install path recorded at start-up), and only when, at the moment of the reload, that path still resolves to the same place, passes the same trust rule as the `cargo` the update runs, and the binary answers `__adopt --formats` within 5 seconds with a list that contains the reload state format version of the running lazarobox. Otherwise nothing MUST be stopped or changed, and the reason MUST be shown: `X.Y.Z cannot reload in place: quit and start it again` for a binary without `__adopt`, else `reload refused: <reason>`.
+
+#### Scenario: A binary from before this change [auto]
+- GIVEN the installed binary answers `unknown command '__adopt'` with exit 2
+- WHEN the reload is asked
+- THEN the footer reads `0.9.0 cannot reload in place: quit and start it again`, no process is signalled and every pane keeps running
+
+#### Scenario: Format not supported [auto]
+- GIVEN the new binary lists only format `2` and the running lazarobox writes `1`
+- WHEN the reload is asked
+- THEN it is refused and nothing changes
+
+### Requirement: Busy refuses the reload with a visible reason [S5a]
+The reload MUST be refused, with nothing changed, while any chat has an approval pending, a command running for it, the model answering or a compaction running, writes staged or proposed, a note being saved, a note or summary open, a message waiting to be sent, messages not yet stored, the interrupted-runs read still answering a key pressed meanwhile (`RunsRead::Recovering` with a `pending` key), orchestrator run bookkeeping held for a pane (a goal before its first worker, a resume or the reply a resumed run waits for), a connector line waiting for its shell to speak, or a live orchestrator run (any active run of an orchestrating chat: its coordinator turn, its worker turns, or the time between them) or orchestrator handoffs still being saved to engram (a save awaiting engram's answer, or a run waiting for its project); while a download, an install, a model delete or a feedback send is in flight; while the managed llama-server is answering another lazarobox; and, in scope 2, while a pane does not take its queued input within 500 ms. None of the run bookkeeping or connector lines is carried in the reload state. The first reason MUST be shown as `reload refused: <reason>` naming the pane for a chat (`chat 3: the model is answering`). An idle chat with history MUST NOT refuse the reload (assumption, Open question 3). An open menu with no unsaved changes MUST be closed as Esc closes it; an open menu with an unsaved draft MUST refuse the reload with `reload refused: save or discard the menu changes first`, keep the menu open with its draft, and discard nothing.
+
+#### Scenario: A chat is answering [auto]
+- GIVEN chat pane 3 streaming an answer
+- WHEN the reload is asked
+- THEN the footer reads `reload refused: chat 3: the model is answering` and the turn goes on
+
+#### Scenario: An idle chat with history [auto]
+- GIVEN an idle chat pane with 12 stored messages and the draft `and then`
+- WHEN the reload is asked
+- THEN it is not refused, and after it the pane shows the same conversation with the draft `and then`
+
+#### Scenario: A live orchestrator run [auto]
+- GIVEN an ORCH pane whose run has a worker running
+- WHEN the reload is asked
+- THEN it is refused with `chat <n>: an orchestrator run is live`, no worker is stopped and the run goes on
+
+#### Scenario: A run between turns [auto]
+- GIVEN an ORCH pane whose run has no worker running and waits for the user's reply
+- WHEN the reload is asked
+- THEN it is refused with `chat <n>: an orchestrator run is live`
+
+#### Scenario: Run handoffs still being saved [auto]
+- GIVEN an ORCH pane whose run has ended but whose last handoff save to engram has no answer yet
+- WHEN the reload is asked
+- THEN it is refused with `chat <n>: an orchestrator run is still saving its handoffs to engram`, and asked again after the answer or after 5 seconds it is not refused for that reason
+
+#### Scenario: The run store is still being read [auto]
+- GIVEN the interrupted-runs read is `Recovering` with a key pressed in pane 3 waiting
+- WHEN the reload is asked
+- THEN it is refused with `chat 3: the run store is still being read`, and asked again after the store answered it is not refused for that reason
+
+#### Scenario: A run is about to start or resume [auto]
+- GIVEN pane 3 holds a goal for a run that has no worker yet, then a resume not yet closed, then a reply a resumed run awaits
+- WHEN the reload is asked in each case
+- THEN each is refused with `chat 3: a run is about to start or resume`, and a stored interrupted run offered for resume does not refuse
+
+#### Scenario: A connector line waits for its shell [auto]
+- GIVEN a connector line typed into a new tab's shell that has not spoken yet
+- WHEN the reload is asked
+- THEN it is refused with `pane <n>: a command is waiting for its shell`, nothing is typed twice, and after the line was typed it is not refused for that reason
+
+#### Scenario: An unsaved menu draft [auto]
+- GIVEN the menu open on `Updates` with `Notify` changed and not saved
+- WHEN the reload is asked
+- THEN the footer reads `reload refused: save or discard the menu changes first`, the menu stays open and the draft still shows the change
+
+#### Scenario: A clean menu is closed [auto]
+- GIVEN the menu open with no change to any row
+- WHEN the reload is asked and nothing else is busy
+- THEN the menu is closed as Esc closes it and the reload goes on
+
+#### Scenario: An ended run is not busy [auto]
+- GIVEN an ORCH pane whose run ended and whose saves are all answered or given up, and an interrupted run offered for resume
+- WHEN the reload is asked
+- THEN it is not refused for the run
+
+### Requirement: Reload state file [S1]
+The reload state MUST be readable only through a descriptor that survives `exec`: on Linux an anonymous memory file with no name; elsewhere a file created with `O_EXCL|O_NOFOLLOW` and mode 0600 in lazarobox's 0700 private run folder and unlinked before `exec`. It MUST start with the magic `LAZAROBOX-RELOAD-STATE`, a format version and the writer's version, and hold the process id, the creation time, the host terminal's mode and size, the tabs (layout tree, weights, focus, zoom, last shell), the next pane id, and each pane: kind (`shell`, `job`, `ended`, `chat`), size, folder, and for scope 2 the master descriptor number, child pid and start time and a screen snapshot; for a chat its conversation id, folder, draft and ORCH flag; and the pane sessions the quit prompt names. It MUST NOT hold the environment, tokens, secrets, chat messages or approvals. The new process MUST refuse a reload state with another magic, a format version it does not list, another process id, older than 30 seconds, larger than 64 MiB, not owned by its user or with group or other permission bits; it MUST NOT write it, and it MUST keep the descriptor open until adoption has fully succeeded, closing it then. The writer MUST set the mode to 0600 with `fchmod` before sealing, because `memfd_create` creates the file with mode 0777.
+
+#### Scenario: Round trip [auto]
+- GIVEN two tabs, one with a vertical split of a shell and a chat, the other zoomed on an ended pane
+- WHEN the reload state is written and read back
+- THEN tabs, weights, focus, zoom, last shell, next pane id, kinds, folders, conversation id and draft are equal
+
+#### Scenario: Refused reload states [auto]
+- GIVEN a reload state with the wrong magic, then format `9`, then another pid, then 31 seconds old, then a truncated blob
+- WHEN each is read
+- THEN each is refused with its reason and nothing in it is used
+
+#### Scenario: A memfd passes its own mode check [auto, linux]
+- GIVEN a reload state written to a memfd
+- WHEN `fstat` is read on it before and after the writer finishes
+- THEN the mode is `0o100600` after, owner is the process's uid, it carries the seals, and the reader accepts it; a memfd left at `0o100777` is refused
+
+#### Scenario: Never named on Linux [auto, linux]
+- GIVEN a reload in progress
+- WHEN the private run folder is listed just before `exec`
+- THEN it holds no reload state file
+
+#### Scenario: A folder that is not text [auto]
+- GIVEN a pane whose folder name holds the byte `0xff`
+- WHEN the reload state is written and read back
+- THEN the folder is the same bytes
+
+### Requirement: Only the kept descriptors cross exec [S4]
+Before `exec`, close-on-exec MUST be cleared only on the master of each live pane, the reload state descriptor and, on Linux, a read-only descriptor of the running binary; every other descriptor MUST stay close-on-exec. If clearing fails for one of them, or `exec` fails, the flags MUST be set back and the reload abandoned. No kept descriptor MUST reach a pane child.
+
+#### Scenario: Descriptor list after exec [auto, linux]
+- GIVEN a test process with one shell pane that execs itself through the reload path
+- WHEN its descriptors are listed after `exec`
+- THEN they are 0, 1, 2, the master, the reload state and the old-binary descriptor, and nothing else
+
+### Requirement: Scope 1 restarts keeping the layout [S2]
+In scope 1 the old process MUST ask first, as quit does, naming the jobs still running in the panes (`Restart? still running: sleep 77 (y/n)`); on `y` it MUST save the chats and stop the panes and every child it started as quitting does, without restoring the host terminal, then `exec` the new binary with the reload state. The new process MUST rebuild the same tabs, layout, focus and zoom, start a new shell in each shell pane's last folder (falling back as a new pane does when the folder is gone), reopen each chat pane's conversation in its folder with its draft, and show `restarted with X.Y.Z: the shells started again`. The jobs left running MUST be named in the new process's first notice instead of on stderr.
+
+#### Scenario: Layout and folders come back [auto]
+- GIVEN two tabs: shells in `/w/a` and `/w/b` split side by side, and a chat on conversation 812
+- WHEN scope 1 runs through the reload state
+- THEN the new app has the same tabs and split, the shells are spawned in `/w/a` and `/w/b`, and the chat shows conversation 812
+
+#### Scenario: Jobs are named [auto]
+- GIVEN a pane that started `sleep 77 &`
+- WHEN scope 1 is asked
+- THEN the statusline reads `Restart? still running: sleep 77 (y/n)`, and after `y` the new process's notice names `sleep 77`
+
+### Requirement: Scope 2 keeps the panes running [S5b]
+In scope 2 every live pane's child MUST keep running across the reload with the same pid, and its output written during the reload MUST NOT be lost: the old process stops its readers at a freeze point, draws what they read, and leaves the rest in the PTY. The new process MUST adopt each live pane whose pid still has the recorded start time, report its exit as before (with the exit status for a `job` pane), and show `reloaded to X.Y.Z`. Children that are not panes (chat engines, MCP servers, the managed llama-server, probes) MUST be stopped before `exec` as quitting stops them, and start again on demand.
+
+#### Scenario: A shell survives [auto, unix PTY, real exec]
+- GIVEN a shell pane that printed `BEFORE`
+- WHEN the reload runs and the new process writes `echo AFTER-$((40+2))` to the adopted pane
+- THEN the pid is unchanged, the screen shows `BEFORE` and then `AFTER-42`, and `exit 7` is later reported as the pane's exit
+
+#### Scenario: Output during the reload [auto, unix PTY, real exec]
+- GIVEN a pane running `sh -c 'sleep 0.2; echo LATE'`
+- WHEN the reload freezes its reader before `LATE` is written
+- THEN the new process shows `LATE` once
+
+#### Scenario: nvim keeps running [manual]
+- GIVEN nvim open on a file in one pane and `sleep 300 &` in another
+- WHEN the reload runs
+- THEN nvim redraws the same file at the same place, `jobs` in the second pane still lists `sleep 300`, and `echo $LAZAROBOX` prints the same pid as before
+
+### Requirement: The watcher stops nothing during a reload [S5a]
+Before `exec`, every process group on the watcher's list MUST have been stopped and taken off it, and the MCP session sockets removed; if a group is still listed after one more stop, the reload MUST be refused with `something lazarobox started is still running`. The old watcher MUST end on `exec` without signalling any group, and the new process MUST start its own watcher. Pane shells are never on the list.
+
+#### Scenario: Empty list at exec [auto]
+- GIVEN a running MCP server listed with the watcher
+- WHEN the reload reaches `exec`
+- THEN the server was stopped and unlisted first, and the watcher exits on its stdin's end having signalled nothing
+
+### Requirement: The host terminal stays usable [S2]
+The old process MUST NOT restore the host terminal before `exec`: raw mode and the alternate screen stay on. It MUST pass the host terminal's mode from before raw mode; the new process MUST set it back immediately before entering raw mode again, re-enter its terminal modes and redraw the whole screen. After a reload, quitting MUST leave the host terminal as it was before lazarobox started.
+
+#### Scenario: Cooked mode after quitting [manual]
+- GIVEN `stty -a` noted before starting lazarobox
+- WHEN lazarobox is reloaded, then quit
+- THEN `stty -a` prints the same
+
+### Requirement: Failures never lose panes silently [S6]
+A failure before `exec` MUST change nothing. A failed `exec` MUST keep the old process running with every pane, and show `reload failed: <error>; still running X.Y.Z`. When the new process cannot read the reload state or panics while adopting, on Linux it MUST run the old binary through its descriptor with the same reload state; elsewhere it MUST start with a single new shell and show and, after its next quit, print `reload failed: the panes could not be kept (<reason>)`. Adoption MUST be all-or-nothing in two passes: the new process MUST validate the whole state before it takes ownership of any master (a state-level failure fails the whole adoption; an entry whose pid or descriptor is invalid is only marked, and handled after the point of no return), and a failure after that point MUST NOT close a master or signal a child before the fallback has run; where there is no fallback, the loss MUST be shown as a visible notice. Before the point of no return (adoption fully succeeded, state descriptor closed) the new process MUST NOT start a reader or writer thread, read from, write to or resize any master, and it MUST keep close-on-exec cleared on every adopted master, the state descriptor and the old-binary descriptor; only after it may it set close-on-exec on the masters. The new process MUST keep the reload state descriptor open until adoption succeeded and the fallback MUST rewind it to offset 0 before `execveat`. A pane that cannot be adopted MUST stay shown with its last screen and the line `[the program in this pane ended during the reload]`. If the fallback `execveat` itself fails (provisional), the new process MUST NOT exit: it MUST keep every master open, show `reload failed and the previous lazarobox could not be restarted: <cause>; your shells are still running but not shown; quit to end them` on its first screen, print the same to stderr after quit, and end the children on quit as a normal quit does. When scope 1's `exec` fails after the teardown, the old process MUST rebuild the layout from its own reload state with new shells.
+
+#### Scenario: exec fails [auto]
+- GIVEN an `exec` that returns `ENOENT`
+- WHEN the reload runs
+- THEN the old process goes on, every pane is live, its descriptors are close-on-exec again, and the notice reads `reload failed: … ; still running 1.27.0`
+
+#### Scenario: New binary cannot read the reload state [auto, linux, real exec]
+- GIVEN a new binary that refuses the reload state
+- WHEN it starts
+- THEN the old binary runs again through its descriptor and adopts the panes
+
+#### Scenario: The fallback reads the state again [auto, linux, real exec]
+- GIVEN a new binary that read the whole reload state and then fails or panics while adopting
+- WHEN it runs the old binary through its descriptor
+- THEN the state descriptor was still open and is rewound to offset 0, and the old binary reads the same state and adopts every pane
+
+#### Scenario: Adoption is all-or-nothing [auto, linux]
+- GIVEN a reload state of three panes where pass 1 validates all and a panic happens while the second pane is being adopted
+- WHEN the new process handles it
+- THEN no master was closed and no child signalled, the first pane's threads are stopped, the old binary runs and all three panes are adopted there; on a platform without the fallback the notice `reload failed: the panes could not be kept (<reason>)` is visible on the first screen
+
+#### Scenario: Nothing reads before the point of no return [auto, linux, real exec]
+- GIVEN a reload state of two panes whose children keep writing, and a failure in pass 2 after the first handle is built
+- WHEN the new process falls back to the old binary
+- THEN no thread read either master, every byte the children wrote is still in the PTY and shows once in the old binary, and no master was resized
+
+#### Scenario: Close-on-exec stays cleared until success [auto, linux, real exec]
+- GIVEN the new process in pass 2
+- WHEN its descriptors' flags are read before and after the point of no return
+- THEN the masters, the state descriptor and the old-binary descriptor are not close-on-exec before it, and after it the masters are close-on-exec and the other two are closed
+
+#### Scenario: The fallback exec fails [auto, linux, real exec] (provisional)
+- GIVEN a new process that cannot adopt and whose old-binary descriptor refuses `execveat`
+- WHEN it handles the failure
+- THEN it is still running, every shell is alive with its master open, the first screen shows `reload failed and the previous lazarobox could not be restarted: …`, and quitting ends the shells and prints the same line to stderr
+
+#### Scenario: One pane cannot be adopted [auto]
+- GIVEN a reload state whose pane 2 pid now has another start time
+- WHEN the new process adopts
+- THEN pane 2 shows its last screen and `[the program in this pane ended during the reload]`, and the other panes are adopted; nothing was closed or signalled for pane 2 before the point of no return
+
+### Requirement: Platforms [S5b]
+Scope 2 MUST be offered on Linux, WSL2 included (assumption, Open question 4). On other platforms the reload MUST run scope 1.
+
+#### Scenario: macOS runs scope 1 [auto, macos]
+- GIVEN lazarobox on macOS after an update
+- WHEN the reload is asked
+- THEN the scope 1 prompt opens

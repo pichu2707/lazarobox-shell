@@ -611,3 +611,39 @@ async fn a_running_chat_keeps_the_level_it_started_at() {
     assert_eq!(asked_level(&approver.asked()), [None]);
     assert_eq!(lab.received("fake"), "");
 }
+
+// Spec (mcp-servers, An unasked call is cancelled with its turn): the turn's
+// cancel aborts its task, which drops the call in flight; nothing more is
+// sent, the call is answered as cancelled and the host is idle.
+#[tokio::test]
+async fn an_unasked_call_is_cancelled_with_its_turn() {
+    use crate::core::ai::config::McpApproval::All;
+    let lab = lab();
+    let server = at(lab.slow("fake", "echo", "late", "30"), All);
+    let approver = Modal::new(false, Decision::Denied("the user declined"));
+    let (dispatch, mut rx) = level_world(&lab, &[server], &[], approver.clone()).await;
+    let task = tokio::spawn(dispatch.call(call()));
+    // The request reached the server: the call is in flight, unasked.
+    for _ in 0..100 {
+        if lab.received("fake").contains("\"name\":\"echo\"") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(lab.received("fake").matches("\"name\":\"echo\"").count(), 1);
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(lab.received("fake").matches("\"name\":\"echo\"").count(), 1);
+    assert_eq!(asked_level(&approver.asked()), [Some(All)]);
+    let seen = events(&mut rx);
+    let results: Vec<_> = seen
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolResult { status, .. } => Some(*status),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 1, "{seen:?}");
+    assert_ne!(results[0], ToolStatus::Ok);
+}

@@ -455,6 +455,14 @@ enum Unprompted {
 }
 
 impl Unprompted {
+    /// The server's approval level this answer carries, if any.
+    fn level(self) -> Option<McpApproval> {
+        match self {
+            Self::Level(level) => Some(level),
+            _ => None,
+        }
+    }
+
     fn of_read(reach: Reach, cloud: bool) -> Self {
         match (reach, cloud) {
             (Reach::Root, true) => Self::InRoot,
@@ -537,10 +545,6 @@ fn ran(call: &Call, report: &RunReport) -> (Outcome, ToolStatus, String, Option<
     (outcome, status, summary, words.system)
 }
 
-/// Runs an approved server tool and returns what the model and the row see:
-/// the result wrapped as untrusted data under `nonce` (D14), which also caps
-/// it. The nonce is needed BEFORE the call: with none there is no wrapper, and
-/// a tool must not run for a result that would be withheld.
 /// Routes the call the user approved, or the server's level let go, to its
 /// server: what was approved must be what is routed.
 async fn routed_external(
@@ -566,6 +570,10 @@ async fn routed_external(
     }
 }
 
+/// Runs an approved server tool and returns what the model and the row see:
+/// the result wrapped as untrusted data under `nonce` (D14), which also caps
+/// it. The nonce is needed BEFORE the call: with none there is no wrapper, and
+/// a tool must not run for a result that would be withheld.
 async fn call_external(
     set: &ExternalSet,
     name: &str,
@@ -1183,8 +1191,8 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         tool,
                         args,
                     },
-                ) if let Unprompted::Level(level) = unprompted => {
-                    routed_external(&scope, &name, (&server, &tool), args, Some(level)).await
+                ) if unprompted.level().is_some() => {
+                    routed_external(&scope, &name, (&server, &tool), args, unprompted.level()).await
                 }
                 // `offers` let it through only with a run manager to go to.
                 (Decision::Sent, Call::Orchestra(call)) => match &scope.orchestra {
