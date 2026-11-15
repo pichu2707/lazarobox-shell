@@ -138,17 +138,17 @@ An empty answer (only whitespace) MUST get the same treatment with the user mess
 ## ADDED Requirements
 
 ### Requirement: HTTP 400 disambiguation [S2]
-The Ollama adapter MUST tell a tools refusal apart from every other HTTP 400 by reading the status and the sanitized, capped error text of the reply, never by the status alone. A tools refusal is a 400 whose error text says that the model does not support tools (the exact phrases are pinned by design from captured Ollama replies). Only a confirmed tools refusal MAY keep the silent retry of the same turn without `tools` and the cached knowledge that the model has no tools (the existing behaviour of "Model without tools"). Any other 400 (including a 400 because of `think`, `options`, a malformed body or an unknown model) MUST end the turn with an error event carrying the status and the short sanitized message, shown in the pane as a visible notice; it MUST NOT be retried without `tools`, MUST NOT mark the model as "without tools", and MUST NOT be hidden. A 400 whose body cannot be read or parsed MUST be treated as "not a tools refusal". No other status code changes behaviour. The error text MUST follow "No content in logs": it MUST NOT echo the user's message. This requirement MUST be in force before any request carries `think` (C6).
+The Ollama adapter MUST tell a tools refusal apart from every other HTTP 400 by reading the status and the sanitized, capped error text of the reply, never by the status alone. A tools refusal is a 400 whose error text says that the model does not support tools (the exact phrases are pinned by design from captured Ollama replies). Only a confirmed tools refusal MAY keep the silent retry of the same turn without `tools` (the existing behaviour of "Model without tools"). The refusal is decided per turn, as the loop does today: nothing is remembered for later turns or for the session, and a per-session memory is out of scope for this change. Any other 400 (including a 400 because of `think`, `options`, a malformed body or an unknown model) MUST end the turn with an error event carrying the status and the short sanitized message, shown in the pane as a visible notice; it MUST NOT be retried without `tools` and MUST NOT be hidden. A 400 whose body cannot be read or parsed MUST be treated as "not a tools refusal". No other status code changes behaviour. The error text MUST follow "No content in logs": it MUST NOT echo the user's message. This requirement MUST be in force before any request carries `think` (C6).
 
 #### Scenario: Tools refusal still degrades silently [auto]
 - GIVEN a fake Ollama that answers 400 with the message that the model does not support tools
 - WHEN a turn runs
-- THEN a second request without `tools` is made, the text answer streams, no error notice is shown and the model is remembered as without tools for the session
+- THEN a second request without `tools` is made, the text answer streams, no error notice is shown and nothing is remembered for later turns (the refusal is decided per turn)
 
 #### Scenario: Other 400 shows a notice [auto]
 - GIVEN a fake Ollama that answers 400 with a message about an invalid option
 - WHEN a turn runs
-- THEN the turn ends with an error event holding `400` and a short sanitized message, no second request is made and the model is not marked as without tools
+- THEN the turn ends with an error event holding `400` and a short sanitized message, no second request is made
 
 #### Scenario: Unreadable 400 body is not a refusal [auto]
 - GIVEN a fake Ollama that answers 400 with an empty body, and another with a body that is not JSON
@@ -166,7 +166,7 @@ The Ollama adapter MUST tell a tools refusal apart from every other HTTP 400 by 
 - THEN the notice is at most 200 characters
 
 ### Requirement: Per-model profiles [S3]
-The Ollama adapter MUST resolve a built-in profile for the model of the turn from a table in code (C7), keyed by model family: the model name with its tag removed and matched by prefix, so `qwen3:14b` and `qwen3:14b-nothink` resolve by their family and by an exact name when a row needs it (an exact row wins over a family row). A profile MAY set: a system prompt addendum (appended after the pinned prompt of the conversation's profile, counted in the history budget like any head text), a round limit (see Ollama round limit with coding tools), `think` (see Reasoning control per model) and the use of the reminders of this spec. A model with no row MUST get exactly today's generic behaviour, byte for byte. A row MUST be added only with a before and after table of `local-model-eval` that supports every value it sets (C2); a row that later lowers a combination MUST be removed or changed. There is no `config.toml` override in this change (C7): a model name in the config never changes a profile, and the profile table is not read from any file. Profiles apply to Ollama only; llama.cpp keeps today's behaviour.
+The Ollama adapter MUST resolve a built-in profile for the model of the turn from a table in code (C7), keyed by model family: the model name with its namespace removed, and the family is the exact name before the first `:` (equality, not a prefix), so `qwen3:14b` and `qwen3:14b-nothink` resolve by the family `qwen3`, while `qwen3-coder:30b` does not; a row may also name the full model name when it needs it (an exact row wins over a family row). A profile MAY set: a system prompt addendum (appended after the pinned prompt of the conversation's profile, counted in the history budget like any head text), a round limit (see Ollama round limit with coding tools), `think` (see Reasoning control per model) and the use of the reminders of this spec. A model with no row MUST get exactly today's generic behaviour, byte for byte. A row MUST be added only with a before and after table of `local-model-eval` that supports every value it sets (C2); a row that later lowers a combination MUST be removed or changed. There is no `config.toml` override in this change (C7): a model name in the config never changes a profile, and the profile table is not read from any file. Profiles apply to Ollama only; llama.cpp keeps today's behaviour.
 
 #### Scenario: No row, no change [auto]
 - GIVEN a model with no profile row
@@ -175,8 +175,8 @@ The Ollama adapter MUST resolve a built-in profile for the model of the turn fro
 
 #### Scenario: Family and exact match [auto]
 - GIVEN rows for the family `qwen3` and for the exact name `qwen3:14b-nothink`
-- WHEN `qwen3:14b`, `qwen3:14b-nothink` and `llama3:8b` are resolved
-- THEN the first gets the family row, the second the exact row, the third none
+- WHEN `qwen3:14b`, `qwen3:14b-nothink`, `qwen3-coder:30b` and `llama3:8b` are resolved
+- THEN the first gets the family row, the second the exact row, the third and the fourth none (the family is the name before `:`, not a prefix)
 
 #### Scenario: Addendum counted in the head [auto]
 - GIVEN a profile with a prompt addendum
