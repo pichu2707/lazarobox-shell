@@ -199,14 +199,13 @@ fn the_order_is_ask_reads_all_ask_and_all_says_writes_run() {
 #[test]
 fn the_reply_says_its_notice_and_reads_the_files_again() {
     let mut m = screen(&ga4(""));
-    let done = "approval: ga4 set to reads in config.toml; the previous file stays in config.toml.bak; restart lazarobox to use it in chats";
+    let done = "approval: ga4 → reads · restart · config.toml.bak";
     assert_eq!(
         m.approval_reply(Ok(done.to_owned())),
         MenuCommand::LoadPresence
     );
     assert_eq!(m.notice.as_deref(), Some(done));
-    let refused =
-        "approval: nothing was written: config.toml changed on disk; nothing was saved, try again";
+    let refused = "approval: changed on disk \u{b7} nothing written";
     assert_eq!(
         m.approval_reply(Err(refused.to_owned())),
         MenuCommand::LoadPresence

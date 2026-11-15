@@ -99,6 +99,58 @@ impl AppendRefusal {
     }
 }
 
+impl AppendRefusal {
+    /// The line the user sees in the Connectors footer for a refused level
+    /// change of `name` to `level`: the cause first, short enough that the
+    /// 60-column popup shows it whole (the detail of a config problem, which
+    /// has no bound, comes last).
+    pub fn approval_notice(&self, name: &str, level: &str) -> String {
+        let text = match self {
+            Self::File(Refusal::Changed) => "changed on disk \u{b7} nothing written".to_owned(),
+            Self::File(Refusal::TooLarge) => {
+                format!("{FILE} over {} KiB \u{b7} set by hand", MAX_BYTES / 1024)
+            }
+            Self::File(Refusal::Unreadable) => format!("{FILE} unreadable \u{b7} set by hand"),
+            Self::NotToml(line) => format!("{FILE} not valid TOML (line {line}) \u{b7} fix it"),
+            Self::WouldBreak | Self::Inline => {
+                "ai.mcp.servers is inline \u{b7} set by hand".to_owned()
+            }
+            Self::NotDeclared(_) => format!("{name} not in {FILE} \u{b7} nothing written"),
+            Self::Limited(_) => format!("{name} is a project entry \u{b7} set by hand"),
+            Self::Twice => format!("{name} declared twice \u{b7} set by hand"),
+            Self::NotPlain(_) => format!("{name} not plain \u{b7} set by hand"),
+            Self::WouldProblem(problem) => format!("edit adds a config problem \u{b7} {problem}"),
+            Self::Unchanged => format!("already {level} \u{b7} nothing written"),
+            Self::ServersDiffer => "edit would change servers \u{b7} nothing written".to_owned(),
+            Self::File(Refusal::ReadOnly(_)) => format!("{FILE} read-only \u{b7} chmod u+w it"),
+            Self::File(Refusal::FileSymlink) => format!("{FILE} is a symlink \u{b7} set by hand"),
+            Self::File(Refusal::NotRegular) => {
+                format!("{FILE} not a regular file \u{b7} set by hand")
+            }
+            Self::File(Refusal::FileOwner) => format!("{FILE} not yours \u{b7} set by hand"),
+            Self::File(Refusal::HardLinked) => format!("{FILE} has hard links \u{b7} set by hand"),
+            Self::File(Refusal::FileMode(_) | Refusal::FileWritable(_)) => {
+                format!("{FILE} mode unsafe \u{b7} fix with chmod")
+            }
+            Self::File(
+                Refusal::NoFolder
+                | Refusal::FolderSymlink
+                | Refusal::FolderOwner
+                | Refusal::FolderWritable(_),
+            ) => "config folder unsafe \u{b7} set by hand".to_owned(),
+            Self::File(Refusal::Io(kind)) => format!("not written \u{b7} {kind}"),
+            Self::File(Refusal::TempExists) => "temp file left \u{b7} remove it".to_owned(),
+            Self::File(Refusal::BackupUnsafe) => {
+                format!("{BACKUP} not a file of yours \u{b7} remove it")
+            }
+            Self::File(Refusal::NoBackup) => format!("no {BACKUP} \u{b7} nothing written"),
+            Self::File(Refusal::Exists) => format!("{FILE} exists \u{b7} nothing written"),
+            other => format!("not written \u{b7} {}", other.notice()),
+        };
+        clean(&format!("approval: {text}"))
+    }
+}
+
 /// `old` with `snippets` after it, when the result keeps every server of
 /// `old` and adds exactly `names`, in order. The old bytes stay a prefix: a
 /// newline is added when they do not end in one, and one empty line before

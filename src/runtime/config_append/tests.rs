@@ -463,8 +463,25 @@ fn an_approval_change_backs_up_the_old_bytes_and_keeps_the_mode() {
     assert_eq!(lab.names(), ["config.toml", "config.toml.bak"]);
     assert_eq!(
         approval_notice("gsc", McpApproval::Reads, Ok(true)),
-        Ok("approval: gsc set to reads in config.toml; the previous file stays in config.toml.bak; restart lazarobox to use it in chats".to_owned())
+        Ok("approval: gsc → reads · restart · config.toml.bak".to_owned())
     );
+}
+
+// mcp-connect: the success notice fits the footer of the 60-column popup.
+#[test]
+fn the_success_notice_fits_the_popup_footer_for_every_catalog_server() {
+    // The footer is a space and the notice, clipped to the popup's inner width.
+    let room = usize::from(crate::core::menu::WANT_WIDTH_AI) - 2 - 1;
+    for entry in crate::core::ai::mcp_catalog::entries() {
+        for level in [McpApproval::Ask, McpApproval::Reads, McpApproval::All] {
+            let notice = approval_notice(entry.id, level, Ok(true)).unwrap();
+            assert!(notice.chars().count() <= room, "{notice}");
+            assert!(
+                notice.contains(BACKUP) && notice.contains("restart"),
+                "{notice}"
+            );
+        }
+    }
 }
 
 // mcp-connect: The change is refused without a write
@@ -522,10 +539,67 @@ fn every_refusal_leaves_the_file_and_no_backup() {
     assert!(lab.names().is_empty());
     assert_eq!(
         approval_notice("gsc", level, Err(AppendRefusal::Twice)),
-        Err(
-            "approval: nothing was written: declared more than once; set approval by hand"
-                .to_owned()
-        )
+        Err("approval: gsc declared twice \u{b7} set by hand".to_owned())
+    );
+}
+
+// mcp-connect: every refusal fits the footer too, its cause before any detail.
+#[test]
+fn every_refusal_notice_fits_the_popup_footer_for_the_longest_server() {
+    use std::{io::ErrorKind, path::PathBuf};
+    let room = usize::from(crate::core::menu::WANT_WIDTH_AI) - 2 - 1;
+    let longest = crate::core::ai::mcp_catalog::entries()
+        .iter()
+        .map(|e| e.id)
+        .max_by_key(|id| id.len())
+        .unwrap();
+    let path = || PathBuf::from("/home/someone/.config/lazarobox/config.toml");
+    let all = [
+        AppendRefusal::NotToml(123_456),
+        AppendRefusal::WouldBreak,
+        AppendRefusal::ServersDiffer,
+        AppendRefusal::NotDeclared(longest.to_owned()),
+        AppendRefusal::Limited(longest.to_owned()),
+        AppendRefusal::Twice,
+        AppendRefusal::Inline,
+        AppendRefusal::NotPlain(longest.to_owned()),
+        AppendRefusal::Unchanged,
+        AppendRefusal::File(Refusal::Changed),
+        AppendRefusal::File(Refusal::TooLarge),
+        AppendRefusal::File(Refusal::Unreadable),
+        AppendRefusal::File(Refusal::ReadOnly(path())),
+        AppendRefusal::File(Refusal::FileSymlink),
+        AppendRefusal::File(Refusal::NotRegular),
+        AppendRefusal::File(Refusal::FileOwner),
+        AppendRefusal::File(Refusal::HardLinked),
+        AppendRefusal::File(Refusal::FileMode(path())),
+        AppendRefusal::File(Refusal::FileWritable(path())),
+        AppendRefusal::File(Refusal::NoFolder),
+        AppendRefusal::File(Refusal::FolderSymlink),
+        AppendRefusal::File(Refusal::FolderOwner),
+        AppendRefusal::File(Refusal::FolderWritable(path())),
+        AppendRefusal::File(Refusal::Io(ErrorKind::PermissionDenied)),
+        AppendRefusal::File(Refusal::TempExists),
+        AppendRefusal::File(Refusal::BackupUnsafe),
+        AppendRefusal::File(Refusal::NoBackup),
+        AppendRefusal::File(Refusal::Exists),
+    ];
+    for refusal in all {
+        let notice = approval_notice(longest, McpApproval::Reads, Err(refusal)).unwrap_err();
+        assert!(notice.starts_with("approval: "), "{notice}");
+        assert!(notice.chars().count() <= room, "{notice}");
+    }
+    // A config problem has no bound: only its detail may be cut.
+    let problem = AppendRefusal::WouldProblem("x".repeat(200));
+    let notice = approval_notice(longest, McpApproval::Reads, Err(problem)).unwrap_err();
+    assert!(
+        notice.starts_with("approval: edit adds a config problem \u{b7} "),
+        "{notice}"
+    );
+    let changed = AppendRefusal::File(Refusal::Changed);
+    assert_eq!(
+        approval_notice("gsc", McpApproval::Ask, Err(changed)),
+        Err("approval: changed on disk \u{b7} nothing written".to_owned())
     );
 }
 

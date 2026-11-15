@@ -79,13 +79,10 @@ pub fn approval_notice(
 ) -> Result<String, String> {
     match done {
         Ok(_) => Ok(format!(
-            "approval: {name} set to {} in {FILE}; the previous file stays in {BACKUP}; restart lazarobox to use it in chats",
+            "approval: {name} → {} · restart · {BACKUP}",
             level.key()
         )),
-        Err(refusal) => Err(format!(
-            "approval: nothing was written: {}",
-            refusal.notice()
-        )),
+        Err(refusal) => Err(refusal.approval_notice(name, level.key())),
     }
 }
 

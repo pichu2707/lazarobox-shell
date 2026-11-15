@@ -43,6 +43,16 @@ baseline.
   entry limited to a `project` is set by hand. Only your key in the area can
   do it: no model, tool result or pasted text can.
 
+### Fixed
+
+- **The approval success notice fits the Connectors popup.** After `a` then `y`
+  the notice read `approval: <name> set to <level> in config.toml; the previous
+  file stays in config.toml.bak; ...` and was cut with `…` at 60 columns, so
+  `config.toml.bak` and the restart instruction were lost. It now reads
+  `approval: <name> → <level> · restart · config.toml.bak`.
+  The refusal notices put the cause first and fit too, for example
+  `approval: changed on disk · nothing written`.
+
 ## [1.27.0] - 2026-11-14
 
 ### Added
