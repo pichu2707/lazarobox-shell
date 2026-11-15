@@ -182,7 +182,7 @@ pub(crate) const DRAFT_OFFER: &str = "Call the issue draft tool to offer a lazar
 /// What a coordinator that offers the draft tool is told on top of
 /// [`DRAFT_OFFER`]: it drafts the issue itself, no worker can (#769).
 pub(crate) const COORDINATOR_DRAFT: &str =
-    "You call it yourself; never start a worker to report an issue.";
+    "You call the issue draft tool yourself; never start a worker to report an issue.";
 
 /// `system` for a turn that offers tools: the built-in "no access" sentence
 /// becomes the tools block. A prompt without that sentence (the user's own
