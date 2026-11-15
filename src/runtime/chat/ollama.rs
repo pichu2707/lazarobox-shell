@@ -70,7 +70,7 @@ pub fn max_rounds(set: FamilySet) -> usize {
 pub const CAP_NOTICE: &str = "tool limit reached for this turn";
 /// What a reply with more calls than [`MAX_CALLS`](crate::core::ai::chat::stream::MAX_CALLS)
 /// is told about the extra ones.
-const TOO_MANY: &str = "too many tool calls in one reply";
+pub(super) const TOO_MANY: &str = "too many tool calls in one reply";
 /// Most bytes of tool results echoed back over one turn. Past it a result is
 /// replaced by [`DROPPED`], so the request bodies stay bounded.
 pub const RESULTS_CAP: usize = 256 * 1024;
