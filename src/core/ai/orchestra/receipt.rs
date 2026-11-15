@@ -6,6 +6,7 @@
 
 use super::WorkerId;
 use super::changes::GAP_CUT;
+use super::judge::{Agreement, State, Verdict as Said};
 use super::ledger::{FIELD_BYTES, Judgement, NONE, Verdict, cut, one_line};
 use super::rdd::{Basis, Consent, Outcome, Review, Severity};
 use super::review::Source;
@@ -184,15 +185,110 @@ fn correction_line(ev: &Evidence) -> String {
     }
 }
 
+/// The judge section (acceptance-judges): consent, level, the flags that
+/// limit what the judges could say, then each round with its agreement
+/// first. Empty when no judge was set up for the review.
+fn judge_lines(review: &Review) -> Vec<String> {
+    let Some(judging) = review.judging() else {
+        return Vec::new();
+    };
+    let granted = judging.granted;
+    let word = if granted {
+        "granted"
+    } else {
+        "declined (not judged)"
+    };
+    let mut lines = vec![format!("judge consent: {word}")];
+    if !granted {
+        return lines;
+    }
+    let standard = &judging.standard;
+    let criteria: Vec<String> = (standard.criteria.iter())
+        .map(|c| format!("{} {}", c.id, c.text))
+        .collect();
+    lines.push(clip(&judging.level));
+    lines.push(format!("criteria: {}", list(&criteria)));
+    let cut = standard.norms.iter().any(|norm| norm.cut_from.is_some());
+    for (on, text) in [
+        (standard.thin, "criteria: thin".to_owned()),
+        (
+            standard.dropped > 0,
+            format!("criteria: {} not judged (cap 12)", standard.dropped),
+        ),
+        (cut, "norms cut at 8 KB".to_owned()),
+        (!judging.independent, "judges not independent".to_owned()),
+    ] {
+        if on {
+            lines.push(text);
+        }
+    }
+    for (at, round) in review.rounds().iter().enumerate() {
+        let r = at + 1;
+        lines.push(match &round.agreement {
+            Agreement::Pass { clean: true, .. } => format!("round {r} agree: pass"),
+            Agreement::Pass { .. } => format!("round {r} agree: pass, unverified"),
+            Agreement::Fail(_) => format!("round {r} agree: fail"),
+            Agreement::Disagree { missing } => {
+                format!("round {r} disagree, missing: {}", clip(missing))
+            }
+        });
+        if let Agreement::Pass { unverified, .. } = &round.agreement {
+            lines.extend(
+                unverified
+                    .iter()
+                    .map(|(n, why)| format!("unverified: C{n} {}", clip(why))),
+            );
+        }
+        for (i, ruling) in round.rulings.iter().enumerate() {
+            let model = judging
+                .models
+                .get(i)
+                .map_or("unknown model", String::as_str);
+            let said = match ruling.verdict {
+                Ok(Said::Pass) => "pass".to_owned(),
+                Ok(Said::Fail) => "fail".to_owned(),
+                Err(why) => format!("no verdict ({})", why.word()),
+            };
+            lines.push(format!(
+                "round {r} judge {} ({}): {said}",
+                i + 1,
+                clip(model)
+            ));
+            for (n, row) in ruling.criteria.iter().enumerate() {
+                let Some((state, why)) = row else { continue };
+                let state = match state {
+                    State::Met => "met",
+                    State::NotMet => "not met",
+                    State::Unknown => "unknown",
+                };
+                lines.push(format!("C{} {state}: {}", n + 1, clip(why)));
+            }
+            for f in &ruling.faults {
+                let at = f.at.as_deref().unwrap_or("unknown");
+                lines.push(format!(
+                    "C{} at: {}: {}",
+                    f.criterion,
+                    clip(at),
+                    clip(&f.text)
+                ));
+            }
+        }
+    }
+    lines.push("tests: not seen before apply".to_owned());
+    lines
+}
+
 fn done(ev: &Evidence) -> String {
-    fit(vec![
+    let mut lines = vec![
         format!("change: worker {} staged {}", ev.worker.0, list(ev.paths)),
         tier_line(ev),
         format!("consent: {}", consent_word(ev)),
         lenses_line(ev),
         format!("outcome: {}", outcome_word(ev)),
         correction_line(ev),
-    ])
+    ];
+    lines.extend(judge_lines(ev.review));
+    fit(lines)
 }
 
 fn left(ev: &Evidence) -> String {
