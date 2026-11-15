@@ -353,9 +353,8 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     // The prefix probe: this terminal's stored result decides whether it runs.
     let probe_dir = probe_store::dir_from(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"));
     let terminal = crate::core::probe::terminal_key(
-        env::var("TERM_PROGRAM").ok().as_deref(),
-        env::var_os("WT_SESSION").is_some(),
-        env::var("TERM").ok().as_deref(),
+        |name| env::var(name).ok(),
+        crate::core::probe::current_emulator().as_deref(),
     );
     let stored = probe_store::load(probe_dir.as_deref()).map(|rows| rows.get(&terminal).copied());
     app = app.with_probe(terminal, stored, start_args.check_prefix);

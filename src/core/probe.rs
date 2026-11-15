@@ -87,19 +87,153 @@ impl Seen {
     }
 }
 
-/// The row name of a terminal: `TERM_PROGRAM`, else `Windows Terminal` when
-/// `WT_SESSION` is set, else `TERM`, else `unknown`. It only names the stored
-/// row; it never changes how the prefix behaves.
-pub fn terminal_key(term_program: Option<&str>, wt_session: bool, term: Option<&str>) -> String {
-    let set = |v: Option<&str>| {
-        v.map(str::trim)
+/// The row name of a terminal, from the first of these that is set (`var`
+/// reads the environment; empty values count as unset):
+///
+/// 1. `TERM_PROGRAM`;
+/// 2. `Windows Terminal` when `WT_SESSION` is set;
+/// 3. a terminal-specific variable: `KITTY_WINDOW_ID` is `kitty`,
+///    `WEZTERM_EXECUTABLE` is `WezTerm`, `ALACRITTY_WINDOW_ID` or
+///    `ALACRITTY_SOCKET` is `Alacritty`, `KONSOLE_VERSION` is `Konsole`,
+///    `VTE_VERSION` is `vte` (GNOME Terminal, Tilix and the rest share VTE's
+///    key handling);
+/// 4. `TERM`, followed by ` (name)` when it is generic (`xterm` or `xterm-`
+///    plus a colour depth, as `xterm-256color`) and `emulator`, the process
+///    name of the terminal found by [`ancestor_emulator`], is known. zutty, st
+///    and xterm itself only set that, so `TERM` alone would share one row;
+/// 5. `unknown`.
+///
+/// It only names the stored row; it never changes how the prefix behaves.
+/// Rows stored under the old generic key (`xterm-256color`) no longer match,
+/// so those terminals probe once more.
+pub fn terminal_key(var: impl Fn(&str) -> Option<String>, emulator: Option<&str>) -> String {
+    let set = |name: &str| {
+        var(name)
+            .map(|v| v.trim().to_owned())
             .filter(|v| !v.is_empty())
-            .map(str::to_owned)
     };
-    set(term_program)
-        .or_else(|| wt_session.then(|| "Windows Terminal".to_owned()))
-        .or_else(|| set(term))
-        .unwrap_or_else(|| "unknown".to_owned())
+    if let Some(program) = set("TERM_PROGRAM") {
+        return program;
+    }
+    if set("WT_SESSION").is_some() {
+        return "Windows Terminal".to_owned();
+    }
+    const SPECIFIC: [(&[&str], &str); 5] = [
+        (&["KITTY_WINDOW_ID"], "kitty"),
+        (&["WEZTERM_EXECUTABLE"], "WezTerm"),
+        (&["ALACRITTY_WINDOW_ID", "ALACRITTY_SOCKET"], "Alacritty"),
+        (&["KONSOLE_VERSION"], "Konsole"),
+        (&["VTE_VERSION"], "vte"),
+    ];
+    if let Some((_, name)) = SPECIFIC
+        .iter()
+        .find(|(names, _)| names.iter().any(|n| set(n).is_some()))
+    {
+        return (*name).to_owned();
+    }
+    let Some(term) = set("TERM") else {
+        return "unknown".to_owned();
+    };
+    match emulator.map(str::trim).filter(|e| !e.is_empty()) {
+        Some(name) if is_generic_term(&term) => format!("{term} ({name})"),
+        _ => term,
+    }
+}
+
+/// `xterm`, or `xterm-` plus only a colour depth: names that many terminals
+/// share. `xterm-kitty` and the like carry a vendor and are not generic.
+fn is_generic_term(term: &str) -> bool {
+    const DEPTHS: [&str; 8] = [
+        "color",
+        "16color",
+        "88color",
+        "256color",
+        "direct",
+        "direct2",
+        "direct16",
+        "direct256",
+    ];
+    term == "xterm"
+        || term
+            .strip_prefix("xterm-")
+            .is_some_and(|d| DEPTHS.contains(&d))
+}
+
+/// Process names that sit between the terminal and lazarobox.
+const NOT_AN_EMULATOR: [&str; 20] = [
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "dash",
+    "ksh",
+    "mksh",
+    "tcsh",
+    "csh",
+    "nu",
+    "elvish",
+    "xonsh",
+    "login",
+    "sudo",
+    "su",
+    "doas",
+    "env",
+    "script",
+    "lazarobox",
+    "lazarobox-shell",
+];
+
+/// How many ancestors [`ancestor_emulator`] looks at.
+const WALK_LIMIT: usize = 8;
+
+/// The parent pid in a `/proc/<pid>/stat` line: the second field after the
+/// closing parenthesis of the command name, which may hold spaces and
+/// parentheses itself (`pid (comm) state ppid ...`).
+pub fn parent_pid(stat: &str) -> Option<u32> {
+    let after = &stat[stat.rfind(')')? + 1..];
+    after.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// The terminal emulator's process name: walks up from `start` (the parent
+/// of lazarobox), skipping shells and wrappers, and returns the first other
+/// name. `read` gives a pid's `(comm, parent pid)`. Pid 1, `init` and `systemd` end the
+/// walk with no name, as do a missing process and `WALK_LIMIT` levels.
+pub fn ancestor_emulator(
+    start: u32,
+    read: impl Fn(u32) -> Option<(String, u32)>,
+) -> Option<String> {
+    let mut pid = start;
+    for _ in 0..WALK_LIMIT {
+        if pid <= 1 {
+            return None;
+        }
+        let (comm, parent) = read(pid)?;
+        let comm = comm.trim();
+        if comm.is_empty() || matches!(comm, "init" | "systemd") {
+            return None;
+        }
+        if !NOT_AN_EMULATOR.contains(&comm) {
+            return Some(comm.to_owned());
+        }
+        pid = parent;
+    }
+    None
+}
+
+/// The emulator of this process, from `/proc` on Linux; no name elsewhere.
+#[cfg(target_os = "linux")]
+pub fn current_emulator() -> Option<String> {
+    ancestor_emulator(std::os::unix::process::parent_id(), |pid| {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+        Some((comm.trim_end().to_owned(), parent_pid(&stat)?))
+    })
+}
+
+/// The emulator of this process: unknown off Linux.
+#[cfg(not(target_os = "linux"))]
+pub fn current_emulator() -> Option<String> {
+    None
 }
 
 /// Why the stored results could not be used.
@@ -295,18 +429,148 @@ mod tests {
         }
     }
 
+    /// An injected environment: only the listed variables are set.
+    fn env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            vars.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| (*v).to_owned())
+        }
+    }
+
     #[test]
     fn the_terminal_key_follows_the_environment_order() {
-        assert_eq!(terminal_key(Some("kitty"), true, Some("xterm")), "kitty");
-        assert_eq!(terminal_key(None, true, Some("xterm")), "Windows Terminal");
+        let key = |vars: &[(&str, &str)]| terminal_key(env(vars), None);
         assert_eq!(
-            terminal_key(None, false, Some("xterm-256color")),
-            "xterm-256color"
+            key(&[
+                ("TERM_PROGRAM", "kitty"),
+                ("WT_SESSION", "1"),
+                ("TERM", "xterm")
+            ]),
+            "kitty"
         );
-        assert_eq!(terminal_key(None, false, None), "unknown");
+        assert_eq!(
+            key(&[("WT_SESSION", "1"), ("TERM", "xterm")]),
+            "Windows Terminal"
+        );
+        assert_eq!(key(&[("TERM", "xterm-kitty")]), "xterm-kitty");
+        assert_eq!(key(&[("TERM", "xterm-256color")]), "xterm-256color");
+        assert_eq!(key(&[]), "unknown");
         // Empty values count as unset.
-        assert_eq!(terminal_key(Some(""), false, Some("")), "unknown");
-        assert_eq!(terminal_key(Some("  "), false, Some("screen")), "screen");
+        assert_eq!(key(&[("TERM_PROGRAM", ""), ("TERM", "")]), "unknown");
+        assert_eq!(key(&[("TERM_PROGRAM", "  "), ("TERM", "screen")]), "screen");
+    }
+
+    #[test]
+    fn terminal_specific_variables_come_before_term() {
+        let key = |vars: &[(&str, &str)]| terminal_key(env(vars), Some("zutty"));
+        let t = ("TERM", "xterm-256color");
+        assert_eq!(key(&[("KITTY_WINDOW_ID", "3"), t]), "kitty");
+        assert_eq!(
+            key(&[("WEZTERM_EXECUTABLE", "/usr/bin/wezterm"), t]),
+            "WezTerm"
+        );
+        assert_eq!(key(&[("ALACRITTY_WINDOW_ID", "1"), t]), "Alacritty");
+        assert_eq!(key(&[("ALACRITTY_SOCKET", "/run/a.sock"), t]), "Alacritty");
+        assert_eq!(key(&[("KONSOLE_VERSION", "240800"), t]), "Konsole");
+        assert_eq!(key(&[("VTE_VERSION", "7600"), t]), "vte");
+        // TERM_PROGRAM and WT_SESSION still win over them.
+        assert_eq!(
+            key(&[("TERM_PROGRAM", "WezTerm"), ("KITTY_WINDOW_ID", "3"), t]),
+            "WezTerm"
+        );
+        assert_eq!(
+            key(&[("WT_SESSION", "x"), ("VTE_VERSION", "7600"), t]),
+            "Windows Terminal"
+        );
+        // An empty value is unset.
+        assert_eq!(key(&[("VTE_VERSION", " "), t]), "xterm-256color (zutty)");
+    }
+
+    #[test]
+    fn a_generic_term_gets_the_emulator_name_appended() {
+        let key = |term: &str, name: Option<&str>| terminal_key(env(&[("TERM", term)]), name);
+        assert_eq!(
+            key("xterm-256color", Some("zutty")),
+            "xterm-256color (zutty)"
+        );
+        assert_eq!(key("xterm", Some("xterm")), "xterm (xterm)");
+        assert_eq!(key("xterm-color", Some("st")), "xterm-color (st)");
+        assert_eq!(key("xterm-direct", Some("st")), "xterm-direct (st)");
+        assert_eq!(key("xterm-256color", None), "xterm-256color");
+        assert_eq!(key("xterm-256color", Some("  ")), "xterm-256color");
+        // A vendor suffix or another family already tells terminals apart.
+        assert_eq!(key("xterm-kitty", Some("kitty")), "xterm-kitty");
+        assert_eq!(key("foot", Some("foot")), "foot");
+        assert_eq!(key("screen-256color", Some("tmux")), "screen-256color");
+        // A terminal-specific variable is not suffixed either.
+        assert_eq!(
+            terminal_key(
+                env(&[("VTE_VERSION", "1"), ("TERM", "xterm")]),
+                Some("gnome-terminal-")
+            ),
+            "vte"
+        );
+    }
+
+    #[test]
+    fn the_parent_pid_is_read_after_the_closing_paren_of_comm() {
+        assert_eq!(parent_pid("42 (zutty) S 7 42 42 0"), Some(7));
+        // The command name may hold spaces and parentheses.
+        assert_eq!(parent_pid("42 (we ird) (x) S 9 42"), Some(9));
+        assert_eq!(parent_pid("42 (a) S"), None);
+        assert_eq!(parent_pid("42 (a) S x 1"), None);
+        assert_eq!(parent_pid("no parens"), None);
+        assert_eq!(parent_pid(""), None);
+    }
+
+    /// A process table: pid -> (comm, parent pid).
+    fn table<'a>(rows: &'a [(u32, &'a str, u32)]) -> impl Fn(u32) -> Option<(String, u32)> + 'a {
+        move |pid| {
+            rows.iter()
+                .find(|(p, _, _)| *p == pid)
+                .map(|(_, c, pp)| ((*c).to_owned(), *pp))
+        }
+    }
+
+    #[test]
+    fn the_emulator_is_the_first_ancestor_that_is_not_a_shell_or_wrapper() {
+        let tree = [
+            (50, "lazarobox-shell", 40),
+            (40, "bash", 30),
+            (30, "sudo", 25),
+            (25, "zutty", 1),
+            (1, "systemd", 0),
+        ];
+        assert_eq!(ancestor_emulator(40, table(&tree)), Some("zutty".into()));
+        assert_eq!(ancestor_emulator(50, table(&tree)), Some("zutty".into()));
+        // Reaching pid 1 gives no name, and so does init as the first hit.
+        let bare = [(40, "zsh", 1), (1, "systemd", 0)];
+        assert_eq!(ancestor_emulator(40, table(&bare)), None);
+        let init = [(40, "fish", 1), (1, "init", 0)];
+        assert_eq!(ancestor_emulator(40, table(&init)), None);
+        // A missing process or an empty name ends the walk.
+        assert_eq!(ancestor_emulator(99, table(&tree)), None);
+        assert_eq!(ancestor_emulator(0, table(&tree)), None);
+        let blank = [(40, "", 30), (30, "zutty", 1)];
+        assert_eq!(ancestor_emulator(40, table(&blank)), None);
+    }
+
+    #[test]
+    fn the_walk_is_bounded_and_survives_a_loop() {
+        // Nine shells deep: the emulator is past the limit.
+        let deep: Vec<(u32, &str, u32)> = (10..19)
+            .map(|p| (p, "bash", p + 1))
+            .chain([(19, "zutty", 1)])
+            .collect();
+        assert_eq!(ancestor_emulator(10, table(&deep)), None);
+        let near: Vec<(u32, &str, u32)> = (10..17)
+            .map(|p| (p, "bash", p + 1))
+            .chain([(17, "zutty", 1)])
+            .collect();
+        assert_eq!(ancestor_emulator(10, table(&near)), Some("zutty".into()));
+        let cycle = [(5, "bash", 6), (6, "sh", 5)];
+        assert_eq!(ancestor_emulator(5, table(&cycle)), None);
     }
 
     #[test]

@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The first-run prefix probe no longer shares one result between terminals
+  that only set `TERM=xterm-256color`.** The stored row is now named after
+  kitty, WezTerm, Alacritty, Konsole or VTE when their own variable is set,
+  and a generic `TERM` gets the terminal's process name (`xterm-256color
+  (zutty)`, read from `/proc` on Linux). Rows stored under the old generic
+  key no longer match, so those terminals probe once more.
+
 ## [1.28.1] - 2026-11-15
 
 ### Fixed
