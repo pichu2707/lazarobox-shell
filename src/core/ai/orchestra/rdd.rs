@@ -464,7 +464,10 @@ impl Review {
             out.push("a reviewer gave no answer".to_owned());
         }
         if self.hollow() > 0 {
-            out.push("a judge passed with nothing verified".to_owned());
+            out.push("a judge passed with a fault or nothing verified".to_owned());
+        }
+        if self.undecided() {
+            out.push("the judges gave no agreed verdict".to_owned());
         }
         out.extend(self.gaps.iter().cloned());
         out
@@ -486,6 +489,13 @@ impl Review {
     /// The findings a failing judge named that the other did not back.
     pub fn contested(&self) -> &[usize] {
         &self.contested
+    }
+
+    /// The latest round ended in a disagreement or a missing verdict: the
+    /// change is not judged, whatever else is open.
+    fn undecided(&self) -> bool {
+        let last = self.rounds.last();
+        last.is_some_and(|round| matches!(round.agreement, Agreement::Disagree { .. }))
     }
 
     /// Passes of the latest round that settle little.
@@ -545,7 +555,10 @@ impl Review {
             return Err(ReviewError::NoCorrection);
         };
         let passed = |criterion: usize| {
-            let row = |r: &Ruling| r.criteria.get(criterion - 1).cloned().flatten();
+            let row = |r: &Ruling| {
+                let at = criterion.checked_sub(1)?;
+                r.criteria.get(at).cloned().flatten()
+            };
             !rulings.is_empty()
                 && rulings
                     .iter()
@@ -882,6 +895,7 @@ impl Review {
             + self.unseen()
             + self.mute()
             + self.hollow()
+            + usize::from(self.undecided())
             + self.gaps.len()
             > 0
         {

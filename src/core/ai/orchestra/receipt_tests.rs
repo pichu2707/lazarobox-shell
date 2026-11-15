@@ -568,8 +568,10 @@ mod judges {
         CRITERION C2 not met | no check\n\
         FINDING C2 | at: src/a.rs:40-52 | the check is missing\nVERDICT fail";
 
+    /// Everything the receipt holds about the judges, whatever the field.
     fn done(held: &Held) -> String {
-        judgement(&held.evidence()).done
+        let got = judgement(&held.evidence());
+        format!("{}\n{}", got.done, got.decisions)
     }
 
     #[test]
@@ -679,5 +681,75 @@ mod judges {
     fn a_review_with_no_judges_reads_as_before() {
         let held = found("boom");
         assert!(!done(&held).contains("judge"));
+    }
+
+    fn big_fail(faults: &[usize], place: &str) -> String {
+        let mut text = String::new();
+        for n in 1..=12 {
+            if faults.contains(&n) {
+                let evidence = "x".repeat(110);
+                text.push_str(&format!("CRITERION C{n} not met | {evidence}\n"));
+                text.push_str(&format!(
+                    "FINDING C{n} | at: {place}{n}.rs:{n}-{n}9 | {evidence}\n"
+                ));
+            } else {
+                text.push_str(&format!("CRITERION C{n} met | {}\n", "y".repeat(110)));
+            }
+        }
+        text.push_str("VERDICT fail");
+        text
+    }
+
+    // Spec: a failed criterion or its place is never reduced to a count.
+    #[test]
+    fn two_judges_over_twelve_criteria_keep_every_fault_place_and_the_key_lines() {
+        let mut shown = standard(false, 0, false);
+        shown.criteria = (1..=12)
+            .map(|n| Criterion {
+                id: format!("C{n}"),
+                text: "z".repeat(60),
+            })
+            .collect();
+        let mut set = judging(true, shown, true);
+        set.models = vec!["claude > opus".to_owned(), "ollama > llama3".to_owned()];
+        let mut review = Review::new(assess(&[change("src/a.rs")], None));
+        review.consent(Consent::Granted).unwrap();
+        review.no_lenses_needed().unwrap();
+        review.set_judging(set);
+        let first = [
+            parse_ruling(&big_fail(&[2, 5, 7], "src/one"), 12),
+            parse_ruling(&big_fail(&[3, 5, 9], "src/two"), 12),
+        ];
+        review.judged(&agree(&first), &first).unwrap();
+        review.begin_correction().unwrap();
+        let again = [parse_ruling(&big_fail(&[3], "src/three"), 12)];
+        review.rejudged(&again).unwrap();
+        let held = Held::of(review, Some(Outcome::BlockersOpen));
+        let got = judgement(&held.evidence());
+        let all = format!("{}\n{}", got.done, got.decisions);
+        for place in [
+            "src/one2.rs:2-29",
+            "src/one5.rs:5-59",
+            "src/one7.rs:7-79",
+            "src/two3.rs:3-39",
+            "src/two5.rs:5-59",
+            "src/two9.rs:9-99",
+            "src/three3.rs:3-39",
+        ] {
+            assert!(all.contains(place), "{place} missing in:\n{all}");
+        }
+        for want in [
+            "round 1 agree: fail",
+            "round 2",
+            "judge 2 (ollama > llama3)",
+            "tests: not seen before apply",
+        ] {
+            assert!(
+                got.done.contains(want),
+                "{want} missing in done:\n{}",
+                got.done
+            );
+        }
+        assert!(!got.decisions.contains("more lines"), "{}", got.decisions);
     }
 }

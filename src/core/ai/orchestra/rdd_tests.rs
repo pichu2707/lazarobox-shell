@@ -997,4 +997,39 @@ mod judges {
         clean.judged(&agree(&[pass()]), &[pass()]).unwrap();
         assert_eq!(clean.conclude(), Ok(Outcome::Clean));
     }
+
+    #[test]
+    fn a_judge_with_no_verdict_never_concludes_clean() {
+        let silent = parse_ruling("nothing useful", 2);
+        let mut single = judge_review();
+        single
+            .judged(&agree(std::slice::from_ref(&silent)), &[silent.clone()])
+            .unwrap();
+        assert_eq!(single.conclude(), Ok(Outcome::Incomplete));
+        assert!(
+            single
+                .reasons()
+                .iter()
+                .any(|why| why.contains("no agreed verdict"))
+        );
+        let mut split = judge_review();
+        let rulings = [pass(), silent];
+        split.judged(&agree(&rulings), &rulings).unwrap();
+        assert!(split.contested().is_empty());
+        assert_eq!(split.conclude(), Ok(Outcome::Incomplete));
+    }
+
+    #[test]
+    fn a_fault_on_criterion_zero_is_kept_and_never_panics() {
+        use crate::core::ai::orchestra::judge::{Agreement, Fault};
+        let mut review = judge_review();
+        let fault = Fault {
+            criterion: 0,
+            at: None,
+            text: "odd".to_owned(),
+        };
+        review.judged(&Agreement::Fail(vec![fault]), &[]).unwrap();
+        assert_eq!(review.begin_correction(), Ok(vec![0]));
+        assert_eq!(review.rejudged(&[pass()]), Ok(vec![0]));
+    }
 }

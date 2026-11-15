@@ -788,4 +788,13 @@ fn the_consent_text_names_the_level_rule_and_the_models_in_one_clean_line() {
         assert!(text.contains(want), "{want} missing in {text:?}");
     }
     assert!(consent_text(&[]).contains("one judge"));
+    assert!(text.contains("large goal"), "{text:?}");
+    let models_first = text.find("opus") < text.find("one judge");
+    assert!(
+        models_first,
+        "the cap must cut the rule, never a model: {text:?}"
+    );
+    assert!(!consent_text(&[]).ends_with(['\u{b7}', ' ']));
+    let size = format!("{} KB", BIG_BYTES / 1024);
+    assert!(text.contains(&size), "{text:?}");
 }
