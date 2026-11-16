@@ -91,7 +91,7 @@ Does S1 need splitting? No, not up front. The design counts ~374 (eval.rs 170, s
 
 ### 7. Baseline and close
 
-- [ ] 7.1 [manual] First live baseline on the owner's machine (RTX 4080 16 GB, Ollama 0.30.10): `qwen2.5:7b`, `qwen2.5-coder:14b`, `qwen3:14b` (accepted set) plus `qwen3:14b-nothink` (informative, C6), 4 tasks x 5 runs each; can take hours. Save the table as `openspec/changes/local-multistep/scores/s1-baseline.txt` and paste it in the PR.
+- [x] 7.1 [manual] First live baseline on the owner's machine (RTX 4080 16 GB, Ollama 0.30.10): `qwen2.5:7b`, `qwen2.5-coder:14b`, `qwen3:14b` (accepted set) plus `qwen3:14b-nothink` (informative, C6), 4 tasks x 5 runs each; can take hours. Save the table as `openspec/changes/local-multistep/scores/s1-baseline.txt` and paste it in the PR. Done 2026-11-16: scores/s1-baseline.txt, totals 2/20, 0/20, 6/20, 5/20.
 - [ ] 7.2 [manual] Curate at most one real transcript per task from the `_DUMP` output into `tests/fixtures/ollama/eval/` (throwaway repo only), check `fixtures_are_clean` passes; optional for S1.
 - [x] 7.3 Gate: `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`; `rm -rf target` of the worktree after the checks (AGENTS.md).
 
