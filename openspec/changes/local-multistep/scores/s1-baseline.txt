@@ -1,0 +1,137 @@
+S1 baseline, task 7.1 of local-multistep
+date: 2026-11-16, main SHA 06779c58, Ollama 0.30.10, GPU NVIDIA GeForce RTX 4080 SUPER 16376 MiB
+runs: 4 tasks x 5 runs per model; models run one invocation each, sequentially
+accepted set: qwen2.5:7b, qwen2.5-coder:14b, qwen3:14b; informative (C6): qwen3:14b-nothink
+
+Passes out of 5 per task
+model               write-and-test  edit-existing  read-only  coordinate  total/20
+qwen2.5:7b          1/5             0/5            1/5        0/5         2/20
+qwen2.5-coder:14b   0/5             0/5            0/5        0/5         0/20
+qwen3:14b           3/5             1/5            2/5        0/5         6/20
+qwen3:14b-nothink   0/5             0/5            5/5        0/5         5/20
+
+Wall time per model (full 20 runs): qwen2.5:7b 15m50s, qwen2.5-coder:14b 59s, qwen3:14b 14m41s, qwen3:14b-nothink 3m29s; total 34m59s (07:09:51 to 07:44:50 +01:00).
+Run errors: none; every model completed all 20 runs. One qwen2.5:7b write-and-test run hit the 10 minute turn cap (601 s).
+Note: qwen2.5-coder:14b made none of the expected tool calls in any run (1-9 s per run, "tools" capability is listed by ollama).
+
+Workarounds and environment
+- live_helper() looks for target/debug/lazarobox but cargo builds target/debug/lazarobox-shell: worked around with a symlink target/debug/lazarobox -> lazarobox-shell (harness not fixed in this branch).
+- pytest resolved to /usr/bin/pytest 8.3.5 (system); PATH was /usr/bin:/bin:/usr/local/bin, without ~/.local/bin (pipx pytest is refused by the Landlock jail) and without linuxbrew (its python3 has no pytest, and the precheck runs python3 -m pytest).
+- The test binary was run directly (target/debug/deps/lazarobox_shell-*) with --ignored --nocapture --test-threads=1, because /usr/bin/cargo is too old for rustc 1.88 on the stripped PATH.
+
+Raw tables from the harness (LAZAROBOX_EVAL_OUT), one per model
+
+=== qwen2.5_7b ===
+qwen2.5:7b  coordinate      coordinate      0/5  asked x1, missing:authorize x5, missing:classify x5, missing:explore x5, missing:resolve x5, missing:spawn x5  seconds 9 11 12 1 8  median 9
+  run 1: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 2: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 3: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 4: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn, asked back
+  run 5: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+qwen2.5:7b  edit-existing   edit-existing   0/5  failed:pytest x4, missing:edit x5, missing:pytest x1, unexpected x1  seconds 2 5 4 9 7  median 5
+  run 1: missing:edit, missing:pytest
+  run 2: missing:edit, failed:pytest
+  run 3: missing:edit, failed:pytest
+  run 4: missing:edit, failed:pytest, unexpected approval
+  run 5: missing:edit, failed:pytest
+qwen2.5:7b  read-only       read-only       1/5  missing:read x4  seconds 0 1 0 1 1  median 1
+  run 1: missing:read
+  run 2: missing:read
+  run 3: missing:read
+  run 5: missing:read
+qwen2.5:7b  write-and-test  write-and-test  1/5  failed:pytest x1, literal x1, missing:batch x1, missing:commit x3, missing:pytest x1, missing:write x1, missing:write-test x1, order x1, time x1  seconds 601 135 121 19 1  median 121
+  run 1: missing:commit, over time
+  run 3: out of order:pytest>commit, ignored literal
+  run 4: missing:commit, failed:pytest
+  run 5: missing:write, missing:write-test, missing:batch, missing:pytest, missing:commit
+
+summary
+qwen2.5:7b coordinate 0/1
+qwen2.5:7b edit-existing 0/1
+qwen2.5:7b read-only 0/1
+qwen2.5:7b write-and-test 0/1
+
+=== qwen2.5-coder_14b ===
+qwen2.5-coder:14b  coordinate      coordinate      0/5  missing:authorize x5, missing:classify x5, missing:explore x5, missing:resolve x5, missing:spawn x5  seconds 4 3 3 3 4  median 3
+  run 1: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 2: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 3: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 4: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 5: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+qwen2.5-coder:14b  edit-existing   edit-existing   0/5  missing:batch x5, missing:edit x5, missing:pytest x5  seconds 3 3 2 1 1  median 2
+  run 1: missing:edit, missing:batch, missing:pytest
+  run 2: missing:edit, missing:batch, missing:pytest
+  run 3: missing:edit, missing:batch, missing:pytest
+  run 4: missing:edit, missing:batch, missing:pytest
+  run 5: missing:edit, missing:batch, missing:pytest
+qwen2.5-coder:14b  read-only       read-only       0/5  missing:read x5  seconds 1 1 1 1 1  median 1
+  run 1: missing:read
+  run 2: missing:read
+  run 3: missing:read
+  run 4: missing:read
+  run 5: missing:read
+qwen2.5-coder:14b  write-and-test  write-and-test  0/5  missing:batch x5, missing:commit x5, missing:pytest x5, missing:write x5, missing:write-test x5  seconds 9 3 3 3 8  median 3
+  run 1: missing:write, missing:write-test, missing:batch, missing:pytest, missing:commit
+  run 2: missing:write, missing:write-test, missing:batch, missing:pytest, missing:commit
+  run 3: missing:write, missing:write-test, missing:batch, missing:pytest, missing:commit
+  run 4: missing:write, missing:write-test, missing:batch, missing:pytest, missing:commit
+  run 5: missing:write, missing:write-test, missing:batch, missing:pytest, missing:commit
+
+summary
+qwen2.5-coder:14b coordinate 0/1
+qwen2.5-coder:14b edit-existing 0/1
+qwen2.5-coder:14b read-only 0/1
+qwen2.5-coder:14b write-and-test 0/1
+
+=== qwen3_14b ===
+qwen3:14b  coordinate      coordinate      0/5  missing:authorize x5, missing:classify x5, missing:explore x5, missing:resolve x5, missing:spawn x4  seconds 44 39 58 46 42  median 44
+  run 1: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 2: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 3: missing:authorize, missing:explore, missing:resolve, missing:classify
+  run 4: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 5: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+qwen3:14b  edit-existing   edit-existing   1/5  asked x2, missing:batch x3, missing:edit x3, missing:pytest x4, unexpected x1  seconds 22 32 32 38 33  median 32
+  run 1: missing:edit, missing:batch, missing:pytest, asked back, unexpected approval
+  run 2: missing:batch, missing:pytest, asked back
+  run 3: missing:edit, missing:pytest
+  run 5: missing:edit, missing:batch, missing:pytest
+qwen3:14b  read-only       read-only       2/5  asked x3, missing:read x3  seconds 6 8 25 9 23  median 9
+  run 1: missing:read, asked back
+  run 2: missing:read, asked back
+  run 4: missing:read, asked back
+qwen3:14b  write-and-test  write-and-test  3/5  asked x1, failed:pytest x1, missing:commit x1, missing:pytest x1, unexpected x2  seconds 43 19 183 164 15  median 43
+  run 3: missing:pytest, unexpected approval
+  run 4: missing:commit, failed:pytest, asked back, unexpected approval
+
+summary
+qwen3:14b coordinate 0/1
+qwen3:14b edit-existing 0/1
+qwen3:14b read-only 0/1
+qwen3:14b write-and-test 0/1
+
+=== qwen3_14b-nothink ===
+qwen3:14b-nothink  coordinate      coordinate      0/5  missing:authorize x5, missing:classify x5, missing:explore x5, missing:resolve x5, missing:spawn x5  seconds 14 7 13 13 13  median 13
+  run 1: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 2: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 3: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 4: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+  run 5: missing:authorize, missing:explore, missing:resolve, missing:classify, missing:spawn
+qwen3:14b-nothink  edit-existing   edit-existing   0/5  failed:pytest x4, missing:batch x1, missing:edit x4, missing:pytest x1, unexpected x2  seconds 5 23 22 20 19  median 20
+  run 1: missing:edit, missing:batch, missing:pytest, unexpected approval
+  run 2: missing:edit, failed:pytest
+  run 3: missing:edit, failed:pytest, unexpected approval
+  run 4: missing:edit, failed:pytest
+  run 5: failed:pytest
+qwen3:14b-nothink  read-only       read-only       5/5  -  seconds 2 1 1 2 2  median 2
+qwen3:14b-nothink  write-and-test  write-and-test  0/5  missing:commit x4, missing:pytest x5, unexpected x5  seconds 14 9 9 11 8  median 9
+  run 1: missing:pytest, missing:commit, unexpected approval
+  run 2: missing:pytest, missing:commit, unexpected approval
+  run 3: missing:pytest, missing:commit, unexpected approval
+  run 4: missing:pytest, missing:commit, unexpected approval
+  run 5: missing:pytest, unexpected approval
+
+summary
+qwen3:14b-nothink coordinate 0/1
+qwen3:14b-nothink edit-existing 0/1
+qwen3:14b-nothink read-only 1/1
+qwen3:14b-nothink write-and-test 0/1
