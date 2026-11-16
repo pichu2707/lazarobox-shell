@@ -2,6 +2,7 @@
 //! It lives in the chat module because it reaches the private Ollama loop.
 
 use std::{
+    ffi::OsStr,
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -748,26 +749,46 @@ pub(super) fn helper_age_warning(helper: &Path, root: &Path) -> Option<String> {
     })
 }
 
-/// The first file named `program` in the `path` list (`:`-separated), as the
-/// host shell would find it. `None` when no folder of `path` holds one.
-pub(super) fn resolve_on_path(program: &str, path: &str) -> Option<PathBuf> {
+/// The first executable file named `program` in the `path` list, as the host
+/// shell would find it. Like the sandbox PATH, it skips empty and relative
+/// entries (they would resolve against the cwd). `None` when none holds one.
+pub(super) fn resolve_on_path(program: &str, path: &OsStr) -> Option<PathBuf> {
     std::env::split_paths(path)
+        .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(program))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| is_executable(candidate))
+}
+
+fn is_executable(file: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(file) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        meta.is_file()
+    }
 }
 
 /// Probes every `forms` of running pytest (`program args`) through `dispatch`
 /// and fails only when none works. `Ok` names the form that works, and says
 /// when the first one (the bare `pytest`) does not. Each failure names the
-/// executable the host PATH resolves the program to, to tell a shadowing or
+/// executable `host_path` resolves the program to, to tell a shadowing or
 /// refused install from a missing one.
 pub(super) async fn pytest_probe(
     dispatch: &dyn Dispatch,
     forms: &[(&str, &[&str])],
+    host_path: &OsStr,
 ) -> Result<String, String> {
     let mut failures = Vec::new();
     for (program, args) in forms {
-        let form = format!("{program} {}", args.join(" "));
+        let form = format!("{program} {}", args.join(" "))
+            .trim_end()
+            .to_string();
         match sandbox_probe(dispatch, program, args).await {
             Ok(()) if failures.is_empty() => return Ok(form),
             Ok(()) => {
@@ -777,8 +798,7 @@ pub(super) async fn pytest_probe(
                 ));
             }
             Err(why) => {
-                let host_path = std::env::var("PATH").unwrap_or_default();
-                let found = resolve_on_path(program, &host_path)
+                let found = resolve_on_path(program, host_path)
                     .map_or("not on PATH".to_string(), |p| p.display().to_string());
                 failures.push(format!("{form} ({found}): {why}"));
             }
@@ -798,7 +818,13 @@ pub(super) async fn live_sandbox_check() {
         ("pytest", &["--version"]),
         ("python3", &["-m", "pytest", "--version"]),
     ];
-    match pytest_probe(&*rig.dispatch(), &forms).await {
+    match pytest_probe(
+        &*rig.dispatch(),
+        &forms,
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )
+    .await
+    {
         Ok(form) => eprintln!("sandbox pre-check: {form}"),
         Err(why) => panic!("{why}"),
     }

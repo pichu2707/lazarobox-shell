@@ -4,6 +4,7 @@
 //! the scorer judges the exchanges. It checks the loop and the scorer, not the
 //! quality of any model, and it is never reported as a score.
 
+use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -553,9 +554,11 @@ const FORMS: [(&str, &[&str]); 2] = [
 // fails when none works, saying which one does.
 #[tokio::test]
 async fn the_pytest_probe_reports_which_form_works_and_fails_when_none_does() {
-    let both = pytest_probe(&Programs(&["pytest", "python3"]), &FORMS).await;
+    let both = pytest_probe(&Programs(&["pytest", "python3"]), &FORMS, OsStr::new("")).await;
     assert_eq!(both.unwrap(), "pytest --version");
-    let only_module = pytest_probe(&Programs(&["python3"]), &FORMS).await.unwrap();
+    let only_module = pytest_probe(&Programs(&["python3"]), &FORMS, OsStr::new(""))
+        .await
+        .unwrap();
     assert!(
         only_module.contains("python3 -m pytest --version"),
         "{only_module}"
@@ -564,7 +567,9 @@ async fn the_pytest_probe_reports_which_form_works_and_fails_when_none_does() {
         only_module.contains("pytest not on the sandboxed PATH"),
         "{only_module}"
     );
-    let why = pytest_probe(&Programs(&[]), &FORMS).await.unwrap_err();
+    let why = pytest_probe(&Programs(&[]), &FORMS, OsStr::new(""))
+        .await
+        .unwrap_err();
     assert!(
         why.contains("pytest --version") && why.contains("python3 -m pytest"),
         "{why}"
@@ -584,20 +589,33 @@ fn the_helper_is_the_package_binary_next_to_the_deps_folder() {
 }
 
 // #791: the probe says which executable the host PATH resolves to.
+#[cfg(unix)]
+fn make_program(dir: &Path, name: &str, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let file = dir.join(name);
+    std::fs::write(&file, "").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+#[cfg(unix)]
 #[test]
-fn a_program_resolves_to_the_first_file_on_the_path() {
+fn a_program_resolves_to_the_first_executable_file_on_an_absolute_path_entry() {
     let root = throwaway_root();
-    let (first, second) = (
+    let (folder, plain, second) = (
+        tempfile::tempdir_in(&root).unwrap(),
         tempfile::tempdir_in(&root).unwrap(),
         tempfile::tempdir_in(&root).unwrap(),
     );
-    std::fs::create_dir(first.path().join("pytest")).unwrap(); // a folder is no program
-    std::fs::write(second.path().join("pytest"), "").unwrap();
-    let path = format!(
-        "{}:{}:/no/such/dir",
-        first.path().display(),
-        second.path().display()
-    );
+    std::fs::create_dir(folder.path().join("pytest")).unwrap(); // a folder is no program
+    make_program(plain.path(), "pytest", 0o644); // not executable
+    make_program(second.path(), "pytest", 0o755);
+    let path = std::env::join_paths([
+        folder.path(),
+        plain.path(),
+        second.path(),
+        Path::new("/no/such/dir"),
+    ])
+    .unwrap();
     assert_eq!(
         resolve_on_path("pytest", &path),
         Some(second.path().join("pytest"))
@@ -605,14 +623,31 @@ fn a_program_resolves_to_the_first_file_on_the_path() {
     assert_eq!(resolve_on_path("nope", &path), None);
 }
 
+#[cfg(unix)]
+#[test]
+fn empty_and_relative_path_entries_are_not_searched() {
+    // The tests run with the crate folder as cwd: Cargo.toml is a file there.
+    let path = std::ffi::OsString::from(":.:src/..");
+    assert_eq!(resolve_on_path("Cargo.toml", &path), None);
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn a_failed_pytest_form_names_the_executable_or_says_it_is_not_on_the_path() {
+    let dir = tempfile::tempdir_in(throwaway_root()).unwrap();
+    make_program(dir.path(), "found-bin", 0o755);
+    let path = std::env::join_paths([dir.path()]).unwrap();
     let why = pytest_probe(
         &Programs(&[]),
-        &[("sh", &["-c", "true"]), ("zz-no-such-bin", &[])],
+        &[("found-bin", &["--version"]), ("zz-no-such-bin", &[])],
+        &path,
     )
     .await
     .unwrap_err();
-    assert!(why.contains("sh -c true ("), "{why}");
-    assert!(why.contains("zz-no-such-bin  (not on PATH)"), "{why}");
+    let found = dir.path().join("found-bin");
+    assert!(
+        why.contains(&format!("found-bin --version ({}):", found.display())),
+        "{why}"
+    );
+    assert!(why.contains("zz-no-such-bin (not on PATH):"), "{why}");
 }
