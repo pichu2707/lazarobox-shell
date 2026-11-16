@@ -2,6 +2,7 @@
 //! It lives in the chat module because it reaches the private Ollama loop.
 
 use std::{
+    ffi::OsStr,
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -397,16 +398,19 @@ pub(super) enum Mode {
     StandIn(PathBuf),
 }
 
-/// The `lazarobox` binary that serves `__jail-exec`: the one `cargo build`
-/// leaves next to the test binaries.
+/// The binary that serves `__jail-exec` for the test binary `exe`
+/// (`target/debug/deps/<test>`): the package binary `cargo build` leaves in
+/// `target/debug`. Cargo names it after the package, not after the project.
+pub(super) fn helper_path(exe: &Path) -> Option<PathBuf> {
+    let debug = exe.parent()?.parent()?;
+    Some(debug.join(env!("CARGO_PKG_NAME")))
+}
+
+/// The binary that serves `__jail-exec`: the one `cargo build` leaves next to
+/// the test binaries (`target/debug/lazarobox-shell`).
 #[cfg(target_os = "linux")]
 pub(super) fn live_helper() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let helper = exe
-        .parent()
-        .and_then(Path::parent)
-        .unwrap()
-        .join("lazarobox");
+    let helper = helper_path(&std::env::current_exe().unwrap()).unwrap();
     assert!(
         helper.is_file(),
         "the sandbox helper {} is missing: run `cargo build` first",
@@ -723,7 +727,7 @@ fn newest(dir: &Path) -> Option<std::time::SystemTime> {
 
 /// A warning when a source file under `root` (`src/`, `Cargo.toml`,
 /// `Cargo.lock`) is newer than `helper`: `cargo test --lib` does not rebuild
-/// `target/debug/lazarobox`, so the live run would use a stale sandbox helper.
+/// `target/debug/lazarobox-shell`, so the live run would use a stale sandbox helper.
 /// The test binary's own age says nothing (cargo links it after the helper).
 /// `None` when the helper is fresh or a time is unknown.
 pub(super) fn helper_age_warning(helper: &Path, root: &Path) -> Option<String> {
@@ -745,16 +749,46 @@ pub(super) fn helper_age_warning(helper: &Path, root: &Path) -> Option<String> {
     })
 }
 
+/// The first executable file named `program` in the `path` list, as the host
+/// shell would find it. Like the sandbox PATH, it skips empty and relative
+/// entries (they would resolve against the cwd). `None` when none holds one.
+pub(super) fn resolve_on_path(program: &str, path: &OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(program))
+        .find(|candidate| is_executable(candidate))
+}
+
+fn is_executable(file: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(file) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        meta.is_file()
+    }
+}
+
 /// Probes every `forms` of running pytest (`program args`) through `dispatch`
 /// and fails only when none works. `Ok` names the form that works, and says
-/// when the first one (the bare `pytest`) does not.
+/// when the first one (the bare `pytest`) does not. Each failure names the
+/// executable `host_path` resolves the program to, to tell a shadowing or
+/// refused install from a missing one.
 pub(super) async fn pytest_probe(
     dispatch: &dyn Dispatch,
     forms: &[(&str, &[&str])],
+    host_path: &OsStr,
 ) -> Result<String, String> {
     let mut failures = Vec::new();
     for (program, args) in forms {
-        let form = format!("{program} {}", args.join(" "));
+        let form = format!("{program} {}", args.join(" "))
+            .trim_end()
+            .to_string();
         match sandbox_probe(dispatch, program, args).await {
             Ok(()) if failures.is_empty() => return Ok(form),
             Ok(()) => {
@@ -763,7 +797,11 @@ pub(super) async fn pytest_probe(
                     failures.join("; ")
                 ));
             }
-            Err(why) => failures.push(format!("{form}: {why}")),
+            Err(why) => {
+                let found = resolve_on_path(program, host_path)
+                    .map_or("not on PATH".to_string(), |p| p.display().to_string());
+                failures.push(format!("{form} ({found}): {why}"));
+            }
         }
     }
     Err(failures.join("\n"))
@@ -780,7 +818,13 @@ pub(super) async fn live_sandbox_check() {
         ("pytest", &["--version"]),
         ("python3", &["-m", "pytest", "--version"]),
     ];
-    match pytest_probe(&*rig.dispatch(), &forms).await {
+    match pytest_probe(
+        &*rig.dispatch(),
+        &forms,
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )
+    .await
+    {
         Ok(form) => eprintln!("sandbox pre-check: {form}"),
         Err(why) => panic!("{why}"),
     }
