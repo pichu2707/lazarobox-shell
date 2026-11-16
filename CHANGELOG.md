@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-11-16
+
 ### Added
 
 - **A stopped run now keeps a trail of its steps.** Each tool call of the
@@ -3017,7 +3019,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.28.2...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.29.0...HEAD
+[1.29.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.28.2...v1.29.0
 [1.28.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.28.1...v1.28.2
 [1.28.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.28.0...v1.28.1
 [1.28.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.27.0...v1.28.0
