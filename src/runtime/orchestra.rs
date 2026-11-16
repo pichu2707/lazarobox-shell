@@ -1507,6 +1507,9 @@ impl RunManager {
                     self.announce_handoff(pane, run, handoff);
                     fine(text)
                 }
+                Err(StepError::Gate) => {
+                    self.gate_refused(pane, live, Gate::Finish, Step::Implement)
+                }
                 Err(refused) => step_refusal(refused),
             }
         });
@@ -2534,6 +2537,7 @@ fn step_refusal(refused: StepError) -> Outcome {
             "cancel code worker {} first: the goal is read-only",
             worker.0
         )),
+        StepError::Gate => error(Gate::Finish.refusal(Step::Implement, &[])),
         StepError::NoReason => error("classify needs a reason"),
         StepError::Widen => error("the goal is read-only: it cannot be widened"),
         StepError::Locked { step, later } => error(format!(

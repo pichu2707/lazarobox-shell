@@ -256,6 +256,9 @@ pub enum StepError {
     Widen,
     /// `step` cannot be handed off again: `later` is already closed.
     Locked { step: Step, later: Step },
+    /// `implement` was granted and no code worker exists: the finish gate
+    /// also holds the `implement` and `close` handoffs.
+    Gate,
 }
 
 /// The steps of one run.

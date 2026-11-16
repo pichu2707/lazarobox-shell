@@ -185,6 +185,8 @@ fn track_closes_with_the_feature_document_only() {
     assert_eq!(handoff.unit, super::ledger::Unit::Step(Step::Track));
     assert_eq!(doc.log()[0], GOAL);
     assert!(run.steps().is_closed(Step::Track));
+    run.spawn(std::time::Instant::now(), Task::Code, "p")
+        .expect("writer");
     assert!(
         run.handoff_step(Step::Implement, Mark::None, judgement())
             .is_ok()

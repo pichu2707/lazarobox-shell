@@ -43,6 +43,11 @@ fn note(done: &str) -> Judgement {
 }
 
 /// Closes `steps` in order with plain handoffs.
+/// A queued code worker: `implement` was granted, so its handoff needs one.
+fn write_worker(run: &mut Run) {
+    run.spawn(Instant::now(), Task::Code, "p").expect("writer");
+}
+
 fn close_all(run: &mut Run, steps: &[Step]) {
     for step in steps {
         let mark = match step {
@@ -118,6 +123,7 @@ fn track_is_for_large_goals_only() {
     large
         .feature_build("goal", &["a".to_owned()], &[], note("x"))
         .expect("tracked");
+    write_worker(&mut large);
     close_all(&mut large, &[Step::Implement, Step::Close]);
 
     let mut small = run();
@@ -134,6 +140,7 @@ fn track_is_for_large_goals_only() {
         small.handoff_step(Step::Track, Mark::None, note("x")),
         Err(StepError::NotLarge)
     );
+    write_worker(&mut small);
     close_all(&mut small, &[Step::Implement, Step::Close]);
 }
 
@@ -447,6 +454,7 @@ fn the_steps_name_what_is_closed_and_what_comes_next() {
     assert_eq!(run.steps().next_open(), Some(Step::Resolve));
     close_all(&mut run, &[Step::Resolve, Step::Classify]);
     assert_eq!(run.steps().next_open(), Some(Step::Implement));
+    write_worker(&mut run);
     close_all(&mut run, &[Step::Implement, Step::Close]);
     assert_eq!(run.steps().next_open(), None);
 
@@ -482,6 +490,7 @@ fn the_step_reply_says_closed_the_verdict_and_the_next_step() {
         reply.ends_with("next: implement (the spawn gate is open)"),
         "{reply}"
     );
+    write_worker(&mut run);
     close_all(&mut run, &[Step::Implement, Step::Close]);
     let reply = run.steps().reply(Step::Close, Verdict::OnCourse);
     assert!(reply.ends_with("all steps closed"), "{reply}");
