@@ -1129,6 +1129,7 @@ Con `exec = true` el modelo recibe `run_command`, que ejecuta un comando de la c
 | `go`                      | `test`, `vet`, `build`, `run`                                              |
 | `npm`, `yarn`, `pnpm`     | `test`, `run <script>` (solo un script declarado en `package.json`), `install` y `ci` |
 | `pytest`                  | cualquier argumento admitido                                               |
+| `python3 -m pytest`       | lo mismo que `pytest`; `python3` con cualquier otra cosa se rechaza (`python` también) |
 
 Se rechazan las opciones que cambian de dónde se lee la configuración o el destino (`--config`, `--manifest-path`, `--target-dir`, `--fix`, `-g`, `--registry`, `-modfile`, etc.), las rutas absolutas y los `..`. El tiempo por defecto es de 120 s y el máximo, de 600 s.
 

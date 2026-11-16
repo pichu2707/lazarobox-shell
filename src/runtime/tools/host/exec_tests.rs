@@ -178,16 +178,20 @@ async fn without_the_exec_family_the_call_is_an_unknown_tool() {
     assert!(asks.asked().is_empty());
 }
 
+const PROGRAM_REFUSAL: &str =
+    "program not allowed: use cargo, npm, pnpm, yarn, pytest, go or python3 -m pytest";
+
 // Scenario "Not on the list" and the verb and flag rules.
 #[tokio::test]
 async fn the_allow_list_refuses_before_the_ask() {
     let w = world();
     for (call, why) in [
-        (command("make", &[], None), "program not allowed"),
-        (
-            command("/usr/bin/cargo", &["test"], None),
-            "program not allowed",
-        ),
+        (command("make", &[], None), PROGRAM_REFUSAL),
+        (command("/usr/bin/cargo", &["test"], None), PROGRAM_REFUSAL),
+        // #775: the interpreter passes only as `python3 -m pytest`.
+        (command("python3", &["-c", "1"], None), PROGRAM_REFUSAL),
+        (command("python3", &[], None), PROGRAM_REFUSAL),
+        (command("python", &["-m", "pytest"], None), PROGRAM_REFUSAL),
         (
             command("cargo", &["publish"], None),
             "subcommand not allowed",
@@ -1001,6 +1005,20 @@ fn a_refused_venv_pytest_falls_through_to_the_path() {
     script(&bin.join("pytest"), "#!/bin/sh\n");
     let found = exec::find(Program::Pytest, &root, Some(bin.as_os_str()));
     assert_eq!(found, Some(bin.join("pytest")));
+}
+
+// #775: `python3 -m pytest` looks for `python3` on the PATH only; the project
+// venv's pytest is not its program.
+#[test]
+fn python3_is_found_on_the_path_and_never_as_the_project_venv_pytest() {
+    let w = world();
+    let root = w.proj.canonicalize().unwrap();
+    script(&venv_bin(&root).join("pytest"), "#!/bin/sh\n");
+    let bin = w.base().join("bin");
+    script(&bin.join("python3"), "#!/bin/sh\n");
+    let found = exec::find(Program::Python3, &root, Some(bin.as_os_str()));
+    assert_eq!(found, Some(bin.join("python3")));
+    assert_eq!(exec::find(Program::Python3, &root, None), None);
 }
 
 // --- package scripts: shown, declared and pinned ---

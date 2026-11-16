@@ -171,6 +171,28 @@ fn pytest_runs_from_a_venv_outside_the_root_or_its_own_file() {
     assert_eq!(system.rx, system_plus(&[]));
 }
 
+// #775: `python3 -m pytest` gets the places `pytest` gets, and never the
+// project venv exception.
+#[test]
+fn python3_runs_from_the_system_or_a_venv_outside_the_root() {
+    let system = build(&layout(Program::Python3, "/usr/bin/python3"), &[]).unwrap();
+    assert_eq!(system.rx, system_plus(&[]));
+    let venv = "/home/u/.local/pipx/venvs/pytest";
+    let l = layout(
+        Program::Python3,
+        "/home/u/.local/pipx/venvs/pytest/bin/python3",
+    );
+    let spec = build(&l, &["/home/u/.local/pipx/venvs/pytest/pyvenv.cfg"]).unwrap();
+    assert_eq!(spec.rx, system_plus(&[venv]));
+    for program in ["/home/u/proj/.venv/bin/python3", "/home/u/proj/bin/python3"] {
+        assert_eq!(
+            build(&layout(Program::Python3, program), &[]),
+            Err(Refusal::InRoot(p(program))),
+            "{program}"
+        );
+    }
+}
+
 #[test]
 fn only_the_root_venv_pytest_may_live_in_the_root() {
     let spec = build(

@@ -25,6 +25,9 @@ pub enum Program {
     Yarn,
     Pytest,
     Go,
+    /// `python3`, only as `python3 -m pytest [args]`: [`check`] refuses any
+    /// other use of it, so this variant never stands for an interpreter.
+    Python3,
 }
 
 impl Program {
@@ -37,6 +40,7 @@ impl Program {
             "yarn" => Program::Yarn,
             "pytest" => Program::Pytest,
             "go" => Program::Go,
+            "python3" => Program::Python3,
             _ => return None,
         })
     }
@@ -49,6 +53,7 @@ impl Program {
             Program::Yarn => "yarn",
             Program::Pytest => "pytest",
             Program::Go => "go",
+            Program::Python3 => "python3",
         }
     }
 }
@@ -67,7 +72,9 @@ pub enum Refusal {
 impl Refusal {
     pub fn text(self) -> &'static str {
         match self {
-            Refusal::Program => "program not allowed",
+            Refusal::Program => {
+                "program not allowed: use cargo, npm, pnpm, yarn, pytest, go or python3 -m pytest"
+            }
             Refusal::Verb => "subcommand not allowed",
             Refusal::Flag => "flag not allowed",
             Refusal::Path => "path not available",
@@ -115,9 +122,18 @@ const GO_DENIED: &[&str] = &["modfile", "toolexec", "exec", "overlay", "vettool"
 /// `scripts` object: `npm run`, `yarn run` and `pnpm run` accept only those.
 pub fn check(program: &str, args: &[String], scripts: &[String]) -> Result<Program, Refusal> {
     let program = Program::parse(program).ok_or(Refusal::Program)?;
+    // An interpreter runs anything: only `-m pytest` leads the argv, and the
+    // words after it are pytest's own, judged like `pytest`'s.
+    if program == Program::Python3
+        && !matches!(args, [m, module, ..] if m == "-m" && module == "pytest")
+    {
+        return Err(Refusal::Program);
+    }
     verb(program, args, scripts)?;
     // argparse expands `@file` in every word, also after `--`.
-    if program == Program::Pytest && args.iter().any(|arg| arg.starts_with('@')) {
+    if matches!(program, Program::Pytest | Program::Python3)
+        && args.iter().any(|arg| arg.starts_with('@'))
+    {
         return Err(Refusal::Flag);
     }
     flags(program, args)?;
@@ -151,7 +167,7 @@ pub fn runs_files(program: &str) -> Option<&'static str> {
         Program::Cargo => "build.rs, tests, Cargo.toml and .cargo/config",
         Program::Npm | Program::Pnpm => "the scripts of package.json and its tests, and .npmrc",
         Program::Yarn => "the scripts of package.json and its tests, and .yarnrc.yml",
-        Program::Pytest => "conftest.py, tests and pyproject.toml",
+        Program::Pytest | Program::Python3 => "conftest.py, tests and pyproject.toml",
         Program::Go => "tests, go.mod and go:generate directives",
     })
 }
@@ -165,7 +181,7 @@ fn verb(program: Program, args: &[String], scripts: &[String]) -> Result<(), Ref
             None => false,
         },
         Program::Go => first.is_some_and(|verb| GO_VERBS.contains(&verb)),
-        Program::Pytest => true,
+        Program::Pytest | Program::Python3 => true,
         Program::Npm | Program::Pnpm | Program::Yarn => match first {
             Some("test") => true,
             // yarn and pnpm fall back to running a binary of that name
@@ -196,7 +212,7 @@ fn flags(program: Program, args: &[String]) -> Result<(), Refusal> {
     let denied = own.iter().any(|arg| match program {
         Program::Cargo => named(arg, CARGO_DENIED, CARGO_ATTACHED),
         Program::Go => go_flag(arg).is_some_and(|flag| GO_DENIED.contains(&flag)),
-        Program::Pytest => false,
+        Program::Pytest | Program::Python3 => false,
         _ => named(arg, NODE_DENIED, NODE_ATTACHED) || global_bundle(arg),
     });
     if denied { Err(Refusal::Flag) } else { Ok(()) }
@@ -252,7 +268,7 @@ fn absolute(word: &str) -> bool {
             && matches!(bytes[2], b'/' | b'\\'))
 }
 
-/// The longest `program` word: the longest name in the table is 6.
+/// The longest `program` word: the longest name in the table is 7.
 const PROGRAM_MAX: usize = 16;
 /// Arguments one call may pass, and the bytes of each.
 const ARGS_MAX: usize = 64;
@@ -405,6 +421,96 @@ mod tests {
             Ok(Program::Pnpm)
         );
         assert_eq!(Program::Go.name(), "go");
+    }
+
+    // #775: `python3 -m pytest` is another spelling of `pytest`, and only that.
+    #[test]
+    fn python3_passes_only_as_dash_m_pytest() {
+        for args in [
+            &["-m", "pytest"][..],
+            &["-m", "pytest", "-k", "fib", "-x"],
+            &["-m", "pytest", "tests/test_fib.py::test_one"],
+            &["-m", "pytest", "--", "-k", "a && b"],
+        ] {
+            assert_eq!(
+                check("python3", &argv(args), &scripts()),
+                Ok(Program::Python3),
+                "{args:?}"
+            );
+        }
+        for (program, args) in [
+            ("python3", &[][..]),
+            ("python3", &["-m"]),
+            ("python3", &["-m", "unittest"]),
+            ("python3", &["-m", "pip", "install", "x"]),
+            ("python3", &["-m", "pytest2"]),
+            ("python3", &["-m", "Pytest"]),
+            ("python3", &["-c", "print(1)"]),
+            ("python3", &["x.py"]),
+            ("python3", &["-I", "-m", "pytest"]),
+            ("python3", &["-u", "-m", "pytest"]),
+            ("python3", &["pytest"]),
+            ("python3", &["pytest", "-m"]),
+            ("python3", &["--", "-m", "pytest"]),
+            ("python", &["-m", "pytest"]),
+            ("python3.12", &["-m", "pytest"]),
+            ("/usr/bin/python3", &["-m", "pytest"]),
+            ("Python3", &["-m", "pytest"]),
+        ] {
+            assert_eq!(
+                refused(program, args),
+                Refusal::Program,
+                "{program} {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn python3_dash_m_pytest_args_get_the_pytest_checks() {
+        // The same words `pytest` refuses are refused after `-m pytest`.
+        assert_eq!(refused("pytest", &["@args.txt"]), Refusal::Flag);
+        assert_eq!(
+            refused("python3", &["-m", "pytest", "@args.txt"]),
+            Refusal::Flag
+        );
+        assert_eq!(
+            refused("python3", &["-m", "pytest", "--", "@args.txt"]),
+            Refusal::Flag
+        );
+        assert_eq!(refused("pytest", &["/etc/passwd"]), Refusal::Path);
+        assert_eq!(
+            refused("python3", &["-m", "pytest", "/etc/passwd"]),
+            Refusal::Path
+        );
+        assert_eq!(refused("python3", &["-m", "pytest", "../x"]), Refusal::Path);
+        assert_eq!(
+            refused("python3", &["-m", "pytest", "--rootdir=/x"]),
+            Refusal::Path
+        );
+    }
+
+    #[test]
+    fn python3_dash_m_pytest_runs_the_same_project_files_as_pytest() {
+        assert_eq!(runs_files("python3"), runs_files("pytest"));
+        assert!(runs_files("python3").is_some());
+        assert_eq!(Program::Python3.name(), "python3");
+    }
+
+    #[test]
+    fn the_program_refusal_names_what_is_allowed_including_python3_m_pytest() {
+        let text = Refusal::Program.text();
+        for allowed in [
+            "cargo",
+            "npm",
+            "pnpm",
+            "yarn",
+            "pytest",
+            "go",
+            "python3 -m pytest",
+        ] {
+            assert!(text.contains(allowed), "{allowed} missing in {text:?}");
+        }
+        assert!(text.starts_with("program not allowed"));
     }
 
     #[test]
@@ -750,6 +856,20 @@ mod tests {
 
     fn req(json: serde_json::Value) -> Result<RunRequest, RunError> {
         parse_run(&json, &scripts())
+    }
+
+    #[test]
+    fn a_python3_dash_m_pytest_call_becomes_a_request_with_its_argv_intact() {
+        let ok = req(serde_json::json!({"program": "python3", "args": ["-m", "pytest", "-x"]}));
+        let ok = ok.unwrap();
+        assert_eq!(
+            (ok.program, ok.args),
+            (Program::Python3, argv(&["-m", "pytest", "-x"]))
+        );
+        assert_eq!(
+            req(serde_json::json!({"program": "python3", "args": ["-c", "1"]})),
+            Err(RunError::Refused(Refusal::Program))
+        );
     }
 
     // Spec (Process rules): `timeout_secs` defaults to 120 and is clamped at

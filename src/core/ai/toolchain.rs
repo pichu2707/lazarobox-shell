@@ -148,7 +148,7 @@ pub fn toolchain_spec(
         Program::Go if !covered(&spec, &layout.program) => {
             roots.extend(go_root(&layout.program, vars));
         }
-        Program::Pytest if !covered(&spec, &layout.program) => {
+        Program::Pytest | Program::Python3 if !covered(&spec, &layout.program) => {
             roots.push(pytest_root(&layout.program, resolve));
         }
         _ => {}
