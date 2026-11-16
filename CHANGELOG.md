@@ -10,6 +10,18 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A run granted `implement` can no longer close with no worker.** The finish
+  gate now also refuses the `implement` and `close` handoffs while no code
+  worker was spawned (a queued one counts, a refused one does not), with the
+  same visible notice and reply as a refused `finish`; the run continues.
+  `read_only` goals still close every step, and Enter (gates off) lifts it.
+- **The gate re-ask is no longer read as the user's request.** The continuation
+  is still one user message, but it now opens with an app marker and points to
+  the Goal inside the ledger data block, so a small model calls the tool
+  instead of answering the instruction.
+
 ## [1.29.0] - 2026-11-16
 
 ### Added
@@ -26,15 +38,6 @@ baseline.
 
 ### Fixed
 
-- **A run granted `implement` can no longer close with no worker.** The finish
-  gate now also refuses the `implement` and `close` handoffs while no code
-  worker was spawned (a queued one counts), with the same visible notice and
-  reply as a refused `finish`; the run continues. `read_only` goals still close
-  every step, and Enter (gates off) lifts it.
-- **The gate re-ask is no longer read as the user's request.** The continuation
-  is still one user message, but it now opens with an app marker and points to
-  the Goal inside the ledger data block, so a small model calls the tool
-  instead of answering the instruction.
 - **With ORCH on, nothing runs before `authorize`.** The spawn gate now refuses
   a worker of every kind, not only a `code` worker, while step `authorize` is
   open: a `review` or read-only `simple` worker started before the user's goal
