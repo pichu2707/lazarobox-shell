@@ -29,6 +29,16 @@ Terms: "jail" = the Landlock sandbox (ABI 3 or higher) used for the child. "Root
 - WHEN each is validated
 - THEN each returns an error result and nothing starts
 
+#### Scenario: python3 as pytest [auto]
+- GIVEN `program` `python3` and `args` `["-m", "pytest", "-q"]`
+- WHEN the call is validated
+- THEN it passes validation, with the same argument checks as `pytest`, and goes on to approval
+
+#### Scenario: python3 any other way [auto]
+- GIVEN `python3 -c ...`, `python3 -I -m pytest`, `python -m pytest` and `python3 -m other`
+- WHEN each is validated
+- THEN each returns `program not allowed: use cargo, npm, pnpm, yarn, pytest, go or python3 -m pytest` and nothing starts
+
 #### Scenario: No shell string [auto]
 - GIVEN `program` `cargo` and an argument `test; rm -rf ~`
 - WHEN the process is built

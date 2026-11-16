@@ -171,19 +171,20 @@ fn pytest_runs_from_a_venv_outside_the_root_or_its_own_file() {
     assert_eq!(system.rx, system_plus(&[]));
 }
 
-// #775: `python3 -m pytest` gets the places `pytest` gets, and never the
-// project venv exception.
+// #775: the python3 the PATH resolves to gets pytest's rules and no venv
+// handling (`find` canonicalizes, so a venv `bin/python3` never reaches here as
+// a venv path). Only a python3 under the system rx paths works today.
 #[test]
-fn python3_runs_from_the_system_or_a_venv_outside_the_root() {
+fn python3_gets_the_system_rules_and_no_venv_handling() {
     let system = build(&layout(Program::Python3, "/usr/bin/python3"), &[]).unwrap();
     assert_eq!(system.rx, system_plus(&[]));
-    let venv = "/home/u/.local/pipx/venvs/pytest";
-    let l = layout(
-        Program::Python3,
-        "/home/u/.local/pipx/venvs/pytest/bin/python3",
+    // Outside the system paths only the file itself is granted, never its
+    // stdlib: a known gap (Homebrew, pyenv and venv interpreters).
+    let user = layout(Program::Python3, "/home/u/.pyenv/versions/3.12/bin/python3");
+    assert_eq!(
+        build(&user, &[]).unwrap().rx,
+        system_plus(&["/home/u/.pyenv/versions/3.12/bin/python3"])
     );
-    let spec = build(&l, &["/home/u/.local/pipx/venvs/pytest/pyvenv.cfg"]).unwrap();
-    assert_eq!(spec.rx, system_plus(&[venv]));
     for program in ["/home/u/proj/.venv/bin/python3", "/home/u/proj/bin/python3"] {
         assert_eq!(
             build(&layout(Program::Python3, program), &[]),

@@ -148,6 +148,9 @@ pub fn toolchain_spec(
         Program::Go if !covered(&spec, &layout.program) => {
             roots.extend(go_root(&layout.program, vars));
         }
+        // `python3 -m pytest` shares this arm. Only a python3 whose stdlib sits
+        // under the system rx paths works today (`/usr/bin/python3` with apt's
+        // python3-pytest); Homebrew, pyenv and venv interpreters are a known gap.
         Program::Pytest | Program::Python3 if !covered(&spec, &layout.program) => {
             roots.push(pytest_root(&layout.program, resolve));
         }

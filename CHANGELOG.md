@@ -19,7 +19,8 @@ baseline.
   `-c`, a script or flags before `-m` are still refused. The remaining
   arguments get the same checks `pytest` gets, and the sandbox, timeout, output
   cap and approval are unchanged. The `program not allowed` refusal now names
-  what is allowed, including `python3 -m pytest`.
+  what is allowed, including `python3 -m pytest`. It needs a system `python3`
+  with pytest installed.
 
 ### Fixed
 
