@@ -505,9 +505,13 @@ impl Run {
         !self.gates_lifted && self.steps.grant() == Some(Grant::Implement) && !self.wrote()
     }
 
-    /// Whether a worker that writes was ever spawned.
+    /// Whether a worker that writes was ever spawned. A refused one never
+    /// ran; an ended one did.
     fn wrote(&self) -> bool {
-        (self.slots.iter()).any(|slot| slot.spec.toolset.families().contains(Family::Write))
+        (self.slots.iter()).any(|slot| {
+            slot.status != WorkerStatus::Refused
+                && slot.spec.toolset.families().contains(Family::Write)
+        })
     }
 
     pub fn status(&self, id: WorkerId) -> Option<WorkerStatus> {

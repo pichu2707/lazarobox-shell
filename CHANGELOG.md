@@ -32,10 +32,9 @@ baseline.
   reply as a refused `finish`; the run continues. `read_only` goals still close
   every step, and Enter (gates off) lifts it.
 - **The gate re-ask is no longer read as the user's request.** The continuation
-  is still one user message, but it now opens with `[lazarobox instruction, not
-  from the user]` and points to the Goal inside the ledger data block, so a
-  small model calls the tool instead of answering the instruction.
-
+  is still one user message, but it now opens with an app marker and points to
+  the Goal inside the ledger data block, so a small model calls the tool
+  instead of answering the instruction.
 - **With ORCH on, nothing runs before `authorize`.** The spawn gate now refuses
   a worker of every kind, not only a `code` worker, while step `authorize` is
   open: a `review` or read-only `simple` worker started before the user's goal

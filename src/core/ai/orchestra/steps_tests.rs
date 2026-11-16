@@ -42,12 +42,12 @@ fn note(done: &str) -> Judgement {
     }
 }
 
-/// Closes `steps` in order with plain handoffs.
 /// A queued code worker: `implement` was granted, so its handoff needs one.
 fn write_worker(run: &mut Run) {
     run.spawn(Instant::now(), Task::Code, "p").expect("writer");
 }
 
+/// Closes `steps` in order with plain handoffs.
 fn close_all(run: &mut Run, steps: &[Step]) {
     for step in steps {
         let mark = match step {

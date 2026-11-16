@@ -136,7 +136,10 @@ fn large_run() -> Run {
     };
     let mut run = Run::new(
         RunId(4),
-        Roster::new(vec![(Task::Orchestrate, ready)]),
+        Roster::new(vec![
+            (Task::Orchestrate, ready.clone()),
+            (Task::Code, ready),
+        ]),
         Duration::from_secs(60),
     );
     let note = Judgement {

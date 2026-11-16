@@ -116,6 +116,30 @@ async fn a_gated_finish_leaves_the_run_open_and_says_why() {
     );
 }
 
+// A `handoff implement` with an implement grant and no writer gets the finish
+// gate reply and the visible notice; the run stays open and goes on.
+#[tokio::test]
+async fn a_gated_implement_handoff_is_refused_visibly_and_the_run_continues() {
+    let mut lab = lab(Script::Hang);
+    let (_run, handle) = lab.start(codex_both());
+    hand_off_early_steps(&handle).await;
+    lab.sent();
+    let refused = handle.call(step_call(Step::Implement, Mark::None)).await;
+    assert!(refused.is_error, "{refused:?}");
+    assert_eq!(refused.text, Gate::Finish.refusal(Step::Implement, &[]));
+    let events = lab.sent();
+    assert_eq!(
+        gate_events(&events),
+        vec![(Gate::Finish, Step::Implement, refused.text.clone())]
+    );
+    assert_eq!(
+        handle.call(spawn(Task::Code, "write it")).await,
+        fine("worker 1: running")
+    );
+    let done = handle.call(step_call(Step::Implement, Mark::None)).await;
+    assert!(!done.is_error, "{done:?}");
+}
+
 // Risk 4 (the gate trap), end to end: Write is off after `implement` was
 // granted, so no code worker can start. The coordinator is told to tell the
 // user; a text reply settles the run, so nothing keeps it going.

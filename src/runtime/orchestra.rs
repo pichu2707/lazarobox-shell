@@ -2545,6 +2545,7 @@ fn step_refusal(refused: StepError) -> Outcome {
             "cancel code worker {} first: the goal is read-only",
             worker.0
         )),
+        // `handoff_step` intercepts it: it needs the run to show the notice.
         StepError::Gate => error(Gate::Finish.refusal(Step::Implement, &[])),
         StepError::NoReason => error("classify needs a reason"),
         StepError::Widen => error("the goal is read-only: it cannot be widened"),
