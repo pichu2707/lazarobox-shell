@@ -1072,7 +1072,10 @@ The Ollama tool loop MUST allow at most 8 rounds per turn when no coding-tools f
 - THEN the batch is still staged
 
 ### Requirement: A tool call written as text gets one reminder
-When a reply of the Ollama or llama.cpp tool loop holds no structured tool call, but its text holds a JSON object, bare or fenced, whose `name` is a tool offered in that turn and which has an `arguments` (or `parameters`) object, the loop MUST send one more request in the same turn. That request MUST carry the reply as plain assistant text, then a user message: ``Your answer wrote a call to `<name>` as text. Text does nothing. To act, call the tool.`` The pane MUST get the system line `the model wrote a tool call as text; it was asked to call the tool`. This MUST happen at most once per turn, MUST count toward the turn's request cap, and MUST NOT happen in the retry without tools. Nothing in the text MUST ever be run or turned into a call (local-model-writes D3).
+When a reply of the Ollama or llama.cpp tool loop holds no structured tool call, but its text holds a JSON object, bare or fenced, whose `name` or `tool` is a tool offered in that turn and which has an `arguments` (or `parameters`) object, the loop MUST send one more request in the same turn. That request MUST carry the reply as plain assistant text, then a user message: ``Your answer wrote a call to `<name>` as text. Text does nothing. To act, call the tool.`` The pane MUST get the system line `the model wrote a tool call as text; it was asked to call the tool`. This MUST happen at most once per turn, MUST count toward the turn's request cap, and MUST NOT happen in the retry without tools. Nothing in the text MUST ever be run or turned into a call (local-model-writes D3). When the final reply of a turn, after the reminder was spent or not allowed by the cap, still is such a written call, the turn MUST end marked as ending on an unanswered written call, so an orchestrating run can re-ask (see `agent-orchestrator`); the mark changes no output of the turn and runs nothing.
+(Previously: only the `name` key was accepted, though the orchestrator's own text-call check already accepted `tool`; the turn end carried no mark.)
+
+Existing scenarios stay unchanged. Added scenarios:
 
 #### Scenario: One reminder [auto]
 - GIVEN tools on and a reply whose text is a fenced call to `find_dir` with arguments
@@ -1093,6 +1096,26 @@ When a reply of the Ollama or llama.cpp tool loop holds no structured tool call,
 - GIVEN a text call in the last reply the cap allows
 - WHEN the loop reads it
 - THEN the turn ends with no reminder
+
+#### Scenario: The `tool` key gets the reminder [auto]
+- GIVEN tools on and a reply whose text is a fenced `{"tool": "find_dir", "arguments": {...}}` with `find_dir` offered
+- WHEN the loop reads the reply
+- THEN a second request carries the text and the reminder naming `find_dir`, and only the call the model makes after it runs
+
+#### Scenario: A `tool` key naming a tool not offered [auto]
+- GIVEN a reply whose text is `{"tool": "nope", "arguments": {}}` with `nope` not offered
+- WHEN the loop reads it
+- THEN the turn ends as before, with no reminder and no mark
+
+#### Scenario: A spent reminder marks the turn end [auto]
+- GIVEN a model that answers with a written call twice (either key)
+- WHEN the loop reads the second answer
+- THEN the turn ends with `Done` after two requests, marked as ending on an unanswered written call, and nothing was run
+
+#### Scenario: A plain answer is not marked [auto]
+- GIVEN a reply of plain text, or text that only names a tool
+- WHEN the turn ends
+- THEN the turn end carries no mark
 
 ### Requirement: A next step announced in prose gets one reminder
 When a reply of the Ollama or llama.cpp tool loop holds no structured tool call and no text call, and the last sentence of its text announces an action the model is about to take (one of the whole-word phrases `I'll`, `I will`, `I need to`, `I'm going to`, `I am going to`, `let me`, `next, I`, `next step`, `voy a`, `vamos a`, `ahora voy`, `a continuación`, `lo siguiente`, `procedo a`, `procederé`, followed by a word other than `be`, `help`, `wait`, `know`, `summarize`, `explain`, `ayudar`, `esperar`, `explicar`, `resumir` or `dar`), the loop MUST send one more request in the same turn. That request MUST carry the reply as plain assistant text, then a user message: `Your answer says what you will do next, but you made no tool call, so nothing happened. If a step the user asked for is still undone, call its tool now. If everything is done, reply with a one-line summary of what the tool results show.` The pane MUST get the system line `the model said what it would do next without a tool call; it was asked to do it`. An answer that ends with a question, or whose last sentence is an offer to the user (the whole words `if you`, `let me know`, `do you want`, `would you like`, `si quieres`, `si lo deseas`, `si te parece`), or a summary or courtesy such as `Now I have created fibonacci.py and the tests pass.` or `I'll be happy to help with anything else.`, MUST NOT get it. This MUST happen at most once per turn, apart from the text call reminder, MUST count toward the turn's request cap, and MUST NOT happen in the retry without tools (#439).
