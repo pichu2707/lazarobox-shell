@@ -685,8 +685,9 @@ pub(super) fn dump(scenario: &Scenario, body: &Value, answer: &str, roots: &[&Pa
 
 /// The result of running one trivial command (`program args`, allowed by the
 /// run_command table) through `dispatch`, the same path every `run_command` of
-/// a run takes. The live test passes `pytest --version`, so a pytest missing
-/// from the PATH shows too. `Err` names the cause, so a
+/// a run takes. The live test passes `pytest --version` and, since #775,
+/// `python3 -m pytest --version` (an allowed spelling of pytest), so a pytest
+/// missing from the PATH shows too. `Err` names the cause, so a
 /// sandbox that cannot run anything (no Landlock on the kernel, a helper that
 /// fails) stops the live test before any model call instead of scoring every
 /// command as a failed step.

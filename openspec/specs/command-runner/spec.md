@@ -17,7 +17,7 @@ Terms: "jail" = the Landlock sandbox (ABI 3 or higher) used for the child. "Root
 - THEN `run_command` is absent and a call to it returns an error result
 
 ### Requirement: Argv input and allow-list
-`run_command` MUST take `program`, `args` (a list of strings), an optional `cwd` and an optional `timeout_secs`. It MUST NOT accept a shell string and MUST NOT start a shell. `program` MUST match one of a fixed allow-list: `cargo`, `npm`, `pnpm`, `yarn`, `pytest`, `go`. The match MUST be on the exact program name, not on a path. The list MUST NOT be extendable by configuration in v1. Which subcommands and flags of each program are accepted is pinned by design. Anything else MUST return an error result and start nothing.
+`run_command` MUST take `program`, `args` (a list of strings), an optional `cwd` and an optional `timeout_secs`. It MUST NOT accept a shell string and MUST NOT start a shell. `program` MUST match one of a fixed allow-list: `cargo`, `npm`, `pnpm`, `yarn`, `pytest`, `go`, or the single form `python3 -m pytest [args]` (argv[1] is `-m`, argv[2] is `pytest`; any other use of `python3` is refused). The match MUST be on the exact program name, not on a path. The list MUST NOT be extendable by configuration in v1. Which subcommands and flags of each program are accepted is pinned by design. Anything else MUST return an error result and start nothing.
 
 #### Scenario: Allowed program [auto]
 - GIVEN `program` `cargo` and `args` `["test"]`
@@ -28,6 +28,16 @@ Terms: "jail" = the Landlock sandbox (ABI 3 or higher) used for the child. "Root
 - GIVEN `program` `make`, `python`, `sh`, `/usr/bin/cargo` and `bash -c`
 - WHEN each is validated
 - THEN each returns an error result and nothing starts
+
+#### Scenario: python3 as pytest [auto]
+- GIVEN `program` `python3` and `args` `["-m", "pytest", "-q"]`
+- WHEN the call is validated
+- THEN it passes validation, with the same argument checks as `pytest`, and goes on to approval
+
+#### Scenario: python3 any other way [auto]
+- GIVEN `python3 -c ...`, `python3 -I -m pytest`, `python -m pytest` and `python3 -m other`
+- WHEN each is validated
+- THEN each returns `program not allowed: use cargo, npm, pnpm, yarn, pytest, go or python3 -m pytest` and nothing starts
 
 #### Scenario: No shell string [auto]
 - GIVEN `program` `cargo` and an argument `test; rm -rf ~`

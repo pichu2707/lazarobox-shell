@@ -10,6 +10,18 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **`run_command` accepts `python3 -m pytest [args]` as another spelling of
+  `pytest`.** Many Python setups have pytest only as a module, so the model
+  could not run their tests at all (#775). Only that exact form passes: `-m`
+  and `pytest` must be the first two arguments, and `python`, any other module,
+  `-c`, a script or flags before `-m` are still refused. The remaining
+  arguments get the same checks `pytest` gets, and the sandbox, timeout, output
+  cap and approval are unchanged. The `program not allowed` refusal now names
+  what is allowed, including `python3 -m pytest`. It needs a system `python3`
+  with pytest installed.
+
 ### Fixed
 
 - **The live eval looks for its sandbox helper under the real binary name.**

@@ -1129,6 +1129,7 @@ With `exec = true` the model receives `run_command`, which runs a command from t
 | `go`                      | `test`, `vet`, `build`, `run`                                              |
 | `npm`, `yarn`, `pnpm`     | `test`, `run <script>` (only a script declared in `package.json`), `install` and `ci` |
 | `pytest`                  | any supported argument                                                     |
+| `python3 -m pytest`       | the same as `pytest`; `python3` with anything else is refused (`python` too) |
 
 Options that change where configuration is read from or the destination are rejected (`--config`, `--manifest-path`, `--target-dir`, `--fix`, `-g`, `--registry`, `-modfile`, etc.), as are absolute paths and `..`. The default timeout is 120 s and the maximum is 600 s.
 
