@@ -4,14 +4,15 @@
 //! the scorer judges the exchanges. It checks the loop and the scorer, not the
 //! quality of any model, and it is never reported as a score.
 
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
 
 use super::{
     eval_harness::{
-        EXIT_NONZERO, Fixture, Folder, Mode, Rig, helper_age_warning, leaks, proxy, pytest_probe,
-        sandbox_probe, throwaway_root,
+        EXIT_NONZERO, Fixture, Folder, Mode, Rig, helper_age_warning, helper_path, leaks, proxy,
+        pytest_probe, resolve_on_path, sandbox_probe, throwaway_root,
     },
     ollama_tests::fake,
 };
@@ -568,4 +569,50 @@ async fn the_pytest_probe_reports_which_form_works_and_fails_when_none_does() {
         why.contains("pytest --version") && why.contains("python3 -m pytest"),
         "{why}"
     );
+}
+
+// #791: cargo names the binary after the package, not "lazarobox".
+#[test]
+fn the_helper_is_the_package_binary_next_to_the_deps_folder() {
+    let exe = Path::new("/w/target/debug/deps/lazarobox_shell-abc123");
+    let helper = helper_path(exe).unwrap();
+    assert_eq!(
+        helper,
+        Path::new("/w/target/debug").join(env!("CARGO_PKG_NAME"))
+    );
+    assert_eq!(helper.file_name().unwrap(), "lazarobox-shell");
+}
+
+// #791: the probe says which executable the host PATH resolves to.
+#[test]
+fn a_program_resolves_to_the_first_file_on_the_path() {
+    let root = throwaway_root();
+    let (first, second) = (
+        tempfile::tempdir_in(&root).unwrap(),
+        tempfile::tempdir_in(&root).unwrap(),
+    );
+    std::fs::create_dir(first.path().join("pytest")).unwrap(); // a folder is no program
+    std::fs::write(second.path().join("pytest"), "").unwrap();
+    let path = format!(
+        "{}:{}:/no/such/dir",
+        first.path().display(),
+        second.path().display()
+    );
+    assert_eq!(
+        resolve_on_path("pytest", &path),
+        Some(second.path().join("pytest"))
+    );
+    assert_eq!(resolve_on_path("nope", &path), None);
+}
+
+#[tokio::test]
+async fn a_failed_pytest_form_names_the_executable_or_says_it_is_not_on_the_path() {
+    let why = pytest_probe(
+        &Programs(&[]),
+        &[("sh", &["-c", "true"]), ("zz-no-such-bin", &[])],
+    )
+    .await
+    .unwrap_err();
+    assert!(why.contains("sh -c true ("), "{why}");
+    assert!(why.contains("zz-no-such-bin  (not on PATH)"), "{why}");
 }

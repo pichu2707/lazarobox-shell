@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The live eval looks for its sandbox helper under the real binary name.**
+  `live_helper` joined `target/debug` with `lazarobox`, but the package builds
+  `target/debug/lazarobox-shell`, so the live run always stopped on a missing
+  helper (#791). The sandbox pre-check also names the executable the host PATH
+  resolves each pytest form to (or "not on PATH"), so a shadowing or refused
+  install shows in the message.
+
 ## [1.29.1] - 2026-11-16
 
 ### Fixed
