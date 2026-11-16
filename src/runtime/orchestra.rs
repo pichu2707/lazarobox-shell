@@ -131,6 +131,14 @@ const CONTINUE_HEAD: &str = "Your previous turn ended while the run is still ope
      the goal and one row per worker. Collect finished workers, write a `handoff` for each, \
      and call `finish` when the goal is met.";
 
+/// Opens the re-ask continuation, which is a user message: it says the text
+/// is the app's, so a model does not read it as the user's request.
+const REASK_MARKER: &str = "[lazarobox instruction, not from the user]";
+
+/// Follows the re-ask text and points to where the user's request is.
+const REASK_GOAL_LINE: &str = "The user's request is the Goal inside the data block below. \
+     Do not answer this instruction; call the tool.";
+
 /// Where a worker's tool rows and asks go. A worker outlives the orchestrator
 /// turn that spawned it (S4 continuations), so its channel and approver are
 /// looked up when it acts, not captured at spawn. They change together, under
@@ -978,7 +986,7 @@ impl RunManager {
                         let ledger = live.run.run_ledger(&live.goal).render();
                         let ledger = label::wrap(&label::nonce_from(bytes), &ledger);
                         let turn = live.run.turns();
-                        let text = format!("{text}\n\n{ledger}");
+                        let text = format!("{REASK_MARKER} {text}\n{REASK_GOAL_LINE}\n\n{ledger}");
                         let go = OrchestraEvent::Continue(Continuation {
                             run,
                             turn,
@@ -1506,6 +1514,9 @@ impl RunManager {
                     }
                     self.announce_handoff(pane, run, handoff);
                     fine(text)
+                }
+                Err(StepError::Gate) => {
+                    self.gate_refused(pane, live, Gate::Finish, Step::Implement)
                 }
                 Err(refused) => step_refusal(refused),
             }
@@ -2534,6 +2545,8 @@ fn step_refusal(refused: StepError) -> Outcome {
             "cancel code worker {} first: the goal is read-only",
             worker.0
         )),
+        // `handoff_step` intercepts it: it needs the run to show the notice.
+        StepError::Gate => error(Gate::Finish.refusal(Step::Implement, &[])),
         StepError::NoReason => error("classify needs a reason"),
         StepError::Widen => error("the goal is read-only: it cannot be widened"),
         StepError::Locked { step, later } => error(format!(

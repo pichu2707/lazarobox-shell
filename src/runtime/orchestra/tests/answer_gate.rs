@@ -52,8 +52,16 @@ async fn a_text_end_before_authorize_is_re_asked_with_the_ledger() {
     );
     let [text] = continuations(&events).try_into().expect("one continuation");
     let reask = answer_text(Some(Step::Authorize), &[], None);
-    assert!(text.starts_with(&format!("{reask}\n\n")), "{text}");
-    assert!(text.contains("build the parser"), "{text}");
+    // One user message: the app marker first, the re-ask, the fixed Goal
+    // line, then the ledger as data. The goal is only inside the wrapper.
+    assert!(text.starts_with(REASK_MARKER), "{text}");
+    assert!(text.contains(&reask), "{text}");
+    assert!(text.contains(REASK_GOAL_LINE), "{text}");
+    let (head, data) = text
+        .split_once("<untrusted-tool-output")
+        .expect("the ledger is wrapped as data");
+    assert!(!head.contains("build the parser"), "{text}");
+    assert!(data.contains("build the parser"), "{text}");
     assert!(!text.contains("worker"), "no worker head: {text}");
     assert!(
         !events.iter().any(|e| matches!(
@@ -119,8 +127,9 @@ async fn a_written_call_is_re_asked_by_name_after_a_read_only_grant() {
         answer_line(None, Some("spawn_agent"))
     );
     let [text] = continuations(&events).try_into().expect("one continuation");
+    assert!(text.starts_with(REASK_MARKER), "{text}");
     assert!(
-        text.starts_with(&answer_text(None, &[], Some("spawn_agent"))),
+        text.contains(&answer_text(None, &[], Some("spawn_agent"))),
         "{text}"
     );
 }

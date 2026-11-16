@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use super::brief::Brief;
 use super::ledger::{FinishError, Judgement, Verdict};
 use super::run::{Refusal, Roster, Run, RunLimits, RunState, UserChoice, WorkerEvent};
-use super::steps::{Gate, Grant, Mark, Size, Step, WRITE_OFF};
+use super::steps::{Gate, Grant, Mark, Size, Step, StepError, WRITE_OFF};
 use super::worker::{ErrorClass, WorkerStatus};
 use super::{RunId, WorkerId};
 use crate::core::ai::chat::engine::Availability;
@@ -228,6 +228,91 @@ fn finish_after_an_implement_grant_with_no_code_worker_is_refused() {
     assert_eq!(run.finish("done"), Err(FinishError::Gate));
     assert_eq!(run.state(), &RunState::Open);
     assert_eq!(run.last_gate(), Some((Gate::Finish, Step::Implement)));
+}
+
+// Owner decision: the gate also covers the handoffs that end the run's work.
+// `implement` and `close` need a writer after an `implement` grant, or the
+// model could close both with no worker and settle the run.
+#[test]
+fn handing_off_implement_or_close_without_a_writer_is_refused() {
+    let mut run = run();
+    close_early(&mut run);
+    let err = run.handoff_step(Step::Implement, Mark::None, note());
+    assert_eq!(err.err(), Some(StepError::Gate));
+    assert_eq!(run.last_gate(), Some((Gate::Finish, Step::Implement)));
+    assert!(!run.steps().is_closed(Step::Implement));
+
+    // `close` is not reachable before `implement` closes: the order check
+    // answers it first and the gate is not touched.
+    run.forget_gate();
+    let err = run.handoff_step(Step::Close, Mark::None, note());
+    assert_eq!(
+        err.err(),
+        Some(StepError::Order {
+            step: Step::Close,
+            open: Step::Implement
+        })
+    );
+    assert_eq!(run.last_gate(), None);
+}
+
+#[test]
+fn a_queued_writer_lets_implement_and_close_be_handed_off() {
+    let mut run = run();
+    close_early(&mut run);
+    run.spawn(Instant::now(), Task::Code, "p").unwrap();
+    close(&mut run, Step::Implement, Mark::None);
+    close(&mut run, Step::Close, Mark::None);
+}
+
+// A refused spawn (the engine cannot run) leaves a `Refused` slot: no worker
+// ran, so it must not lift the gate.
+#[test]
+fn a_refused_write_slot_does_not_lift_the_gate() {
+    let down = Availability::Undetected {
+        engine: "claude".to_owned(),
+        status: "not found".to_owned(),
+    };
+    let ready = Availability::Ready {
+        engine: "claude".to_owned(),
+        model: Some("opus".to_owned()),
+    };
+    let roster = Roster::new(vec![
+        (Task::Orchestrate, ready.clone()),
+        (Task::Code, down),
+        (Task::Review, ready.clone()),
+        (Task::General, ready.clone()),
+        (Task::Summarize, ready),
+    ]);
+    let mut run = Run::new(RunId(3), roster, Duration::from_secs(600));
+    close_early(&mut run);
+    let id = run.spawn(Instant::now(), Task::Code, "p").unwrap();
+    assert_eq!(run.status(id), Some(WorkerStatus::Refused));
+    assert_eq!(
+        run.handoff_step(Step::Implement, Mark::None, note()).err(),
+        Some(StepError::Gate)
+    );
+}
+
+#[test]
+fn a_read_only_grant_closes_every_step_with_no_worker() {
+    let mut run = run();
+    authorize(&mut run, Grant::ReadOnly);
+    close(&mut run, Step::Explore, Mark::None);
+    close(&mut run, Step::Resolve, Mark::None);
+    close(&mut run, Step::Classify, Mark::Size(Size::Small));
+    close(&mut run, Step::Implement, Mark::None);
+    close(&mut run, Step::Close, Mark::None);
+    assert!(run.finish("done").is_ok());
+}
+
+#[test]
+fn lifted_gates_let_implement_and_close_close_with_no_writer() {
+    let mut run = run();
+    close_early(&mut run);
+    run.lift_gates();
+    close(&mut run, Step::Implement, Mark::None);
+    close(&mut run, Step::Close, Mark::None);
 }
 
 // A code worker that ended still satisfies the gate: it ran.

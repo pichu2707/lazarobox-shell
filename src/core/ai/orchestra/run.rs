@@ -499,9 +499,19 @@ impl Run {
             && self.steps.grant() != Some(Grant::ReadOnly)
     }
 
-    /// Whether a worker that writes was ever spawned.
+    /// The finish gate stands: `implement` was granted, no worker that writes
+    /// was spawned and the user did not lift the gates (W3, D4).
+    fn finish_gated(&self) -> bool {
+        !self.gates_lifted && self.steps.grant() == Some(Grant::Implement) && !self.wrote()
+    }
+
+    /// Whether a worker that writes was ever spawned. A refused one never
+    /// ran; an ended one did.
     fn wrote(&self) -> bool {
-        (self.slots.iter()).any(|slot| slot.spec.toolset.families().contains(Family::Write))
+        (self.slots.iter()).any(|slot| {
+            slot.status != WorkerStatus::Refused
+                && slot.spec.toolset.families().contains(Family::Write)
+        })
     }
 
     pub fn status(&self, id: WorkerId) -> Option<WorkerStatus> {
@@ -1431,6 +1441,10 @@ impl Run {
         }
         self.steps.check(step)?;
         self.steps.check_mark(step, mark)?;
+        if matches!(step, Step::Implement | Step::Close) && self.finish_gated() {
+            self.last_gate = Some((Gate::Finish, Step::Implement));
+            return Err(StepError::Gate);
+        }
         if step == Step::Classify && note.reason.trim().is_empty() {
             return Err(StepError::NoReason);
         }
@@ -1599,7 +1613,7 @@ impl Run {
         }
         // A run granted `implement` is not done before a code worker ran. A
         // spawn that was refused made no slot, so it does not count (W3).
-        if !self.gates_lifted && self.steps.grant() == Some(Grant::Implement) && !self.wrote() {
+        if self.finish_gated() {
             self.last_gate = Some((Gate::Finish, Step::Implement));
             return Err(FinishError::Gate);
         }
