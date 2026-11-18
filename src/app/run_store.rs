@@ -77,6 +77,9 @@ pub(super) struct RunKeep {
     runs: HashMap<RunId, Kept>,
     /// The steps of each run (#771), until its end.
     trails: HashMap<RunId, Trail>,
+    /// Runs whose trail was already listed (a stop, a failed turn), with the
+    /// steps it held then: their end lists it again only if it grew since.
+    reported: HashMap<RunId, usize>,
     /// The steps taken before the pane's run is known, until it is.
     pending: HashMap<PaneId, Vec<Held>>,
     /// The latest coordinator turn of each pane and the run it belongs to.
@@ -371,6 +374,58 @@ impl App {
         (self.run_keep.trails.get(&run)).map_or_else(Vec::new, |trail| trail.shown(SHOWN))
     }
 
+    /// The trail for a run that stops (turn cap, timeout) or whose turn
+    /// failed: its end lists it again only when more steps came after.
+    pub(super) fn report_closing(&mut self, run: RunId) -> Vec<String> {
+        let lines = self.trail_report(run);
+        if !lines.is_empty() {
+            let taken = self.run_keep.trails.get(&run).map_or(0, Trail::taken);
+            self.run_keep.reported.insert(run, taken);
+        }
+        lines
+    }
+
+    /// The trail at the end of `run`: after a cancel, and after a clean
+    /// finish while the run is still the pane's own (a replaced run's end
+    /// says nothing in the newer one). A trail already listed is listed again
+    /// only when it grew since.
+    pub(super) fn report_end(&mut self, id: PaneId, run: RunId) -> Vec<String> {
+        let taken = self.run_keep.trails.get(&run).map_or(0, Trail::taken);
+        if (self.run_keep.reported.remove(&run)).is_some_and(|n| taken <= n) {
+            return Vec::new();
+        }
+        let chat = self.panes.get(&id).and_then(PaneState::chat_state);
+        let own =
+            chat.is_some_and(|c| c.run_cancelled(run) || c.orch_run().is_none_or(|r| r == run));
+        if own {
+            self.trail_report(run)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The coordinator turn of `id` failed: the trail of the run that turn
+    /// belongs to says what it did before (its end lists it again only if
+    /// steps came after). A turn with no run of its own lists the steps it
+    /// holds and leaves the pane's other run alone. Nothing when the failure
+    /// ends the run (a continuation was waiting: its end lists the trail).
+    pub(super) fn report_failed_turn(&mut self, id: PaneId) -> Vec<String> {
+        let chat = self.panes.get(&id).and_then(PaneState::chat_state);
+        if chat.is_none_or(ChatState::continue_pending) {
+            return Vec::new();
+        }
+        if let Some(run) = self.run_keep.turns.get(&id).and_then(|t| t.run) {
+            return self.report_closing(run);
+        }
+        // The turn names no run: the steps it holds are listed where they
+        // are. A start that failed drops them right after (forget_goal),
+        // so nothing adopts them to list them again.
+        let turn = self.run_keep.turns.get(&id).map(|t| t.turn);
+        (self.run_keep.pending.get(&id))
+            .and_then(|held| held.iter().find(|h| Some(h.turn) == turn))
+            .map_or_else(Vec::new, |h| h.trail.shown(SHOWN))
+    }
+
     /// Asks the store for interrupted runs, once per process.
     pub(super) fn recover_runs(&mut self, id: PaneId) -> Vec<Effect> {
         if !matches!(self.run_keep.read, RunsRead::Unknown) {
@@ -481,6 +536,13 @@ impl App {
         self.run_keep.pending.remove(&id);
         self.run_keep.turns.remove(&id);
         self.release_wait(id, false);
+        let owned: Vec<RunId> = (self.run_keep.runs.iter())
+            .filter(|(_, kept)| kept.pane == id)
+            .map(|(run, _)| *run)
+            .collect();
+        owned.iter().for_each(|run| {
+            self.run_keep.reported.remove(run);
+        });
         self.run_keep.resume_goal = None;
         // A resume that never started leaves its run offered (to the other
         // panes of this folder).

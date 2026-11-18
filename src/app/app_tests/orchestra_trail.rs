@@ -3,7 +3,7 @@
 
 use super::chat_live::ask;
 use super::chat_live::{chat_id, chat_of};
-use super::orchestra_run::{RUN, event, handed_off, row, running};
+use super::orchestra_run::{RUN, event, handed_off, next_turn, row, running};
 use super::*;
 use crate::core::ai::orchestra::RunId;
 use crate::core::ai::{
@@ -122,12 +122,7 @@ fn steps_before_the_first_worker_join_the_first_save() {
 }
 
 #[test]
-fn a_cancelled_run_shows_its_trail_and_a_clean_end_does_not() {
-    let (mut a, turn) = running();
-    a.update(event(row(RUN, 1, WorkerStatus::Running)));
-    call(&mut a, turn, 1, "wait", "worker 1");
-    a.update(event(OrchestraEvent::Ended { run: RUN }));
-    assert!(!system(&a).iter().any(|l| l == "step trail:"));
+fn a_cancelled_run_shows_its_trail() {
     let (mut a, turn) = running();
     a.update(event(row(RUN, 1, WorkerStatus::Running)));
     call(&mut a, turn, 1, "wait", "worker 1");
@@ -138,6 +133,140 @@ fn a_cancelled_run_shows_its_trail_and_a_clean_end_does_not() {
         said.contains(&"  wait worker 1 -> no result".to_owned()),
         "{said:?}"
     );
+}
+
+#[test]
+fn a_clean_finish_shows_its_trail_and_saves_it() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    let ended = a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let said = system(&a);
+    let at = said
+        .iter()
+        .position(|l| l == "step trail:")
+        .expect("{said:?}");
+    assert_eq!(said[at + 1], "  read_file src/lib.rs -> ok");
+    let [closed] = saves(&ended).try_into().expect("one save");
+    assert_eq!(closed.phase, RunPhase::Ended);
+    assert_eq!(
+        closed.trail.as_deref(),
+        Some("cut 0\nread_file src/lib.rs -> ok")
+    );
+}
+
+#[test]
+fn a_clean_finish_with_no_step_says_nothing() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert!(!system(&a).iter().any(|l| l.starts_with("step trail")));
+}
+
+#[test]
+fn a_stopped_run_shows_its_trail_once_when_it_ends_after() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "wait", "worker 1");
+    a.update(event(OrchestraEvent::Stopped {
+        run: RUN,
+        reason: "run stopped: it took max_turns (6) orchestrator turns".to_owned(),
+    }));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let shown = system(&a).iter().filter(|l| *l == "step trail:").count();
+    assert_eq!(shown, 1);
+}
+
+#[test]
+fn the_end_of_a_replaced_run_does_not_show_its_trail_in_the_new_one() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "wait", "worker 1");
+    let newer = RunId(RUN.0 + 1);
+    a.update(event(row(newer, 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert!(!system(&a).iter().any(|l| l.starts_with("step trail")));
+}
+
+#[test]
+fn an_engine_error_with_the_run_open_shows_the_trail() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Error, "no such file");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("boom".into())),
+    ));
+    let said = system(&a);
+    let at = said
+        .iter()
+        .position(|l| l == "step trail:")
+        .expect("{said:?}");
+    assert_eq!(
+        said[at + 1],
+        "  read_file src/lib.rs -> error: no such file"
+    );
+}
+
+#[test]
+fn an_engine_error_with_no_step_says_nothing_more() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("boom".into())),
+    ));
+    assert!(!system(&a).iter().any(|l| l.starts_with("step trail")));
+}
+
+fn fail(a: &mut App, turn: u64) {
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("boom".into())),
+    ));
+}
+
+fn trails_listed(a: &App) -> usize {
+    system(a).iter().filter(|l| *l == "step trail:").count()
+}
+
+#[test]
+fn an_engine_error_that_ends_the_run_lists_the_trail_once() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Error, "no such file");
+    fail(&mut a, turn);
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
+}
+
+#[test]
+fn an_engine_error_then_a_later_clean_end_lists_the_trail_once() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    fail(&mut a, turn);
+    assert_eq!(trails_listed(&a), 1);
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
+}
+
+#[test]
+fn an_engine_error_before_any_run_is_named_lists_the_held_steps_once() {
+    let (mut a, turn) = running();
+    call(&mut a, turn, 1, "list_panes", "");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    fail(&mut a, turn);
+    assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
 }
 
 #[test]
@@ -445,4 +574,81 @@ fn a_failed_start_leaves_no_steps_for_the_next_run() {
         trail.contains("second_turn_step") && !trail.contains("failed_turn_step"),
         "{b:?}"
     );
+}
+
+// A later turn that names no run is not the run the pane still has: its
+// error says nothing of that run, whose own end lists the trail once.
+#[test]
+fn an_unnamed_turns_error_does_not_list_or_silence_the_panes_live_run() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    done(&mut a, turn);
+    let second = next_turn_of(&ask(&mut a, "something else"));
+    fail(&mut a, second);
+    assert_eq!(trails_listed(&a), 0, "{:?}", system(&a));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
+}
+
+// With the run alive after the error, the steps taken after it are listed
+// at the end; a run with nothing new says nothing a second time.
+#[test]
+fn steps_after_an_engine_error_are_listed_when_the_run_ends() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    fail(&mut a, turn);
+    assert_eq!(trails_listed(&a), 1);
+    a.update(event(handed_off(Verdict::OnCourse)));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let said = system(&a);
+    assert_eq!(trails_listed(&a), 2, "{said:?}");
+    let last = said.iter().rposition(|l| l == "step trail:").unwrap();
+    assert!(
+        said[last + 1..].iter().any(|l| l.contains("handoff")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn an_engine_error_then_an_immediate_end_lists_the_trail_once() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    fail(&mut a, turn);
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
+}
+
+#[test]
+fn an_engine_error_before_a_continuation_lists_the_trail_once_at_the_end() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    a.update(event(OrchestraEvent::Continue(next_turn(2))));
+    fail(&mut a, turn);
+    assert_eq!(trails_listed(&a), 0, "{:?}", system(&a));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
+}
+
+#[test]
+fn a_user_interrupt_lists_the_trail_once() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Interrupted),
+    ));
+    assert_eq!(trails_listed(&a), 0, "{:?}", system(&a));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
 }

@@ -124,6 +124,11 @@ impl Trail {
         self.steps.is_empty()
     }
 
+    /// How many steps the run took, the dropped ones included.
+    pub fn taken(&self) -> usize {
+        self.cut + self.steps.len()
+    }
+
     /// How many older steps were dropped at the cap.
     pub fn cut(&self) -> usize {
         self.cut
