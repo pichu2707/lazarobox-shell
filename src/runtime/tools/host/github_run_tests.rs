@@ -795,6 +795,7 @@ fn stderr_is_classified_into_fixed_sentences_only() {
             "rate limit reached",
         ),
         ("HTTP 403: API rate limit exceeded", "rate limit reached"),
+        ("HTTP 429: Too Many Requests", "rate limit reached"),
         ("error connecting to api.github.com", "network error"),
         (
             "dial tcp: lookup api.github.com: no such host",

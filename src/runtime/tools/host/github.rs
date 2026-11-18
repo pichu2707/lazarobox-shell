@@ -262,7 +262,7 @@ async fn fork_note(host: &ToolHost, planned: &Planned) -> String {
 pub(super) fn why_failed(stderr: &str) -> Option<&'static str> {
     let low = stderr.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| low.contains(n));
-    if has(&["rate limit"]) {
+    if has(&["rate limit", "http 429"]) {
         Some("rate limit reached")
     } else if has(&[
         "http 404",

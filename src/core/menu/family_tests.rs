@@ -191,10 +191,7 @@ fn only_the_rows_that_change_files_or_run_code_carry_a_caution() {
     assert_eq!(on("Tools").caution(), None);
     // The Approval row says what each mode covers and that it is per chat.
     let approval = on("Approval").caution().unwrap();
-    assert_eq!(
-        approval,
-        "auto types; run adds Enter on cd/ls/grep; per chat"
-    );
+    assert_eq!(approval, "auto types; run runs safe reads only; per chat");
     assert!(
         approval.is_ascii() && approval.len() <= 44 + 8,
         "{approval}"

@@ -867,7 +867,7 @@ const CAUTION: &str = "Can change files or run code";
 const GITHUB_HINT: &str = "Reads issues and PRs; locks auto-run in that chat";
 /// The line of the Approval row: what each mode covers, and that the mode is
 /// per chat (the menu does not change an open chat). ASCII.
-const APPROVAL_HINT: &str = "auto types; run adds Enter on cd/ls/grep; per chat";
+const APPROVAL_HINT: &str = "auto types; run runs safe reads only; per chat";
 /// Lines of the caution, reserved at the foot of the Tools tab so the popup
 /// does not change size when it appears.
 pub const CAUTION_ROWS: usize = 1;

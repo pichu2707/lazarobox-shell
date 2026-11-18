@@ -203,7 +203,7 @@ Every failure MUST give the user a visible message in the result row (and the sa
 - `gh` is not logged in: the message says so and says to run `gh auth login` and try again;
 - `gh` does not answer in time: the message says GitHub did not answer in time and no result is shown;
 - the issue or PR number does not exist in the repository: the message names the number and the repository and says it was not found;
-- any other `gh` failure: a short message that `gh` failed, with no raw `gh` output carrying content.
+- any other `gh` failure: a short message that `gh` failed, with no raw `gh` output carrying content. A failure MAY append one fixed cause, `: rate limit reached`, `: not found or no access` or `: network error`, chosen from known patterns in the stderr; these sentences are lazarobox constants, never `gh` text, and a rate-limit pattern wins over an HTTP 403 it rides on. An unknown stderr keeps the plain `gh failed (exit N)`.
 The status of each is `error`, except a declined consent, which is `denied`.
 
 #### Scenario: gh missing [auto]
@@ -230,6 +230,16 @@ The status of each is `error`, except a declined consent, which is `denied`.
 - GIVEN a fake `gh` that fails with unrelated output holding `SECRET-TOKEN-123`
 - WHEN the call ends
 - THEN the message says `gh` failed and neither it nor the logs hold the token
+
+#### Scenario: Classified failure names a fixed cause [auto]
+- GIVEN a fake `gh` that fails with stderr `HTTP 404: Not Found` plus `SECRET-TOKEN-123`, and another with `error connecting to api.github.com`
+- WHEN each call ends
+- THEN the messages say `gh failed (exit N)` followed by `: not found or no access` and `: network error`, and neither holds the token or any `gh` text
+
+#### Scenario: Rate limit wins over HTTP 403 [auto]
+- GIVEN a fake `gh` that fails with stderr `HTTP 403: API rate limit exceeded`, and another with `HTTP 429: Too Many Requests`
+- WHEN each call ends
+- THEN both messages end with `: rate limit reached`, not `: not found or no access`
 
 ### Requirement: The chat grant
 `/github` (see chat-pane) opens a dialog that names the repository. Only a human keypress on that dialog MUST grant: neither the model, nor any text it read, nor any tool result, nor words in the user's message can open or answer it. The grant MUST apply to that chat pane only and MUST NOT change the saved toggle or write the config, and MUST take effect at the next message, never in a turn already running. The grant MUST NOT be stored in the conversation, sent to any engine as text, or shown to the model other than by the tools appearing in the next turn's list. The grant MUST end when the pane closes or the app quits, when the chat's folder changes (`/cd` or a folder restore, with a visible system line that says the GitHub tools are off because the folder changed), when the conversation is resumed (a resumed conversation opens with no grant), when the master tools switch goes off, and when the saved GitHub toggle goes from on to off in a menu save (for every chat). A change of engine or model MUST NOT end it. The auto-run block of pane-execution is separate and is not ended by any of these. A declined dialog MUST show a visible notice, grant nothing, and open nothing again until the user types `/github` again. Granting does not give cloud consent.

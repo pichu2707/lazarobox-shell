@@ -1750,7 +1750,7 @@ mod tests {
 
     #[test]
     fn the_approval_row_shows_its_hint_at_62_and_80_columns() {
-        let hint = "auto types; run adds Enter on cd/ls/grep; per chat";
+        let hint = "auto types; run runs safe reads only; per chat";
         for width in [62, 80] {
             let mut menu = ai_tab();
             goto(&mut menu, "Approval");
