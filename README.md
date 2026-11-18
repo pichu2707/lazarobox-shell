@@ -1061,7 +1061,7 @@ github = false     # gh_issue_list, gh_issue_view and gh_pr_view (read-only; see
 issue_draft = true # gh_issue_draft: opens the Feedback form with a draft (see Issue draft)
 ```
 
-The **Tools** tab of the menu shows the rows **Search**, **Write**, **Exec**, **Git**, **Git write**, **GitHub** and **Issue draft** (`h`/`l` to change, `s` to save); **Write**, **Exec** and **Git write** carry a warning line (`Can change files or run code`); **GitHub** carries its own (`Reads issues and PRs; locks auto-run in that chat`), because it only reads. Saving only writes those keys and preserves the rest of `config.toml`. With all switches off, the tools are the usual ones. Ollama admits 24 tool rounds per turn when any of these families is active (8 otherwise).
+The **Tools** tab of the menu shows the rows **Search**, **Write**, **Exec**, **Git**, **Git write**, **GitHub** and **Issue draft** (`h`/`l` to change, `s` to save); **Write**, **Exec** and **Git write** carry a warning line (`Can change files or run code`); **GitHub** carries its own (`Reads issues and PRs; locks auto-run in that chat`), because it only reads; **Approval** carries `auto types; run adds Enter on cd/ls/grep; per chat` (`auto` only types the command; `run` also presses Enter for the search and navigation commands `cd`, `pwd`, `ls`, `tree`, `find`, `grep` and `rg`; the mode applies per chat). Saving only writes those keys and preserves the rest of `config.toml`. With all switches off, the tools are the usual ones. Ollama admits 24 tool rounds per turn when any of these families is active (8 otherwise).
 
 #### Search: `glob` and `grep`
 

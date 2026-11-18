@@ -865,6 +865,9 @@ const CAUTION: &str = "Can change files or run code";
 /// The line of the GitHub row: it only reads, so the caution above would be
 /// untrue; what enabling does is the block it starts in a chat. ASCII.
 const GITHUB_HINT: &str = "Reads issues and PRs; locks auto-run in that chat";
+/// The line of the Approval row: what each mode covers, and that the mode is
+/// per chat (the menu does not change an open chat). ASCII.
+const APPROVAL_HINT: &str = "auto types; run adds Enter on cd/ls/grep; per chat";
 /// Lines of the caution, reserved at the foot of the Tools tab so the popup
 /// does not change size when it appears.
 pub const CAUTION_ROWS: usize = 1;
@@ -1842,6 +1845,10 @@ impl MenuState {
                 value: DraftValue::Flag(flag),
                 ..
             }) if flag.key == "github" => Some(GITHUB_HINT),
+            ItemKind::Draft(AiChoice {
+                value: DraftValue::List(list),
+                ..
+            }) if list.table == TOOLS_TABLE && list.key == "approval" => Some(APPROVAL_HINT),
             _ => None,
         }
     }

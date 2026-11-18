@@ -1749,6 +1749,18 @@ mod tests {
     }
 
     #[test]
+    fn the_approval_row_shows_its_hint_at_62_and_80_columns() {
+        let hint = "auto types; run adds Enter on cd/ls/grep; per chat";
+        for width in [62, 80] {
+            let mut menu = ai_tab();
+            goto(&mut menu, "Approval");
+            let l = lines(&draw(width, POPUP_H, &menu));
+            assert_eq!(l.iter().filter(|row| row.contains(hint)).count(), 1);
+            assert!(!l.iter().any(|row| row.contains("Can change")));
+        }
+    }
+
+    #[test]
     fn the_caution_shows_only_on_the_risky_family_rows_and_keeps_the_size() {
         let caution = "Can change files or run code";
         let hint = "Reads issues and PRs; locks auto-run in that chat";
