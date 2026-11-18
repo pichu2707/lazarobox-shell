@@ -91,9 +91,11 @@ impl Seen {
 /// reads the environment; empty values count as unset):
 ///
 /// 0. inside tmux (`TERM_PROGRAM` is `tmux`, or `TMUX` is set): `tmux (name)`,
-///    where `name` is the outer emulator, found as in 2 and 3 below and, when
-///    no variable names one, by the process walk (never over ssh); plain
-///    `tmux` when none is found. tmux's own `TERM_PROGRAM` and `TERM` say
+///    where `name` is the outer emulator, found as in 2 and 3 below from the
+///    variables only (never over ssh); plain `tmux` when none names one. There
+///    is no process walk here: the tmux server is daemonized and reparented
+///    (pid 1, systemd, cron…), so the walk never reaches the emulator and
+///    could name a non-emulator. tmux's own `TERM_PROGRAM` and `TERM` say
 ///    nothing about the emulator. The variables are inherited by the tmux
 ///    server from the shell that started it, so they may name the terminal of
 ///    the first attach; the key is fixed at startup and does not follow a
@@ -136,12 +138,8 @@ pub fn terminal_key(
         || set("TERM_PROGRAM").is_some_and(|p| p.eq_ignore_ascii_case("tmux"));
     if inside_tmux {
         // tmux sets TERM_PROGRAM and TERM itself, so neither names the outer
-        // emulator: look at the emulator variables, then the process walk.
-        let outer = if ssh {
-            None
-        } else {
-            emulator_variable(&set).or_else(|| clean(emulator()))
-        };
+        // emulator: look at the emulator variables only.
+        let outer = if ssh { None } else { emulator_variable(&set) };
         return match outer {
             Some(name) => format!("tmux ({name})"),
             None => "tmux".to_owned(),
@@ -609,9 +607,8 @@ mod tests {
             key(&[("TMUX", "/tmp/t,1,0"), ("KITTY_WINDOW_ID", "3")], None),
             "tmux (kitty)"
         );
-        // No variable: the ancestor walk decides.
-        assert_eq!(key(&[tm, term], Some("zutty")), "tmux (zutty)");
-        // Nothing found: plain tmux.
+        // No variable: plain tmux, whatever a walk would say.
+        assert_eq!(key(&[tm, term], Some("zutty")), "tmux");
         assert_eq!(key(&[tm, term], None), "tmux");
         assert_eq!(key(&[tm, term], Some("  ")), "tmux");
         assert_eq!(key(&[("TMUX", "x,1,0")], None), "tmux");
@@ -664,6 +661,28 @@ mod tests {
         assert_eq!(key(&[t, ("SSH_TTY", "/dev/pts/3")]).0, "xterm-256color");
         // Empty ssh variables do not count.
         assert_eq!(key(&[t, ("SSH_TTY", "")]).1, 1);
+    }
+
+    #[test]
+    fn inside_tmux_the_walk_never_runs() {
+        use std::cell::Cell;
+        let tm = ("TERM_PROGRAM", "tmux");
+        let term = ("TERM", "tmux-256color");
+        for vars in [
+            vec![tm, term],
+            vec![("TMUX", "x,1,0")],
+            vec![tm, term, ("SSH_TTY", "/dev/pts/3")],
+            vec![tm, term, ("SSH_CONNECTION", "1 2 3 4")],
+            vec![tm, term, ("KITTY_WINDOW_ID", "3")],
+        ] {
+            let calls = Cell::new(0);
+            let k = terminal_key(env(&vars), || {
+                calls.set(calls.get() + 1);
+                Some("zutty".to_owned())
+            });
+            assert_eq!(calls.get(), 0, "{vars:?}");
+            assert!(k == "tmux" || k == "tmux (kitty)", "{vars:?}: {k}");
+        }
     }
 
     #[test]

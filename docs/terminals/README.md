@@ -46,9 +46,13 @@ folder here, a filled record, and that constant, in the same change.
   the first-run prefix probe is stored under `tmux (<emulator>)`, for example
   `tmux (kitty)`, so each outer emulator probes on its own. The emulator comes
   from the same checks as outside tmux (`WT_SESSION`, `KITTY_WINDOW_ID`,
-  `WEZTERM_EXECUTABLE`, ...; then the process walk), ignoring tmux's own
-  `TERM_PROGRAM` and `TERM`; with none found, or over ssh, the key is plain
-  `tmux`. Limits: the tmux server inherits those variables from the shell that
+  `WEZTERM_EXECUTABLE`, ...), ignoring tmux's own `TERM_PROGRAM` and `TERM`.
+  Inside tmux only those variables name the row (there is no process walk: the
+  tmux server is daemonized and reparented, so the walk would not reach the
+  emulator); with none found, or over ssh, the key is plain `tmux`. The key
+  only names the row; it does not decide the probe result. Limits: tmux's
+  default `update-environment` refreshes `SSH_CONNECTION`, so panes made after
+  an ssh attach use plain `tmux` (an extra probe, not breakage); the tmux server inherits those variables from the shell that
   started it, so they may name the terminal of the first attach, not the
   current one; the key is fixed at startup, so a re-attach from another
   emulator does not change it until lazarobox restarts; and rows stored under
