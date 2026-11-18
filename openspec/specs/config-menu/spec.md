@@ -1110,7 +1110,7 @@ Note: when the file holds a bad value (for example `approval = "AUTO"`), the row
 - WHEN rendered
 - THEN the footer reads `j/k move · h/l change · s save · Esc cancel` and the value reads `ask`
 
-#### Scenario: The Approval row has its own hint [auto, TestBackend + insta]
+#### Scenario: The Approval row has its own hint [auto, TestBackend]
 - GIVEN the Tools tab with `Approval` selected, at 62 and at 80 columns
 - WHEN it is rendered
 - THEN the caution line reads `auto types; run runs safe reads only; per chat` once, the text "Can change files or run code" is not shown, and the popup keeps its size
