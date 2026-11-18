@@ -16,7 +16,11 @@ use std::{
 use futures::FutureExt;
 use tokio::sync::mpsc;
 
-use super::{exec_tests::Asks, github::gh_env, *};
+use super::{
+    exec_tests::Asks,
+    github::{gh_env, why_failed},
+    *,
+};
 use crate::core::ai::{
     chat::approval::ApprovalAsk,
     tools::{
@@ -775,4 +779,85 @@ async fn an_ollama_cloud_model_asks_for_a_github_read_and_the_start_blocks_its_r
             .is_error
     );
     assert!(!refused.github_read.load(Ordering::Relaxed));
+}
+
+// A failed `gh` names its cause with a fixed sentence picked by known
+// substrings of its stderr; gh's own words never reach the output.
+#[test]
+fn stderr_is_classified_into_fixed_sentences_only() {
+    let cases = [
+        (
+            "gh: API rate limit exceeded for user ID 42.",
+            "rate limit reached",
+        ),
+        (
+            "HTTP 403: You have exceeded a secondary rate limit",
+            "rate limit reached",
+        ),
+        ("HTTP 403: API rate limit exceeded", "rate limit reached"),
+        ("error connecting to api.github.com", "network error"),
+        (
+            "dial tcp: lookup api.github.com: no such host",
+            "network error",
+        ),
+        (
+            "Get \"https://api.github.com\": dial tcp: i/o timeout",
+            "network error",
+        ),
+        (
+            "HTTP 404: Not Found (https://api.github.com/x)",
+            "not found or no access",
+        ),
+        (
+            "HTTP 403: Resource not accessible by integration",
+            "not found or no access",
+        ),
+        (
+            "GraphQL: Could not resolve to a Repository with the name 'o/r'.",
+            "not found or no access",
+        ),
+    ];
+    for (stderr, want) in cases {
+        assert_eq!(why_failed(stderr), Some(want), "{stderr}");
+        // Every sentence is a constant of ours, never a slice of the input.
+        let tagged = format!("{stderr} SECRET-TOKEN-123");
+        let word = why_failed(&tagged).unwrap();
+        assert!(!word.contains("SECRET-TOKEN-123"), "{word}");
+    }
+    for unknown in [
+        "",
+        "boom",
+        "SECRET-TOKEN-123",
+        "HTTP 500: server error",
+        "could not resolve x",
+    ] {
+        assert_eq!(why_failed(unknown), None, "{unknown}");
+    }
+}
+
+#[tokio::test]
+async fn a_classified_failure_appends_its_fixed_sentence_and_never_stderr() {
+    let cases = [
+        (
+            "API rate limit exceeded",
+            "gh failed (exit 1): rate limit reached",
+        ),
+        (
+            "error connecting to api.github.com",
+            "gh failed (exit 1): network error",
+        ),
+        (
+            "HTTP 404: Not Found",
+            "gh failed (exit 1): not found or no access",
+        ),
+        ("totally unknown", "gh failed (exit 1)"),
+    ];
+    for (stderr, want) in cases {
+        let script = format!("echo '{stderr} SECRET-TOKEN-123' >&2; exit 1");
+        let rig = rig(Some(ORIGIN), &script);
+        let (out, _) = one(&rig, list()).await;
+        assert!(out.is_error, "{}", out.text);
+        assert_eq!(out.text, want);
+        assert!(!out.text.contains("SECRET-TOKEN-123"), "{}", out.text);
+    }
 }
