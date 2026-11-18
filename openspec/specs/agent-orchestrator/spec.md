@@ -606,9 +606,10 @@ A key MUST open a full-pane transcript of a worker. Runs MUST be stored locally 
 - THEN the pane lists the last 12 steps under `step trail:` (with a count of earlier ones not shown), the run's closing save carries the whole trail, a run that took no step says nothing, the end of a replaced run says nothing in the newer run, and a run that already listed its trail on a stop lists it once
 
 #### Scenario: An engine error with the run open lists the step trail [S9, auto]
-- GIVEN a coordinator turn that failed (engine error, answer cap) while its run is still open, and no continuation waiting
+- GIVEN a coordinator turn that failed (engine error, answer cap), and no continuation waiting
 - WHEN the turn ends
-- THEN the pane lists the run's step trail under the error (`step trail:` and its steps), nothing more when the run has no step; a failure that ends the run (a waiting continuation cancels it) lists it once, at the run's end
+- THEN the pane lists the run's step trail under the error (`step trail:` and its steps), nothing more when there is no step; the run's end that follows (or a later clean end) does not list it again; a failure that ends the run (a waiting continuation cancels it) lists it once, at the run's end
+- AND when no worker, handoff or gate refusal has named a run for the turn yet, the steps the turn took are listed the same way, once; they are not kept for a run, because a start that failed has none
 
 #### Scenario: Resume is offered only in the run's folder [S9, auto]
 - GIVEN an interrupted run stored with folder `~/a` (or with no folder, from before folders were kept)

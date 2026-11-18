@@ -400,18 +400,26 @@ impl App {
         }
     }
 
-    /// The coordinator turn of `id` failed with its run still open: the
-    /// trail says what the run did before it. Nothing when the failure ends
-    /// the run (a continuation was waiting: its end lists the trail).
-    pub(super) fn report_failed_turn(&self, id: PaneId) -> Vec<String> {
+    /// The coordinator turn of `id` failed: the trail says what the run did
+    /// before it, once (its end does not list it again). With no run named
+    /// yet it lists the steps the turn holds. Nothing
+    /// when the failure ends the run (a continuation was waiting: its end
+    /// lists the trail).
+    pub(super) fn report_failed_turn(&mut self, id: PaneId) -> Vec<String> {
         let chat = self.panes.get(&id).and_then(PaneState::chat_state);
-        match chat
-            .filter(|c| !c.continue_pending())
-            .and_then(ChatState::orch_run)
-        {
-            Some(run) => self.trail_report(run),
-            None => Vec::new(),
+        if chat.is_none_or(ChatState::continue_pending) {
+            return Vec::new();
         }
+        if let Some(run) = chat.and_then(ChatState::orch_run) {
+            return self.report_closing(run);
+        }
+        // No run is named yet: the steps the turn holds are listed where
+        // they are. A start that failed drops them right after (forget_goal),
+        // so nothing adopts them to list them again.
+        let turn = self.run_keep.turns.get(&id).map(|t| t.turn);
+        (self.run_keep.pending.get(&id))
+            .and_then(|held| held.iter().find(|h| Some(h.turn) == turn))
+            .map_or_else(Vec::new, |h| h.trail.shown(SHOWN))
     }
 
     /// Asks the store for interrupted runs, once per process.

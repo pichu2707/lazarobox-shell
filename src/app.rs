@@ -3431,7 +3431,7 @@ impl App {
         // The usage line follows the settings at the moment the turn ends.
         chat.set_usage_config(self.ai.usage().clone());
         let failure = turn_failure(&event);
-        let failure_said = failure.is_some();
+        let turn_failed = failure.is_some();
         // D6: what may suggest `/feedback` (a failed turn, a tool `Error`).
         let failed = failure.is_some()
             || matches!(
@@ -3458,6 +3458,14 @@ impl App {
         if finished {
             self.reply_ended(id, how == Ended::Done);
         }
+        // A failed turn lists the steps of its run, or the ones it holds when
+        // none is named; before a start that failed drops them (#771).
+        if finished && turn_failed {
+            let lines = self.report_failed_turn(id);
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                lines.into_iter().for_each(|l| chat.push_system_line(l));
+            }
+        }
         // A start that failed leaves no run to give its goal to.
         if finished && how == Ended::Error && no_run {
             self.forget_goal(id);
@@ -3476,13 +3484,6 @@ impl App {
         let mut effects = self.store_effects(id);
         if let Some(step) = step {
             effects.extend(self.keep_step(id, turn, &step));
-        }
-        // The turn failed with its run still open (#771).
-        if finished && failure_said {
-            let lines = self.report_failed_turn(id);
-            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-                lines.into_iter().for_each(|l| chat.push_system_line(l));
-            }
         }
         if follow == Follow::CancelEngine {
             // The state ended the turn itself (answer cap): stop the engine.

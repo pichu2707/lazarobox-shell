@@ -14,8 +14,10 @@ baseline.
 
 - **A run that finishes, or whose turn fails, now lists its step trail.** The
   last 12 steps show under `step trail:` when a run ends cleanly (a run with
-  no step says nothing) and when the coordinator's turn fails with the run
-  still open, so a stuck run can be diagnosed where it is reported.
+  no step says nothing) and when the coordinator's turn fails, once even if
+  the run ends right after, so a stuck run can be diagnosed where it is
+  reported. A failed turn that no worker, handoff or gate refusal has tied to
+  a run lists the steps it took.
 - **`run_command` accepts `python3 -m pytest [args]` as another spelling of
   `pytest`.** Many Python setups have pytest only as a module, so the model
   could not run their tests at all (#775). Only that exact form passes: `-m`

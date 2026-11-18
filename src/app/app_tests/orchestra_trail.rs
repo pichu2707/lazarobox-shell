@@ -212,7 +212,7 @@ fn an_engine_error_with_the_run_open_shows_the_trail() {
 }
 
 #[test]
-fn an_engine_error_with_no_step_or_no_run_says_nothing_more() {
+fn an_engine_error_with_no_step_says_nothing_more() {
     let (mut a, turn) = running();
     a.update(event(row(RUN, 1, WorkerStatus::Running)));
     a.update(AppEvent::Chat(
@@ -221,15 +221,52 @@ fn an_engine_error_with_no_step_or_no_run_says_nothing_more() {
         StreamEvent::Error(ChatError::Failed("boom".into())),
     ));
     assert!(!system(&a).iter().any(|l| l.starts_with("step trail")));
-    let (mut a, turn) = running();
-    call(&mut a, turn, 1, "list_panes", "");
-    result(&mut a, turn, 1, ToolStatus::Ok, "");
+}
+
+fn fail(a: &mut App, turn: u64) {
     a.update(AppEvent::Chat(
         chat_id(),
         turn,
         StreamEvent::Error(ChatError::Failed("boom".into())),
     ));
-    assert!(!system(&a).iter().any(|l| l.starts_with("step trail")));
+}
+
+fn trails_listed(a: &App) -> usize {
+    system(a).iter().filter(|l| *l == "step trail:").count()
+}
+
+#[test]
+fn an_engine_error_that_ends_the_run_lists_the_trail_once() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Error, "no such file");
+    fail(&mut a, turn);
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
+}
+
+#[test]
+fn an_engine_error_then_a_later_clean_end_lists_the_trail_once() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    fail(&mut a, turn);
+    assert_eq!(trails_listed(&a), 1);
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
+}
+
+#[test]
+fn an_engine_error_before_any_run_is_named_lists_the_held_steps_once() {
+    let (mut a, turn) = running();
+    call(&mut a, turn, 1, "list_panes", "");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    fail(&mut a, turn);
+    assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
 }
 
 #[test]
