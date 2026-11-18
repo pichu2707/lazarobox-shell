@@ -159,8 +159,13 @@ pub fn failed_too_large(tool: Tool, reason: &str) -> String {
 /// The notice when only OSC 52 was sent: nothing confirms it arrived. The
 /// action comes first and the notice is short, so the statusline (about 60
 /// columns for a notice at 80) never clips it.
-pub fn osc52_only(ssh: bool) -> String {
-    if ssh {
+///
+/// Inside tmux the hint names the option instead: under its default
+/// `set-clipboard external` tmux drops the sequence, whatever the session.
+pub fn osc52_only(ssh: bool, in_tmux: bool) -> String {
+    if in_tmux {
+        "No paste? In tmux, set -g set-clipboard on (OSC 52 sent)".to_owned()
+    } else if ssh {
         "No paste? Enable OSC 52 in your terminal (sent)".to_owned()
     } else {
         "No paste? Install wl-copy or xclip (OSC 52 sent)".to_owned()
@@ -318,13 +323,20 @@ mod tests {
     #[test]
     fn osc52_only_has_a_local_and_an_ssh_text() {
         assert_eq!(
-            osc52_only(false),
+            osc52_only(false, false),
             "No paste? Install wl-copy or xclip (OSC 52 sent)"
         );
         assert_eq!(
-            osc52_only(true),
+            osc52_only(true, false),
             "No paste? Enable OSC 52 in your terminal (sent)"
         );
+    }
+
+    #[test]
+    fn osc52_only_in_tmux_names_the_option_whatever_the_session() {
+        let hint = "No paste? In tmux, set -g set-clipboard on (OSC 52 sent)";
+        assert_eq!(osc52_only(false, true), hint);
+        assert_eq!(osc52_only(true, true), hint);
     }
 
     /// Columns the statusline gives the notice at 80 columns: measured on a
@@ -337,8 +349,9 @@ mod tests {
         // The reason comes last, so a long one is what gets clipped.
         let reason = "killed by a signal";
         let notices = [
-            osc52_only(false),
-            osc52_only(true),
+            osc52_only(false, false),
+            osc52_only(true, false),
+            osc52_only(false, true),
             failed(Tool::ClipExe, reason),
             failed_too_large(Tool::ClipExe, reason),
             failed(Tool::PowerShell, reason),
