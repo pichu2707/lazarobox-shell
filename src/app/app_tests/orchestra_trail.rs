@@ -122,12 +122,7 @@ fn steps_before_the_first_worker_join_the_first_save() {
 }
 
 #[test]
-fn a_cancelled_run_shows_its_trail_and_a_clean_end_does_not() {
-    let (mut a, turn) = running();
-    a.update(event(row(RUN, 1, WorkerStatus::Running)));
-    call(&mut a, turn, 1, "wait", "worker 1");
-    a.update(event(OrchestraEvent::Ended { run: RUN }));
-    assert!(!system(&a).iter().any(|l| l == "step trail:"));
+fn a_cancelled_run_shows_its_trail() {
     let (mut a, turn) = running();
     a.update(event(row(RUN, 1, WorkerStatus::Running)));
     call(&mut a, turn, 1, "wait", "worker 1");
@@ -138,6 +133,103 @@ fn a_cancelled_run_shows_its_trail_and_a_clean_end_does_not() {
         said.contains(&"  wait worker 1 -> no result".to_owned()),
         "{said:?}"
     );
+}
+
+#[test]
+fn a_clean_finish_shows_its_trail_and_saves_it() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    let ended = a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let said = system(&a);
+    let at = said
+        .iter()
+        .position(|l| l == "step trail:")
+        .expect("{said:?}");
+    assert_eq!(said[at + 1], "  read_file src/lib.rs -> ok");
+    let [closed] = saves(&ended).try_into().expect("one save");
+    assert_eq!(closed.phase, RunPhase::Ended);
+    assert_eq!(
+        closed.trail.as_deref(),
+        Some("cut 0\nread_file src/lib.rs -> ok")
+    );
+}
+
+#[test]
+fn a_clean_finish_with_no_step_says_nothing() {
+    let (mut a, _) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert!(!system(&a).iter().any(|l| l.starts_with("step trail")));
+}
+
+#[test]
+fn a_stopped_run_shows_its_trail_once_when_it_ends_after() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "wait", "worker 1");
+    a.update(event(OrchestraEvent::Stopped {
+        run: RUN,
+        reason: "run stopped: it took max_turns (6) orchestrator turns".to_owned(),
+    }));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    let shown = system(&a).iter().filter(|l| *l == "step trail:").count();
+    assert_eq!(shown, 1);
+}
+
+#[test]
+fn the_end_of_a_replaced_run_does_not_show_its_trail_in_the_new_one() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "wait", "worker 1");
+    let newer = RunId(RUN.0 + 1);
+    a.update(event(row(newer, 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Ended { run: RUN }));
+    assert!(!system(&a).iter().any(|l| l.starts_with("step trail")));
+}
+
+#[test]
+fn an_engine_error_with_the_run_open_shows_the_trail() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Error, "no such file");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("boom".into())),
+    ));
+    let said = system(&a);
+    let at = said
+        .iter()
+        .position(|l| l == "step trail:")
+        .expect("{said:?}");
+    assert_eq!(
+        said[at + 1],
+        "  read_file src/lib.rs -> error: no such file"
+    );
+}
+
+#[test]
+fn an_engine_error_with_no_step_or_no_run_says_nothing_more() {
+    let (mut a, turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("boom".into())),
+    ));
+    assert!(!system(&a).iter().any(|l| l.starts_with("step trail")));
+    let (mut a, turn) = running();
+    call(&mut a, turn, 1, "list_panes", "");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(ChatError::Failed("boom".into())),
+    ));
+    assert!(!system(&a).iter().any(|l| l.starts_with("step trail")));
 }
 
 #[test]

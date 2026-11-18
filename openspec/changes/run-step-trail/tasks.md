@@ -30,10 +30,10 @@ Slice B, `feat/run-step-trail` (stacked on A):
 
 Later:
 
-- [ ] Engine error of the coordinator turn with the run still open (the
-      ipfing-like case): say the trail is available and show it; the stop
-      report only fires on stop, timeout and cancel today. Next task.
-- [ ] Show the trail of a run that finished cleanly (a closing line or view).
+- [x] Engine error of the coordinator turn with the run still open (the
+      ipfing-like case): the trail is listed under the error.
+- [x] Show the trail of a run that finished cleanly (listed on its end; once
+      with a stop report; not for a replaced run).
 - [ ] A resumed run (Prefix r r) starts an empty trail: the old run's trail is
       not carried over (the old row keeps it until retention drops it).
 - [ ] Worker tool calls: summarise per worker into the trail if diagnosis needs

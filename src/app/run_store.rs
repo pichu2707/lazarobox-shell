@@ -77,6 +77,8 @@ pub(super) struct RunKeep {
     runs: HashMap<RunId, Kept>,
     /// The steps of each run (#771), until its end.
     trails: HashMap<RunId, Trail>,
+    /// Runs whose stop report already listed the trail: their end says no more.
+    reported: HashSet<RunId>,
     /// The steps taken before the pane's run is known, until it is.
     pending: HashMap<PaneId, Vec<Held>>,
     /// The latest coordinator turn of each pane and the run it belongs to.
@@ -369,6 +371,47 @@ impl App {
     /// The lines that report the trail of `run`: empty when it has no step.
     pub(super) fn trail_report(&self, run: RunId) -> Vec<String> {
         (self.run_keep.trails.get(&run)).map_or_else(Vec::new, |trail| trail.shown(SHOWN))
+    }
+
+    /// The trail for a run that stops (turn cap, timeout): its end follows
+    /// and does not list it again.
+    pub(super) fn report_closing(&mut self, run: RunId) -> Vec<String> {
+        let lines = self.trail_report(run);
+        if !lines.is_empty() {
+            self.run_keep.reported.insert(run);
+        }
+        lines
+    }
+
+    /// The trail at the end of `run`: after a cancel, and after a clean
+    /// finish while the run is still the pane's own (a replaced run's end
+    /// says nothing in the newer one). Once only.
+    pub(super) fn report_end(&mut self, id: PaneId, run: RunId) -> Vec<String> {
+        if self.run_keep.reported.remove(&run) {
+            return Vec::new();
+        }
+        let chat = self.panes.get(&id).and_then(PaneState::chat_state);
+        let own =
+            chat.is_some_and(|c| c.run_cancelled(run) || c.orch_run().is_none_or(|r| r == run));
+        if own {
+            self.trail_report(run)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The coordinator turn of `id` failed with its run still open: the
+    /// trail says what the run did before it. Nothing when the failure ends
+    /// the run (a continuation was waiting: its end lists the trail).
+    pub(super) fn report_failed_turn(&self, id: PaneId) -> Vec<String> {
+        let chat = self.panes.get(&id).and_then(PaneState::chat_state);
+        match chat
+            .filter(|c| !c.continue_pending())
+            .and_then(ChatState::orch_run)
+        {
+            Some(run) => self.trail_report(run),
+            None => Vec::new(),
+        }
     }
 
     /// Asks the store for interrupted runs, once per process.

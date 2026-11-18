@@ -232,15 +232,11 @@ impl App {
         };
         let mut kept =
             named.map_or_else(Vec::new, |(run, starts)| self.adopt_trail(id, run, starts));
-        let stopped = match &event {
-            OrchestraEvent::Stopped { .. } | OrchestraEvent::Expired { .. } => true,
-            OrchestraEvent::Ended { run } => (self.panes.get(&id))
-                .and_then(PaneState::chat_state)
-                .is_some_and(|chat| chat.run_cancelled(*run)),
-            _ => false,
-        };
-        let report = match (stopped, named) {
-            (true, Some((run, _))) => self.trail_report(run),
+        let report = match (&event, named) {
+            (OrchestraEvent::Stopped { .. } | OrchestraEvent::Expired { .. }, Some((run, _))) => {
+                self.report_closing(run)
+            }
+            (OrchestraEvent::Ended { run }, _) => self.report_end(id, *run),
             _ => Vec::new(),
         };
         // A run that ended stores nothing more, whether its pane is still a
@@ -551,9 +547,7 @@ impl App {
             // one started.
             OrchestraEvent::Ended { run } => {
                 ended = Some(run);
-                if chat.run_cancelled(run) {
-                    report.into_iter().for_each(|l| chat.push_system_line(l));
-                }
+                report.into_iter().for_each(|l| chat.push_system_line(l));
                 chat.end_orch_run(run);
                 if chat.waiting_run() == Some(run) {
                     chat.set_waiting_run(None);

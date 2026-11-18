@@ -876,6 +876,11 @@ impl ChatState {
         self.orch_cancelled == Some(run)
     }
 
+    /// A continuation turn waits for the current turn's end.
+    pub fn continue_pending(&self) -> bool {
+        self.orch_continue.is_some()
+    }
+
     pub fn take_continue(&mut self) -> Option<Continuation> {
         self.orch_continue.take()
     }
