@@ -44,9 +44,11 @@ folder here, a filled record, and that constant, in the same change.
   (`set -g prefix C-a`).
 - **tmux and copy.** With the default `set-clipboard external`, tmux drops the
   OSC 52 that `y` sends: use `set -g set-clipboard on`, or have `wl-copy` or
-  `xclip` installed. Inside tmux the notice says so: `No paste? In tmux, set -g
-  set-clipboard on (OSC 52 sent)`. Truecolor needs `set -as terminal-features 'xterm*:RGB'`
-  when the outer `TERM` is `xterm-256color`.
+  `xclip` installed. Whenever `TMUX` is set, the notice says so:
+  `No paste? In tmux, set -g set-clipboard on (OSC 52 sent)`.
+- **tmux and truecolor.** Truecolor needs
+  `set -as terminal-features 'xterm*:RGB'` when the outer `TERM` is
+  `xterm-256color`.
 
 ## Record header
 

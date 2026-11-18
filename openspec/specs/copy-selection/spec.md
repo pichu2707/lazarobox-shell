@@ -84,6 +84,7 @@ Every copy MUST show a notice, and the notice MUST say honestly what happened:
 - `Copied (<tool>)` when a local tool ran and succeeded (`<tool>` is its name, e.g. `wl-copy`).
 - On a local desktop session with no tool found: `No paste? Install wl-copy or xclip (OSC 52 sent)`.
 - Over SSH (tools skipped): `No paste? Enable OSC 52 in your terminal (sent)`.
+- Inside tmux (`TMUX` set) when OSC 52 is the only copy path, whether local or over SSH: `No paste? In tmux, set -g set-clipboard on (OSC 52 sent)`. It takes the place of both notices above, because tmux drops OSC 52 unless `set-clipboard` is `on`.
 - `<tool> failed; sent via OSC 52 (<reason>)` when the tool was started and failed. OSC 52 was still sent, and the notice MUST NOT claim a successful copy.
 - `<tool> failed; not copied: too large for OSC 52 (<reason>)` when the tool failed and the text was too large for OSC 52, so nothing was sent to the terminal.
 
@@ -113,6 +114,11 @@ A copy MUST NOT end without a notice, whichever caller started it (COPY yank, ch
 - GIVEN `SSH_CONNECTION` is set and `wl-copy` is available
 - WHEN `y` is pressed
 - THEN `wl-copy` is not run, OSC 52 is written and the notice is `No paste? Enable OSC 52 in your terminal (sent)`
+
+#### Scenario: Only OSC 52 sent inside tmux [auto]
+- GIVEN `TMUX` is set and no local tool runs (none available, or `SSH_CONNECTION` is set)
+- WHEN `y` is pressed
+- THEN OSC 52 is written and the notice is `No paste? In tmux, set -g set-clipboard on (OSC 52 sent)`
 
 #### Scenario: Tool fails [auto]
 - GIVEN `wl-copy` is available but exits with an error
