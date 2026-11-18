@@ -190,7 +190,7 @@ fn without_gh_the_prefilled_page_opens_instead() {
     assert_eq!(texts(&a)[0], "gh is not installed or not logged in: link");
     assert_eq!(
         a.notice(),
-        Some(crate::core::clipboard::osc52_only(false).as_str())
+        Some(crate::core::clipboard::osc52_only(false, false).as_str())
     );
 }
 
