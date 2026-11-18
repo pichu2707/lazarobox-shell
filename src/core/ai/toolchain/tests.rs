@@ -178,13 +178,19 @@ fn pytest_runs_from_a_venv_outside_the_root_or_its_own_file() {
 fn python3_gets_the_system_rules_and_no_venv_handling() {
     let system = build(&layout(Program::Python3, "/usr/bin/python3"), &[]).unwrap();
     assert_eq!(system.rx, system_plus(&[]));
-    // Outside the system paths only the file itself is granted, never its
-    // stdlib: a known gap (Homebrew, pyenv and venv interpreters).
-    let user = layout(Program::Python3, "/home/u/.pyenv/versions/3.12/bin/python3");
-    assert_eq!(
-        build(&user, &[]).unwrap().rx,
-        system_plus(&["/home/u/.pyenv/versions/3.12/bin/python3"])
-    );
+    // Outside the system paths its stdlib cannot be read: it is refused up
+    // front, naming the interpreter (#794). Pytest keeps its own rule.
+    for program in [
+        "/home/u/.pyenv/versions/3.12/bin/python3",
+        "/home/linuxbrew/.linuxbrew/bin/python3",
+        "/opt/python/bin/python3",
+    ] {
+        assert_eq!(
+            build(&layout(Program::Python3, program), &[]),
+            Err(Refusal::Interpreter(p(program))),
+            "{program}"
+        );
+    }
     for program in ["/home/u/proj/.venv/bin/python3", "/home/u/proj/bin/python3"] {
         assert_eq!(
             build(&layout(Program::Python3, program), &[]),

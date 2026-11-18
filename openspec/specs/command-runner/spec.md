@@ -34,6 +34,11 @@ Terms: "jail" = the Landlock sandbox (ABI 3 or higher) used for the child. "Root
 - WHEN the call is validated
 - THEN it passes validation, with the same argument checks as `pytest`, and goes on to approval
 
+#### Scenario: python3 outside the system paths [auto]
+- GIVEN `python3 -m pytest` and a `python3` that the PATH resolves to outside the sandbox's system rx paths (for example `/home/linuxbrew/.linuxbrew/bin/python3`, pyenv, or a venv whose canonical interpreter lives there)
+- WHEN the sandbox rules are built, before anything starts
+- THEN the call is refused with `python3 at "<resolved path>" is outside the sandbox's system paths (/usr, /bin, /lib, /lib64, /usr/local); its standard library cannot be read. Put a system python3 first on the PATH or run pytest directly`, and no interpreter is run or `pyvenv.cfg` read to decide
+
 #### Scenario: python3 any other way [auto]
 - GIVEN `python3 -c ...`, `python3 -I -m pytest`, `python -m pytest` and `python3 -m other`
 - WHEN each is validated

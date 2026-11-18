@@ -953,6 +953,25 @@ async fn a_program_in_no_known_toolchain_place_is_refused() {
     );
 }
 
+// #794: a python3 outside the system rx paths cannot read its stdlib; the
+// refusal names it instead of letting Python fail with its own error.
+#[tokio::test]
+async fn a_python3_outside_the_system_paths_is_refused_naming_it() {
+    let mut w = runnable(HELPER, gate());
+    script(&w.base().join("brew/python3"), "#!/bin/sh\n");
+    let dir = w.base().join("brew");
+    on_path(&mut w, dir.display().to_string());
+    let (out, _) = w.run(command("python3", &["-m", "pytest"], None)).await;
+    let real = std::fs::canonicalize(dir.join("python3")).unwrap();
+    assert!(out.is_error, "{out:?}");
+    assert_eq!(
+        out.text,
+        format!(
+            "python3 at {real:?} is outside the sandbox's system paths (/usr, /bin, /lib, /lib64, /usr/local); its standard library cannot be read. Put a system python3 first on the PATH or run pytest directly"
+        )
+    );
+}
+
 // --- which executable a name stands for ---
 
 fn pytest_in(root: &Path) -> Option<PathBuf> {

@@ -81,6 +81,9 @@ pub enum Refusal {
     /// The program is outside every known toolchain place, or its place is too
     /// broad to grant.
     Program(PathBuf),
+    /// A `python3` outside the system rx paths: its standard library cannot be
+    /// read inside the jail (#794).
+    Interpreter(PathBuf),
     /// A granted path equals, contains or is inside a credential place.
     Never(PathBuf),
     /// A writable path equals, contains or is inside an execute path (R29).
@@ -148,10 +151,13 @@ pub fn toolchain_spec(
         Program::Go if !covered(&spec, &layout.program) => {
             roots.extend(go_root(&layout.program, vars));
         }
-        // `python3 -m pytest` shares this arm. Only a python3 whose stdlib sits
-        // under the system rx paths works today (`/usr/bin/python3` with apt's
-        // python3-pytest); Homebrew, pyenv and venv interpreters are a known gap.
-        Program::Pytest | Program::Python3 if !covered(&spec, &layout.program) => {
+        // `python3 -m pytest`: only a python3 whose stdlib sits under the system
+        // rx paths works (`/usr/bin/python3` with apt's python3-pytest). Any
+        // other would fail inside Python, so it is refused by name (#794).
+        Program::Python3 if !covered(&spec, &layout.program) => {
+            return Err(Refusal::Interpreter(layout.program.clone()));
+        }
+        Program::Pytest if !covered(&spec, &layout.program) => {
             roots.push(pytest_root(&layout.program, resolve));
         }
         _ => {}
