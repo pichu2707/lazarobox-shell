@@ -350,6 +350,8 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         clipboard.as_ref().map(clipboard::Clipboard::tool),
         session.ssh,
     );
+    // Read once here, at the edge: inside tmux the copy notice names its option.
+    app = app.with_tmux(env::var_os("TMUX").is_some());
     // The prefix probe: this terminal's stored result decides whether it runs.
     let probe_dir = probe_store::dir_from(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"));
     let terminal = crate::core::probe::terminal_key(

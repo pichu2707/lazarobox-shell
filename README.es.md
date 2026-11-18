@@ -390,7 +390,7 @@ En un panel de chat de IA funciona igual y copia texto limpio: sin los prefijos 
 
 **Cadena de copia.** Al copiar, lazarobox manda siempre OSC 52 a la terminal y, además, usa una herramienta local si la encuentra: `wl-copy` (Wayland), `xclip` o `xsel` (X11) y, en WSL, `powershell.exe` con `Set-Clipboard`, o `clip.exe` si no está. `powershell.exe` recibe el texto en UTF-8 y lo guarda exacto, sin el `<feff>` que `clip.exe` dejaba al pegar; los saltos de línea pasan a `\r\n`, como hacía `clip.exe`. `clip.exe` solo recibe la marca de orden de bytes cuando el texto no es ASCII, porque sin ella confunde los textos cortos. Por SSH no se usa ninguna herramienta local, porque el portapapeles que importa es el de tu máquina. El aviso dice lo que pasó de verdad: `Copied (xclip)` si la herramienta terminó bien; `xclip failed; sent via OSC 52 (...)` si falló; y `No paste? Install wl-copy or xclip (OSC 52 sent)` si solo se mandó OSC 52, porque nada confirma que haya llegado. Una selección demasiado grande para OSC 52 solo se copia con una herramienta local, y si esta falla lo dice.
 
-Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`; con el `set-clipboard external` por defecto de tmux, este lo descarta y no se copia nada (ver [docs/terminals](docs/terminals/README.md)).
+Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`; con el `set-clipboard external` por defecto de tmux, este lo descarta y no se copia nada; el aviso de copia dice entonces `No paste? In tmux, set -g set-clipboard on (OSC 52 sent)` (ver [docs/terminals](docs/terminals/README.md)).
 
 ---
 
@@ -1061,7 +1061,7 @@ github = false     # gh_issue_list, gh_issue_view y gh_pr_view (solo lectura; ve
 issue_draft = true # gh_issue_draft: abre el formulario de Feedback con un borrador (ver Borrador de issue)
 ```
 
-La pestaña **Tools** del menú muestra las filas **Search**, **Write**, **Exec**, **Git**, **Git write**, **GitHub** e **Issue draft** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`); **GitHub** lleva la suya (`Reads issues and PRs; locks auto-run in that chat`), porque solo lee. Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
+La pestaña **Tools** del menú muestra las filas **Search**, **Write**, **Exec**, **Git**, **Git write**, **GitHub** e **Issue draft** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`); **GitHub** lleva la suya (`Reads issues and PRs; locks auto-run in that chat`), porque solo lee; **Approval** lleva `auto types; run runs safe reads only; per chat` (`auto` solo escribe el comando; `run` también pulsa Enter en los comandos de búsqueda y navegación `cd`, `pwd`, `ls`, `tree`, `find`, `grep` y `rg`; una conversación que leyó texto de GitHub nunca se ejecuta sola; el modo vale por chat). Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
 
 #### Búsqueda: `glob` y `grep`
 

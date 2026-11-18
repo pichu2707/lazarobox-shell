@@ -255,6 +255,35 @@ async fn fork_note(host: &ToolHost, planned: &Planned) -> String {
     note
 }
 
+/// A fixed lazarobox sentence for a known kind of `gh` failure, picked by
+/// substrings of its stderr. Never `gh`'s own text: only our constants leave
+/// here, and an unknown stderr gives `None`. Rate limit goes first because it
+/// rides on an `HTTP 403`.
+pub(super) fn why_failed(stderr: &str) -> Option<&'static str> {
+    let low = stderr.to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| low.contains(n));
+    if has(&["rate limit", "http 429"]) {
+        Some("rate limit reached")
+    } else if has(&[
+        "http 404",
+        "http 403",
+        "could not resolve to a",
+        "resource not accessible",
+    ]) {
+        Some("not found or no access")
+    } else if has(&[
+        "error connecting to",
+        "no such host",
+        "i/o timeout",
+        "connection refused",
+        "network is unreachable",
+    ]) {
+        Some("network error")
+    } else {
+        None
+    }
+}
+
 /// The fixed sentence for a `gh` that ended badly. Never `gh`'s own text.
 fn failure(split: &Split, call: &GhCall, slug: &Slug) -> Option<String> {
     let ended = &split.ended;
@@ -279,7 +308,10 @@ fn failure(split: &Split, call: &GhCall, slug: &Slug) -> Option<String> {
         format!("#{n} was not found in {slug}")
     } else if ended.exit != Some(0) {
         match ended.exit {
-            Some(code) => format!("gh failed (exit {code})"),
+            Some(code) => match why_failed(&stderr) {
+                Some(why) => format!("gh failed (exit {code}): {why}"),
+                None => format!("gh failed (exit {code})"),
+            },
             None => "gh failed".to_owned(),
         }
     } else {

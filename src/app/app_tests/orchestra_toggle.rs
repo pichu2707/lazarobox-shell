@@ -233,7 +233,7 @@ fn ctrl_y_still_copies_the_last_answer() {
     let mut a = gated(answered("hello"), true);
     let effects = a.update(ctrl('y'));
     assert_eq!(effects, vec![Effect::SetClipboard(osc52("hello").unwrap())]);
-    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
+    assert_eq!(a.notice(), Some(osc52_only(false, false).as_str()));
     assert!(!orch(&a, chat_id()));
 }
 

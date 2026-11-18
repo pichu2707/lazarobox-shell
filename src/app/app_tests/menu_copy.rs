@@ -66,7 +66,7 @@ fn y_on_an_engine_row_with_a_no_jail_reason_sets_the_clipboard_and_says_so() {
     let Footer::Hint(hint) = hint else {
         panic!("not a hint")
     };
-    assert_eq!(hint, osc52_only(false));
+    assert_eq!(hint, osc52_only(false, false));
 }
 
 #[test]

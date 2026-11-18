@@ -1185,6 +1185,8 @@ pub struct App {
     clipboard: Option<Tool>,
     /// Running over SSH: the notices point at the terminal's OSC 52.
     ssh: bool,
+    /// Running inside tmux (`TMUX` set): the notices name its clipboard option.
+    tmux: bool,
     /// The number of the last `Effect::CopyLocal`; an answer to an older
     /// one is dropped (latest copy wins).
     clip_seq: u64,
@@ -1334,6 +1336,7 @@ impl App {
             opener: false,
             clipboard: None,
             ssh: false,
+            tmux: false,
             clip_seq: 0,
             clip_osc52: false,
             clip_link: false,
@@ -1476,6 +1479,12 @@ impl App {
     pub fn with_clipboard(mut self, tool: Option<Tool>, ssh: bool) -> Self {
         self.clipboard = tool.filter(|_| !ssh);
         self.ssh = ssh;
+        self
+    }
+
+    /// Injects whether the session runs inside tmux (the runtime reads `TMUX`).
+    pub fn with_tmux(mut self, in_tmux: bool) -> Self {
+        self.tmux = in_tmux;
         self
     }
 
@@ -2891,7 +2900,7 @@ impl App {
                 self.notice = Some("Selection too large to copy".to_string());
                 return effects;
             }
-            (Ok(_), None) => self.notice = Some(clipboard::osc52_only(self.ssh)),
+            (Ok(_), None) => self.notice = Some(clipboard::osc52_only(self.ssh, self.tmux)),
             (_, Some(tool)) => {
                 self.clip_seq += 1;
                 self.clip_osc52 = sequence.is_ok();
@@ -5108,7 +5117,7 @@ mod app_tests {
             a.update(key('y')),
             vec![Effect::SetClipboard(osc52("foo\n\nbar").expect("fits"))]
         );
-        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
+        assert_eq!(a.notice(), Some(osc52_only(false, false).as_str()));
     }
 
     // copy-selection: Multi-row line selection.
@@ -5123,7 +5132,7 @@ mod app_tests {
             a.update(key('y')),
             vec![Effect::SetClipboard(osc("foo\nbar"))]
         );
-        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
+        assert_eq!(a.notice(), Some(osc52_only(false, false).as_str()));
     }
 
     // copy-selection: Wide character once.
@@ -5135,7 +5144,7 @@ mod app_tests {
         a.update(key('v'));
         a.update(key('$'));
         assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("a漢b"))]);
-        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
+        assert_eq!(a.notice(), Some(osc52_only(false, false).as_str()));
     }
 
     // copy-selection: Selection spans scrollback (app part: offset restored).
@@ -5229,7 +5238,10 @@ mod app_tests {
         let mut a = app().with_clipboard(None, false);
         hello_selected(&mut a);
         assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("hello"))]);
-        assert_eq!(a.notice(), Some(clipboard::osc52_only(false).as_str()));
+        assert_eq!(
+            a.notice(),
+            Some(clipboard::osc52_only(false, false).as_str())
+        );
         assert!(
             a.notice()
                 .is_some_and(|n| n.contains("Install wl-copy or xclip"))
@@ -5244,6 +5256,17 @@ mod app_tests {
         assert!(
             a.notice()
                 .is_some_and(|n| n.contains("Enable OSC 52 in your terminal"))
+        );
+    }
+
+    #[test]
+    fn in_tmux_the_osc52_only_notice_names_the_tmux_option() {
+        let mut a = app().with_clipboard(None, false).with_tmux(true);
+        hello_selected(&mut a);
+        a.update(key('y'));
+        assert_eq!(
+            a.notice(),
+            Some("No paste? In tmux, set -g set-clipboard on (OSC 52 sent)")
         );
     }
 
@@ -5329,8 +5352,8 @@ mod app_tests {
         a.update(key('0'));
         a.update(key('v'));
         a.update(key('y'));
-        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
-        assert_eq!(a.status_path(40), osc52_only(false));
+        assert_eq!(a.notice(), Some(osc52_only(false, false).as_str()));
+        assert_eq!(a.status_path(40), osc52_only(false, false));
         assert_eq!(a.input(), InputMode::Terminal);
         a.update(key('z'));
         assert_eq!(a.notice(), None);
@@ -5430,7 +5453,7 @@ mod app_tests {
         assert_eq!(a.input(), InputMode::Terminal);
         assert_eq!(a.update(repeat('y')), vec![]);
         // The drop must not eat the yank notice.
-        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
+        assert_eq!(a.notice(), Some(osc52_only(false, false).as_str()));
     }
 
     #[test]
@@ -5537,7 +5560,7 @@ mod app_tests {
         for ms in [400, 433, 466] {
             assert_eq!(at(&mut a, ms, key('y')), vec![], "y at {ms}");
         }
-        assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
+        assert_eq!(a.notice(), Some(osc52_only(false, false).as_str()));
     }
 
     #[test]

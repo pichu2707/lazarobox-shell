@@ -390,7 +390,7 @@ In an AI chat pane it works the same and copies clean text: without the drawing 
 
 **Copy chain.** When copying, lazarobox always sends OSC 52 to the terminal and, in addition, uses a local tool if it finds one: `wl-copy` (Wayland), `xclip` or `xsel` (X11) and, on WSL, `powershell.exe` with `Set-Clipboard`, or `clip.exe` if it is not there. `powershell.exe` receives the text in UTF-8 and stores it exactly, without the `<feff>` that `clip.exe` left when pasting; line breaks become `\r\n`, as `clip.exe` did. `clip.exe` only receives the byte order mark when the text is not ASCII, because without it it gets short texts wrong. Over SSH no local tool is used, because the clipboard that matters is your machine's. The notice says what really happened: `Copied (xclip)` if the tool finished well; `xclip failed; sent via OSC 52 (...)` if it failed; and `No paste? Install wl-copy or xclip (OSC 52 sent)` if only OSC 52 was sent, because nothing confirms it arrived. A selection too large for OSC 52 is only copied with a local tool, and if that fails it says so.
 
-Inside tmux, OSC 52 needs `set -g set-clipboard on` in `tmux.conf`; with tmux's default `set-clipboard external` tmux drops it and nothing is copied (see [docs/terminals](docs/terminals/README.md)).
+Inside tmux, OSC 52 needs `set -g set-clipboard on` in `tmux.conf`; with tmux's default `set-clipboard external` tmux drops it and nothing is copied; the copy notice then reads `No paste? In tmux, set -g set-clipboard on (OSC 52 sent)` (see [docs/terminals](docs/terminals/README.md)).
 
 ---
 
@@ -1061,7 +1061,7 @@ github = false     # gh_issue_list, gh_issue_view and gh_pr_view (read-only; see
 issue_draft = true # gh_issue_draft: opens the Feedback form with a draft (see Issue draft)
 ```
 
-The **Tools** tab of the menu shows the rows **Search**, **Write**, **Exec**, **Git**, **Git write**, **GitHub** and **Issue draft** (`h`/`l` to change, `s` to save); **Write**, **Exec** and **Git write** carry a warning line (`Can change files or run code`); **GitHub** carries its own (`Reads issues and PRs; locks auto-run in that chat`), because it only reads. Saving only writes those keys and preserves the rest of `config.toml`. With all switches off, the tools are the usual ones. Ollama admits 24 tool rounds per turn when any of these families is active (8 otherwise).
+The **Tools** tab of the menu shows the rows **Search**, **Write**, **Exec**, **Git**, **Git write**, **GitHub** and **Issue draft** (`h`/`l` to change, `s` to save); **Write**, **Exec** and **Git write** carry a warning line (`Can change files or run code`); **GitHub** carries its own (`Reads issues and PRs; locks auto-run in that chat`), because it only reads; **Approval** carries `auto types; run runs safe reads only; per chat` (`auto` only types the command; `run` also presses Enter for the search and navigation commands `cd`, `pwd`, `ls`, `tree`, `find`, `grep` and `rg`; a conversation that read GitHub text never auto-runs; the mode applies per chat). Saving only writes those keys and preserves the rest of `config.toml`. With all switches off, the tools are the usual ones. Ollama admits 24 tool rounds per turn when any of these families is active (8 otherwise).
 
 #### Search: `glob` and `grep`
 

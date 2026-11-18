@@ -510,7 +510,7 @@ fn ctrl_y_copies_the_last_answer_and_says_how_much() {
     let mut a = answered("hello");
     let effects = a.update(ctrl('y'));
     assert_eq!(effects, vec![Effect::SetClipboard(osc52("hello").unwrap())]);
-    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
+    assert_eq!(a.notice(), Some(osc52_only(false, false).as_str()));
     assert!(a.take_dirty());
 }
 
@@ -518,7 +518,7 @@ fn ctrl_y_copies_the_last_answer_and_says_how_much() {
 fn a_one_character_yank_is_singular() {
     let mut a = answered("x");
     a.update(ctrl('y'));
-    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
+    assert_eq!(a.notice(), Some(osc52_only(false, false).as_str()));
 }
 
 #[test]
@@ -545,7 +545,7 @@ fn ctrl_b_copies_the_last_code_block_without_its_fences() {
         effects,
         vec![Effect::SetClipboard(osc52("let x = 1;").unwrap())]
     );
-    assert_eq!(a.notice(), Some(osc52_only(false).as_str()));
+    assert_eq!(a.notice(), Some(osc52_only(false, false).as_str()));
 }
 
 #[test]
