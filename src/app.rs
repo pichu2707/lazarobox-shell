@@ -3433,7 +3433,7 @@ impl App {
         let failure = turn_failure(&event);
         let turn_failed = failure.is_some();
         // D6: what may suggest `/feedback` (a failed turn, a tool `Error`).
-        let failed = failure.is_some()
+        let failed = turn_failed
             || matches!(
                 tool,
                 Some(ToolEvent::Over(

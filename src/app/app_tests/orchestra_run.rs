@@ -617,7 +617,7 @@ fn a_note_does_not_leak_into_the_next_alert() {
     assert!(!text.contains("retry failed"), "{text}");
 }
 
-fn next_turn(turn: usize) -> Continuation {
+pub(super) fn next_turn(turn: usize) -> Continuation {
     Continuation {
         run: RUN,
         turn,
