@@ -6,7 +6,7 @@ Make every terminal dependency either work or say clearly that it did not. Suppo
 ## Requirements
 
 ### Requirement: First-run prefix probe
-On the first run in a terminal with no remembered probe result, the app MUST ask the user to press `Ctrl+Space`. If `Ctrl+Space` arrives within the probe window, the app MUST remember a pass and show no offer. If `Ctrl+]` (or `Ctrl+5`, the same byte) arrives, the app MUST remember `alias` and show no offer. If a plain space, or any key that is neither printable nor unmodified (for example `Esc`, `Enter`, an arrow, or a modified key), arrives first, the app MUST show a notice offering `Ctrl+]` as the prefix and MUST remember `missed`. An unmodified printable key other than the space bar (letters, digits, symbols) MUST NOT end the probe: the user may be typing, so the probe keeps waiting. If the window passes with no deciding key, the app MUST end the probe, MUST store nothing and MUST show no offer; the probe runs again on the next start. The window MUST be a few seconds (the exact length is left to design) and MUST NOT start before the app is running. The probe MUST NOT block the app: every key reaches the app as usual, and the notice is advice only. The probe MUST NOT use environment heuristics (`WT_SESSION`, WSL, `TERM_PROGRAM`) to decide the result.
+On the first run in a terminal with no remembered probe result, the app MUST ask the user to press `Ctrl+Space`. If `Ctrl+Space` arrives within the probe window, the app MUST remember a pass and show no offer. If `Ctrl+]` (or `Ctrl+5`, the same byte) arrives, the app MUST remember `alias` and show no offer. If a plain space, or any key that is neither printable nor unmodified (for example `Esc`, `Enter`, an arrow, or a modified key), arrives first, the app MUST show a notice offering `Ctrl+]` as the prefix and MUST remember `missed`. An unmodified printable key other than the space bar (letters, digits, symbols) MUST NOT end the probe: the user may be typing, so the probe keeps waiting. If the window passes with no deciding key, the app MUST end the probe, MUST store nothing and MUST show no offer; the probe runs again on the next start. The window MUST be a few seconds (the exact length is left to design) and MUST NOT start before the app is running. The probe MUST NOT block the app: every key reaches the app as usual, and the notice is advice only. The probe MUST NOT use environment heuristics (`WT_SESSION`, WSL, `TERM_PROGRAM`) to decide the result. The remembered result is keyed per terminal; inside tmux (`TERM_PROGRAM=tmux` or `TMUX` set) the key MUST be `tmux (<emulator>)` when the outer emulator is found with the same detection used outside tmux (the emulator variables only, ignoring tmux's own `TERM_PROGRAM` and `TERM`; there MUST be no process walk inside tmux), and plain `tmux` when none is found or over ssh. The key only names the row; it MUST NOT decide the probe result. tmux's default `update-environment` refreshes `SSH_CONNECTION`, so panes made after an ssh attach use plain `tmux` (an extra probe, not breakage). The key is fixed at startup and the variables may name the first-attach terminal; rows stored under plain `tmux` stop matching and probe again.
 
 #### Scenario: Ctrl+Space arrives [auto]
 - GIVEN a first run with no remembered result
@@ -51,6 +51,16 @@ The probe result MUST be remembered so that the probe does not run again on late
 - GIVEN a remembered result made in terminal A
 - WHEN lazarobox starts in a different terminal B with no result
 - THEN the probe runs
+
+#### Scenario: Inside tmux the outer emulator names the row [auto]
+- GIVEN `TERM_PROGRAM=tmux` (or `TMUX` set) and `KITTY_WINDOW_ID` set, not over ssh
+- WHEN the terminal key is computed
+- THEN it is `tmux (kitty)`, and a result remembered under `tmux (WezTerm)` does not apply
+
+#### Scenario: Inside tmux with no outer emulator found [auto]
+- GIVEN `TERM_PROGRAM=tmux`, no emulator variable (or the session is over ssh), whatever a process walk would find
+- WHEN the terminal key is computed
+- THEN it is plain `tmux`
 
 #### Scenario: Rerun on request [auto]
 - GIVEN a remembered result

@@ -42,6 +42,21 @@ folder here, a filled record, and that constant, in the same change.
 - **tmux and Ctrl+B.** tmux's default prefix is `Ctrl+B`, so it never
   reaches lazarobox. Press it twice for one `Ctrl+B`, or move the tmux prefix
   (`set -g prefix C-a`).
+- **tmux and the probe key.** Inside tmux (`TERM_PROGRAM=tmux` or `TMUX` set)
+  the first-run prefix probe is stored under `tmux (<emulator>)`, for example
+  `tmux (kitty)`, so each outer emulator probes on its own. The emulator comes
+  from the same checks as outside tmux (`WT_SESSION`, `KITTY_WINDOW_ID`,
+  `WEZTERM_EXECUTABLE`, ...), ignoring tmux's own `TERM_PROGRAM` and `TERM`.
+  Inside tmux only those variables name the row (there is no process walk: the
+  tmux server is daemonized and reparented, so the walk would not reach the
+  emulator); with none found, or over ssh, the key is plain `tmux`. The key
+  only names the row; it does not decide the probe result. Limits: tmux's
+  default `update-environment` refreshes `SSH_CONNECTION`, so panes made after
+  an ssh attach use plain `tmux` (an extra probe, not breakage); the tmux server inherits those variables from the shell that
+  started it, so they may name the terminal of the first attach, not the
+  current one; the key is fixed at startup, so a re-attach from another
+  emulator does not change it until lazarobox restarts; and rows stored under
+  `tmux` before this change no longer match, so those users probe once more.
 - **tmux and copy.** With the default `set-clipboard external`, tmux drops the
   OSC 52 that `y` sends: use `set -g set-clipboard on`, or have `wl-copy` or
   `xclip` installed. Whenever `TMUX` is set, the notice says so:
