@@ -30,7 +30,7 @@ use crate::{
         jail::JailSupport,
         orchestra::commands::{Ran, RanEnd},
         sanitize::clean,
-        toolchain::{Layout, Refusal, Vars, env::scrub, toolchain_spec},
+        toolchain::{Layout, Refusal, SYSTEM_RX, Vars, env::scrub, toolchain_spec},
         tools::{
             Call, ToolError,
             allow::{self, Program, RunError, RunRequest, parse_run},
@@ -531,14 +531,14 @@ async fn attempt(
     };
     let done = go(host, plan, &nonce).await;
     drop(permit);
-    done.unwrap_or_else(fail)
+    done.unwrap_or_else(|why| fail(&why))
 }
 
 type Done = ((Outcome, ToolStatus, String), Option<RanEnd>);
 
-async fn go(host: &ToolHost, plan: Plan, nonce: &str) -> Result<Done, &'static str> {
+async fn go(host: &ToolHost, plan: Plan, nonce: &str) -> Result<Done, String> {
     let Some(helper) = host.exec.helper.clone() else {
-        return Err(NO_SANDBOX);
+        return Err(NO_SANDBOX.to_owned());
     };
     let unreported = host.exec.sink(plan.key);
     let read = host.exec.read.clone();
@@ -554,7 +554,7 @@ async fn go(host: &ToolHost, plan: Plan, nonce: &str) -> Result<Done, &'static s
             job(&*read, home, parent, plan, helper, build_env, unreported)
         })
         .await
-        .map_err(|_| COULD_NOT)??
+        .map_err(|_| COULD_NOT.to_owned())??
     };
     // What the run changed is told on every path, an error included: the
     // watched places are read whatever the program did, and a run that is
@@ -619,7 +619,7 @@ fn job(
     helper: PathBuf,
     build_env: Vec<(OsString, OsString)>,
     unreported: Unreported,
-) -> Result<Job, &'static str> {
+) -> Result<Job, String> {
     let canonical = |path: OsString| fs::canonicalize(path).ok();
     let home = home.and_then(canonical).ok_or(REFUSED)?;
     let scratch = Scratch::unique(&parent.ok_or(NO_SANDBOX)?, "run").map_err(|_| COULD_NOT)?;
@@ -657,12 +657,24 @@ fn job(
     })
 }
 
-fn sandbox_text(why: &Refusal) -> &'static str {
+fn sandbox_text(why: &Refusal) -> String {
     match why {
         Refusal::Root(_) => REFUSED,
         Refusal::Program(_) | Refusal::InRoot(_) => NO_PLACE,
+        Refusal::Interpreter(python) => return interpreter_text(python),
         _ => NO_SANDBOX,
     }
+    .to_owned()
+}
+
+/// Names the python3 the PATH resolved to and why it cannot run (#794). The
+/// path is quoted and escaped: it comes from the environment, not from a fixed
+/// text.
+fn interpreter_text(python: &Path) -> String {
+    let system = SYSTEM_RX.join(", ");
+    format!(
+        "python3 at {python:?} is outside the sandbox's system paths ({system}); its standard library cannot be read. Put a system python3 first on the PATH or run pytest directly"
+    )
 }
 
 /// The executable file `tool` names: the project's pytest venv first, then the
