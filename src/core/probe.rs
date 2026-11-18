@@ -90,6 +90,15 @@ impl Seen {
 /// The row name of a terminal, from the first of these that is set (`var`
 /// reads the environment; empty values count as unset):
 ///
+/// 0. inside tmux (`TERM_PROGRAM` is `tmux`, or `TMUX` is set): `tmux (name)`,
+///    where `name` is the outer emulator, found as in 2 and 3 below and, when
+///    no variable names one, by the process walk (never over ssh); plain
+///    `tmux` when none is found. tmux's own `TERM_PROGRAM` and `TERM` say
+///    nothing about the emulator. The variables are inherited by the tmux
+///    server from the shell that started it, so they may name the terminal of
+///    the first attach; the key is fixed at startup and does not follow a
+///    re-attach from another emulator. Rows stored under `tmux` no longer
+///    match, so those users probe once more;
 /// 1. `TERM_PROGRAM`;
 /// 2. `Windows Terminal` when `WT_SESSION` is set;
 /// 3. a terminal-specific variable: `KITTY_WINDOW_ID` is `kitty`,
@@ -122,11 +131,45 @@ pub fn terminal_key(
             .map(|v| v.trim().to_owned())
             .filter(|v| !v.is_empty())
     };
+    let ssh = set("SSH_CONNECTION").is_some() || set("SSH_TTY").is_some();
+    let inside_tmux = set("TMUX").is_some()
+        || set("TERM_PROGRAM").is_some_and(|p| p.eq_ignore_ascii_case("tmux"));
+    if inside_tmux {
+        // tmux sets TERM_PROGRAM and TERM itself, so neither names the outer
+        // emulator: look at the emulator variables, then the process walk.
+        let outer = if ssh {
+            None
+        } else {
+            emulator_variable(&set).or_else(|| clean(emulator()))
+        };
+        return match outer {
+            Some(name) => format!("tmux ({name})"),
+            None => "tmux".to_owned(),
+        };
+    }
     if let Some(program) = set("TERM_PROGRAM") {
         return program;
     }
+    if let Some(name) = emulator_variable(&set) {
+        return name;
+    }
+    let Some(term) = set("TERM") else {
+        return "unknown".to_owned();
+    };
+    if !is_generic_term(&term) || ssh {
+        return term;
+    }
+    match clean(emulator()) {
+        Some(name) => format!("{term} ({name})"),
+        None => term,
+    }
+}
+
+/// The terminal an emulator-specific variable names (`WT_SESSION`,
+/// `KITTY_WINDOW_ID`, ...), in the order the key documents.
+fn emulator_variable(set: &impl Fn(&str) -> Option<String>) -> Option<String> {
     if set("WT_SESSION").is_some() {
-        return "Windows Terminal".to_owned();
+        return Some("Windows Terminal".to_owned());
     }
     const SPECIFIC: [(&[&str], &str); 5] = [
         (&["KITTY_WINDOW_ID"], "kitty"),
@@ -135,25 +178,14 @@ pub fn terminal_key(
         (&["KONSOLE_VERSION"], "Konsole"),
         (&["VTE_VERSION"], "vte"),
     ];
-    if let Some((_, name)) = SPECIFIC
+    SPECIFIC
         .iter()
         .find(|(names, _)| names.iter().any(|n| set(n).is_some()))
-    {
-        return (*name).to_owned();
-    }
-    let Some(term) = set("TERM") else {
-        return "unknown".to_owned();
-    };
-    if !is_generic_term(&term) || set("SSH_CONNECTION").is_some() || set("SSH_TTY").is_some() {
-        return term;
-    }
-    match emulator()
-        .map(|e| e.trim().to_owned())
-        .filter(|e| !e.is_empty())
-    {
-        Some(name) => format!("{term} ({name})"),
-        None => term,
-    }
+        .map(|(_, name)| (*name).to_owned())
+}
+
+fn clean(name: Option<String>) -> Option<String> {
+    name.map(|e| e.trim().to_owned()).filter(|e| !e.is_empty())
 }
 
 /// `xterm`, or `xterm-` plus only a colour depth: names that many terminals
@@ -549,6 +581,57 @@ mod tests {
                 "gnome-terminal-".to_owned()
             )),
             "vte"
+        );
+    }
+
+    #[test]
+    fn inside_tmux_the_key_names_the_outer_emulator() {
+        let key = |vars: &[(&str, &str)], walk: Option<&str>| {
+            terminal_key(env(vars), || walk.map(str::to_owned))
+        };
+        let tm = ("TERM_PROGRAM", "tmux");
+        let term = ("TERM", "tmux-256color");
+        assert_eq!(
+            key(&[tm, term, ("KITTY_WINDOW_ID", "3")], None),
+            "tmux (kitty)"
+        );
+        assert_eq!(
+            key(&[tm, term, ("WT_SESSION", "x")], None),
+            "tmux (Windows Terminal)"
+        );
+        assert_eq!(
+            key(&[tm, term, ("WEZTERM_EXECUTABLE", "/w")], None),
+            "tmux (WezTerm)"
+        );
+        assert_eq!(key(&[tm, term, ("VTE_VERSION", "7")], None), "tmux (vte)");
+        // TMUX alone is enough, and then TERM_PROGRAM is ignored.
+        assert_eq!(
+            key(&[("TMUX", "/tmp/t,1,0"), ("KITTY_WINDOW_ID", "3")], None),
+            "tmux (kitty)"
+        );
+        // No variable: the ancestor walk decides.
+        assert_eq!(key(&[tm, term], Some("zutty")), "tmux (zutty)");
+        // Nothing found: plain tmux.
+        assert_eq!(key(&[tm, term], None), "tmux");
+        assert_eq!(key(&[tm, term], Some("  ")), "tmux");
+        assert_eq!(key(&[("TMUX", "x,1,0")], None), "tmux");
+        // Over ssh the key stays plain, variables and walk included.
+        assert_eq!(
+            key(&[tm, term, ("SSH_TTY", "/dev/pts/3")], Some("zutty")),
+            "tmux"
+        );
+        assert_eq!(
+            key(
+                &[tm, ("SSH_CONNECTION", "1 2 3 4"), ("KITTY_WINDOW_ID", "3")],
+                None
+            ),
+            "tmux"
+        );
+        // Outside tmux nothing changes.
+        assert_eq!(key(&[("TERM_PROGRAM", "kitty"), term], Some("z")), "kitty");
+        assert_eq!(
+            key(&[("TMUX", ""), ("TERM_PROGRAM", "kitty")], None),
+            "kitty"
         );
     }
 
