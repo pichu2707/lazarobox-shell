@@ -16,10 +16,11 @@ use super::{Outcome, ToolHost, ToolStatus, TurnScope, ended, files::lock_set, gi
 use crate::{
     core::ai::{
         chat::{
+            GH_FAILED_NOTICE,
             approval::{ApprovalAsk, ask_for},
             engine::StreamEvent,
         },
-        sanitize::clean,
+        sanitize::{clean, redact_tokens},
         tools::{
             Call, Locality,
             github::{self as pure, GhCall, GhRepo, Slug, render},
@@ -291,7 +292,7 @@ const STDERR_SHOWN: usize = 300;
 /// `gh`'s stderr as one clean line for the user's notice: escapes and control
 /// characters gone, spaces folded, cut at [`STDERR_SHOWN`] with an ellipsis.
 fn shown_stderr(stderr: &str) -> String {
-    let line = clean(stderr)
+    let line = redact_tokens(&clean(stderr))
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
@@ -306,8 +307,8 @@ fn shown_stderr(stderr: &str) -> String {
 /// because that text can carry third-party issue text.
 fn stderr_notice(code: i32, stderr: &str) -> String {
     match shown_stderr(stderr) {
-        said if said.is_empty() => format!("gh failed (exit {code}) and printed nothing"),
-        said => format!("gh failed (exit {code}), it said: {said}"),
+        said if said.is_empty() => format!("{GH_FAILED_NOTICE}{code}) and printed nothing"),
+        said => format!("{GH_FAILED_NOTICE}{code}), it said: {said}"),
     }
 }
 

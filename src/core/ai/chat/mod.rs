@@ -140,6 +140,9 @@ pub fn worker_over_window(tokens: usize, window: usize) -> String {
         "the worker prompt and setup are about {tokens} tokens, over the {window}-token window: the server may cut them"
     )
 }
+/// Start of the notice a failed `gh` read shows the user (see the runtime's
+/// `github` host).
+pub const GH_FAILED_NOTICE: &str = "gh failed (exit ";
 /// System line for a send while an answer is still streaming.
 pub const BUSY: &str = "still answering: wait for it or press Esc to cancel";
 /// System line for a send into a full conversation.
@@ -1894,6 +1897,12 @@ impl ChatState {
             }
             StreamEvent::Reading => {
                 self.clock_read(now);
+                Follow::Nothing
+            }
+            // The same `gh` failure twice is two failures: it counts instead
+            // of being dropped like a repeated notice.
+            StreamEvent::Notice(line) if line.starts_with(GH_FAILED_NOTICE) => {
+                self.push_collapsing_line(line.clone(), line);
                 Follow::Nothing
             }
             StreamEvent::Notice(line) => {

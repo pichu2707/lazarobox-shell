@@ -886,11 +886,15 @@ async fn a_failed_gh_shows_its_stderr_to_the_user_and_never_to_the_model() {
         ["gh failed (exit 1), it said: boom: SECRET-TOKEN-123"]
     );
     // Nothing else in the stream carries it: the result row says the sentence.
-    for event in &events {
-        if let StreamEvent::ToolResult { summary, .. } = event {
-            assert!(!summary.contains("SECRET-TOKEN-123"), "{summary}");
-        }
-    }
+    let results: Vec<&String> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolResult { summary, .. } => Some(summary),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 1, "a result row must exist");
+    assert!(!results[0].contains("SECRET-TOKEN-123"), "{}", results[0]);
 }
 
 #[tokio::test]
@@ -903,16 +907,81 @@ async fn a_failed_gh_with_no_stderr_says_it_printed_nothing() {
     );
 }
 
+const SAID: &str = "gh failed (exit 1), it said: ";
+
+/// The one notice a failing `gh` that prints `printf_arg` on stderr leaves.
+async fn told_for(printf_arg: &str) -> String {
+    let rig = rig(Some(ORIGIN), &format!("printf '{printf_arg}' >&2; exit 1"));
+    let (_, events) = one(&rig, list()).await;
+    let mut told = notice_lines(&events);
+    assert_eq!(told.len(), 1, "{told:?}");
+    told.remove(0)
+}
+
 #[tokio::test]
 async fn the_stderr_notice_is_stripped_of_escapes_and_capped() {
-    let long = "x".repeat(600);
-    let script = format!("printf '\\033[31mred\\033[0m {long}\\n' >&2; exit 1");
-    let rig = rig(Some(ORIGIN), &script);
-    let (_, events) = one(&rig, list()).await;
-    let told = notice_lines(&events);
-    assert_eq!(told.len(), 1, "{told:?}");
-    assert!(told[0].contains("red xxx"), "{}", told[0]);
-    assert!(!told[0].contains('\u{1b}'), "{}", told[0]);
-    assert!(told[0].ends_with('…'), "{}", told[0]);
-    assert!(told[0].chars().count() < 400, "{}", told[0].chars().count());
+    let long = "ab ".repeat(300);
+    let told = told_for(&format!("\\033[31mred\\033[0m {long}\\n")).await;
+    assert!(told.starts_with(&format!("{SAID}red ab ab")), "{told}");
+    assert!(!told.contains('\u{1b}'), "{told}");
+    // Exactly 300 characters of stderr, then the marker.
+    assert_eq!(
+        told.chars().count(),
+        SAID.chars().count() + 300 + 1,
+        "{told}"
+    );
+    assert!(told.ends_with('…'), "{told}");
+}
+
+#[tokio::test]
+async fn the_stderr_notice_drops_links_bidi_overrides_cr_and_nul() {
+    let told = told_for(
+        "a \\033]8;;https://evil.example\\033\\\\click\\033]8;;\\033\\\\ b \\342\\200\\256txt\\r\\000 c\\n",
+    )
+    .await;
+    assert!(told.starts_with(SAID), "{told}");
+    for bad in ['\u{1b}', '\u{202e}', '\r', '\0'] {
+        assert!(!told.contains(bad), "{bad:?} in {told:?}");
+    }
+    assert!(!told.contains("evil.example"), "{told}");
+    assert!(told.contains("click"), "{told}");
+    assert_eq!(told.lines().count(), 1, "{told:?}");
+}
+
+#[tokio::test]
+async fn a_token_in_the_stderr_notice_is_redacted_on_screen() {
+    let told = told_for("bad credentials ghp_abcdefghijklmnopqrstuvwxyz0123456789\\n").await;
+    assert!(told.starts_with(SAID), "{told}");
+    assert!(!told.contains("ghp_abcdefgh"), "{told}");
+    assert!(told.contains("bad credentials"), "{told}");
+}
+
+// Only "any other exit failure" speaks: the classified endings keep their
+// fixed sentence and add no notice.
+#[tokio::test]
+async fn the_classified_failures_add_no_notice() {
+    let cases = [
+        ("echo 'gh auth login' >&2; exit 4", list()),
+        (
+            "echo 'no pull requests match with the number of 9' >&2; exit 1",
+            view(9, false),
+        ),
+        ("kill -9 $$", list()),
+        ("head -c 5000000 /dev/zero | tr '\\0' a", list()),
+    ];
+    for (script, call) in cases {
+        let rig = rig(Some(ORIGIN), script);
+        let (out, events) = one(&rig, call).await;
+        assert!(out.is_error, "{script}: {}", out.text);
+        assert!(notice_lines(&events).is_empty(), "{script}: {events:?}");
+    }
+    let rig = rig_with(
+        Some(ORIGIN),
+        "sleep 300",
+        "cat \"$FIX/repo-view.json\"",
+        Duration::from_millis(300),
+    );
+    let (out, events) = one(&rig, list()).await;
+    assert!(out.is_error, "{}", out.text);
+    assert!(notice_lines(&events).is_empty(), "{events:?}");
 }

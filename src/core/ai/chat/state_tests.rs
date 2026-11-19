@@ -383,6 +383,45 @@ fn a_notice_is_one_system_line_per_pane_however_many_turns_say_it() {
     assert_eq!(systems(&state), [line]);
 }
 
+// Issue #795: a second identical gh failure must still leave a visible line.
+#[test]
+fn a_repeated_gh_failure_notice_stays_visible() {
+    let mut state = chat();
+    let line = "gh failed (exit 1), it said: boom";
+    let (turn, _) = sent(&mut state, "one");
+    state.apply(turn, StreamEvent::Notice(line.into()));
+    state.apply(turn, StreamEvent::Delta("a".into()));
+    state.apply(turn, StreamEvent::Done(Finish::Stop));
+    let (turn, _) = sent(&mut state, "two");
+    state.apply(turn, StreamEvent::Notice(line.into()));
+    let shown = systems(&state);
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert!(shown.iter().all(|s| s.starts_with(line)), "{shown:?}");
+    assert_eq!(shown[1], format!("{line} (2 times so far)"));
+}
+
+// The notice is display only: a system line, never part of the messages.
+#[test]
+fn a_gh_failure_notice_is_a_system_line_and_not_a_message() {
+    let mut state = chat();
+    let (turn, _) = sent(&mut state, "hi");
+    let before: Vec<String> = state.messages().map(|m| format!("{m:?}")).collect();
+    state.apply(
+        turn,
+        StreamEvent::Notice("gh failed (exit 1), it said: SECRET-TOKEN-123".into()),
+    );
+    assert_eq!(
+        systems(&state),
+        ["gh failed (exit 1), it said: SECRET-TOKEN-123"]
+    );
+    let after: Vec<String> = state.messages().map(|m| format!("{m:?}")).collect();
+    assert_eq!(before, after);
+    assert!(
+        after.iter().all(|m| !m.contains("SECRET-TOKEN-123")),
+        "{after:?}"
+    );
+}
+
 #[test]
 fn a_notice_does_not_start_the_answer_or_end_the_turn() {
     let mut state = chat();
