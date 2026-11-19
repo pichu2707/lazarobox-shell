@@ -1750,7 +1750,7 @@ mod tests {
 
     #[test]
     fn the_approval_row_shows_its_hint_at_62_and_80_columns() {
-        let hint = "run runs cd/pwd/ls/tree/find/grep/rg; git, gh ask";
+        let hint = "per chat; run runs only cd pwd ls tree find grep rg";
         for width in [62, 80] {
             let mut menu = ai_tab();
             goto(&mut menu, "Approval");

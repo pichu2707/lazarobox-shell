@@ -865,9 +865,9 @@ const CAUTION: &str = "Can change files or run code";
 /// The line of the GitHub row: it only reads, so the caution above would be
 /// untrue; what enabling does is the block it starts in a chat. ASCII.
 const GITHUB_HINT: &str = "Reads issues and PRs; locks auto-run in that chat";
-/// The line of the Approval row: the verbs `run` runs, and that anything else
-/// (git and gh included) asks. ASCII.
-const APPROVAL_HINT: &str = "run runs cd/pwd/ls/tree/find/grep/rg; git, gh ask";
+/// The line of the Approval row: the mode is per chat and `run` runs only
+/// these verbs, those of `exec::SPECS` (a test keeps them equal). ASCII.
+pub(crate) const APPROVAL_HINT: &str = "per chat; run runs only cd pwd ls tree find grep rg";
 /// Lines of the caution, reserved at the foot of the Tools tab so the popup
 /// does not change size when it appears.
 pub const CAUTION_ROWS: usize = 1;

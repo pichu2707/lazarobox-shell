@@ -812,3 +812,35 @@ fn grammar_refuses_the_adversarial_list() {
         assert!(parse(text).is_err(), "{text:?} must go to the prompt");
     }
 }
+
+// One list of verbs: the hint of the Approval row and the README paragraph
+// name every verb of `SPECS`, and nothing else.
+#[test]
+fn the_run_verbs_are_the_same_in_the_hint_and_the_readmes() {
+    let hint = crate::core::menu::APPROVAL_HINT;
+    let verbs: Vec<&str> = SPECS.iter().map(|spec| spec.name).collect();
+    for verb in &verbs {
+        assert!(
+            hint.split(' ').any(|w| w == *verb),
+            "hint lacks {verb}: {hint}"
+        );
+    }
+    let list = hint.strip_prefix("per chat; run runs only ").expect(hint);
+    assert_eq!(list.split(' ').count(), verbs.len(), "{list}");
+    for readme in [
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")),
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.es.md")),
+    ] {
+        let quoted = format!("`{hint}`");
+        assert!(readme.contains(&quoted), "the README quotes the hint");
+        let line = readme
+            .lines()
+            .find(|l| {
+                l.contains("`cd`, `pwd`, `ls`, `tree`, `find`, `grep`") && l.contains("Enter")
+            })
+            .expect("the README lists the verbs");
+        for verb in &verbs {
+            assert!(line.contains(&format!("`{verb}`")), "{verb}");
+        }
+    }
+}

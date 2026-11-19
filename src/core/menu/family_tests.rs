@@ -193,7 +193,7 @@ fn only_the_rows_that_change_files_or_run_code_carry_a_caution() {
     let approval = on("Approval").caution().unwrap();
     assert_eq!(
         approval,
-        "run runs cd/pwd/ls/tree/find/grep/rg; git, gh ask"
+        "per chat; run runs only cd pwd ls tree find grep rg"
     );
     assert!(
         approval.is_ascii() && approval.len() <= 44 + 8,

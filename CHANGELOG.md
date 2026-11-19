@@ -14,10 +14,9 @@ baseline.
 
 - **`run` mode says why a command still asks, and the Approval row names the
   limit.** A command whose program is not `cd`, `pwd`, `ls`, `tree`, `find`,
-  `grep` or `rg` now shows `` `gh` is not on the run list (cd, pwd, ls, tree,
-  find, grep, rg) `` instead of `not a safe command`. The Approval row of the
-  Tools tab reads `run runs cd/pwd/ls/tree/find/grep/rg; git, gh ask`, and both
-  READMEs spell out the shape limits of `run` and that `auto` never presses
+  `grep` or `rg` now shows `` `gh` is not on the run list `` instead of
+  `not a safe command`. The Approval row of the Tools tab reads
+  `per chat; run runs only cd pwd ls tree find grep rg`, and both READMEs spell out the shape limits of `run` and that `auto` never presses
   Enter (#795).
 
 ## [1.31.0] - 2026-11-19
