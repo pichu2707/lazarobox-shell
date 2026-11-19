@@ -130,10 +130,7 @@ fn a_second_call_to_the_same_pane_in_a_batch_prompts() {
 fn an_off_list_command_prompts_and_y_runs_it() {
     let (mut a, turn) = run_live();
     assert_eq!(announce(&mut a, turn, 1, run("cargo build")), vec![]);
-    assert_eq!(
-        why(&a).as_deref(),
-        Some("`cargo` is not on the run list (cd, pwd, ls, tree, find, grep, rg)")
-    );
+    assert_eq!(why(&a).as_deref(), Some("`cargo` is not on the run list"));
     assert_eq!(slot(&a), None);
     assert_eq!(chat_of(&a).auto_typed(), 0);
     assert_eq!(
@@ -167,22 +164,10 @@ fn a_search_command_goes_to_the_check_without_a_prompt() {
 #[test]
 fn mkdir_and_a_build_ask_and_y_runs_them() {
     for (command, reason) in [
-        (
-            "mkdir x",
-            "`mkdir` is not on the run list (cd, pwd, ls, tree, find, grep, rg)",
-        ),
-        (
-            "mkdir -p a/b",
-            "`mkdir` is not on the run list (cd, pwd, ls, tree, find, grep, rg)",
-        ),
-        (
-            "npm test",
-            "`npm` is not on the run list (cd, pwd, ls, tree, find, grep, rg)",
-        ),
-        (
-            "git push",
-            "`git` is not on the run list (cd, pwd, ls, tree, find, grep, rg)",
-        ),
+        ("mkdir x", "`mkdir` is not on the run list"),
+        ("mkdir -p a/b", "`mkdir` is not on the run list"),
+        ("npm test", "`npm` is not on the run list"),
+        ("git push", "`git` is not on the run list"),
     ] {
         let (mut a, turn) = run_live();
         assert_eq!(announce(&mut a, turn, 1, run(command)), vec![], "{command}");
@@ -246,10 +231,7 @@ fn git_asks_like_any_command_off_the_list_and_counts_toward_the_pause() {
             "{command}"
         );
         assert_eq!(pending(&a).map(|(ask, _)| ask), Some(run(command)));
-        assert_eq!(
-            why(&a).as_deref(),
-            Some("`git` is not on the run list (cd, pwd, ls, tree, find, grep, rg)")
-        );
+        assert_eq!(why(&a).as_deref(), Some("`git` is not on the run list"));
         assert_eq!(slot(&a), None);
         result(&mut a, turn, call, ToolStatus::Denied);
     }
