@@ -865,9 +865,9 @@ const CAUTION: &str = "Can change files or run code";
 /// The line of the GitHub row: it only reads, so the caution above would be
 /// untrue; what enabling does is the block it starts in a chat. ASCII.
 const GITHUB_HINT: &str = "Reads issues and PRs; locks auto-run in that chat";
-/// The line of the Approval row: what each mode covers, and that the mode is
-/// per chat (the menu does not change an open chat). ASCII.
-const APPROVAL_HINT: &str = "auto types; run runs safe reads only; per chat";
+/// The line of the Approval row: the verbs `run` runs, and that anything else
+/// (git and gh included) asks. ASCII.
+const APPROVAL_HINT: &str = "run runs cd/pwd/ls/tree/find/grep/rg; git, gh ask";
 /// Lines of the caution, reserved at the foot of the Tools tab so the popup
 /// does not change size when it appears.
 pub const CAUTION_ROWS: usize = 1;

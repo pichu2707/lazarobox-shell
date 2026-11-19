@@ -189,9 +189,9 @@ fn only_the_rows_that_change_files_or_run_code_carry_a_caution() {
     assert_eq!(hint, "Reads issues and PRs; locks auto-run in that chat");
     assert!(hint.is_ascii() && hint.len() <= 44 + 8, "{hint}");
     assert_eq!(on("Tools").caution(), None);
-    // The Approval row says what each mode covers and that it is per chat.
+    // The Approval row names what `run` runs and that git and gh ask.
     let approval = on("Approval").caution().unwrap();
-    assert_eq!(approval, "auto types; run runs safe reads only; per chat");
+    assert_eq!(approval, "run runs cd/pwd/ls/tree/find/grep/rg; git, gh ask");
     assert!(
         approval.is_ascii() && approval.len() <= 44 + 8,
         "{approval}"
