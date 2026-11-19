@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.31.3] - 2026-11-19
+
 ### Changed
 
 - **Worker tool calls enter the step trail.** Each one is stored as `worker <n>: <tool> <args> -> ok | refused: <reason> | error`, built only from text lazarobox generates (never tool output or error detail), with its own cap of 20 so workers never push out coordinator steps. A report lists the last 12 coordinator steps and the last 4 worker steps. Display-only, as before (#771).
@@ -3151,7 +3153,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.2...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.3...HEAD
+[1.31.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.2...v1.31.3
 [1.31.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.1...v1.31.2
 [1.31.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.0...v1.31.1
 [1.31.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.30.0...v1.31.0
