@@ -16,9 +16,11 @@ use super::{Outcome, ToolHost, ToolStatus, TurnScope, ended, files::lock_set, gi
 use crate::{
     core::ai::{
         chat::{
+            GH_FAILED_NOTICE,
             approval::{ApprovalAsk, ask_for},
             engine::StreamEvent,
         },
+        sanitize::{clean, redact_tokens},
         tools::{
             Call, Locality,
             github::{self as pure, GhCall, GhRepo, Slug, render},
@@ -284,15 +286,43 @@ pub(super) fn why_failed(stderr: &str) -> Option<&'static str> {
     }
 }
 
-/// The fixed sentence for a `gh` that ended badly. Never `gh`'s own text.
-fn failure(split: &Split, call: &GhCall, slug: &Slug) -> Option<String> {
+/// The most characters of `gh`'s stderr the user is shown.
+const STDERR_SHOWN: usize = 300;
+
+/// `gh`'s stderr as one clean line for the user's notice: escapes and control
+/// characters gone, spaces folded, cut at [`STDERR_SHOWN`] with an ellipsis.
+fn shown_stderr(stderr: &str) -> String {
+    let line = redact_tokens(&clean(stderr))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    match line.char_indices().nth(STDERR_SHOWN) {
+        Some((end, _)) => format!("{}…", line[..end].trim_end()),
+        None => line,
+    }
+}
+
+/// The notice for the user about a `gh` that exited badly: its own stderr.
+/// Shown in the pane only; it is never part of the result the model reads,
+/// because that text can carry third-party issue text.
+fn stderr_notice(code: i32, stderr: &str) -> String {
+    match shown_stderr(stderr) {
+        said if said.is_empty() => format!("{GH_FAILED_NOTICE}{code}) and printed nothing"),
+        said => format!("{GH_FAILED_NOTICE}{code}), it said: {said}"),
+    }
+}
+
+/// The fixed sentence for a `gh` that ended badly, and the user's notice with
+/// `gh`'s stderr when it exited badly. The sentence is never `gh`'s own text.
+fn failure(split: &Split, call: &GhCall, slug: &Slug) -> Option<(String, Option<String>)> {
     let ended = &split.ended;
     let stderr = String::from_utf8_lossy(&split.stderr);
     let number = match *call {
         GhCall::IssueView { number, .. } | GhCall::PrView { number } => Some(number),
         GhCall::IssueList { .. } => None,
     };
-    Some(if ended.timed_out {
+    let mut notice = None;
+    let sentence = if ended.timed_out {
         TIMED_OUT.to_owned()
     } else if split.over {
         match call {
@@ -308,15 +338,19 @@ fn failure(split: &Split, call: &GhCall, slug: &Slug) -> Option<String> {
         format!("#{n} was not found in {slug}")
     } else if ended.exit != Some(0) {
         match ended.exit {
-            Some(code) => match why_failed(&stderr) {
-                Some(why) => format!("gh failed (exit {code}): {why}"),
-                None => format!("gh failed (exit {code})"),
-            },
+            Some(code) => {
+                notice = Some(stderr_notice(code, &stderr));
+                match why_failed(&stderr) {
+                    Some(why) => format!("gh failed (exit {code}): {why}"),
+                    None => format!("gh failed (exit {code})"),
+                }
+            }
             None => "gh failed".to_owned(),
         }
     } else {
         return None;
-    })
+    };
+    Some((sentence, notice))
 }
 
 /// Runs the read. `GithubStarted` goes out first on the turn's ordered
@@ -342,7 +376,10 @@ pub(super) async fn run(
         Ok(split) => split,
         Err(_) => return ended(ToolStatus::Error, START_FAILED.to_owned(), START_FAILED),
     };
-    if let Some(why) = failure(&split, call, &planned.slug) {
+    if let Some((why, notice)) = failure(&split, call, &planned.slug) {
+        if let Some(line) = notice {
+            let _ = scope.events.send(StreamEvent::Notice(line)).await;
+        }
         return ended(ToolStatus::Error, why.clone(), &why);
     }
     let json = String::from_utf8_lossy(&split.stdout);

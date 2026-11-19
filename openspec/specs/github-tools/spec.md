@@ -203,7 +203,7 @@ Every failure MUST give the user a visible message in the result row (and the sa
 - `gh` is not logged in: the message says so and says to run `gh auth login` and try again;
 - `gh` does not answer in time: the message says GitHub did not answer in time and no result is shown;
 - the issue or PR number does not exist in the repository: the message names the number and the repository and says it was not found;
-- any other `gh` failure: a short message that `gh` failed, with no raw `gh` output carrying content. A failure MAY append one fixed cause, `: rate limit reached`, `: not found or no access` or `: network error`, chosen from known patterns in the stderr; these sentences are lazarobox constants, never `gh` text, and a rate-limit pattern wins over an HTTP 403 it rides on. An unknown stderr keeps the plain `gh failed (exit N)`.
+- any other `gh` failure: a short message that `gh` failed, with no raw `gh` output carrying content. A failure MAY append one fixed cause, `: rate limit reached`, `: not found or no access` or `: network error`, chosen from known patterns in the stderr; these sentences are lazarobox constants, never `gh` text, and a rate-limit pattern wins over an HTTP 403 it rides on. An unknown stderr keeps the plain `gh failed (exit N)`. The stderr itself is shown to the USER only: on the "any other exit failure" branch (a nonzero exit code that is not logged out, not found, a timeout, over the size cap or a killed process; those keep their fixed sentence and add no notice) a chat turn's pane gets a notice `gh failed (exit N), it said: <stderr>` (or `gh failed (exit N) and printed nothing`), sanitized (escapes, links, control and bidi characters dropped, token-shaped secrets redacted) to one line and cut at 300 characters with `…`. A repeated identical failure is shown again with a count, never dropped. The notice appears in chat turns only: an orchestrator worker's `gh` failure shows no notice (follow-up). It MUST NEVER reach the model: not in the tool result, not in its summary, not in any text sent back to the engine.
 The status of each is `error`, except a declined consent, which is `denied`.
 
 #### Scenario: gh missing [auto]
@@ -235,6 +235,11 @@ The status of each is `error`, except a declined consent, which is `denied`.
 - GIVEN a fake `gh` that fails with stderr `HTTP 404: Not Found` plus `SECRET-TOKEN-123`, and another with `error connecting to api.github.com`
 - WHEN each call ends
 - THEN the messages say `gh failed (exit N)` followed by `: not found or no access` and `: network error`, and neither holds the token or any `gh` text
+
+#### Scenario: The user sees the stderr, the model does not [auto]
+- GIVEN a fake `gh` that exits 1 with stderr `boom: SECRET-TOKEN-123`
+- WHEN the call ends
+- THEN the pane gets the notice `gh failed (exit 1), it said: boom: SECRET-TOKEN-123` and the tool result the model reads is only `gh failed (exit 1)`
 
 #### Scenario: Rate limit wins over HTTP 403 [auto]
 - GIVEN a fake `gh` that fails with stderr `HTTP 403: API rate limit exceeded`, and another with `HTTP 429: Too Many Requests`
