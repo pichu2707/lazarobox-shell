@@ -10,6 +10,10 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- **A resumed run keeps the interrupted run's step trail.** The report of a run started with `Ctrl+Space` `r` `r` lists the old run's steps, a `resumed from run <id>` line, then its own steps. The trail stays display-only: it never reaches the resume seed, a continuation or any model (#771).
+
 ## [1.31.2] - 2026-11-19
 
 ### Changed

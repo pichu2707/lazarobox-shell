@@ -357,6 +357,9 @@ impl App {
         if self.ended_runs.contains(&run) {
             return Vec::new();
         }
+        // Before the trail is read: a resumed run's first save carries the
+        // lines it took over.
+        self.ensure_kept(id, run);
         let text = self.run_keep.trails.get(&run).map(Trail::to_text);
         let kept = self.ensure_kept(id, run);
         let mut record = kept.record(run, RunPhase::Live, Vec::new(), text);
@@ -443,6 +446,9 @@ impl App {
         if self.ended_runs.contains(&row.run) {
             return Vec::new();
         }
+        // Before the trail is read: a resumed run's first save carries the
+        // lines it took over.
+        self.ensure_kept(id, row.run);
         let trail = self.run_keep.trails.get(&row.run).map(Trail::to_text);
         let kept = self.ensure_kept(id, row.run);
         let worker = WorkerRecord {
@@ -482,16 +488,28 @@ impl App {
         if !self.run_keep.runs.contains_key(&run) {
             let keep = &mut self.run_keep;
             let goal = keep.goals.remove(&id).unwrap_or_default();
-            let supersedes = keep
+            let resumed = keep
                 .resuming
                 .remove(&id)
-                .map(|run| run.id)
-                .or_else(|| keep.awaiting.remove(&id).map(|waiting| waiting.run.id))
+                .map(|run| (run.id, run.trail))
+                .or_else(|| {
+                    let waiting = keep.awaiting.remove(&id)?;
+                    Some((waiting.run.id, waiting.run.trail))
+                })
                 .or_else(|| {
                     let late = keep.resume_of.remove(&id)?;
-                    keep.interrupted.retain(|run| run.id != late);
-                    Some(late)
+                    let at = keep.interrupted.iter().position(|run| run.id == late);
+                    let trail = at.and_then(|at| keep.interrupted.remove(at).trail);
+                    Some((late, trail))
                 });
+            let supersedes = resumed.as_ref().map(|(old, _)| *old);
+            // The resumed run starts from the old run's trail (display only).
+            if let Some((old, Some(text))) = resumed {
+                keep.trails
+                    .entry(run)
+                    .or_default()
+                    .carry(Trail::from_text(&text), old);
+            }
             self.make_kept(id, run, goal, supersedes);
         }
         self.run_keep

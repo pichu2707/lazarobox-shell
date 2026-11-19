@@ -652,3 +652,113 @@ fn a_user_interrupt_lists_the_trail_once() {
     a.update(event(OrchestraEvent::Ended { run: RUN }));
     assert_eq!(trails_listed(&a), 1, "{:?}", system(&a));
 }
+
+const OLD: &str = "cut 0\nexec cargo test -> error: exit 101";
+
+/// A ready ORCH pane that found run 9 interrupted, with `trail` stored.
+fn resumable(trail: Option<&str>) -> App {
+    use super::orchestra_send::{orch_ai, orch_app_with, toggle};
+    let mut ai = orch_ai();
+    ai.orchestrator.acknowledged = true;
+    let mut a = orch_app_with(ai);
+    toggle(&mut a);
+    let run = RunRecord {
+        id: 9,
+        goal: "port the parser".into(),
+        phase: RunPhase::Interrupted,
+        workers: vec![],
+        folder: chat_of(&a).origin_cwd().map(Into::into),
+        supersedes: None,
+        trail: trail.map(str::to_owned),
+    };
+    a.update(AppEvent::Store(StoreReply::RunsRecovered {
+        pane: chat_id(),
+        runs: vec![run],
+    }));
+    a
+}
+
+fn resume(a: &mut App) -> (Vec<Effect>, u64) {
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    let effects = press(a, "rr");
+    let turn = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::OrchestrateSend { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .expect("a resume turn");
+    (effects, turn)
+}
+
+const NEW_RUN: RunId = RunId(900);
+
+// Scenario: Resumed run carries the predecessor's trail.
+#[test]
+fn a_resumed_run_that_stops_lists_the_old_steps_the_separator_and_its_own() {
+    let mut a = resumable(Some(OLD));
+    let before = system(&a);
+    let (started, turn) = resume(&mut a);
+    // D5: starting the resume shows nothing new and never touches row 9's trail.
+    assert_eq!(system(&a), before);
+    assert!(saves(&started).iter().all(|r| r.trail.is_none()));
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    let first = saves(&a.update(event(row(NEW_RUN, 1, WorkerStatus::Running))))
+        .pop()
+        .expect("a save");
+    assert_eq!(first.supersedes, Some(9));
+    let want =
+        "cut 0\nexec cargo test -> error: exit 101\nresumed from run 9\nread_file src/lib.rs -> ok";
+    assert_eq!(first.trail.as_deref(), Some(want));
+    a.update(event(OrchestraEvent::Stopped {
+        run: NEW_RUN,
+        reason: "run stopped: it took max_turns (6) orchestrator turns".to_owned(),
+    }));
+    let said = system(&a);
+    let at = said
+        .iter()
+        .rposition(|l| l == "step trail:")
+        .expect("{said:?}");
+    assert_eq!(
+        said[at + 1..at + 4],
+        [
+            "  exec cargo test -> error: exit 101",
+            "  resumed from run 9",
+            "  read_file src/lib.rs -> ok"
+        ]
+    );
+    // A restart reads the carried lines, the separator and the run's own steps.
+    let (mut b, _) = running();
+    let mut interrupted = first.clone();
+    interrupted.phase = RunPhase::Interrupted;
+    interrupted.folder = chat_of(&b).origin_cwd().map(Into::into);
+    b.update(AppEvent::Store(StoreReply::RunsRecovered {
+        pane: chat_id(),
+        runs: vec![interrupted],
+    }));
+    let said = system(&b);
+    assert!(
+        said.contains(&"  resumed from run 9".to_owned()),
+        "{said:?}"
+    );
+    assert!(
+        said.contains(&"  read_file src/lib.rs -> ok".to_owned()),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_predecessor_with_no_trail_gives_no_separator() {
+    let mut a = resumable(None);
+    let (_, turn) = resume(&mut a);
+    call(&mut a, turn, 1, "read_file", "src/lib.rs");
+    result(&mut a, turn, 1, ToolStatus::Ok, "");
+    let first = saves(&a.update(event(row(NEW_RUN, 1, WorkerStatus::Running))))
+        .pop()
+        .expect("a save");
+    assert_eq!(
+        first.trail.as_deref(),
+        Some("cut 0\nread_file src/lib.rs -> ok")
+    );
+}

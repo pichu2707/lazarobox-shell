@@ -183,3 +183,75 @@ fn a_huge_input_is_cut_before_it_is_scrubbed() {
     trail.handoff("worker 1", "blocked", &huge);
     assert!(trail.lines().iter().all(|l| l.len() <= LINE_BYTES));
 }
+
+fn finished(trail: &mut Trail, id: u64, name: &str) {
+    call(trail, id, name, "x");
+    trail.result(CallId(id), ToolStatus::Ok, "");
+}
+
+#[test]
+fn carry_puts_old_lines_then_the_separator_then_the_new_ones() {
+    let mut earlier = Trail::default();
+    finished(&mut earlier, 1, "old");
+    let mut trail = Trail::default();
+    finished(&mut trail, 2, "new");
+    trail.carry(earlier, 7);
+    assert_eq!(
+        trail.lines(),
+        vec!["old x -> ok", "resumed from run 7", "new x -> ok"]
+    );
+}
+
+#[test]
+fn carry_adds_the_cut_counts_and_drops_the_oldest_first() {
+    let mut trail = Trail::from_text("cut 3\nnew x -> ok");
+    trail.carry(Trail::from_text("cut 5\nold x -> ok"), 7);
+    assert_eq!(trail.cut(), 8);
+    assert_eq!(
+        trail.shown(SHOWN)[0],
+        "step trail: 8 earlier steps not shown"
+    );
+
+    let mut earlier = Trail::default();
+    for n in 0..MAX_STEPS as u64 {
+        finished(&mut earlier, n, &format!("old{n}"));
+    }
+    let mut trail = Trail::default();
+    finished(&mut trail, 99, "new");
+    trail.carry(earlier, 7);
+    let lines = trail.lines();
+    assert_eq!(lines.len(), MAX_STEPS);
+    assert_eq!(lines[0], "old2 x -> ok");
+    assert_eq!(lines[MAX_STEPS - 1], "new x -> ok");
+    assert_eq!(trail.cut(), 2);
+}
+
+#[test]
+fn a_chain_of_resumes_keeps_every_earlier_run_and_separator() {
+    let mut a = Trail::default();
+    finished(&mut a, 1, "a");
+    let mut b = Trail::default();
+    finished(&mut b, 2, "b");
+    b.carry(Trail::from_text(&a.to_text()), 1);
+    let mut c = Trail::default();
+    finished(&mut c, 3, "c");
+    c.carry(Trail::from_text(&b.to_text()), 2);
+    assert_eq!(
+        c.lines(),
+        vec![
+            "a x -> ok",
+            "resumed from run 1",
+            "b x -> ok",
+            "resumed from run 2",
+            "c x -> ok"
+        ]
+    );
+}
+
+#[test]
+fn an_empty_predecessor_adds_no_separator() {
+    let mut trail = Trail::default();
+    finished(&mut trail, 1, "new");
+    trail.carry(Trail::default(), 7);
+    assert_eq!(trail.lines(), vec!["new x -> ok"]);
+}

@@ -218,3 +218,15 @@ fn a_stored_simple_worker_is_counted_and_listed_and_an_unknown_kind_is_kept() {
         assert!(text.contains("worker 2") && text.contains(kind), "{text}");
     }
 }
+
+// Display only: the stored trail never reaches the message that seeds a resume.
+#[test]
+fn the_resume_message_never_holds_the_trail() {
+    let mut r = record("fix the parser", vec![worker(2, "running")]);
+    r.trail = Some(
+        "cut 0\nexec curl TRAILMARK -> error: ghp_abcdefghijklmnopqrstuvwxyz0123456789".into(),
+    );
+    let text = r.resume_message();
+    assert!(!text.contains("TRAILMARK"), "{text}");
+    assert!(!text.contains("ghp_abcdefghijklmnopqrstuvwxyz"), "{text}");
+}

@@ -34,7 +34,7 @@ Later:
       ipfing-like case): the trail is listed under the error.
 - [x] Show the trail of a run that finished cleanly (listed on its end; once
       with a stop report; not for a replaced run).
-- [ ] A resumed run (Prefix r r) starts an empty trail: see Slice 4a below.
+- [x] A resumed run (Prefix r r) starts an empty trail: see Slice 4a below.
 - [ ] Worker tool calls enter the trail: see Slice 4b below.
 - [ ] Acceptance-judges S2: push judge steps through `Trail::call` / `handoff`
       (out of scope for Slice 4).
@@ -63,47 +63,47 @@ to a model". Design: D1-D5.
 
 RED (write first, all fail):
 
-- [ ] 4a.1 `trail_tests.rs`: `carry` puts the old lines, then
+- [x] 4a.1 `trail_tests.rs`: `carry` puts the old lines, then
       `resumed from run <id>`, then the new lines; the cut counts add (5 + 3
       says "8 earlier steps not shown"); with 60+ lines the oldest go first.
-- [ ] 4a.2 `trail_tests.rs`: chain A -> B -> C: C's text holds A's lines,
+- [x] 4a.2 `trail_tests.rs`: chain A -> B -> C: C's text holds A's lines,
       `resumed from run A`, B's lines and `resumed from run B` (D4). A
       predecessor with an empty trail adds no separator.
-- [ ] 4a.3 `app_tests/orchestra_trail.rs`: a resumed run that stops lists the
+- [x] 4a.3 `app_tests/orchestra_trail.rs`: a resumed run that stops lists the
       old lines, the separator, then its own steps; its first `SaveRun` already
       carries them; starting the resume pushes no trail line (D5); the
       predecessor row's stored trail is unchanged; a restart reads the carried
       lines, separator and own steps; a predecessor with no trail gives no
       separator.
-- [ ] 4a.4 `record_tests.rs`: `resume_message()` of a record whose trail holds
+- [x] 4a.4 `record_tests.rs`: `resume_message()` of a record whose trail holds
       a marker and a token contains neither.
-- [ ] 4a.5 `app_tests/orchestra_resume.rs`: after `Prefix r r` with a marker in
+- [x] 4a.5 `app_tests/orchestra_resume.rs`: after `Prefix r r` with a marker in
       the stored trail, the resume turn's `ChatRequest` and the next
       continuation request hold no marker; the stop report does.
 
 GREEN (each follows its RED):
 
-- [ ] 4a.6 `trail.rs`: add `Trail::carry(&mut self, earlier: Trail, from: u64)`
+- [x] 4a.6 `trail.rs`: add `Trail::carry(&mut self, earlier: Trail, from: u64)`
       (push the separator on `earlier`, then `absorb`). Makes 4a.1, 4a.2 pass.
-- [ ] 4a.7 `run_store.rs`: `ensure_kept` resolves `(id, trail)` in the
+- [x] 4a.7 `run_store.rs`: `ensure_kept` resolves `(id, trail)` in the
       `supersedes` branch (`resuming` / `awaiting` / `resume_of`; for
       `resume_of` read from `interrupted` before `retain`) and seeds
       `trails[new].carry(old, old_id)`.
-- [ ] 4a.8 `run_store.rs`: in `keep_worker` and `save_trail` call `ensure_kept`
+- [x] 4a.8 `run_store.rs`: in `keep_worker` and `save_trail` call `ensure_kept`
       before reading `trails[run].to_text()` (D3). Makes 4a.3 pass.
-- [ ] 4a.9 Confirm 4a.4 and 4a.5 pass with no production change (the trail is
+- [x] 4a.9 Confirm 4a.4 and 4a.5 pass with no production change (the trail is
       never read by `resume_message` or a request). If one fails, fix the
       leak, not the test.
 
 Close-out:
 
-- [ ] 4a.10 README.md and README.es.md: where they describe the step trail,
+- [x] 4a.10 README.md and README.es.md: where they describe the step trail,
       say a resumed run keeps the old run's steps, then a
       `resumed from run <id>` line (same sections, same order; code and
       printed texts unchanged).
-- [ ] 4a.11 CHANGELOG `[Unreleased]` entry (resumed run keeps the interrupted
+- [x] 4a.11 CHANGELOG `[Unreleased]` entry (resumed run keeps the interrupted
       run's step trail).
-- [ ] 4a.12 `cargo test`, `cargo clippy --all-targets -- -D warnings`,
+- [x] 4a.12 `cargo test`, `cargo clippy --all-targets -- -D warnings`,
       `cargo fmt --check` all green (not from a worktree under `/tmp`).
 - [ ] 4a.13 `rm -rf target` in the worktree. Open the PR, merge after green CI
       and clean review.
