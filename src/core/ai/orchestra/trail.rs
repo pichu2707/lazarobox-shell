@@ -120,6 +120,16 @@ impl Trail {
         }
     }
 
+    /// A resumed run starts from `earlier`, the trail of run `from` that it
+    /// resumes: its lines, then a separator, then this trail's own steps. The
+    /// separator is a plain line, so it never reaches a model (display only).
+    pub fn carry(&mut self, mut earlier: Self, from: u64) {
+        if !earlier.is_empty() {
+            earlier.push(Step::plain(format!("resumed from run {from}")));
+        }
+        self.absorb(earlier);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }

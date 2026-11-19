@@ -943,3 +943,54 @@ fn a_resume_waiting_for_a_reply_gets_no_undelegated_notice() {
         system(&a)
     );
 }
+
+// Display only: the stored trail reaches neither the resume turn nor the
+// continuation that follows; the stop report, which is for the owner, shows it.
+#[test]
+fn the_stored_trail_never_reaches_a_model_request() {
+    use crate::core::ai::chat::engine::{Finish, StreamEvent};
+    use crate::core::ai::orchestra::event::{Continuation, OrchestraEvent};
+    let mut ai = orch_ai();
+    ai.orchestrator.acknowledged = true;
+    let mut a = orch_app_with(ai);
+    toggle(&mut a);
+    let mut old = stored(9, "port the parser");
+    old.trail = Some("cut 0\nexec curl TRAILMARK -> error: exit 101".into());
+    recovered(&mut a, vec![old]);
+
+    let effects = keys(&mut a, "rr");
+    let (request, orch) = turn_of(&effects).expect("the resume turn");
+    assert!(
+        request
+            .messages
+            .last()
+            .is_some_and(|m| m.content.contains("port the parser"))
+    );
+    assert!(!format!("{request:?}").contains("TRAILMARK"));
+    assert!(!format!("{orch:?}").contains("TRAILMARK"));
+    let turn = turn_id(&effects);
+
+    a.update(event(row(RunId(900), 1, WorkerStatus::Running)));
+    a.update(event(OrchestraEvent::Continue(Continuation {
+        run: RunId(900),
+        turn: 2,
+        max: 6,
+        text: "LEDGER-TEXT".to_owned(),
+    })));
+    let next = a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Done(Finish::Stop),
+    ));
+    let (request, orch) = turn_of(&next).expect("the continuation turn");
+    let last = request.messages.last().map(|m| m.content.as_str());
+    assert_eq!(last, Some("LEDGER-TEXT"));
+    assert!(!format!("{request:?}").contains("TRAILMARK"));
+    assert!(!format!("{orch:?}").contains("TRAILMARK"));
+
+    a.update(event(OrchestraEvent::Stopped {
+        run: RunId(900),
+        reason: "run stopped: it took max_turns (6) orchestrator turns".to_owned(),
+    }));
+    assert!(system(&a).iter().any(|l| l.contains("TRAILMARK")));
+}

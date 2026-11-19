@@ -347,7 +347,8 @@ impl App {
             .or_default()
             .absorb(early.trail);
         if let Some(goal) = early.goal {
-            self.make_kept(id, run, goal, None);
+            let supersedes = self.take_resumed(id, run);
+            self.make_kept(id, run, goal, supersedes);
         }
         self.save_trail(id, run)
     }
@@ -357,6 +358,9 @@ impl App {
         if self.ended_runs.contains(&run) {
             return Vec::new();
         }
+        // Before the trail is read: a resumed run's first save carries the
+        // lines it took over.
+        self.seed(id, run);
         let text = self.run_keep.trails.get(&run).map(Trail::to_text);
         let kept = self.ensure_kept(id, run);
         let mut record = kept.record(run, RunPhase::Live, Vec::new(), text);
@@ -443,6 +447,9 @@ impl App {
         if self.ended_runs.contains(&row.run) {
             return Vec::new();
         }
+        // Before the trail is read: a resumed run's first save carries the
+        // lines it took over.
+        self.seed(id, row.run);
         let trail = self.run_keep.trails.get(&row.run).map(Trail::to_text);
         let kept = self.ensure_kept(id, row.run);
         let worker = WorkerRecord {
@@ -480,24 +487,46 @@ impl App {
     /// The store's view of `run` of pane `id`, made on first use.
     fn ensure_kept(&mut self, id: PaneId, run: RunId) -> &mut Kept {
         if !self.run_keep.runs.contains_key(&run) {
-            let keep = &mut self.run_keep;
-            let goal = keep.goals.remove(&id).unwrap_or_default();
-            let supersedes = keep
-                .resuming
-                .remove(&id)
-                .map(|run| run.id)
-                .or_else(|| keep.awaiting.remove(&id).map(|waiting| waiting.run.id))
-                .or_else(|| {
-                    let late = keep.resume_of.remove(&id)?;
-                    keep.interrupted.retain(|run| run.id != late);
-                    Some(late)
-                });
+            let goal = self.run_keep.goals.remove(&id).unwrap_or_default();
+            let supersedes = self.take_resumed(id, run);
             self.make_kept(id, run, goal, supersedes);
         }
         self.run_keep
             .runs
             .entry(run)
             .or_insert_with(|| unreachable!())
+    }
+
+    /// The interrupted run that new run `run` of pane `id` resumes, if any. The
+    /// new run starts from that run's stored trail (display only). Call it
+    /// before the run gets its `Kept`, so no path makes one without it.
+    fn take_resumed(&mut self, id: PaneId, run: RunId) -> Option<u64> {
+        let keep = &mut self.run_keep;
+        let (old, trail) = keep
+            .resuming
+            .remove(&id)
+            .map(|run| (run.id, run.trail))
+            .or_else(|| {
+                let waiting = keep.awaiting.remove(&id)?;
+                Some((waiting.run.id, waiting.run.trail))
+            })
+            .or_else(|| {
+                let late = keep.resume_of.remove(&id)?;
+                let at = keep.interrupted.iter().position(|run| run.id == late);
+                let trail = at.and_then(|at| keep.interrupted.remove(at).trail);
+                Some((late, trail))
+            })?;
+        if let Some(text) = trail {
+            let earlier = Trail::from_text(&text);
+            keep.trails.entry(run).or_default().carry(earlier, old);
+        }
+        Some(old)
+    }
+
+    /// Makes the store's view of `run` if there is none, so the trail of a
+    /// resumed run is seeded before it is read.
+    fn seed(&mut self, id: PaneId, run: RunId) {
+        let _ = self.ensure_kept(id, run);
     }
 
     /// The store's view of `run`, made if there is none, with the goal it
