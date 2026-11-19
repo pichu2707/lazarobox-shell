@@ -61,6 +61,14 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a commit may take: its hooks may run linters.
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(120);
 const NOT_CHECKED: &str = "the commit could not be checked against the reviewed changes";
+const NO_HEAD: &str = "the repository has no commit to re-author";
+const STAGED_FOR_REAUTHOR: &str =
+    "changes are staged; a re-author would fold them into the commit: commit or unstage them first";
+const PUSHED: &str =
+    "HEAD is already on a remote branch; rewriting it would rewrite pushed history";
+const SAME_AUTHOR: &str =
+    "HEAD already has that author; set another one with git_identity_set first";
+const HEAD_MOVED: &str = "HEAD or the identity changed after the question; ask again";
 const IDENTITY_NOT_CONFIRMED: &str =
     "the commit identity could not be confirmed after the write; check .git/config";
 
@@ -129,6 +137,7 @@ pub(super) async fn plan(
     let planned = match call {
         Call::GitAdd { paths } => plan_add(host, scope, paths).await.map(Some),
         Call::GitCommit { message } => plan_commit(host, scope, message).await.map(Some),
+        Call::GitCommitReauthor => plan_reauthor(host, scope).await.map(Some),
         _ => Ok(None),
     };
     Ok(planned?)
@@ -232,6 +241,7 @@ pub(super) async fn run(
         Call::GitAdd { paths } => add(host, scope, paths, &nonce).await,
         Call::GitCommit { message } => commit(host, scope, message, reviewed, &nonce).await,
         Call::GitIdentitySet { name, email } => identity(host, scope, name, email, &nonce).await,
+        Call::GitCommitReauthor => reauthor(host, scope, reviewed, &nonce).await,
         _ => go(host, scope, call, &nonce).await,
     };
     result.unwrap_or_else(fail)
@@ -337,6 +347,113 @@ fn is_identity_write(change: &Change) -> bool {
             .is_some_and(|after| pure::only_identity_changed(change.before.as_deref(), after))
 }
 
+/// The ask of a re-author: HEAD's subject, its author and the new one, once
+/// every check passed. Nothing is rewritten yet.
+async fn plan_reauthor(host: &ToolHost, scope: &TurnScope) -> Result<ApprovalAsk, &'static str> {
+    let opened = open(host, scope).await?;
+    let who = opened.repo.identity.clone().map_err(GitError::reason)?;
+    let head = reauthor_checks(&opened, &who).await?;
+    Ok(ApprovalAsk::Reauthor {
+        commit: head.id,
+        subject: head.subject,
+        from: head.author,
+        to: pure::author_of(&who),
+    })
+}
+
+/// HEAD, once the checks before a re-author passed: there is a HEAD, nothing
+/// is staged, no remote-tracking branch holds it and its author is not
+/// already `who`.
+async fn reauthor_checks(
+    opened: &Opened,
+    who: &pure::Identity,
+) -> Result<pure::Head, &'static str> {
+    let dir = &opened.repo.dir;
+    let raw = text_of(opened, pure::head_argv(dir), true).await;
+    let head = raw.as_deref().and_then(pure::parse_head).ok_or(NO_HEAD)?;
+    let staged = exec(opened, pure::staged_argv(dir), true).await?;
+    match (staged.done.ended.exit, staged.done.ended.timed_out) {
+        (Some(0), false) => {}
+        (Some(1), false) => return Err(STAGED_FOR_REAUTHOR),
+        _ => return Err(FAILED),
+    }
+    let remote = pure::remote_contains_argv(dir, &head.id).ok_or(FAILED)?;
+    match text_of(opened, remote, true).await {
+        Some(refs) if refs.trim().is_empty() => {}
+        Some(_) => return Err(PUSHED),
+        None => return Err(FAILED),
+    }
+    if head.author == pure::author_of(who) {
+        return Err(SAME_AUTHOR);
+    }
+    Ok(head)
+}
+
+/// The approved re-author: only if HEAD and the identity are still the ones
+/// the user read, then the amend in the jail and the tree compared.
+async fn reauthor(
+    host: &ToolHost,
+    scope: &TurnScope,
+    reviewed: Option<ApprovalAsk>,
+    nonce: &str,
+) -> Result<(Outcome, ToolStatus, String), &'static str> {
+    let Some(ApprovalAsk::Reauthor { commit, to, .. }) = reviewed else {
+        return Err(COULD_NOT);
+    };
+    let mut opened = open(host, scope).await?;
+    opened.ctx.timeout = COMMIT_TIMEOUT;
+    let who = opened.repo.identity.clone().map_err(GitError::reason)?;
+    let head = reauthor_checks(&opened, &who).await?;
+    if head.id != commit || pure::author_of(&who) != to {
+        return Err(HEAD_MOVED);
+    }
+    let dir = &opened.repo.dir;
+    let before = text_of(&opened, pure::head_tree_argv(dir), true).await;
+    let before = before.ok_or(FAILED)?.trim().to_owned();
+    let ran = exec(&opened, pure::reauthor_argv(dir, &who), false).await?;
+    let ended = &ran.done.ended;
+    let ok = ended.exit == Some(0) && !ended.timed_out;
+    // The output holds the hooks' words: data, wrapped like any other.
+    let body = label::wrap(nonce, &ran.done.capture.text());
+    if !ok {
+        let text = format!("{FAILED}\n{body}");
+        return Ok(finish(
+            &opened,
+            ran.changes,
+            (ToolStatus::Error, FAILED),
+            text,
+            nonce,
+        ));
+    }
+    let after = text_of(&opened, pure::head_argv(dir), true).await;
+    let new_id = after.as_deref().and_then(pure::parse_head).map(|h| h.id);
+    let short = new_id.as_deref().and_then(|id| id.get(..7)).unwrap_or("?");
+    let done = format!("HEAD re-authored as {to}: {short}\n{body}");
+    // Warn, never undo, as for a commit: a hook may have changed the tree.
+    let Some(drift) = drift_of(&opened, &before, true).await else {
+        return Ok(finish(
+            &opened,
+            ran.changes,
+            (ToolStatus::Ok, "git commit --amend"),
+            done,
+            nonce,
+        ));
+    };
+    let text = format!("{}\n{done}", redact(&drift.0).text);
+    let summary = if drift.1 {
+        "the re-authored commit differs from HEAD before it; a secret path was committed"
+    } else {
+        "the re-authored commit differs from HEAD before it"
+    };
+    Ok(finish(
+        &opened,
+        ran.changes,
+        (ToolStatus::Error, summary),
+        text,
+        nonce,
+    ))
+}
+
 /// The approved commit: only if the index is what the user read.
 async fn commit(
     host: &ToolHost,
@@ -379,7 +496,7 @@ async fn commit(
     }
     // Warn, never undo (user decision 2026-10-28): a hook may have changed
     // what was committed after the review.
-    let Some(drift) = drift_of(&opened, &before).await else {
+    let Some(drift) = drift_of(&opened, &before, false).await else {
         return Ok(finish(
             &opened,
             ran.changes,
@@ -426,7 +543,7 @@ async fn index_drift(opened: &Opened, before: &str) -> Option<String> {
 
 /// How the commit just made differs from the reviewed tree: the notice and
 /// whether a secret path is in it, or `None` when it is the reviewed tree.
-async fn drift_of(opened: &Opened, before: &str) -> Option<(String, bool)> {
+async fn drift_of(opened: &Opened, before: &str, amend: bool) -> Option<(String, bool)> {
     let dir = &opened.repo.dir;
     let after = text_of(opened, pure::head_tree_argv(dir), true).await;
     let after = after.as_deref().map(str::trim);
@@ -437,7 +554,9 @@ async fn drift_of(opened: &Opened, before: &str) -> Option<(String, bool)> {
         Some(argv) => text_of(opened, argv, true).await,
         None => None,
     };
-    Some(listing.map_or((NOT_CHECKED.to_owned(), false), |l| pure::drift_notice(&l)))
+    Some(listing.map_or((NOT_CHECKED.to_owned(), false), |l| {
+        pure::drift_notice_for(&l, amend)
+    }))
 }
 
 /// The result of a write verb, with the watched places it changed.

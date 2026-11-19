@@ -2,9 +2,10 @@
 //! Pure: it spawns nothing and reads no file. The runner in the runtime owns
 //! the jail and the process; this module only decides the words.
 //!
-//! Only status, diff, log, add, commit and the repo-local identity write
-//! (`config --local` of `user.name` and `user.email`) exist, and no verb takes
-//! a free-form argument list. Every call carries the same `-c` hardening, and the secret
+//! Only status, diff, log, add, commit, the repo-local identity write
+//! (`config --local` of `user.name` and `user.email`) and the re-author of
+//! HEAD (`commit --amend --reset-author`, with its `for-each-ref` check) exist,
+//! and no verb takes a free-form argument list. Every call carries the same `-c` hardening, and the secret
 //! file names are excluded by pathspec so a tracked `.env` is never printed.
 
 use std::path::{Component, Path};
@@ -15,10 +16,15 @@ use crate::core::ai::sanitize::is_format;
 
 mod identity;
 mod parse;
+mod reauthor;
 
 pub use identity::{identity_get_argv, identity_set_argvs, only_identity_changed};
 use parse::tidy;
 pub use parse::{Commit, Entry, Kind, Status, parse_log, parse_status, render_log, render_status};
+pub use reauthor::{
+    HEAD_SHOWN, Head, author_of, head_argv, parse_head, reauthor_argv, remote_contains_argv,
+    staged_argv,
+};
 
 /// The most log entries a call returns, whatever the model asks for.
 pub const MAX_LOG_COUNT: usize = 50;
@@ -546,6 +552,12 @@ pub fn tree_diff_argv(dir: &GitDir, before: &str, after: &str) -> Option<Vec<Str
 /// path was committed. Names are one clean line and a secret name is masked.
 /// The commit is never undone: the way back is only suggested.
 pub fn drift_notice(listing: &str) -> (String, bool) {
+    drift_notice_for(listing, false)
+}
+
+/// [`drift_notice`] for a commit or, with `amend`, for the re-author of HEAD,
+/// whose way back is the HEAD before it (`HEAD@{1}`), not its parent.
+pub fn drift_notice_for(listing: &str, amend: bool) -> (String, bool) {
     let names: Vec<&str> = listing.split('\0').filter(|n| !n.is_empty()).collect();
     let secret = names.iter().any(|n| secret_path(n));
     let shown: Vec<String> = names
@@ -574,10 +586,13 @@ pub fn drift_notice(listing: &str) -> (String, bool) {
     if secret {
         text.push_str("; a secret path was committed");
     }
-    text.push_str(
+    text.push_str(if amend {
+        ". To take it back the user can run `git reset --soft HEAD@{1}` \
+         (HEAD before the re-author)."
+    } else {
         ". To take it back the user can run `git reset --soft HEAD~1` \
-         (for a first commit, `git update-ref -d HEAD`).",
-    );
+         (for a first commit, `git update-ref -d HEAD`)."
+    });
     (text, secret)
 }
 
@@ -705,6 +720,10 @@ mod tests {
             identity_set_argvs(&gd(), &who())[0].clone(),
             identity_set_argvs(&gd(), &who())[1].clone(),
             identity_get_argv(&gd()),
+            reauthor_argv(&gd(), &who()),
+            head_argv(&gd()),
+            staged_argv(&gd()),
+            remote_contains_argv(&gd(), &"a".repeat(40)).unwrap(),
         ];
         for argv in &all {
             for setting in HARDENING {
@@ -864,6 +883,8 @@ mod tests {
             commit_argv(&gd(), &who(), "m").unwrap(),
             identity_set_argvs(&gd(), &who())[0].clone(),
             identity_get_argv(&gd()),
+            reauthor_argv(&gd(), &who()),
+            remote_contains_argv(&gd(), &"a".repeat(40)).unwrap(),
         ]
         .map(|argv| {
             let at = argv.iter().position(|a| a == "--no-pager").unwrap();
@@ -875,7 +896,17 @@ mod tests {
         });
         assert_eq!(
             verbs,
-            ["status", "diff", "log", "add", "commit", "config", "config"]
+            [
+                "status",
+                "diff",
+                "log",
+                "add",
+                "commit",
+                "config",
+                "config",
+                "commit",
+                "for-each-ref"
+            ]
         );
     }
 
@@ -1127,6 +1158,9 @@ u UU N... 1 2 3 4 aaa bbb ccc conflict.rs\0\
         // A secret root that is a file is excluded itself, not only its
         // contents.
         assert!(specs.contains(&":(exclude,glob,icase)**/.clasprc.json".to_owned()));
+        let (amend, _) = drift_notice_for("ok.rs\0", true);
+        assert!(amend.contains("git reset --soft HEAD@{1}"), "{amend}");
+        assert!(!amend.contains("HEAD~1"), "{amend}");
         let (notice, secret) = drift_notice("ok.rs\0.clasprc.json\0");
         assert!(secret && !notice.contains(".clasprc"), "{notice}");
     }

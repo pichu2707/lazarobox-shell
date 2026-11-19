@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Let a model see the state of a repository and record a commit, with the user reviewing every commit. Git runs through the command runner with hardened settings. Linux only in v1. Tags: [auto] = `cargo test` (temp repos); [design-confirm] = name or value that design must pin. Tool names `git_status`, `git_diff`, `git_log`, `git_add`, `git_commit` are provisional; `git_identity_set` is fixed (#802).
+Let a model see the state of a repository and record a commit, with the user reviewing every commit. Git runs through the command runner with hardened settings. Linux only in v1. Tags: [auto] = `cargo test` (temp repos); [design-confirm] = name or value that design must pin. Tool names `git_status`, `git_diff`, `git_log`, `git_add`, `git_commit` are provisional; `git_identity_set` and `git_commit_reauthor` are fixed (#802).
 
-Terms: "Read verbs" = status, diff, log. "Write verbs" = add, commit, the identity write. "Root" = the chat origin.
+Terms: "Read verbs" = status, diff, log. "Write verbs" = add, commit, the identity write, the re-author of HEAD. "Root" = the chat origin.
 
 ## Requirements
 
@@ -22,7 +22,7 @@ The read verbs MUST belong to the `Git` toggle and the write verbs to the `GitWr
 - THEN `git_status`, `git_diff` and `git_log` are present and `git_add` and `git_commit` are not
 
 ### Requirement: Verb boundary
-Only status, diff, log, add, commit and the identity write (`git config --local` of `user.name` and `user.email` only) MAY exist. No tool MUST run push, fetch, pull, checkout, switch, reset, clean, rebase, merge, stash, rm, mv, or any alias, and no tool MUST accept a free-form git argument list. Workers MUST NOT commit.
+Only status, diff, log, add, commit, the identity write (`git config --local` of `user.name` and `user.email` only) and the re-author of HEAD (`commit --amend --reset-author --no-edit`, with `for-each-ref --contains` as its check) MAY exist. No tool MUST run push, fetch, pull, checkout, switch, reset, clean, rebase, merge, stash, rm, mv, or any alias, and no tool MUST accept a free-form git argument list. Workers MUST NOT commit.
 
 #### Scenario: Unknown verb [auto]
 - GIVEN a call to `git_push`, `git_reset` or `git_run`
@@ -147,6 +147,26 @@ Hardening details (design, Git section): hooks run only from the repo's own `.gi
 - GIVEN a config whose text after a run differs in a key other than `[user]` `name` and `email`
 - WHEN the run's changes are filtered
 - THEN that change is still reported
+
+### Requirement: re-author of HEAD
+`git_commit_reauthor` takes no argument and MUST only rewrite HEAD: `git commit --amend --reset-author --no-edit --cleanup=verbatim` with the repo identity as author and committer and signing disabled, so the tree and the message stay byte for byte. It MUST be refused before the prompt, each with a fixed error, when the repository has no commit, when anything is staged (`git diff --cached --quiet`, nothing left out: an amend would fold it in), when a remote-tracking branch (`refs/remotes`) holds HEAD, or when HEAD's author already is the repo identity. It MUST need an explicit `y` in every approval mode; the prompt MUST show HEAD's short id, subject, current author and new author. After the `y` the checks MUST run again, and when HEAD or the identity is not the one the user read the run MUST refuse without rewriting. Hooks run in the jail as for a commit. When the re-authored tree differs from HEAD's tree before it, the result MUST be an error that says so and suggests `git reset --soft HEAD@{1}`; nothing is undone.
+
+#### Scenario: Asks, then rewrites HEAD [auto]
+- GIVEN a repository whose identity is not HEAD's author and nothing staged
+- WHEN `git_commit_reauthor` is answered `n`
+- THEN HEAD is unchanged
+- WHEN it is answered `y`
+- THEN HEAD's author and committer are the repo identity and its tree and message are unchanged
+
+#### Scenario: Refused before the prompt [auto]
+- GIVEN a staged change, or HEAD on `refs/remotes/origin/main`, or HEAD already authored by the repo identity, or no commit
+- WHEN `git_commit_reauthor` is called
+- THEN an error result is returned, no prompt opens and HEAD is unchanged
+
+#### Scenario: HEAD moved after the question [auto]
+- GIVEN a new commit made while the question is open
+- WHEN the user answers `y`
+- THEN the result says HEAD changed after the question and the new commit keeps its author
 
 ### Requirement: Git root follows the chat folder
 Git verbs MUST run in the chat folder at the moment of the call. After a folder change the verbs act on the repository of the new folder; a folder that is not a repository gives the usual not-a-repository result, and `$HOME` or `/` as the folder keeps the existing refusal. Under WSL, a Windows drive folder follows the grant: without it every verb returns the folder-level drive text of code-write, Root policy; with it the verbs run there like in any root.

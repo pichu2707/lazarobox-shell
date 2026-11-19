@@ -130,6 +130,7 @@ pub const READ_ONLY: Scenario = Scenario {
         "git_add",
         "git_commit",
         "git_identity_set",
+        "git_commit_reauthor",
     ],
     ambiguous: false,
 };
@@ -197,6 +198,7 @@ pub const COORDINATE: Scenario = Scenario {
         "git_add",
         "git_commit",
         "git_identity_set",
+        "git_commit_reauthor",
     ],
     ambiguous: false,
 };

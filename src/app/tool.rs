@@ -271,6 +271,7 @@ impl App {
             | ApprovalAsk::DriveGrant { .. }
             | ApprovalAsk::GitAdd { .. }
             | ApprovalAsk::GitIdentity { .. }
+            | ApprovalAsk::Reauthor { .. }
             | ApprovalAsk::Commit(_)
             | ApprovalAsk::Batch(_)
             | ApprovalAsk::Screen { .. }

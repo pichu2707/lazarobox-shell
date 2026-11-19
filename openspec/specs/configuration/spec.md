@@ -522,7 +522,7 @@ The table `[ai.tools]` MAY hold seven booleans: `search`, `write`, `exec`, `git`
 #### Scenario: Git toggles are independent [auto]
 - GIVEN `git = false` and `git_write = true`
 - WHEN the tool list is built
-- THEN only `git_add`, `git_commit` and `git_identity_set` are offered among the git tools
+- THEN only `git_add`, `git_commit`, `git_identity_set` and `git_commit_reauthor` are offered among the git tools
 
 #### Scenario: Old file with no key [auto]
 - GIVEN a file written before this change

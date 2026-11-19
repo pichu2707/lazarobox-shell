@@ -208,7 +208,8 @@ impl Approver for Judge {
             ApprovalAsk::Batch(_) => "propose_batch",
             ApprovalAsk::Commit(_)
             | ApprovalAsk::GitAdd { .. }
-            | ApprovalAsk::GitIdentity { .. } => "git_commit",
+            | ApprovalAsk::GitIdentity { .. }
+            | ApprovalAsk::Reauthor { .. } => "git_commit",
             _ => "",
         };
         let decision = match self.allows(tool) {
@@ -245,6 +246,7 @@ impl Dispatch for Canned {
             Call::GitAdd { .. } => Some(("git_commit", "staged 2 paths")),
             Call::GitCommit { .. } => Some(("git_commit", "committed abc1234")),
             Call::GitIdentitySet { .. } => Some(("git_commit", "identity set")),
+            Call::GitCommitReauthor => Some(("git_commit", "re-authored abc1234")),
             git if git.uses_git() => Some(("", "nothing to report")),
             _ => None,
         };
