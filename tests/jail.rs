@@ -969,3 +969,77 @@ fn the_program_it_runs_cannot_write_on_the_status_pipe() {
         "the variable must not reach the program"
     );
 }
+
+/// A self-contained python3 on this machine (uv or pyenv), as the PATH lookup
+/// gives it: canonical.
+fn self_contained_python() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let places = [".local/share/uv/python", ".pyenv/versions"];
+    let installs = places
+        .iter()
+        .filter_map(|place| fs::read_dir(home.join(place)).ok())
+        .flatten()
+        .flatten();
+    installs
+        .filter_map(|install| fs::read_dir(install.path().join("bin")).ok())
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            name.strip_prefix("python3.")
+                .is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()))
+        })
+        .find_map(|path| fs::canonicalize(path).ok())
+}
+
+// #794: a self-contained python3 starts in the real toolchain jail with only
+// its own folder granted, and does not without it.
+#[test]
+fn a_self_contained_python3_reads_its_stdlib_in_the_toolchain_jail() {
+    use lazarobox_shell::core::ai::{
+        toolchain::{Layout, Vars, toolchain_spec},
+        tools::allow::Program,
+    };
+
+    if !jail_available() {
+        return;
+    }
+    let Some(python) = self_contained_python() else {
+        eprintln!("skipped: no uv or pyenv python3 on this machine");
+        return;
+    };
+    let (dir, root, _ssh) = project_root();
+    let tmp = fs::canonicalize(dir.path()).unwrap().join("tmp");
+    fs::create_dir(&tmp).unwrap();
+    let layout = Layout {
+        tool: Program::Python3,
+        home: canon(&std::env::var("HOME").unwrap()),
+        root,
+        program: python.clone(),
+        tmp,
+        vars: Vars::default(),
+    };
+    let spec = toolchain_spec(&layout, &|p| fs::canonicalize(p).ok()).expect("a spec");
+    let prefix = python.parent().unwrap().parent().unwrap().to_path_buf();
+    assert!(spec.rx.contains(&prefix), "{:?}", spec.rx);
+    let script = "import json, os; print('stdlib ok')";
+    let python_job = |spec: JailSpec| JailArgs {
+        min_abi: None,
+        arg0: None,
+        spec,
+        program: python.clone(),
+        argv: ["-I", "-c", script].map(OsString::from).to_vec(),
+    };
+    let out = run(&python_job(spec.clone()));
+    assert!(out.status.success(), "{python:?}: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "stdlib ok");
+
+    let mut without = spec;
+    without.rx.retain(|rx| *rx != prefix);
+    let out = run(&python_job(without));
+    assert!(
+        !out.status.success(),
+        "{python:?} ran with no grant on its folder"
+    );
+}

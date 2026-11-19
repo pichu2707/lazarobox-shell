@@ -173,13 +173,15 @@ fn pytest_runs_from_a_venv_outside_the_root_or_its_own_file() {
 
 // #775: the python3 the PATH resolves to gets pytest's rules and no venv
 // handling (`find` canonicalizes, so a venv `bin/python3` never reaches here as
-// a venv path). Only a python3 under the system rx paths works today.
+// a venv path). Outside the system rx paths only a self-contained install
+// works (see below).
 #[test]
 fn python3_gets_the_system_rules_and_no_venv_handling() {
     let system = build(&layout(Program::Python3, "/usr/bin/python3"), &[]).unwrap();
     assert_eq!(system.rx, system_plus(&[]));
-    // Outside the system paths its stdlib cannot be read: it is refused up
-    // front, naming the interpreter (#794). Pytest keeps its own rule.
+    // Outside the system paths, with no standard library found beside it, it
+    // is refused up front, naming the interpreter (#794). Pytest keeps its
+    // own rule.
     for program in [
         "/home/u/.pyenv/versions/3.12/bin/python3",
         "/home/linuxbrew/.linuxbrew/bin/python3",
@@ -198,6 +200,101 @@ fn python3_gets_the_system_rules_and_no_venv_handling() {
             "{program}"
         );
     }
+}
+
+// #794 (option A, self-contained installs only): the folder above the `bin`
+// that holds `python3.X` is granted when its own standard library sits in
+// `lib/python3.X`, as pyenv, uv and python.org builds have it.
+#[test]
+fn a_self_contained_python3_gets_its_prefix() {
+    for (program, prefix) in [
+        (
+            "/home/u/.pyenv/versions/3.12.1/bin/python3.12",
+            "/home/u/.pyenv/versions/3.12.1",
+        ),
+        (
+            "/home/u/.local/share/uv/python/cpython-3.12.4-linux-x86_64-gnu/bin/python3.12",
+            "/home/u/.local/share/uv/python/cpython-3.12.4-linux-x86_64-gnu",
+        ),
+        ("/opt/python/3.13/bin/python3.13t", "/opt/python/3.13"),
+    ] {
+        let name = Path::new(program).file_name().unwrap().to_str().unwrap();
+        let landmark = format!("{prefix}/lib/{name}/os.py");
+        let spec = build(&layout(Program::Python3, program), &[&landmark]).unwrap();
+        assert_eq!(spec.rx, system_plus(&[prefix]), "{program}");
+        assert!(
+            spec.rw.iter().all(|rw| !rw.starts_with(prefix)),
+            "{program}"
+        );
+    }
+}
+
+#[test]
+fn a_python3_that_is_not_self_contained_keeps_the_refusal() {
+    let refused = |program: &str, existing: &[&str]| {
+        assert_eq!(
+            build(&layout(Program::Python3, program), existing),
+            Err(Refusal::Interpreter(p(program))),
+            "{program}"
+        );
+    };
+    // No standard library beside it.
+    refused("/home/u/.pyenv/versions/3.12.1/bin/python3.12", &[]);
+    // A name without its version: no landmark to look for.
+    refused(
+        "/opt/python/bin/python3",
+        &["/opt/python/lib/python3/os.py"],
+    );
+    // Not in a `bin` folder.
+    refused("/opt/python/python3.12", &["/opt/lib/python3.12/os.py"]);
+    // A Homebrew keg holds its stdlib but not its site-packages (#794).
+    let keg = "/home/linuxbrew/.linuxbrew/Cellar/python@3.13/3.13.1";
+    refused(
+        &format!("{keg}/bin/python3.13"),
+        &[&format!("{keg}/lib/python3.13/os.py")],
+    );
+    // A prefix too broad to grant: the home folder itself.
+    refused("/home/u/bin/python3.12", &["/home/u/lib/python3.12/os.py"]);
+}
+
+// Verifier probes (#794): a prefix in a credential or scratch place, or a
+// landmark that links out of the prefix, is never granted.
+#[test]
+fn a_python3_prefix_in_a_credential_or_scratch_place_is_refused() {
+    for prefix in [
+        "/home/u/.ssh/x",
+        "/home/u/.aws",
+        "/home/u/.gnupg",
+        "/home/u/.local",
+        "/tmp",
+        "/home",
+    ] {
+        let program = format!("{prefix}/bin/python3.12");
+        let landmark = format!("{prefix}/lib/python3.12/os.py");
+        assert_eq!(
+            build(&layout(Program::Python3, &program), &[&landmark]),
+            Err(Refusal::Interpreter(p(&program))),
+            "{prefix}"
+        );
+    }
+}
+
+#[test]
+fn a_python3_landmark_that_links_out_of_its_prefix_is_refused() {
+    let program = "/opt/py/bin/python3.12";
+    let spec = toolchain_spec(&layout(Program::Python3, program), &|path: &Path| {
+        (path == Path::new("/opt/py/lib/python3.12/os.py")).then(|| p("/usr/lib/python3.12/os.py"))
+    });
+    assert_eq!(spec, Err(Refusal::Interpreter(p(program))));
+}
+
+#[test]
+fn a_pyenv_shim_is_refused() {
+    let shim = "/home/u/.pyenv/shims/python3";
+    assert_eq!(
+        build(&layout(Program::Python3, shim), &[]),
+        Err(Refusal::Interpreter(p(shim)))
+    );
 }
 
 #[test]
