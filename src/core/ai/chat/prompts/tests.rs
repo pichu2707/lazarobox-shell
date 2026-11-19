@@ -555,7 +555,9 @@ fn the_coding_block_names_only_the_abilities_of_the_turn() {
     );
     let two = line(FamilySet::LEGACY.with(Family::Write).with(Family::GitWrite));
     assert!(
-        two.contains(&format!("given: {WRITE} and add and commit with git;")),
+        two.contains(&format!(
+            "given: {WRITE} and add, commit and set the commit author with git;"
+        )),
         "{two}"
     );
     let all = line(
@@ -566,7 +568,7 @@ fn the_coding_block_names_only_the_abilities_of_the_turn() {
     );
     assert!(
         all.contains(&format!(
-            "given: {WRITE}, run tests and builds and add and commit with git;"
+            "given: {WRITE}, run tests and builds and add, commit and set the commit author with git;"
         )),
         "{all}"
     );

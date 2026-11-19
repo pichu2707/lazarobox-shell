@@ -36,6 +36,7 @@ use crate::{
     },
     runtime::tools::{
         git::{self as runtime, Ctx, Fault, Output, Ran},
+        integrity::{Change, Kind},
         new_nonce,
     },
 };
@@ -60,6 +61,8 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a commit may take: its hooks may run linters.
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(120);
 const NOT_CHECKED: &str = "the commit could not be checked against the reviewed changes";
+const IDENTITY_NOT_CONFIRMED: &str =
+    "the commit identity could not be confirmed after the write; check .git/config";
 
 /// An opened repository: the run context and what the preflight found.
 struct Opened {
@@ -117,6 +120,9 @@ pub(super) async fn plan(
             pure::check_add(&refs).map_err(GitError::reason)?;
         }
         Call::GitCommit { message } => pure::check_message(message).map_err(GitError::reason)?,
+        Call::GitIdentitySet { name, email } => {
+            pure::Identity::new(name, email).map_err(GitError::reason)?;
+        }
         _ => {}
     }
     ready(host, scope).await?;
@@ -225,6 +231,7 @@ pub(super) async fn run(
     let result = match call {
         Call::GitAdd { paths } => add(host, scope, paths, &nonce).await,
         Call::GitCommit { message } => commit(host, scope, message, reviewed, &nonce).await,
+        Call::GitIdentitySet { name, email } => identity(host, scope, name, email, &nonce).await,
         _ => go(host, scope, call, &nonce).await,
     };
     result.unwrap_or_else(fail)
@@ -249,7 +256,85 @@ async fn add(
     } else {
         (ToolStatus::Error, FAILED)
     };
-    Ok(finish(&opened, ran, result, text.to_owned(), nonce))
+    Ok(finish(&opened, ran.changes, result, text.to_owned(), nonce))
+}
+
+/// The approved identity write: both keys with `git config --local` in the
+/// jail, then the email read back. The watcher's report keeps every change
+/// but the identity lines of a config file.
+async fn identity(
+    host: &ToolHost,
+    scope: &TurnScope,
+    name: &str,
+    email: &str,
+    nonce: &str,
+) -> Result<(Outcome, ToolStatus, String), &'static str> {
+    let who = pure::Identity::new(name, email).map_err(GitError::reason)?;
+    let opened = open(host, scope).await?;
+    let mut changes = Vec::new();
+    let mut written = 0;
+    for argv in pure::identity_set_argvs(&opened.repo.dir, &who) {
+        let ran = exec(&opened, argv, false).await?;
+        let ended = &ran.done.ended;
+        let ok = ended.exit == Some(0) && !ended.timed_out;
+        changes.extend(ran.changes.into_iter().filter(|c| !is_identity_write(c)));
+        if !ok {
+            break;
+        }
+        written += 1;
+    }
+    let read = match written {
+        2 => text_of(&opened, pure::identity_get_argv(&opened.repo.dir), true).await,
+        _ => None,
+    };
+    let (status, summary, text) = identity_result(written, read.as_deref(), name, email);
+    Ok(finish(&opened, changes, (status, summary), text, nonce))
+}
+
+/// The result of the identity write: how many of the two writes (name, then
+/// email) ended well and the email read back after both. A name written
+/// without its email is said plainly: the repo now has a mixed author.
+fn identity_result(
+    written: usize,
+    read: Option<&str>,
+    name: &str,
+    email: &str,
+) -> (ToolStatus, &'static str, String) {
+    let error = |text: String| (ToolStatus::Error, FAILED, text);
+    match (written, read) {
+        (2, Some(got)) if got.trim() == email => (
+            ToolStatus::Ok,
+            "git config user",
+            format!("commit author set to {name} <{email}> in this repository's config"),
+        ),
+        (2, _) => (
+            ToolStatus::Error,
+            IDENTITY_NOT_CONFIRMED,
+            IDENTITY_NOT_CONFIRMED.to_owned(),
+        ),
+        (1, _) => error(format!(
+            "{FAILED}: user.name was set to {name} but user.email was not written; \
+             commits now get a mixed author until git_identity_set succeeds"
+        )),
+        _ => error(format!("{FAILED}: nothing was written")),
+    }
+}
+
+/// Whether a watched change is only the identity write: a config file whose
+/// text is known on both sides (or new) and differs only in its `[user]`
+/// name and email. Anything the watcher could not check stays reported.
+fn is_identity_write(change: &Change) -> bool {
+    let config = change.path.file_name().is_some_and(|n| n == "config");
+    // A changed file keeps its text and mode on record; a new one has none.
+    let known = match change.kind {
+        Kind::Changed => change.before.is_some() && change.mode.0 == change.mode.1,
+        Kind::Added => true,
+        Kind::Removed | Kind::Unchecked => false,
+    };
+    config
+        && known
+        && (change.after.as_deref())
+            .is_some_and(|after| pure::only_identity_changed(change.before.as_deref(), after))
 }
 
 /// The approved commit: only if the index is what the user read.
@@ -286,7 +371,7 @@ async fn commit(
         }
         return Ok(finish(
             &opened,
-            ran,
+            ran.changes,
             (ToolStatus::Error, FAILED),
             text,
             nonce,
@@ -297,7 +382,7 @@ async fn commit(
     let Some(drift) = drift_of(&opened, &before).await else {
         return Ok(finish(
             &opened,
-            ran,
+            ran.changes,
             (ToolStatus::Ok, "git commit"),
             body,
             nonce,
@@ -311,7 +396,7 @@ async fn commit(
     };
     Ok(finish(
         &opened,
-        ran,
+        ran.changes,
         (ToolStatus::Error, summary),
         text,
         nonce,
@@ -358,12 +443,11 @@ async fn drift_of(opened: &Opened, before: &str) -> Option<(String, bool)> {
 /// The result of a write verb, with the watched places it changed.
 fn finish(
     opened: &Opened,
-    ran: Ran,
+    mut changes: Vec<Change>,
     (status, summary): (ToolStatus, &str),
     mut text: String,
     nonce: &str,
 ) -> (Outcome, ToolStatus, String) {
-    let mut changes = ran.changes;
     changes.extend(opened.unreported.drain());
     if let Some(note) = super::exec::changes_note(&changes, nonce) {
         text.push_str(&note);
@@ -539,4 +623,93 @@ fn diff_text(done: &crate::runtime::tools::runner::Done) -> Result<String, &'sta
     } else {
         text
     })
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    const BEFORE: &[u8] = b"[core]\n\tbare = false\n";
+    const AFTER: &[u8] = b"[core]\n\tbare = false\n[user]\n\tname = Ana\n";
+
+    fn change(path: &str, kind: Kind, before: Option<&[u8]>, mode: (u32, u32)) -> Change {
+        Change {
+            path: PathBuf::from(path),
+            kind,
+            before: before.map(<[u8]>::to_vec),
+            after: Some(AFTER.to_vec()),
+            mode: (Some(mode.0), Some(mode.1)),
+        }
+    }
+
+    // Spec S1: only a config whose text and mode are on record, changed in
+    // its identity lines alone, is left out of the report.
+    #[test]
+    fn only_a_known_identity_change_of_a_config_is_left_out() {
+        let same = (0o644, 0o644);
+        assert!(is_identity_write(&change(
+            ".git/config",
+            Kind::Changed,
+            Some(BEFORE),
+            same
+        )));
+        // A new config holding only the identity.
+        let mut added = change(".git/config", Kind::Added, None, same);
+        added.after = Some(b"[user]\n\tname = Ana\n".to_vec());
+        assert!(is_identity_write(&added));
+        // A new config with anything else: still reported.
+        assert!(!is_identity_write(&change(
+            ".git/config",
+            Kind::Added,
+            None,
+            same
+        )));
+        for kept in [
+            // The mode changed.
+            change(".git/config", Kind::Changed, Some(BEFORE), (0o644, 0o755)),
+            // No text before: it cannot be compared.
+            change(".git/config", Kind::Changed, None, same),
+            // Not something the watcher could compare.
+            change(".git/config", Kind::Unchecked, Some(BEFORE), same),
+            change(".git/config", Kind::Removed, Some(BEFORE), same),
+            // Not a config file.
+            change(".git/hooks/pre-commit", Kind::Changed, Some(BEFORE), same),
+            change(".git/config.worktree", Kind::Changed, Some(BEFORE), same),
+        ] {
+            assert!(!is_identity_write(&kept), "{kept:?}");
+        }
+        // Another key changed with the identity: still reported.
+        let mut other = change(".git/config", Kind::Changed, Some(BEFORE), same);
+        other.after = Some(b"[core]\n\tbare = true\n[user]\n\tname = Ana\n".to_vec());
+        assert!(!is_identity_write(&other));
+    }
+
+    // Spec S1: a name written without its email is an error that says so;
+    // nothing written, or an email that does not read back, is an error.
+    #[test]
+    fn the_result_says_what_was_written() {
+        let (status, _, text) = identity_result(2, Some("a@b.c\n"), "Ana", "a@b.c");
+        assert_eq!(status, ToolStatus::Ok);
+        assert_eq!(
+            text,
+            "commit author set to Ana <a@b.c> in this repository's config"
+        );
+        let (status, summary, _) = identity_result(2, Some("x@y.z"), "Ana", "a@b.c");
+        assert_eq!(
+            (status, summary),
+            (ToolStatus::Error, IDENTITY_NOT_CONFIRMED)
+        );
+        assert_eq!(
+            identity_result(2, None, "Ana", "a@b.c").1,
+            IDENTITY_NOT_CONFIRMED
+        );
+        let (status, _, text) = identity_result(1, None, "Ana", "a@b.c");
+        assert_eq!(status, ToolStatus::Error);
+        assert!(text.contains("user.name was set to Ana but user.email was not written"));
+        let (status, _, text) = identity_result(0, None, "Ana", "a@b.c");
+        assert_eq!(status, ToolStatus::Error);
+        assert!(text.contains("nothing was written"));
+    }
 }

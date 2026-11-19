@@ -218,6 +218,10 @@ pub enum ApprovalAsk {
     /// fills it in, [`ask_for`] leaves it `None`. Never routed by the
     /// approval mode: every mode asks.
     GitAdd { paths: String, files: Option<usize> },
+    /// Write `name` and `email` as the repository's own `user.name` and
+    /// `user.email`. Both passed `Identity::new` (one clean line each) before
+    /// the ask. Never routed by the approval mode: every mode asks.
+    GitIdentity { name: String, email: String },
     /// Record the index as a commit. The user reads the message, the signing
     /// notice and the whole staged diff in the review view; it is never routed
     /// by the approval mode, so no mode approves it.
@@ -430,6 +434,12 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             paths: flat(&joined_paths(paths), GIT_ADD_SHOWN).0,
             files: None,
         }),
+        // The identity changes the repo's config: it always asks. The host
+        // refused a name or email that is not one clean line before this.
+        Call::GitIdentitySet { name, email } => Some(ApprovalAsk::GitIdentity {
+            name: flat(name, GIT_ADD_SHOWN).0,
+            email: flat(email, GIT_ADD_SHOWN).0,
+        }),
         // A user tool asks, on any engine and in any approval mode: lazarobox
         // cannot know what it does, and a read-only hint is ignored. The one
         // exception is its server's own level, which only the host sets, on
@@ -486,6 +496,9 @@ pub fn worker_label(kind: Task, engine: &str, model: &str) -> String {
 /// The most characters of the paths of an add that its prompt shows. The host
 /// refuses an add whose paths are longer, so the prompt never hides one.
 pub const GIT_ADD_SHOWN: usize = 400;
+// An identity ask shows its name and email whole: the shown cap is never
+// shorter than the identity cap.
+const _: () = assert!(crate::core::ai::tools::git::MAX_IDENTITY_BYTES <= GIT_ADD_SHOWN);
 
 /// The paths of an add as the prompt writes them: a path with whitespace is
 /// quoted, so two paths never read as one.

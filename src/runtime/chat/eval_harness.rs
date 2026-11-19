@@ -206,7 +206,9 @@ impl Approver for Judge {
         let tool = match ask {
             ApprovalAsk::Exec { .. } => "run_command",
             ApprovalAsk::Batch(_) => "propose_batch",
-            ApprovalAsk::Commit(_) | ApprovalAsk::GitAdd { .. } => "git_commit",
+            ApprovalAsk::Commit(_)
+            | ApprovalAsk::GitAdd { .. }
+            | ApprovalAsk::GitIdentity { .. } => "git_commit",
             _ => "",
         };
         let decision = match self.allows(tool) {
@@ -242,6 +244,7 @@ impl Dispatch for Canned {
             Call::RunCommand { .. } => Some(("run_command", "exit code 0 after 0.4s\n1 passed")),
             Call::GitAdd { .. } => Some(("git_commit", "staged 2 paths")),
             Call::GitCommit { .. } => Some(("git_commit", "committed abc1234")),
+            Call::GitIdentitySet { .. } => Some(("git_commit", "identity set")),
             git if git.uses_git() => Some(("", "nothing to report")),
             _ => None,
         };

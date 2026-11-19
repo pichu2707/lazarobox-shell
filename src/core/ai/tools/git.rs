@@ -2,8 +2,9 @@
 //! Pure: it spawns nothing and reads no file. The runner in the runtime owns
 //! the jail and the process; this module only decides the words.
 //!
-//! Only status, diff, log, add and commit exist, and no verb takes a free-form
-//! argument list. Every call carries the same `-c` hardening, and the secret
+//! Only status, diff, log, add, commit and the repo-local identity write
+//! (`config --local` of `user.name` and `user.email`) exist, and no verb takes
+//! a free-form argument list. Every call carries the same `-c` hardening, and the secret
 //! file names are excluded by pathspec so a tracked `.env` is never printed.
 
 use std::path::{Component, Path};
@@ -12,8 +13,10 @@ use super::paths::{SECRET_DIRS, SECRET_FILES, SECRET_PATTERNS, is_excluded_name}
 use crate::core::ai::jail::CREDENTIAL_DIRS;
 use crate::core::ai::sanitize::is_format;
 
+mod identity;
 mod parse;
 
+pub use identity::{identity_get_argv, identity_set_argvs, only_identity_changed};
 use parse::tidy;
 pub use parse::{Commit, Entry, Kind, Status, parse_log, parse_status, render_log, render_status};
 
@@ -699,6 +702,9 @@ mod tests {
             log_argv(&gd(), None, None).unwrap(),
             add_argv(&gd(), &["a.rs"]).unwrap(),
             commit_argv(&gd(), &who(), "msg").unwrap(),
+            identity_set_argvs(&gd(), &who())[0].clone(),
+            identity_set_argvs(&gd(), &who())[1].clone(),
+            identity_get_argv(&gd()),
         ];
         for argv in &all {
             for setting in HARDENING {
@@ -856,6 +862,8 @@ mod tests {
             log_argv(&gd(), None, None).unwrap(),
             add_argv(&gd(), &["a"]).unwrap(),
             commit_argv(&gd(), &who(), "m").unwrap(),
+            identity_set_argvs(&gd(), &who())[0].clone(),
+            identity_get_argv(&gd()),
         ]
         .map(|argv| {
             let at = argv.iter().position(|a| a == "--no-pager").unwrap();
@@ -865,7 +873,10 @@ mod tests {
             }
             argv[verb].clone()
         });
-        assert_eq!(verbs, ["status", "diff", "log", "add", "commit"]);
+        assert_eq!(
+            verbs,
+            ["status", "diff", "log", "add", "commit", "config", "config"]
+        );
     }
 
     #[test]

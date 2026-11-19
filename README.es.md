@@ -1056,7 +1056,7 @@ search = true      # glob, grep y la lectura por ventanas de read_file
 write = false      # create_dir, write_file, edit_file, propose_batch
 exec = false       # run_command: comandos de la cadena de herramientas (ver más abajo)
 git = false        # git_status, git_diff, git_log (solo lectura)
-git_write = false  # git_add y git_commit (escriben; cada una pide tu `y`)
+git_write = false  # git_add, git_commit y git_identity_set (escriben; cada una pide tu `y`)
 github = false     # gh_issue_list, gh_issue_view y gh_pr_view (solo lectura; ver GitHub)
 issue_draft = true # gh_issue_draft: abre el formulario de Feedback con un borrador (ver Borrador de issue)
 ```
@@ -1142,7 +1142,7 @@ Se rechazan las opciones que cambian de dónde se lee la configuración o el des
 
 #### Git: `git_status`, `git_diff`, `git_log`, `git_add` y `git_commit`
 
-Dos interruptores independientes, ambos desactivados por defecto: **Git** (`git = true`) ofrece las tres de lectura y **Git write** (`git_write = true`) ofrece `git_add` y `git_commit`. No existe ninguna otra operación (ni `push`, `pull`, `checkout`, `reset`, `rebase`...) ni una lista libre de argumentos, y un _worker_ del orquestador nunca puede hacer commit. Linux solamente; `git` debe estar en un lugar del sistema.
+Dos interruptores independientes, ambos desactivados por defecto: **Git** (`git = true`) ofrece las tres de lectura y **Git write** (`git_write = true`) ofrece `git_add`, `git_commit` y `git_identity_set`. No existe ninguna otra operación (ni `push`, `pull`, `checkout`, `reset`, `rebase`...) ni una lista libre de argumentos, y un _worker_ del orquestador nunca puede hacer commit. Linux solamente; `git` debe estar en un lugar del sistema.
 
 | Herramienta  | Qué hace                                                                 | ¿Pregunta?                                   |
 | :----------- | :----------------------------------------------------------------------- | :------------------------------------------- |
@@ -1151,6 +1151,7 @@ Dos interruptores independientes, ambos desactivados por defecto: **Git** (`git 
 | `git_diff`   | Diff del árbol de trabajo o del índice, acotado.                         | Motor local: no. **Nube: sí**, antes de ejecutar. |
 | `git_add`    | Añade al índice las rutas indicadas.                                     | Siempre.                                     |
 | `git_commit` | Crea el commit tras la revisión a panel completo.                        | Siempre, en todos los motores.               |
+| `git_identity_set` | Fija el autor de los commits del repositorio (`user.name`, `user.email`). | Siempre, en todos los motores.         |
 
 **Lectura.** Los nombres de secretos (`.env`, `.npmrc`...) se excluyen por _pathspec_, así que un `.env` rastreado y modificado no aparece en el diff ni en el log, y toda la salida se censura y se entrega como dato no fiable. Se rechazan mientras haya un lote de escritura preparado o propuesto, y una ruta rechazada no abre ningún aviso.
 
@@ -1166,6 +1167,8 @@ Dos interruptores independientes, ambos desactivados por defecto: **Git** (`git 
 Se rechaza si hay un secreto en el índice o si el diff queda cortado. Como en un lote de escritura, `y` solo aprueba si has visto todo lo que debe caber. Tras `y`, lazarobox vuelve a comprobar el índice byte a byte; si cambió, no hay commit. El commit tiene un límite de 120 s.
 
 Después del commit, lazarobox compara el árbol que se ha confirmado con el que revisaste. Si difieren (un gancho puede cambiar ficheros), **avisa y no deshace nada**, y sugiere `git reset --soft HEAD~1`. Límite conocido: un gancho `commit-msg` que edite el mensaje no se detecta.
+
+**`git_identity_set`.** Escribe `user.name` y `user.email` con `git config --local`, en el `.git/config` del propio repositorio y nunca en tu configuración global, y el siguiente `git_commit` los usa. El aviso muestra el nombre y el correo que va a escribir. Un nombre o correo con un carácter de control, o un correo sin `@` o con espacios, se rechaza antes del aviso. Tras la `y` se ejecuta en la jaula y vuelve a leer el correo (si se escribe el nombre pero no el correo, el error lo dice: no se deshace); el cambio de esas dos líneas no se informa como cambio de configuración, pero cualquier otro cambio en `.git/config` o en los ganchos sí. En un worktree enlazado escribe la configuración compartida del repositorio.
 
 #### Modelo de amenazas de `run_command` y de git
 

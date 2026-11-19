@@ -2,14 +2,14 @@
 
 ## Purpose
 
-Let a model see the state of a repository and record a commit, with the user reviewing every commit. Git runs through the command runner with hardened settings. Linux only in v1. Tags: [auto] = `cargo test` (temp repos); [design-confirm] = name or value that design must pin. Tool names `git_status`, `git_diff`, `git_log`, `git_add`, `git_commit` are provisional.
+Let a model see the state of a repository and record a commit, with the user reviewing every commit. Git runs through the command runner with hardened settings. Linux only in v1. Tags: [auto] = `cargo test` (temp repos); [design-confirm] = name or value that design must pin. Tool names `git_status`, `git_diff`, `git_log`, `git_add`, `git_commit` are provisional; `git_identity_set` is fixed (#802).
 
-Terms: "Read verbs" = status, diff, log. "Write verbs" = add, commit. "Root" = the chat origin.
+Terms: "Read verbs" = status, diff, log. "Write verbs" = add, commit, the identity write. "Root" = the chat origin.
 
 ## Requirements
 
 ### Requirement: Two toggles
-The read verbs MUST belong to the `Git` toggle and the write verbs to the `GitWrite` toggle. Both MUST be off by default. They are independent: `GitWrite` on with `Git` off offers only add and commit. A verb whose toggle is off MUST NOT be registered or executed.
+The read verbs MUST belong to the `Git` toggle and the write verbs to the `GitWrite` toggle. Both MUST be off by default. They are independent: `GitWrite` on with `Git` off offers only the write verbs. A verb whose toggle is off MUST NOT be registered or executed.
 
 #### Scenario: Defaults [auto]
 - GIVEN a config with no git toggles
@@ -22,7 +22,7 @@ The read verbs MUST belong to the `Git` toggle and the write verbs to the `GitWr
 - THEN `git_status`, `git_diff` and `git_log` are present and `git_add` and `git_commit` are not
 
 ### Requirement: Verb boundary
-Only status, diff, log, add and commit MAY exist. No tool MUST run push, fetch, pull, checkout, switch, reset, clean, rebase, merge, stash, rm, mv, or any alias, and no tool MUST accept a free-form git argument list. Workers MUST NOT commit.
+Only status, diff, log, add, commit and the identity write (`git config --local` of `user.name` and `user.email` only) MAY exist. No tool MUST run push, fetch, pull, checkout, switch, reset, clean, rebase, merge, stash, rm, mv, or any alias, and no tool MUST accept a free-form git argument list. Workers MUST NOT commit.
 
 #### Scenario: Unknown verb [auto]
 - GIVEN a call to `git_push`, `git_reset` or `git_run`
@@ -127,6 +127,26 @@ Hardening details (design, Git section): hooks run only from the repo's own `.gi
 - GIVEN an open commit review
 - WHEN `n` or a cancel ends it
 - THEN the result is `denied` and no commit exists
+
+### Requirement: identity write
+`git_identity_set(name, email)` MUST write `user.name` and `user.email` to the repository's own config with `git config --local`, never the global or system config, and MUST need an explicit `y` in every approval mode; the prompt MUST show the name and email. A name or email that `Identity::new` refuses (empty, too long, a control or format character, an email without `@` or with whitespace) MUST be refused before the prompt with the fixed identity error. The write MUST run in the jail with the other git verbs. After it, the email MUST be read back with `git config --local --get user.email`; a mismatch or a failed read MUST be an error result. The two keys are two writes with no rollback: when the name was written and the email was not, the error result MUST say that `user.name` changed and `user.email` did not. The prompt MUST show the name and email as labelled values, not as a command line. The integrity report of the run MUST leave out a change to a `config` file only when its text before and after differs only in the `name` and `email` lines of its `[user]` section (and that section's header) and its mode is unchanged; any other change, and anything the watcher could not check, MUST still be reported. In a linked worktree the write goes to the common config, as plain `git config --local` does.
+
+#### Scenario: Asks, then writes [auto]
+- GIVEN a repository and `GitWrite` on
+- WHEN `git_identity_set("Ana Pérez", "ana@example.com")` is answered `n`
+- THEN the config is unchanged
+- WHEN it is answered `y`
+- THEN the repository's `user.name` and `user.email` are `Ana Pérez` and `ana@example.com`, the result says so and reports no config change, and the next `git_commit` is authored by them
+
+#### Scenario: Invalid identity [auto]
+- GIVEN an email `not-an-email`
+- WHEN `git_identity_set` is called
+- THEN the identity error is returned and no prompt opens
+
+#### Scenario: Other config changes stay reported [auto]
+- GIVEN a config whose text after a run differs in a key other than `[user]` `name` and `email`
+- WHEN the run's changes are filtered
+- THEN that change is still reported
 
 ### Requirement: Git root follows the chat folder
 Git verbs MUST run in the chat folder at the moment of the call. After a folder change the verbs act on the repository of the new folder; a folder that is not a repository gives the usual not-a-repository result, and `$HOME` or `/` as the folder keeps the existing refusal. Under WSL, a Windows drive folder follows the grant: without it every verb returns the folder-level drive text of code-write, Root policy; with it the verbs run there like in any root.

@@ -177,6 +177,13 @@ pub enum Call {
     GitCommit {
         message: String,
     },
+    /// Writes `user.name` and `user.email` to the repository's own config
+    /// (`git config --local`). Both are the model's text; the host validates
+    /// them before it asks.
+    GitIdentitySet {
+        name: String,
+        email: String,
+    },
     /// A tool of a user MCP server. It is always a write tool: every call
     /// needs the user's `y`. `name` is the qualified name the model used;
     /// `server` and `tool` come from the lookup (`servers::Qualified`), never
@@ -269,6 +276,11 @@ impl std::fmt::Debug for Call {
                 .debug_struct("GitCommit")
                 .field("message_len", &message.len())
                 .finish(),
+            Call::GitIdentitySet { name, email } => f
+                .debug_struct("GitIdentitySet")
+                .field("name_len", &name.len())
+                .field("email_len", &email.len())
+                .finish(),
             Call::External {
                 name,
                 server,
@@ -343,6 +355,7 @@ impl Call {
             Call::GitLog { .. } => "git_log",
             Call::GitAdd { .. } => "git_add",
             Call::GitCommit { .. } => "git_commit",
+            Call::GitIdentitySet { .. } => "git_identity_set",
         }
     }
 
@@ -359,14 +372,18 @@ impl Call {
         matches!(self, Call::Github(_))
     }
 
-    /// Whether the call is any of the five git verbs.
+    /// Whether the call is any of the git verbs.
     pub fn uses_git(&self) -> bool {
         self.is_git() || self.is_git_write()
     }
 
-    /// Whether the call belongs to the GitWrite family (add and commit).
+    /// Whether the call belongs to the GitWrite family (add, commit and the
+    /// identity write).
     pub fn is_git_write(&self) -> bool {
-        matches!(self, Call::GitAdd { .. } | Call::GitCommit { .. })
+        matches!(
+            self,
+            Call::GitAdd { .. } | Call::GitCommit { .. } | Call::GitIdentitySet { .. }
+        )
     }
 
     /// Whether the call belongs to the Exec family.
@@ -418,6 +435,7 @@ impl Call {
             Call::ReadPane { pane, .. } => Cow::Owned(pane.to_string()),
             Call::GitAdd { paths } => Cow::Owned(paths.join(" ")),
             Call::GitCommit { message } => Cow::Borrowed(message),
+            Call::GitIdentitySet { name, email } => Cow::Owned(format!("{name} <{email}>")),
             Call::NeedsSpecification { what } => Cow::Borrowed(what),
             Call::Glob { pattern, dir } | Call::Grep { pattern, dir } => match dir {
                 Some(dir) => Cow::Owned(format!("{pattern} in {dir}")),
@@ -549,7 +567,7 @@ const fn id(name: &'static str, required: bool) -> ArgDef {
 
 /// The built-ins in offer order. `Access::Read` is only a classification,
 /// not an approval rule: see [`Access`].
-const BUILT_INS: [ToolDef; 30] = [
+const BUILT_INS: [ToolDef; 31] = [
     ToolDef {
         name: "find_dir",
         description: "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
@@ -789,6 +807,30 @@ const BUILT_INS: [ToolDef; 30] = [
             required: true,
             gate: None,
         }],
+    },
+    ToolDef {
+        name: "git_identity_set",
+        description: "Set the commit author of the repository at the chat's root: writes `name` and `email` as user.name and user.email to the repository's own config (never the global one), then reads the email back. The user approves every call. Later git_commit calls use it.",
+        access: Access::Write,
+        family: Family::GitWrite,
+        args: &[
+            ArgDef {
+                name: "name",
+                kind: ArgKind::Str {
+                    max: git::MAX_IDENTITY_BYTES,
+                },
+                required: true,
+                gate: None,
+            },
+            ArgDef {
+                name: "email",
+                kind: ArgKind::Str {
+                    max: git::MAX_IDENTITY_BYTES,
+                },
+                required: true,
+                gate: None,
+            },
+        ],
     },
     // The GitHub reads: `gh` on the host, the repository is always `origin`.
     ToolDef {
@@ -1176,6 +1218,10 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
             },
         }),
         "git_commit" => Ok(Call::GitCommit { message: text }),
+        "git_identity_set" => Ok(Call::GitIdentitySet {
+            name: text,
+            email: field("email"),
+        }),
         // Unreachable: the name was found in `BUILT_INS` above and every
         // built-in has an arm. Kept so a new built-in cannot become a
         // `run_in_pane` by falling through.
@@ -2439,6 +2485,51 @@ mod tests {
         );
         // The message is the model's text: it stays out of the debug output.
         assert!(!format!("{commit:?}").contains("body"));
+    }
+
+    // Spec S1 (#802): the identity write is a GitWrite tool, offered only with
+    // that family on, with both arguments required.
+    #[test]
+    fn identity_set_is_a_git_write_tool() {
+        for set in [FamilySet::LEGACY, git_set(), exec_set()] {
+            assert!(!names(&registry_with(&[], set)).contains(&"git_identity_set"));
+            assert_eq!(
+                parse_write(
+                    "git_identity_set",
+                    json!({"name": "Ana", "email": "a@b.c"}),
+                    set
+                ),
+                Err(ToolError::UnknownTool)
+            );
+        }
+        let listed = registry_with(&[], git_write_set());
+        let tool = listed
+            .iter()
+            .find(|t| t.name == "git_identity_set")
+            .unwrap();
+        assert_eq!(tool.access, Access::Write);
+        let parse = |args| parse_write("git_identity_set", args, git_write_set());
+        let call = parse(json!({"name": "Ana Pérez", "email": "ana@example.com"})).unwrap();
+        assert_eq!(
+            call,
+            Call::GitIdentitySet {
+                name: "Ana Pérez".into(),
+                email: "ana@example.com".into()
+            }
+        );
+        assert!(call.is_git_write() && call.uses_git() && !call.is_git() && !call.is_write());
+        assert_eq!(
+            (call.name(), &*call.argument()),
+            ("git_identity_set", "Ana Pérez <ana@example.com>")
+        );
+        assert_eq!(
+            parse(json!({"name": "Ana"})),
+            Err(ToolError::MissingArgument)
+        );
+        assert_eq!(
+            parse(json!({"name": "Ana", "email": "a@b.c", "global": true})),
+            Err(ToolError::ExtraArgument)
+        );
     }
 
     // Spec (git-tools, Verb boundary): no other verb exists, even with every

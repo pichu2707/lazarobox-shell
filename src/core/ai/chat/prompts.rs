@@ -182,7 +182,10 @@ const ABILITIES: [(Family, &str); 3] = [
         "write and edit files (they stay staged until you propose the batch, which the user reviews once)",
     ),
     (Family::Exec, "run tests and builds"),
-    (Family::GitWrite, "add and commit with git"),
+    (
+        Family::GitWrite,
+        "add, commit and set the commit author with git",
+    ),
 ];
 
 /// What a turn that offers `gh_issue_draft` is told about it, after the rest

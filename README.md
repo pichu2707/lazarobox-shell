@@ -1056,7 +1056,7 @@ search = true      # glob, grep and read_file's windowed reading
 write = false      # create_dir, write_file, edit_file, propose_batch
 exec = false       # run_command: toolchain commands (see below)
 git = false        # git_status, git_diff, git_log (read-only)
-git_write = false  # git_add and git_commit (they write; each asks for your `y`)
+git_write = false  # git_add, git_commit and git_identity_set (they write; each asks for your `y`)
 github = false     # gh_issue_list, gh_issue_view and gh_pr_view (read-only; see GitHub)
 issue_draft = true # gh_issue_draft: opens the Feedback form with a draft (see Issue draft)
 ```
@@ -1142,7 +1142,7 @@ Options that change where configuration is read from or the destination are reje
 
 #### Git: `git_status`, `git_diff`, `git_log`, `git_add` and `git_commit`
 
-Two independent switches, both off by default: **Git** (`git = true`) offers the three read ones and **Git write** (`git_write = true`) offers `git_add` and `git_commit`. There is no other operation (no `push`, `pull`, `checkout`, `reset`, `rebase`...) nor a free-form argument list, and an orchestrator _worker_ can never commit. Linux only; `git` must be in a system location.
+Two independent switches, both off by default: **Git** (`git = true`) offers the three read ones and **Git write** (`git_write = true`) offers `git_add`, `git_commit` and `git_identity_set`. There is no other operation (no `push`, `pull`, `checkout`, `reset`, `rebase`...) nor a free-form argument list, and an orchestrator _worker_ can never commit. Linux only; `git` must be in a system location.
 
 | Tool         | What it does                                                             | Does it ask?                                 |
 | :----------- | :----------------------------------------------------------------------- | :------------------------------------------- |
@@ -1151,6 +1151,7 @@ Two independent switches, both off by default: **Git** (`git = true`) offers the
 | `git_diff`   | Bounded diff of the working tree or the index.                           | Local engine: no. **Cloud: yes**, before running. |
 | `git_add`    | Adds the given paths to the index.                                       | Always.                                      |
 | `git_commit` | Creates the commit after the full-pane review.                           | Always, on all engines.                      |
+| `git_identity_set` | Sets the repository's commit author (`user.name`, `user.email`).   | Always, on all engines.                      |
 
 **Reading.** Secret names (`.env`, `.npmrc`...) are excluded by _pathspec_, so a tracked and modified `.env` does not appear in the diff or the log, and all output is redacted and delivered as untrusted data. They are rejected while a write batch is prepared or proposed, and a rejected path opens no notice.
 
@@ -1166,6 +1167,8 @@ Two independent switches, both off by default: **Git** (`git = true`) offers the
 It is rejected if there is a secret in the index or if the diff is cut off. As with a write batch, `y` only approves if you have seen everything that must fit. After `y`, lazarobox checks the index again byte by byte; if it changed, there is no commit. The commit has a 120 s limit.
 
 After the commit, lazarobox compares the tree that was committed with the one you reviewed. If they differ (a hook may change files), it **warns and undoes nothing**, and suggests `git reset --soft HEAD~1`. Known limit: a `commit-msg` hook that edits the message is not detected.
+
+**`git_identity_set`.** It writes `user.name` and `user.email` with `git config --local`, in the repository's own `.git/config` and never in your global config, and the next `git_commit` uses them. The notice shows the name and email to write. A name or email with a control character, an email without `@` or with spaces is rejected before the notice. After `y` it runs in the jail and reads the email back (if the name is written but the email is not, the error says so: there is no rollback); the change of those two lines is not reported as a config change, but any other change to `.git/config` or the hooks is. In a linked worktree it writes the shared config of the repository.
 
 #### Threat model of `run_command` and git
 

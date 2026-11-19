@@ -713,6 +713,16 @@ impl App {
                 why: None,
                 notice: None,
             }),
+            // Name and email are one clean line each (checked before the ask), shown
+            // as labelled values: two `git config --local` writes run, no shell.
+            ApprovalAsk::GitIdentity { name, email } => Some(ApprovalPrompt {
+                target: "set the commit author in your repository's .git/config".to_owned(),
+                command: format!("user.name: {name} | user.email: {email}"),
+                keys: EXTERNAL_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
             // The program, arguments and folder are what will run, and the host
             // refused text that would not show as it is. The notice is part of
             // what is approved, so the pane must fit it (it is not `why`).

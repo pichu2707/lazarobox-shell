@@ -329,6 +329,7 @@ pub fn execute_within(
         | Call::GitLog { .. }
         | Call::GitAdd { .. }
         | Call::GitCommit { .. }
+        | Call::GitIdentitySet { .. }
         | Call::ProposeBatch
         | Call::Github(_)
         | Call::IssueDraft(_)
