@@ -34,8 +34,8 @@ use crate::core::ai::{
 /// other reason to give. Short, and it goes back to the model.
 pub const DECLINED: &str = "the user declined";
 pub const CANCELLED: &str = "cancelled";
-const TOOLS_OFF: &str = "tools are off";
-const WORKER_OVER: &str = "the worker already ended";
+pub(super) const TOOLS_OFF: &str = "tools are off";
+pub(super) const WORKER_OVER: &str = "the worker already ended";
 const APPROVAL_CHAT_ONLY: &str = "The approval mode is for chat panes; open one with Ctrl+Space c";
 const QUEUE_FULL_NOTICE: &str = "Too many worker approvals are waiting; the last one was denied";
 const APPROVAL_TOOLS_OFF: &str = "Tools are off: there is no approval mode to change";

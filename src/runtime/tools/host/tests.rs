@@ -1258,3 +1258,35 @@ fn a_contended_badge_poll_answers_none_and_a_free_one_answers() {
     drop(held);
     assert!(host.badges(|_| false).is_some());
 }
+
+// Reason drift (#771): the step trail keeps a refusal only if its text equals
+// a fixed key of core, which cannot import these constants. Each source
+// constant must still map to its label, with and without the `denied: ` prefix.
+#[test]
+fn the_trail_labels_follow_the_refusal_texts() {
+    use crate::core::ai::chat::engine::{CallId, ToolStatus};
+    use crate::core::ai::orchestra::trail::Trail;
+    let cases = [
+        (crate::app::DECLINED, "declined"),
+        (crate::app::CANCELLED, "cancelled"),
+        (NOT_APPROVED, "not approved"),
+        (NOT_COMMAND, "not a command"),
+        (
+            crate::core::ai::chat::review::TOO_LARGE,
+            "too large to review",
+        ),
+        (review::NOT_REVIEWED, "not reviewed"),
+    ];
+    for (source, label) in cases {
+        for text in [source.to_owned(), format!("denied: {source}")] {
+            let mut trail = Trail::default();
+            trail.worker_call(1, CallId(1), "exec", "ls");
+            trail.worker_result(1, CallId(1), ToolStatus::Denied, &text);
+            assert_eq!(
+                trail.lines(),
+                vec![format!("worker 1: exec ls -> refused: {label}")],
+                "{text}"
+            );
+        }
+    }
+}

@@ -209,6 +209,7 @@ impl App {
         };
         // A worker's step is a redraw only when its transcript is on view.
         if let OrchestraEvent::Trace { run, worker, item } = event {
+            let kept = self.keep_worker_step(id, run, worker, &item);
             if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
                 let shown = chat
                     .run_view()
@@ -216,7 +217,7 @@ impl App {
                 chat.trace(run, worker, item);
                 self.dirty |= shown;
             }
-            return Vec::new();
+            return kept;
         }
         // The steps of a run that stops, for its report (#771); first, the
         // ones taken before the run was known join it.

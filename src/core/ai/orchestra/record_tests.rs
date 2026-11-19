@@ -224,9 +224,12 @@ fn a_stored_simple_worker_is_counted_and_listed_and_an_unknown_kind_is_kept() {
 fn the_resume_message_never_holds_the_trail() {
     let mut r = record("fix the parser", vec![worker(2, "running")]);
     r.trail = Some(
-        "cut 0\nexec curl TRAILMARK -> error: ghp_abcdefghijklmnopqrstuvwxyz0123456789".into(),
+        "cut 0\nexec curl TRAILMARK -> error: ghp_abcdefghijklmnopqrstuvwxyz0123456789\nworker 1: exec curl WORKMARK -> error".into(),
     );
     let text = r.resume_message();
-    assert!(!text.contains("TRAILMARK"), "{text}");
+    assert!(
+        !text.contains("TRAILMARK") && !text.contains("WORKMARK"),
+        "{text}"
+    );
     assert!(!text.contains("ghp_abcdefghijklmnopqrstuvwxyz"), "{text}");
 }
