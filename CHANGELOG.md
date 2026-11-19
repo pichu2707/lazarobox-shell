@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.31.2] - 2026-11-19
+
 ### Changed
 
 - **The `gh` failure notice now shows in an orchestrator worker's view.** A worker whose `gh` read fails with unrecognised stderr gets the notice as a line of its transcript. It is display-only: it never reaches the worker's result, the run ledger or any model (#811).
@@ -3144,7 +3146,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.1...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.2...HEAD
+[1.31.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.1...v1.31.2
 [1.31.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.0...v1.31.1
 [1.31.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.30.0...v1.31.0
 [1.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.29.1...v1.30.0
