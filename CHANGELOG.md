@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-11-19
+
 ### Added
 
 - **`git_identity_set` sets the repository's commit author.** With Git write
@@ -3123,7 +3125,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.30.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.0...HEAD
+[1.31.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.30.0...v1.31.0
 [1.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.29.1...v1.30.0
 [1.29.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.29.0...v1.29.1
 [1.29.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.28.2...v1.29.0
