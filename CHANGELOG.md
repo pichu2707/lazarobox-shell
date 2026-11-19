@@ -12,6 +12,7 @@ baseline.
 
 ### Changed
 
+- **Worker tool calls enter the step trail.** Each one is stored as `worker <n>: <tool> <args> -> ok | refused: <reason> | error`, built only from text lazarobox generates (never tool output or error detail), with its own cap of 20 so workers never push out coordinator steps. A report lists the last 12 coordinator steps and the last 4 worker steps. Display-only, as before (#771).
 - **A resumed run keeps the interrupted run's step trail.** The report of a run started with `Ctrl+Space` `r` `r` lists the old run's steps, a `resumed from run <id>` line, then its own steps. The trail stays display-only: it never reaches the resume seed, a continuation or any model (#771).
 
 ## [1.31.2] - 2026-11-19

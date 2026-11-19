@@ -35,7 +35,7 @@ Later:
 - [x] Show the trail of a run that finished cleanly (listed on its end; once
       with a stop report; not for a replaced run).
 - [x] A resumed run (Prefix r r) starts an empty trail: see Slice 4a below.
-- [ ] Worker tool calls enter the trail: see Slice 4b below.
+- [x] Worker tool calls enter the trail: see Slice 4b below.
 - [ ] Acceptance-judges S2: push judge steps through `Trail::call` / `handoff`
       (out of scope for Slice 4).
 
@@ -120,69 +120,69 @@ readable by older builds", "Display only". Design: D6-D13.
 
 RED (write first, all fail):
 
-- [ ] 4b.1 `trail_tests.rs`: 100 worker lines evict no coordinator line or
+- [x] 4b.1 `trail_tests.rs`: 100 worker lines evict no coordinator line or
       handoff; `worker_cut` and `cut` count apart; `to_text` writes the sum
       (D10, D11).
-- [ ] 4b.2 `trail_tests.rs`: a legacy-style parse (header, then at most 60
+- [x] 4b.2 `trail_tests.rs`: a legacy-style parse (header, then at most 60
       lines) of an 80-line text gives a correct total; a `from_text` round
       trip keeps the kinds (D11).
-- [ ] 4b.3 `trail_tests.rs`: the same `CallId` for the coordinator and two
+- [x] 4b.3 `trail_tests.rs`: the same `CallId` for the coordinator and two
       workers resolves to each one's own line (D9).
-- [ ] 4b.4 `trail_tests.rs`: hostile result (token, fake instruction, gh
+- [x] 4b.4 `trail_tests.rs`: hostile result (token, fake instruction, gh
       stderr text) gives `-> error` or `-> refused`, and the stored text holds
       none of it; an unknown denial gives plain `refused`; every `REASONS`
       key maps to its label, with and without the `denied: ` prefix (D7, D8).
-- [ ] 4b.5 `trail_tests.rs` (D13): with 30 coordinator and 30 worker lines,
+- [x] 4b.5 `trail_tests.rs` (D13): with 30 coordinator and 30 worker lines,
       `shown` lists the last 12 coordinator-share lines and the last 4 worker
       lines (16), in chronological order, and the cut note counts both
       shares. With no worker lines, `shown` is unchanged (12 lines).
-- [ ] 4b.6 runtime host tests: reason drift, each source constant
+- [x] 4b.6 runtime host tests: reason drift, each source constant
       (`app::tool::DECLINED`, `CANCELLED`, `host::NOT_APPROVED`,
       `NOT_COMMAND`, the `tools are off` and `the worker already ended`
       strings, `chat::review::TOO_LARGE`, `not reviewed`) maps to its label.
-- [ ] 4b.7 `app_tests/orchestra_trail.rs`: a failed worker call survives a
+- [x] 4b.7 `app_tests/orchestra_trail.rs`: a failed worker call survives a
       restart (the interrupted line lists `worker 1: ... -> error`); a refused
       worker call stores its fixed reason; the stored `SaveRun` text of a
       hostile result holds none of its text; an `ok` worker result saves
       nothing by itself, `refused` and `error` save at once (D12); a call
       from an ended run or a run the pane does not own is not kept.
-- [ ] 4b.8 `app_tests/orchestra_resume.rs` and `record_tests.rs`: with worker
+- [x] 4b.8 `app_tests/orchestra_resume.rs` and `record_tests.rs`: with worker
       lines in the stored trail, `resume_message()` and the next requests
       still hold no trail line.
 
 GREEN (each follows its RED):
 
-- [ ] 4b.9 `trail.rs`: add `Kind` and `Step.kind`, per-kind `fit` shared by
+- [x] 4b.9 `trail.rs`: add `Kind` and `Step.kind`, per-kind `fit` shared by
       `push` and `absorb`, `WORKER_STEPS = 20`, `worker_cut`, and open calls
       keyed by `(Kind, CallId)`. Makes 4b.1, 4b.3 pass.
-- [ ] 4b.10 `trail.rs`: `from_text` classification (`worker <digits>: ` prefix
+- [x] 4b.10 `trail.rs`: `from_text` classification (`worker <digits>: ` prefix
       = worker line, else coordinator; whole stored cut into `cut`) and
       `to_text` writing `cut <cut + worker_cut>`. Makes 4b.2 pass.
-- [ ] 4b.11 `trail.rs`: `worker_call`, `worker_result`, `REASONS` and
+- [x] 4b.11 `trail.rs`: `worker_call`, `worker_result`, `REASONS` and
       `reason()` (`strip_prefix` plus iterator `find`, no `if let` guards;
       the result summary is only an equality key, never copied; `Error`
       stores `error`). Makes 4b.4 pass; 4b.6 passes once the constants match.
-- [ ] 4b.12 `trail.rs`: per-share `shown` (last 12 coordinator-share, last 4
+- [x] 4b.12 `trail.rs`: per-share `shown` (last 12 coordinator-share, last 4
       worker, cut note counts both) (D13). Makes 4b.5 pass.
-- [ ] 4b.13 `run_store.rs`: `keep_worker_step(id, run, worker, &item)` with the
+- [x] 4b.13 `run_store.rs`: `keep_worker_step(id, run, worker, &item)` with the
       same guards as `keep_handoff` (`ended_runs`, `owns`); `Ok` updates
       memory only, `refused` and `error` send a `SaveRun` with the trail
       (D6, D12).
-- [ ] 4b.14 `orchestra.rs`: in `App::on_orchestra`, call it from the `Trace`
+- [x] 4b.14 `orchestra.rs`: in `App::on_orchestra`, call it from the `Trace`
       branch for `Call` / `Result` items before `item` moves into
       `chat.trace`; ignore Text and Notice items. Makes 4b.7 pass.
-- [ ] 4b.15 Confirm 4b.8 passes with no production change.
+- [x] 4b.15 Confirm 4b.8 passes with no production change.
 
 Close-out:
 
-- [ ] 4b.16 README.md and README.es.md: step trail sections say worker tool
+- [x] 4b.16 README.md and README.es.md: step trail sections say worker tool
       calls appear as `worker <n>: <tool> <args> -> ok | refused: <reason> |
       error`, the separate worker share, and that a report lists the last 12
       coordinator steps and the last 4 worker steps (same sections, same
       order).
-- [ ] 4b.17 CHANGELOG `[Unreleased]` entry (worker tool calls in the step
+- [x] 4b.17 CHANGELOG `[Unreleased]` entry (worker tool calls in the step
       trail, per-share report).
-- [ ] 4b.18 `cargo test`, `cargo clippy --all-targets -- -D warnings`,
+- [x] 4b.18 `cargo test`, `cargo clippy --all-targets -- -D warnings`,
       `cargo fmt --check` all green.
 - [ ] 4b.19 `rm -rf target` in the worktree. Open the PR, merge after green CI
       and clean review.

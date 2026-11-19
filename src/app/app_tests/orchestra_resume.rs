@@ -955,7 +955,10 @@ fn the_stored_trail_never_reaches_a_model_request() {
     let mut a = orch_app_with(ai);
     toggle(&mut a);
     let mut old = stored(9, "port the parser");
-    old.trail = Some("cut 0\nexec curl TRAILMARK -> error: exit 101".into());
+    old.trail = Some(
+        "cut 0\nexec curl TRAILMARK -> error: exit 101\nworker 1: exec curl WORKMARK -> error"
+            .into(),
+    );
     recovered(&mut a, vec![old]);
 
     let effects = keys(&mut a, "rr");
@@ -968,6 +971,8 @@ fn the_stored_trail_never_reaches_a_model_request() {
     );
     assert!(!format!("{request:?}").contains("TRAILMARK"));
     assert!(!format!("{orch:?}").contains("TRAILMARK"));
+    assert!(!format!("{request:?}").contains("WORKMARK"));
+    assert!(!format!("{orch:?}").contains("WORKMARK"));
     let turn = turn_id(&effects);
 
     a.update(event(row(RunId(900), 1, WorkerStatus::Running)));
@@ -987,10 +992,13 @@ fn the_stored_trail_never_reaches_a_model_request() {
     assert_eq!(last, Some("LEDGER-TEXT"));
     assert!(!format!("{request:?}").contains("TRAILMARK"));
     assert!(!format!("{orch:?}").contains("TRAILMARK"));
+    assert!(!format!("{request:?}").contains("WORKMARK"));
+    assert!(!format!("{orch:?}").contains("WORKMARK"));
 
     a.update(event(OrchestraEvent::Stopped {
         run: RunId(900),
         reason: "run stopped: it took max_turns (6) orchestrator turns".to_owned(),
     }));
     assert!(system(&a).iter().any(|l| l.contains("TRAILMARK")));
+    assert!(system(&a).iter().any(|l| l.contains("WORKMARK")));
 }

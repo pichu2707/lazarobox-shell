@@ -11,10 +11,10 @@ use std::{
 };
 
 use super::*;
-use crate::core::ai::chat::engine::StreamEvent;
+use crate::core::ai::chat::engine::{StreamEvent, ToolStatus};
 use crate::core::ai::orchestra::{
-    RunId,
-    event::WorkerRow,
+    RunId, WorkerId,
+    event::{TraceItem, WorkerRow},
     record::{RunPhase, RunRecord, SHOWN_MAX, WorkerRecord},
     trail::{SHOWN, Trail},
 };
@@ -303,6 +303,41 @@ impl App {
             .or_default()
             .handoff(who, verdict, reason);
         self.save_trail(id, run)
+    }
+
+    /// A tool call or result of worker `worker` of `run`. Only lazarobox's own
+    /// text enters the trail (see `Trail::worker_result`); text and notices are
+    /// not steps. An `ok` waits for the next save; a refusal or an error, which
+    /// a diagnosis starts from, saves at once.
+    pub(super) fn keep_worker_step(
+        &mut self,
+        id: PaneId,
+        run: RunId,
+        worker: WorkerId,
+        item: &TraceItem,
+    ) -> Vec<Effect> {
+        if self.ended_runs.contains(&run) || !self.owns(id, run) {
+            return Vec::new();
+        }
+        let trail = self.run_keep.trails.entry(run).or_default();
+        match item {
+            TraceItem::Call { id, name, summary } => {
+                trail.worker_call(worker.0, *id, name, summary);
+                Vec::new()
+            }
+            TraceItem::Result {
+                id: call,
+                status,
+                summary,
+            } => {
+                trail.worker_result(worker.0, *call, *status, summary);
+                if *status == ToolStatus::Ok {
+                    return Vec::new();
+                }
+                self.save_trail(id, run)
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// An event names `run` in pane `id`. If the latest coordinator turn has
