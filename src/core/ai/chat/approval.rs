@@ -496,6 +496,9 @@ pub fn worker_label(kind: Task, engine: &str, model: &str) -> String {
 /// The most characters of the paths of an add that its prompt shows. The host
 /// refuses an add whose paths are longer, so the prompt never hides one.
 pub const GIT_ADD_SHOWN: usize = 400;
+// An identity ask shows its name and email whole: the shown cap is never
+// shorter than the identity cap.
+const _: () = assert!(crate::core::ai::tools::git::MAX_IDENTITY_BYTES <= GIT_ADD_SHOWN);
 
 /// The paths of an add as the prompt writes them: a path with whitespace is
 /// quoted, so two paths never read as one.

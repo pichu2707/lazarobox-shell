@@ -1168,7 +1168,7 @@ It is rejected if there is a secret in the index or if the diff is cut off. As w
 
 After the commit, lazarobox compares the tree that was committed with the one you reviewed. If they differ (a hook may change files), it **warns and undoes nothing**, and suggests `git reset --soft HEAD~1`. Known limit: a `commit-msg` hook that edits the message is not detected.
 
-**`git_identity_set`.** It writes `user.name` and `user.email` with `git config --local`, in the repository's own `.git/config` and never in your global config, and the next `git_commit` uses them. The notice shows the name and email to write. A name or email with a control character, an email without `@` or with spaces is rejected before the notice. After `y` it runs in the jail and reads the email back; the change of those two lines is not reported as a config change, but any other change to `.git/config` or the hooks is. In a linked worktree it writes the shared config of the repository.
+**`git_identity_set`.** It writes `user.name` and `user.email` with `git config --local`, in the repository's own `.git/config` and never in your global config, and the next `git_commit` uses them. The notice shows the name and email to write. A name or email with a control character, an email without `@` or with spaces is rejected before the notice. After `y` it runs in the jail and reads the email back (if the name is written but the email is not, the error says so: there is no rollback); the change of those two lines is not reported as a config change, but any other change to `.git/config` or the hooks is. In a linked worktree it writes the shared config of the repository.
 
 #### Threat model of `run_command` and git
 

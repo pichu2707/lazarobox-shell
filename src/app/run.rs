@@ -713,10 +713,11 @@ impl App {
                 why: None,
                 notice: None,
             }),
-            // Name and email are one clean line each (checked before the ask).
+            // Name and email are one clean line each (checked before the ask), shown
+            // as labelled values: two `git config --local` writes run, no shell.
             ApprovalAsk::GitIdentity { name, email } => Some(ApprovalPrompt {
                 target: "set the commit author in your repository's .git/config".to_owned(),
-                command: format!("git config --local user.name '{name}' user.email {email}"),
+                command: format!("user.name: {name} | user.email: {email}"),
                 keys: EXTERNAL_KEYS,
                 armed,
                 why: None,
