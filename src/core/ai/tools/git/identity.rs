@@ -28,28 +28,38 @@ pub fn identity_get_argv(dir: &GitDir) -> Vec<String> {
 
 /// Whether a config file changed only in its `[user]` `name` and `email`
 /// lines (a `[user]` header added or kept with them). `before` is `None` when
-/// the file did not exist. Byte-exact for every other line, so anything else
-/// the run changed stays reported.
+/// the file did not exist. Every other line is compared byte for byte
+/// together with the section it belongs to, so a line that moves into or out
+/// of a section (a `[user]` header added or removed above it) is a change,
+/// and so is anything joined to a key by a trailing `\`.
 pub fn only_identity_changed(before: Option<&[u8]>, after: &[u8]) -> bool {
     rest(before.unwrap_or_default()) == rest(after)
 }
 
-/// The lines of a config without the `[user]` headers and the `name` and
-/// `email` keys under them.
-fn rest(text: &[u8]) -> Vec<&[u8]> {
-    let mut in_user = false;
+/// The lines of a config, each with the header of its section, without blank
+/// lines, the `[user]` headers and the plain `name` and `email` keys under them.
+fn rest(text: &[u8]) -> Vec<(&[u8], &[u8])> {
+    const USER: &[u8] = b"[user]";
+    let mut section: &[u8] = b"";
+    let mut continued = false;
     let mut kept = Vec::new();
     for line in text.split(|&b| b == b'\n') {
         let trimmed = line.trim_ascii();
-        if trimmed.starts_with(b"[") {
-            in_user = trimmed.eq_ignore_ascii_case(b"[user]");
-            if in_user {
-                continue;
-            }
-        } else if in_user && is_identity_key(trimmed) {
+        let joined = std::mem::replace(&mut continued, trimmed.ends_with(b"\\"));
+        // A blank line means nothing to git, wherever it sits.
+        if trimmed.is_empty() && !joined {
             continue;
         }
-        kept.push(line);
+        if !joined && trimmed.starts_with(b"[") {
+            if trimmed.eq_ignore_ascii_case(USER) {
+                section = USER;
+                continue;
+            }
+            section = line;
+        } else if !joined && !continued && section == USER && is_identity_key(trimmed) {
+            continue;
+        }
+        kept.push((section, line));
     }
     kept
 }
@@ -146,12 +156,36 @@ mod tests {
             format!("{BASE}[alias]\n\tname = !sh\n{id}"),
             // A user subsection is not the user section.
             format!("{BASE}[user \"x\"]\n\tname = Ana\n"),
+            // A key continued onto the next line is not a plain identity key.
+            format!("{BASE}[user]\n\tname = Ana \\\n\thooksPath = /evil\n"),
         ] {
             assert!(
                 !only_identity_changed(Some(BASE.as_bytes()), after.as_bytes()),
                 "{after:?}"
             );
         }
+    }
+
+    // A line that changes section is a change, even when only `[user]`
+    // headers were added or removed around it (verifier advisory 3).
+    #[test]
+    fn a_line_moved_across_a_user_header_is_a_change() {
+        let before = "[core]\n\tbare = false\n[user]\n\thooksPath = /evil\n";
+        let after = "[core]\n\tbare = false\n\thooksPath = /evil\n";
+        assert!(!only_identity_changed(
+            Some(before.as_bytes()),
+            after.as_bytes()
+        ));
+        assert!(!only_identity_changed(
+            Some(after.as_bytes()),
+            before.as_bytes()
+        ));
+        // A removed user section that held only the identity is fine.
+        let only_id = format!("{BASE}[user]\n\tname = Ana\n");
+        assert!(only_identity_changed(
+            Some(only_id.as_bytes()),
+            BASE.as_bytes()
+        ));
     }
 
     // Spec S1, against the git the tests run with: the writes land in the
