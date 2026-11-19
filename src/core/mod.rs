@@ -18,6 +18,7 @@ pub mod mouse;
 pub mod nesting;
 pub mod opener;
 pub mod osc7;
+pub mod osc8;
 pub mod pane;
 pub mod prefix;
 pub mod probe;

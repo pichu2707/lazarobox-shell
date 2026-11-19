@@ -420,4 +420,110 @@ mod click {
             "{effects:?}"
         );
     }
+
+    // OSC 8 links (#796) ----------------------------------------------------------
+
+    fn osc8(url: &str, text: &str) -> String {
+        format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
+    }
+
+    fn shown(url: &str) -> Option<String> {
+        Some(format!("Link to {url}: click it again to open it"))
+    }
+
+    #[test]
+    fn an_osc8_link_showing_its_url_opens_at_once() {
+        let (mut a, r) = shell(&osc8("https://a.io/x", "https://a.io/x"));
+        assert_eq!(click(&mut a, (r.x + 3, r.y)), opened("https://a.io/x"));
+    }
+
+    #[test]
+    fn an_osc8_link_with_other_text_shows_its_url_then_opens_on_a_second_click() {
+        let (mut a, r) = shell(&format!("see {}", osc8("https://a.io/docs", "⧉ Design")));
+        let at = (r.x + 4, r.y);
+        assert_eq!(click(&mut a, at), []);
+        assert_eq!(a.notice, shown("https://a.io/docs"));
+        assert_eq!(click(&mut a, (r.x + 7, r.y)), opened("https://a.io/docs"));
+        assert_eq!(click(&mut a, at), [], "the next click shows it again");
+        assert_eq!(a.notice, shown("https://a.io/docs"));
+    }
+
+    #[test]
+    fn a_click_elsewhere_in_between_shows_the_url_again() {
+        let (mut a, r) = shell(&format!("see {}", osc8("https://a.io/docs", "⧉")));
+        let at = (r.x + 4, r.y);
+        assert_eq!(click(&mut a, at), []);
+        assert_eq!(click(&mut a, (r.x, r.y)), []);
+        assert_eq!(click(&mut a, at), []);
+        assert_eq!(a.notice, shown("https://a.io/docs"));
+    }
+
+    #[test]
+    fn the_second_click_must_be_on_the_same_link() {
+        let text = format!(
+            "{} {}",
+            osc8("https://a.io", "⧉"),
+            osc8("https://b.io", "⧉")
+        );
+        let (mut a, r) = shell(&text);
+        assert_eq!(click(&mut a, (r.x, r.y)), []);
+        assert_eq!(click(&mut a, (r.x + 2, r.y)), []);
+        assert_eq!(a.notice, shown("https://b.io"));
+    }
+
+    #[test]
+    fn an_osc8_link_whose_text_is_another_url_goes_where_it_points() {
+        let (mut a, r) = shell(&osc8("https://a.io/real", "https://b.io/shown"));
+        assert_eq!(click(&mut a, (r.x + 3, r.y)), []);
+        assert_eq!(a.notice, shown("https://a.io/real"));
+        assert_eq!(click(&mut a, (r.x + 3, r.y)), opened("https://a.io/real"));
+    }
+
+    #[test]
+    fn an_osc8_link_to_a_file_opens_nothing() {
+        let (mut a, r) = shell(&osc8("file:///etc/passwd", "⧉ passwd"));
+        assert_eq!(click(&mut a, (r.x + 2, r.y)), []);
+        assert_eq!(click(&mut a, (r.x + 2, r.y)), []);
+    }
+
+    #[test]
+    fn prefix_u_lists_the_url_of_an_osc8_link() {
+        let (mut a, _) = shell(&format!("{} and {LINK}", osc8("https://a.io/docs", "⧉")));
+        press(&mut a, "u");
+        assert_eq!(list_of(&a), ["https://a.io/docs", LINK]);
+        assert_eq!(a.update(key('1')), opened("https://a.io/docs"));
+    }
+
+    // Verifier B1: the cells after the link make the URL the user reads longer.
+    #[test]
+    fn an_osc8_link_covering_part_of_a_visible_url_asks_first() {
+        let (mut a, r) = shell(&format!(
+            "{}m",
+            osc8("https://github.co", "https://github.co")
+        ));
+        assert_eq!(click(&mut a, (r.x + 3, r.y)), []);
+        assert_eq!(a.notice, shown("https://github.co"));
+    }
+
+    #[test]
+    fn a_hidden_link_redrawn_with_another_url_shows_the_new_one() {
+        let (mut a, r) = shell(&osc8("https://a.io", "⧉"));
+        assert_eq!(click(&mut a, (r.x, r.y)), []);
+        let redrawn = format!("\r{}", osc8("https://evil.io", "⧉"));
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(redrawn.into_bytes()),
+        ));
+        assert_eq!(click(&mut a, (r.x, r.y)), []);
+        assert_eq!(a.notice, shown("https://evil.io"));
+    }
+
+    #[test]
+    fn a_key_between_the_clicks_shows_the_url_again() {
+        let (mut a, r) = shell(&osc8("https://a.io", "⧉"));
+        assert_eq!(click(&mut a, (r.x, r.y)), []);
+        a.update(key('x'));
+        assert_eq!(click(&mut a, (r.x, r.y)), []);
+        assert_eq!(a.notice, shown("https://a.io"));
+    }
 }

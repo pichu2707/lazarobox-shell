@@ -1199,6 +1199,9 @@ pub struct App {
     link_list: Option<LinkList>,
     /// Where the left button went down, until it comes up.
     link_press: Option<(u16, u16)>,
+    /// The link whose URL the last click showed: the next click on it
+    /// opens it (#796).
+    shown_link: Option<(PaneId, String)>,
     /// The Hugging Face account of the saved token, once a connect or a
     /// check found it in this session.
     hf_account: Option<String>,
@@ -1342,6 +1345,7 @@ impl App {
             clip_link: false,
             link_list: None,
             link_press: None,
+            shown_link: None,
             hf_account: None,
             note_choices: Vec::new(),
             engines: None,
@@ -2220,7 +2224,11 @@ impl App {
 
     pub fn update(&mut self, event: AppEvent) -> Vec<Effect> {
         let mut effects = match event {
-            AppEvent::Key(key) => self.on_key(key),
+            AppEvent::Key(key) => {
+                // Only a click right after the one that showed a URL opens it.
+                self.shown_link = None;
+                self.on_key(key)
+            }
             AppEvent::Mouse(mouse) => self.on_mouse(mouse),
             AppEvent::Paste(text) => self.on_paste(&text),
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),

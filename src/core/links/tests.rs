@@ -32,6 +32,7 @@ fn a_link_says_its_text_and_its_columns() {
         [Link {
             url: "https://a.io/x".into(),
             spans: vec![span(0, 4, 18)],
+            hidden: false,
         }]
     );
 }
@@ -169,6 +170,7 @@ fn a_link_that_wraps_is_one_link_with_a_span_per_row() {
         [Link {
             url: "https://a.io/long/path".into(),
             spans: vec![span(0, 2, 17), span(1, 0, 7)],
+            hidden: false,
         }]
     );
 }
@@ -205,6 +207,7 @@ fn the_drawing_at_the_start_of_a_row_is_not_text() {
         [Link {
             url: "https://a.io/long".into(),
             spans: vec![span(0, 2, 17), span(1, 2, 4)],
+            hidden: false,
         }]
     );
 }
@@ -243,4 +246,42 @@ fn every_link_found_may_be_opened() {
 fn empty_rows_have_no_links() {
     assert_eq!(detect(&[]), []);
     assert_eq!(detect(&[row("")]), []);
+}
+
+#[test]
+fn a_drawn_link_wins_over_the_text_it_covers_and_the_rest_stay_in_order() {
+    let drawn = Link {
+        url: "https://a.io/real".into(),
+        spans: vec![span(1, 0, 17)],
+        hidden: true,
+    };
+    let found = detect(&[
+        row("https://c.io"),
+        row("https://b.io/shown and https://d.io"),
+    ]);
+    let urls: Vec<_> = merge(vec![drawn], found)
+        .into_iter()
+        .map(|link| link.url)
+        .collect();
+    assert_eq!(urls, ["https://c.io", "https://a.io/real", "https://d.io"]);
+}
+
+#[test]
+fn a_drawn_link_shows_its_url_only_when_the_text_reads_that_link_there() {
+    let drawn = |text: &str| Link {
+        url: "https://github.co".into(),
+        spans: vec![span(0, 0, 17)],
+        hidden: text != "https://github.co",
+    };
+    let alone = merge(
+        vec![drawn("https://github.co")],
+        detect(&[row("https://github.co")]),
+    );
+    assert!(!alone[0].hidden);
+    let longer = merge(
+        vec![drawn("https://github.co")],
+        detect(&[row("https://github.com")]),
+    );
+    assert_eq!(longer.len(), 1);
+    assert!(longer[0].hidden, "the text reads https://github.com");
 }
