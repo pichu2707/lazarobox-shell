@@ -1199,6 +1199,9 @@ pub struct App {
     link_list: Option<LinkList>,
     /// Where the left button went down, until it comes up.
     link_press: Option<(u16, u16)>,
+    /// The link whose URL the last click showed: the next click on it
+    /// opens it (#796).
+    shown_link: Option<(PaneId, String)>,
     /// The Hugging Face account of the saved token, once a connect or a
     /// check found it in this session.
     hf_account: Option<String>,
@@ -1342,6 +1345,7 @@ impl App {
             clip_link: false,
             link_list: None,
             link_press: None,
+            shown_link: None,
             hf_account: None,
             note_choices: Vec::new(),
             engines: None,

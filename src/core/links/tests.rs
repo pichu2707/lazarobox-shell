@@ -247,3 +247,21 @@ fn empty_rows_have_no_links() {
     assert_eq!(detect(&[]), []);
     assert_eq!(detect(&[row("")]), []);
 }
+
+#[test]
+fn a_drawn_link_wins_over_the_text_it_covers_and_the_rest_stay_in_order() {
+    let drawn = Link {
+        url: "https://a.io/real".into(),
+        spans: vec![span(1, 0, 17)],
+        hidden: true,
+    };
+    let found = detect(&[
+        row("https://c.io"),
+        row("https://b.io/shown and https://d.io"),
+    ]);
+    let urls: Vec<_> = merge(vec![drawn], found)
+        .into_iter()
+        .map(|link| link.url)
+        .collect();
+    assert_eq!(urls, ["https://c.io", "https://a.io/real", "https://d.io"]);
+}

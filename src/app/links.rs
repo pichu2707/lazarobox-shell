@@ -1,5 +1,6 @@
 //! Opening a link a pane shows (pane-links): the rows of the pane go through
-//! the detector, and a click is looked up in what it found.
+//! the detector, with the OSC 8 links the pane drew (#796), and a click is
+//! looked up in what it found.
 
 use super::{scroll::rect_has, *};
 use crate::core::ai::chat::transcript::{Line, Wrap};
@@ -47,6 +48,8 @@ impl App {
     /// press was on the same cell, so a drag never opens one.
     pub(super) fn on_link_release(&mut self, mouse: MouseEvent) -> Vec<Effect> {
         let press = self.link_press.take();
+        // Only the very next click opens a link whose URL a click showed.
+        let shown = self.shown_link.take();
         if press != Some((mouse.column, mouse.row)) || !self.mouse_reads_panes() {
             return Vec::new();
         }
@@ -64,10 +67,27 @@ impl App {
             return Vec::new();
         }
         let (col, row) = (mouse.column - rect.x, mouse.row - rect.y);
-        let url = self
+        let link = self
             .pane_links(id)
             .and_then(|found| found.at(usize::from(col), usize::from(row)).cloned());
-        url.map_or_else(Vec::new, |link| self.open_link(link.url))
+        link.map_or_else(Vec::new, |link| self.click_link(id, link, shown))
+    }
+
+    /// Opens a link that shows its URL. One that shows other text says
+    /// where it goes, and opens when the next click is on it too.
+    fn click_link(
+        &mut self,
+        id: PaneId,
+        link: Link,
+        shown: Option<(PaneId, String)>,
+    ) -> Vec<Effect> {
+        if !link.hidden || shown == Some((id, link.url.clone())) {
+            return self.open_link(link.url);
+        }
+        self.notice = Some(format!("Link to {}: click it again to open it", link.url));
+        self.dirty = true;
+        self.shown_link = Some((id, link.url));
+        Vec::new()
     }
 
     /// The links pane `id` shows; `None` for a chat with no transcript.
@@ -78,6 +98,7 @@ impl App {
         let state = self.panes.get_mut(&id)?;
         let drawn = usize::from(state.size.rows);
         let pty = state.pty_mut()?;
+        let hyperlinks = pty.emu.hyperlinks();
         let (texts, above) = pty.emu.link_rows();
         let rows: Vec<Row> = texts
             .iter()
@@ -88,7 +109,7 @@ impl App {
             })
             .collect();
         Some(PaneLinks {
-            links: links::detect(&rows),
+            links: links::merge(hyperlinks, links::detect(&rows)),
             above,
             first_row: 0,
             drawn,

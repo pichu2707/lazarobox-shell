@@ -170,5 +170,25 @@ fn link(cells: &[Cell]) -> Link {
     }
 }
 
+/// The OSC 8 links a pane drew and the links found in its text, in reading
+/// order. Where they share a cell the OSC 8 link wins: it is where the text
+/// points to.
+pub fn merge(drawn: Vec<Link>, found: Vec<Link>) -> Vec<Link> {
+    let shares_a_cell = |link: &Link| {
+        (link.spans.iter()).any(|span| {
+            (drawn.iter().flat_map(|other| &other.spans)).any(|theirs| {
+                theirs.row == span.row && theirs.start < span.end && span.start < theirs.end
+            })
+        })
+    };
+    let found: Vec<Link> = found
+        .into_iter()
+        .filter(|link| !shares_a_cell(link))
+        .collect();
+    let mut links: Vec<Link> = drawn.into_iter().chain(found).collect();
+    links.sort_by_key(|link| link.spans.first().map(|span| (span.row, span.start)));
+    links
+}
+
 #[cfg(test)]
 mod tests;

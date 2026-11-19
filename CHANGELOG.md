@@ -28,6 +28,14 @@ baseline.
   remote branch, or when HEAD already has that author. Every call asks for
   your `y` with the commit's subject and both authors, and nothing is
   rewritten if HEAD or the identity changed after the question.
+- **Links that an AI CLI draws in a pane with other text, such as `⧉`, can
+  be opened.** Claude Code and OpenCode print OSC 8 links when the terminal
+  supports them; lazarobox now keeps where each one is. A click on a link
+  whose text is its URL opens it; on one that shows other text, the first
+  click shows the URL (`Link to <url>: click it again to open it`) and a
+  second click on it opens it. `Ctrl+Space` `u` lists them by their URL. Only
+  `http` and `https` links open, and a link the program has drawn over is no
+  link. (#796)
 
 ## [1.30.0] - 2026-11-19
 

@@ -424,7 +424,7 @@ Any change of focused pane or active tab MUST exit COPY (the pane being left ret
 - THEN mode is still RESIZE
 
 ### Requirement: LINKS mode
-`u` in PREFIX MUST list the distinct `http` and `https` links the focused pane shows, in reading order, a link shown twice listed where it was last seen, with the newest selected. When there are more links than keys the newest MUST stay. In LINKS, `1` to `9` and then letters open their row, Enter opens the selected row, `y` copies it, `j`/`k` and the arrows move the selection, and Esc or Ctrl+C close the list. Opening, copying or closing returns to TERMINAL. A held key MUST NOT pick a row. No key reaches a PTY. The list MUST work with `mouse` off.
+`u` in PREFIX MUST list the distinct `http` and `https` links the focused pane shows, an OSC 8 link by its URL, in reading order, a link shown twice listed where it was last seen, with the newest selected. When there are more links than keys the newest MUST stay. In LINKS, `1` to `9` and then letters open their row, Enter opens the selected row, `y` copies it, `j`/`k` and the arrows move the selection, and Esc or Ctrl+C close the list. Opening, copying or closing returns to TERMINAL. A held key MUST NOT pick a row. No key reaches a PTY. The list MUST work with `mouse` off.
 
 #### Scenario: No links [auto]
 - GIVEN a focused pane that shows no link

@@ -57,7 +57,7 @@ On shutdown the disable sequence `\x1b[?1006l\x1b[?1000l` MUST be written on eve
 - THEN Kitty native selection works
 
 ### Requirement: Events handled
-Only vertical wheel events (wheel up, wheel down), a left press in MENU on a link line, and a left click on a link a pane shows MUST be handled. In MENU, a left press on the line of the Hugging Face token field that shows `https://huggingface.co/settings/tokens/new?tokenType=read` MUST do what Ctrl+O does there (config-menu, Hugging Face account row); a left press anywhere else in MENU MUST do nothing, and MUST NOT move the selection. The press is found on the row where the popup draws it: the renderer and the hit-test MUST share one layout, and on the one-line fallback nothing is clickable. Outside MENU, a left press followed by a release on the same cell, on a link a pane shows, MUST open that link (pane-links). Every other mouse event (a left press or release that is not such a click, another button, drag, motion, horizontal wheel) MUST be ignored: no effect, nothing forwarded to any PTY. Modifier keys held during a wheel event MUST NOT change the step; they are encoded as modifier bits only when the wheel is forwarded to a child (see Wheel encoding). A wheel event MUST NEVER change the focused pane, the active tab or the input mode. Wheel events MUST be ignored in every input mode except TERMINAL and COPY: in PREFIX, a pending group, RESIZE, MENU and every confirmation nothing happens and the state is unchanged.
+Only vertical wheel events (wheel up, wheel down), a left press in MENU on a link line, and a left click on a link a pane shows MUST be handled. In MENU, a left press on the line of the Hugging Face token field that shows `https://huggingface.co/settings/tokens/new?tokenType=read` MUST do what Ctrl+O does there (config-menu, Hugging Face account row); a left press anywhere else in MENU MUST do nothing, and MUST NOT move the selection. The press is found on the row where the popup draws it: the renderer and the hit-test MUST share one layout, and on the one-line fallback nothing is clickable. Outside MENU, a left press followed by a release on the same cell, on a link a pane shows, MUST open that link (pane-links). A link a shell pane drew with OSC 8 is a link too when its target is `http` or `https`; when the text it shows is not its URL (for example an icon such as `⧉`), the click MUST NOT open it but MUST show its URL in the notice, and only the next click, on that same link, opens it (osc8-pane-links). Every other mouse event (a left press or release that is not such a click, another button, drag, motion, horizontal wheel) MUST be ignored: no effect, nothing forwarded to any PTY. Modifier keys held during a wheel event MUST NOT change the step; they are encoded as modifier bits only when the wheel is forwarded to a child (see Wheel encoding). A wheel event MUST NEVER change the focused pane, the active tab or the input mode. Wheel events MUST be ignored in every input mode except TERMINAL and COPY: in PREFIX, a pending group, RESIZE, MENU and every confirmation nothing happens and the state is unchanged.
 
 #### Scenario: Non-wheel events ignored
 - GIVEN TERMINAL with a shell pane under the pointer
@@ -70,6 +70,14 @@ Only vertical wheel events (wheel up, wheel down), a left press in MENU on a lin
 - THEN the link is opened in the browser and the notice names it
 - AND a link that wraps opens whole from any of its rows
 - AND with no opener, or when the browser does not open, the link is copied and the notice says `The browser did not open: link copied`
+
+#### Scenario: An OSC 8 link that hides its URL shows it first [auto]
+- GIVEN TERMINAL or COPY, with `mouse` on, and a shell pane where a program drew an OSC 8 link to `https://a.io/docs` with the text `⧉ Design`
+- WHEN the user clicks on it
+- THEN nothing is opened and the notice says `Link to https://a.io/docs: click it again to open it`
+- AND a second click on that link opens it; a click anywhere else in between, or on another link, shows a URL again instead
+- AND an OSC 8 link whose text is its URL opens at the first click, and one to another scheme (`file://`, `vscode://`) is no link
+- AND a link the program has since drawn over, or that a resize or a switch of screen made stale, is no link
 
 #### Scenario: A press or a drag opens nothing [auto]
 - GIVEN a link drawn in a pane
