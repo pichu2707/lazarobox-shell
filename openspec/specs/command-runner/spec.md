@@ -34,10 +34,16 @@ Terms: "jail" = the Landlock sandbox (ABI 3 or higher) used for the child. "Root
 - WHEN the call is validated
 - THEN it passes validation, with the same argument checks as `pytest`, and goes on to approval
 
+#### Scenario: A self-contained python3 gets its own folder [auto]
+- GIVEN `python3 -m pytest` and a `python3` that the PATH resolves to outside the sandbox's system rx paths, at `<install>/bin/python3.X`, with `<install>/lib/python3.X/os.py` present (pyenv, uv, python.org)
+- WHEN the sandbox rules are built
+- THEN `<install>` is granted read and execute, decided from the paths alone: no interpreter is run and no `pyvenv.cfg` is read
+- AND an `<install>` inside a Homebrew `Cellar`, or one too broad to grant (the home folder or above), is refused as below
+
 #### Scenario: python3 outside the system paths [auto]
-- GIVEN `python3 -m pytest` and a `python3` that the PATH resolves to outside the sandbox's system rx paths (for example `/home/linuxbrew/.linuxbrew/bin/python3`, pyenv, or a venv whose canonical interpreter lives there)
+- GIVEN `python3 -m pytest` and a `python3` that the PATH resolves to outside the sandbox's system rx paths that is not a self-contained install (for example Homebrew's `/home/linuxbrew/.linuxbrew/bin/python3`, or a venv whose canonical interpreter lives there)
 - WHEN the sandbox rules are built, before anything starts
-- THEN the call is refused with `python3 at "<resolved path>" is outside the sandbox's system paths (/usr, /bin, /lib, /lib64, /usr/local); its standard library cannot be read. Put a system python3 first on the PATH or run pytest directly`, and no interpreter is run or `pyvenv.cfg` read to decide
+- THEN the call is refused with `python3 at "<resolved path>" is outside the sandbox's system paths (/usr, /bin, /lib, /lib64, /usr/local) and is not a self-contained install (pyenv, uv); what it needs cannot be read. Put a system python3 first on the PATH or run pytest directly`, and no interpreter is run or `pyvenv.cfg` read to decide
 
 #### Scenario: python3 any other way [auto]
 - GIVEN `python3 -c ...`, `python3 -I -m pytest`, `python -m pytest` and `python3 -m other`

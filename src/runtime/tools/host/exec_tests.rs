@@ -953,8 +953,9 @@ async fn a_program_in_no_known_toolchain_place_is_refused() {
     );
 }
 
-// #794: a python3 outside the system rx paths cannot read its stdlib; the
-// refusal names it instead of letting Python fail with its own error.
+// #794: a python3 outside the system rx paths that is not a self-contained
+// install cannot read what it needs; the refusal names it instead of letting
+// Python fail with its own error.
 #[tokio::test]
 async fn a_python3_outside_the_system_paths_is_refused_naming_it() {
     let mut w = runnable(HELPER, gate());
@@ -967,7 +968,7 @@ async fn a_python3_outside_the_system_paths_is_refused_naming_it() {
     assert_eq!(
         out.text,
         format!(
-            "python3 at {real:?} is outside the sandbox's system paths (/usr, /bin, /lib, /lib64, /usr/local); its standard library cannot be read. Put a system python3 first on the PATH or run pytest directly"
+            "python3 at {real:?} is outside the sandbox's system paths (/usr, /bin, /lib, /lib64, /usr/local) and is not a self-contained install (pyenv, uv); what it needs cannot be read. Put a system python3 first on the PATH or run pytest directly"
         )
     );
 }

@@ -673,7 +673,7 @@ fn sandbox_text(why: &Refusal) -> String {
 fn interpreter_text(python: &Path) -> String {
     let system = SYSTEM_RX.join(", ");
     format!(
-        "python3 at {python:?} is outside the sandbox's system paths ({system}); its standard library cannot be read. Put a system python3 first on the PATH or run pytest directly"
+        "python3 at {python:?} is outside the sandbox's system paths ({system}) and is not a self-contained install (pyenv, uv); what it needs cannot be read. Put a system python3 first on the PATH or run pytest directly"
     )
 }
 

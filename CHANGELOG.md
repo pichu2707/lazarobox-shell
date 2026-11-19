@@ -29,6 +29,16 @@ baseline.
   your `y` with the commit's subject and both authors, and nothing is
   rewritten if HEAD or the identity changed after the question.
 
+### Changed
+
+- **`python3 -m pytest` works with a self-contained python3, such as pyenv
+  or uv.** When the `python3` on the PATH lives outside the system paths, at
+  `<install>/bin/python3.X`, and its standard library sits in
+  `<install>/lib/python3.X`, the sandbox now grants read and execute access
+  to `<install>`. This is decided from the paths alone, without running the
+  interpreter. Homebrew's python3 keeps its packages outside its folder, so
+  it is still refused with the notice that names it. (#794)
+
 ## [1.30.0] - 2026-11-19
 
 ### Added

@@ -81,8 +81,8 @@ pub enum Refusal {
     /// The program is outside every known toolchain place, or its place is too
     /// broad to grant.
     Program(PathBuf),
-    /// A `python3` outside the system rx paths: its standard library cannot be
-    /// read inside the jail (#794).
+    /// A `python3` outside the system rx paths that is not a self-contained
+    /// install: what it needs cannot be read inside the jail (#794).
     Interpreter(PathBuf),
     /// A granted path equals, contains or is inside a credential place.
     Never(PathBuf),
@@ -151,11 +151,14 @@ pub fn toolchain_spec(
         Program::Go if !covered(&spec, &layout.program) => {
             roots.extend(go_root(&layout.program, vars));
         }
-        // `python3 -m pytest`: only a python3 whose stdlib sits under the system
-        // rx paths works (`/usr/bin/python3` with apt's python3-pytest). Any
-        // other would fail inside Python, so it is refused by name (#794).
+        // `python3 -m pytest`: a python3 under the system rx paths, or a
+        // self-contained install, which gets its own folder. Any other would
+        // fail inside Python, so it is refused by name (#794).
         Program::Python3 if !covered(&spec, &layout.program) => {
-            return Err(Refusal::Interpreter(layout.program.clone()));
+            match python_prefix(&layout.program, resolve) {
+                Some(prefix) if !broad_place(&prefix, &homes) => roots.push(prefix),
+                _ => return Err(Refusal::Interpreter(layout.program.clone())),
+            }
         }
         Program::Pytest if !covered(&spec, &layout.program) => {
             roots.push(pytest_root(&layout.program, resolve));
@@ -246,6 +249,33 @@ fn go_root(program: &Path, vars: &Vars) -> Option<PathBuf> {
     (bin.file_name()? == "bin")
         .then(|| bin.parent().map(Path::to_path_buf))
         .flatten()
+}
+
+/// The install of a self-contained `python3` (pyenv, uv, python.org): the
+/// folder above the `bin` that holds `python3.X`, when its own standard
+/// library sits in `lib/python3.X` (CPython's landmark, `os.py`). Read from
+/// the path, never by running it. A Homebrew keg is not one: its packages live
+/// outside it, so pytest would not be found (#794).
+fn python_prefix(program: &Path, resolve: &dyn Fn(&Path) -> Option<PathBuf>) -> Option<PathBuf> {
+    let name = program.file_name()?.to_str()?;
+    let version = name.strip_prefix("python3.")?;
+    if version.is_empty()
+        || !version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.')
+    {
+        return None;
+    }
+    let bin = program
+        .parent()
+        .filter(|bin| bin.file_name().is_some_and(|n| n == "bin"))?;
+    let prefix = bin.parent()?;
+    if prefix.components().any(|c| c.as_os_str() == "Cellar") {
+        return None;
+    }
+    resolve(&prefix.join("lib").join(name).join("os.py"))
+        .filter(|landmark| landmark.starts_with(prefix))
+        .map(|_| prefix.to_path_buf())
 }
 
 /// The virtual environment that holds `program` when `pyvenv.cfg` sits next to
