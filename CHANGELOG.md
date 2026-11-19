@@ -36,6 +36,29 @@ baseline.
   helper (#791). The sandbox pre-check also names the executable the host PATH
   resolves each pytest form to (or "not on PATH"), so a shadowing or refused
   install shows in the message.
+- **A copy inside tmux that only reaches the terminal through OSC 52 names the
+  setting it needs.** tmux drops OSC 52 under its default
+  `set-clipboard external`, so the old notice said the text was sent while
+  nothing reached the clipboard (#784). With `TMUX` set, the notice now reads
+  `No paste? In tmux, set -g set-clipboard on (OSC 52 sent)`.
+- **The Approval row says what each mode covers, and a failing `gh` read says
+  why.** With the Approval row selected, the Tools tab shows
+  `auto types; run runs safe reads only; per chat` (#795). A failing GitHub
+  read now ends in `rate limit reached`, `not found or no access` or
+  `network error` when gh's output matches one of those causes; gh's own text
+  never reaches the message, and an unknown cause keeps `gh failed (exit N)`.
+- **Inside tmux, the first-run prefix probe records the emulator that runs
+  tmux.** Every result was stored under `tmux`, so a `pass` in one emulator
+  hid another that swallows `Ctrl+Space` (#785). The key now reads, for
+  example, `tmux (kitty)` or `tmux (Windows Terminal)`, and stays `tmux` when
+  no emulator variable is set or over SSH. Results stored under the old key
+  no longer match, so those users get one more probe.
+- **`python3 -m pytest` with a `python3` outside the sandbox's system paths is
+  refused before it runs, naming the interpreter.** A Homebrew, pyenv or `/opt`
+  interpreter used to start and then fail with a raw Python error (#794). The
+  refusal names its path and the allowed paths, and suggests putting a system
+  `python3` first on the PATH or running `pytest` directly. The sandbox is not
+  widened, and no `python3` that worked before is refused.
 
 ## [1.29.1] - 2026-11-16
 
