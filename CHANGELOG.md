@@ -10,6 +10,17 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **`git_identity_set` sets the repository's commit author.** With Git write
+  on, a model can write `user.name` and `user.email` to the repository's own
+  config (`git config --local`, never the global one), so the next
+  `git_commit` is authored by them without `run_in_pane` (#802). Every call
+  asks for your `y` and shows the name and email; an invalid one is refused
+  before the question. The write runs in the jail and the email is read back.
+  The change of those two lines is not reported as a config change; any other
+  change to `.git/config` or the hooks still is.
+
 ## [1.30.0] - 2026-11-19
 
 ### Added

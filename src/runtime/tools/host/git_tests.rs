@@ -1245,3 +1245,117 @@ async fn a_git_verb_in_a_granted_drive_folder_runs_there() {
     );
     assert!(asks.asked().is_empty());
 }
+
+fn identity(name: &str, email: &str) -> Call {
+    Call::GitIdentitySet {
+        name: name.into(),
+        email: email.into(),
+    }
+}
+
+/// One key of the repo's own config, as git reads it.
+fn local_config(cwd: &Path, key: &str) -> String {
+    let out = Command::new("git")
+        .args(["config", "--local", "--get", key])
+        .env_remove("GIT_DIR")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+// Spec S1 (#802): the identity write asks with the name and email, changes
+// nothing on a no, and after `y` writes both keys to the repo's own config,
+// reads the email back and reports no config change of its own.
+#[tokio::test]
+async fn an_identity_write_asks_and_sets_the_repo_config_only_after_y() {
+    let Some(w) = repo_world() else { return };
+    let ask = ApprovalAsk::GitIdentity {
+        name: "Ana Pérez".into(),
+        email: "ana@example.com".into(),
+    };
+    let no = Asks::new(Decision::Denied("the user declined"));
+    let out = turn(&w, Locality::Local, no.clone(), write_set())
+        .call(identity("Ana Pérez", "ana@example.com"))
+        .await;
+    assert!(out.is_error, "{out:?}");
+    assert_eq!(no.asked(), vec![ask.clone()]);
+    assert_eq!(local_config(&w.proj, "user.email"), "dev@example.com");
+
+    let yes = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Cloud, yes.clone(), write_set())
+        .call(identity("Ana Pérez", "ana@example.com"))
+        .await;
+    assert!(!out.is_error, "{out:?}");
+    assert_eq!(yes.asked(), vec![ask]);
+    assert!(
+        out.text
+            .contains("commit author set to Ana Pérez <ana@example.com>"),
+        "{out:?}"
+    );
+    assert!(!out.text.contains("config changed"), "{out:?}");
+    assert!(!out.text.contains("tainted"), "{out:?}");
+    assert_eq!(local_config(&w.proj, "user.name"), "Ana Pérez");
+    assert_eq!(local_config(&w.proj, "user.email"), "ana@example.com");
+
+    // "Later git_commit calls use it."
+    std::fs::write(w.proj.join("b.txt"), "b\n").unwrap();
+    sh(&w.proj, &["add", "b.txt"]);
+    let out = turn(&w, Locality::Local, Asks::new(Decision::Sent), write_set())
+        .call(commit("feat: b"))
+        .await;
+    assert!(!out.is_error, "{out:?}");
+    let author = Command::new("git")
+        .args(["log", "-1", "--format=%an <%ae>"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .current_dir(&w.proj)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&author.stdout).trim(),
+        "Ana Pérez <ana@example.com>"
+    );
+}
+
+// Spec S1: a name or email `Identity::new` refuses is refused before the
+// prompt with the fixed identity error, and the config is untouched.
+#[tokio::test]
+async fn an_invalid_identity_is_refused_before_the_prompt() {
+    let Some(w) = repo_world() else { return };
+    for (name, email) in [
+        ("Ana", "not-an-email"),
+        ("", "ana@example.com"),
+        ("Ana\nEvil", "ana@example.com"),
+        ("Ana", "ana @example.com"),
+    ] {
+        let asks = Asks::new(Decision::Sent);
+        let out = turn(&w, Locality::Local, asks.clone(), write_set())
+            .call(identity(name, email))
+            .await;
+        assert!(
+            out.is_error && out.text == GitError::Identity.reason(),
+            "{name:?} {email:?}: {out:?}"
+        );
+        assert!(asks.asked().is_empty());
+    }
+    assert_eq!(local_config(&w.proj, "user.email"), "dev@example.com");
+}
+
+// Spec S1: with `GitWrite` off the identity write is an unknown tool.
+#[tokio::test]
+async fn without_the_git_write_family_the_identity_write_is_unknown() {
+    let w = bare_world(LANDLOCK);
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks.clone(), git_set())
+        .call(identity("Ana", "ana@example.com"))
+        .await;
+    assert!(out.is_error, "{out:?}");
+    assert_eq!(
+        out.text,
+        crate::core::ai::tools::mcp::refusal_text(crate::core::ai::tools::ToolError::UnknownTool)
+    );
+    assert!(asks.asked().is_empty());
+}

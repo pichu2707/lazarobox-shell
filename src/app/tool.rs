@@ -270,6 +270,7 @@ impl App {
             | ApprovalAsk::ToolGrant { .. }
             | ApprovalAsk::DriveGrant { .. }
             | ApprovalAsk::GitAdd { .. }
+            | ApprovalAsk::GitIdentity { .. }
             | ApprovalAsk::Commit(_)
             | ApprovalAsk::Batch(_)
             | ApprovalAsk::Screen { .. }
