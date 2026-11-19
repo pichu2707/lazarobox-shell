@@ -19,6 +19,10 @@ baseline.
   `per chat; run runs only cd pwd ls tree find grep rg`, and both READMEs spell out the shape limits of `run` and that `auto` never presses
   Enter (#795).
 
+### Fixed
+
+- **A failed `gh` read now tells you why.** The chat shows a notice with `gh`'s own stderr (one clean line, cut at 300 characters) instead of a bare `gh failed (exit 1)`; the model still gets only the fixed sentence (#795).
+
 ## [1.31.0] - 2026-11-19
 
 ### Added
