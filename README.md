@@ -1129,7 +1129,7 @@ With `exec = true` the model receives `run_command`, which runs a command from t
 | `go`                      | `test`, `vet`, `build`, `run`                                              |
 | `npm`, `yarn`, `pnpm`     | `test`, `run <script>` (only a script declared in `package.json`), `install` and `ci` |
 | `pytest`                  | any supported argument                                                     |
-| `python3 -m pytest`       | the same as `pytest`, with a `python3` under the system paths (`/usr`, `/bin`, `/lib`, `/lib64`, `/usr/local`) or a self-contained install (pyenv, uv, python.org: its standard library sits in `<install>/lib/python3.X`), which gets read and execute access to its own folder; any other (Homebrew, or a venv whose interpreter lives outside them) is refused naming it; `python3` with anything else is refused (`python` too) |
+| `python3 -m pytest`       | the same as `pytest`, with a `python3` under the system paths (`/usr`, `/bin`, `/lib`, `/lib64`, `/usr/local`) or a self-contained install (uv, python.org, or a pyenv version whose `bin` folder is on the PATH: its standard library sits in `<install>/lib/python3.X`), which gets read and execute access to its own folder; any other (Homebrew, pyenv's shims) is refused naming it; a venv runs as its base interpreter, without the venv's own packages; `python3` with anything else is refused (`python` too) |
 
 Options that change where configuration is read from or the destination are rejected (`--config`, `--manifest-path`, `--target-dir`, `--fix`, `-g`, `--registry`, `-modfile`, etc.), as are absolute paths and `..`. The default timeout is 120 s and the maximum is 600 s.
 

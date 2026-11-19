@@ -31,13 +31,14 @@ baseline.
 
 ### Changed
 
-- **`python3 -m pytest` works with a self-contained python3, such as pyenv
-  or uv.** When the `python3` on the PATH lives outside the system paths, at
+- **`python3 -m pytest` works with a self-contained python3, such as uv,
+  python.org or a pyenv version whose `bin` folder is on the PATH.** When the `python3` on the PATH lives outside the system paths, at
   `<install>/bin/python3.X`, and its standard library sits in
   `<install>/lib/python3.X`, the sandbox now grants read and execute access
   to `<install>`. This is decided from the paths alone, without running the
   interpreter. Homebrew's python3 keeps its packages outside its folder, so
-  it is still refused with the notice that names it. (#794)
+  it is still refused with the notice that names it, and so are pyenv's
+  shims. The interpreter needs pytest installed in it. (#794)
 
 ## [1.30.0] - 2026-11-19
 

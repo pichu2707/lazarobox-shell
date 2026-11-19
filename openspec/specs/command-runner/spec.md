@@ -38,7 +38,7 @@ Terms: "jail" = the Landlock sandbox (ABI 3 or higher) used for the child. "Root
 - GIVEN `python3 -m pytest` and a `python3` that the PATH resolves to outside the sandbox's system rx paths, at `<install>/bin/python3.X`, with `<install>/lib/python3.X/os.py` present (pyenv, uv, python.org)
 - WHEN the sandbox rules are built
 - THEN `<install>` is granted read and execute, decided from the paths alone: no interpreter is run and no `pyvenv.cfg` is read
-- AND an `<install>` inside a Homebrew `Cellar`, or one too broad to grant (the home folder or above), is refused as below
+- AND an `<install>` inside a Homebrew `Cellar`, one too broad to grant (the home folder or above), and a pyenv shim (a `python3` with no version in its name) are refused as below
 
 #### Scenario: python3 outside the system paths [auto]
 - GIVEN `python3 -m pytest` and a `python3` that the PATH resolves to outside the sandbox's system rx paths that is not a self-contained install (for example Homebrew's `/home/linuxbrew/.linuxbrew/bin/python3`, or a venv whose canonical interpreter lives there)

@@ -257,6 +257,46 @@ fn a_python3_that_is_not_self_contained_keeps_the_refusal() {
     refused("/home/u/bin/python3.12", &["/home/u/lib/python3.12/os.py"]);
 }
 
+// Verifier probes (#794): a prefix in a credential or scratch place, or a
+// landmark that links out of the prefix, is never granted.
+#[test]
+fn a_python3_prefix_in_a_credential_or_scratch_place_is_refused() {
+    for prefix in [
+        "/home/u/.ssh/x",
+        "/home/u/.aws",
+        "/home/u/.gnupg",
+        "/home/u/.local",
+        "/tmp",
+        "/home",
+    ] {
+        let program = format!("{prefix}/bin/python3.12");
+        let landmark = format!("{prefix}/lib/python3.12/os.py");
+        assert_eq!(
+            build(&layout(Program::Python3, &program), &[&landmark]),
+            Err(Refusal::Interpreter(p(&program))),
+            "{prefix}"
+        );
+    }
+}
+
+#[test]
+fn a_python3_landmark_that_links_out_of_its_prefix_is_refused() {
+    let program = "/opt/py/bin/python3.12";
+    let spec = toolchain_spec(&layout(Program::Python3, program), &|path: &Path| {
+        (path == Path::new("/opt/py/lib/python3.12/os.py")).then(|| p("/usr/lib/python3.12/os.py"))
+    });
+    assert_eq!(spec, Err(Refusal::Interpreter(p(program))));
+}
+
+#[test]
+fn a_pyenv_shim_is_refused() {
+    let shim = "/home/u/.pyenv/shims/python3";
+    assert_eq!(
+        build(&layout(Program::Python3, shim), &[]),
+        Err(Refusal::Interpreter(p(shim)))
+    );
+}
+
 #[test]
 fn only_the_root_venv_pytest_may_live_in_the_root() {
     let spec = build(
