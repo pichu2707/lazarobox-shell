@@ -862,3 +862,57 @@ async fn a_classified_failure_appends_its_fixed_sentence_and_never_stderr() {
         assert!(!out.text.contains("SECRET-TOKEN-123"), "{}", out.text);
     }
 }
+
+fn notice_lines(events: &[StreamEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Notice(line) => Some(line.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+// Issue #795: the user sees gh's own stderr in a notice; the model-facing
+// text keeps only the fixed sentence.
+#[tokio::test]
+async fn a_failed_gh_shows_its_stderr_to_the_user_and_never_to_the_model() {
+    let rig = rig(Some(ORIGIN), "echo 'boom: SECRET-TOKEN-123' >&2; exit 1");
+    let (out, events) = one(&rig, list()).await;
+    assert_eq!(out.text, "gh failed (exit 1)");
+    assert!(!out.text.contains("SECRET-TOKEN-123"));
+    assert_eq!(
+        notice_lines(&events),
+        ["gh failed (exit 1), it said: boom: SECRET-TOKEN-123"]
+    );
+    // Nothing else in the stream carries it: the result row says the sentence.
+    for event in &events {
+        if let StreamEvent::ToolResult { summary, .. } = event {
+            assert!(!summary.contains("SECRET-TOKEN-123"), "{summary}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_failed_gh_with_no_stderr_says_it_printed_nothing() {
+    let rig = rig(Some(ORIGIN), "exit 1");
+    let (_, events) = one(&rig, list()).await;
+    assert_eq!(
+        notice_lines(&events),
+        ["gh failed (exit 1) and printed nothing"]
+    );
+}
+
+#[tokio::test]
+async fn the_stderr_notice_is_stripped_of_escapes_and_capped() {
+    let long = "x".repeat(600);
+    let script = format!("printf '\\033[31mred\\033[0m {long}\\n' >&2; exit 1");
+    let rig = rig(Some(ORIGIN), &script);
+    let (_, events) = one(&rig, list()).await;
+    let told = notice_lines(&events);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("red xxx"), "{}", told[0]);
+    assert!(!told[0].contains('\u{1b}'), "{}", told[0]);
+    assert!(told[0].ends_with('…'), "{}", told[0]);
+    assert!(told[0].chars().count() < 400, "{}", told[0].chars().count());
+}
