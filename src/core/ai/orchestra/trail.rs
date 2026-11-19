@@ -234,7 +234,10 @@ impl Trail {
     }
 
     /// What the store keeps: the cut count of both shares, then a line per
-    /// step.
+    /// step. The args in a line are model-authored text (cleaned, scrubbed,
+    /// redacted, capped), not lazarobox-built: the trail is safe only because
+    /// it is display-only. Never feed it to a model; first replace the args
+    /// with lazarobox-built text (design D14).
     pub fn to_text(&self) -> String {
         let mut out = format!("{CUT_KEY}{}", self.cut + self.worker_cut);
         for l in self.lines() {

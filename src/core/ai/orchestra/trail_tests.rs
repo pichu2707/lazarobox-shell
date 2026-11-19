@@ -416,6 +416,8 @@ fn a_report_lists_the_last_twelve_coordinator_and_four_worker_lines() {
     assert!(coord[11].contains("c29") && coord[0].contains("c18"));
     assert!(work[3].contains("w29") && work[0].contains("w26"));
     // Chronological: c26 comes before w26, w29 comes last.
+    let at = |needle: &str| listed.iter().position(|l| l.contains(needle)).unwrap();
+    assert!(at("c26") < at("w26"));
     assert!(listed[listed.len() - 1].contains("w29"));
 }
 

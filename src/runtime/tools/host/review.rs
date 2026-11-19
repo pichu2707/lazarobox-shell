@@ -32,9 +32,9 @@ use crate::{
 /// The row of the consent, a call of its own.
 const ROW: &str = "review";
 
-/// What the user's `n` to the consent denies with.
 /// What the model is told when the user declined the review of a batch.
 pub(super) const NOT_REVIEWED: &str = "not reviewed";
+/// What the user's `n` to the consent denies with.
 const USER_DECLINED: &str = "the user declined";
 
 /// A staged set read on the blocking pool: `None` when the read failed, which
