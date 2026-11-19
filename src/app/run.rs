@@ -723,6 +723,25 @@ impl App {
                 why: None,
                 notice: None,
             }),
+            // The host made subject and authors one clean line each.
+            ApprovalAsk::Reauthor {
+                commit,
+                subject,
+                from,
+                to,
+            } => Some(ApprovalPrompt {
+                target:
+                    "rewrite the author of your last commit (HEAD; no remote branch here holds it)"
+                        .to_owned(),
+                command: format!(
+                    "{} {subject} | author: {from} -> {to}",
+                    commit.get(..7).unwrap_or(commit)
+                ),
+                keys: EXTERNAL_KEYS,
+                armed,
+                why: None,
+                notice: None,
+            }),
             // The program, arguments and folder are what will run, and the host
             // refused text that would not show as it is. The notice is part of
             // what is approved, so the pane must fit it (it is not `why`).

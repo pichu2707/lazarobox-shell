@@ -20,6 +20,14 @@ baseline.
   before the question. The write runs in the jail and the email is read back.
   The change of those two lines is not reported as a config change; any other
   change to `.git/config` or the hooks still is.
+- **`git_commit_reauthor` rewrites the author of the last commit.** With Git
+  write on, a model can fix the author of HEAD (only HEAD) with the
+  repository's identity: `git commit --amend --reset-author --no-edit`, keeping
+  the files and the message (#802). It is refused before the question when
+  nothing is committed, when changes are staged, when HEAD is already on a
+  remote branch, or when HEAD already has that author. Every call asks for
+  your `y` with the commit's subject and both authors, and nothing is
+  rewritten if HEAD or the identity changed after the question.
 
 ## [1.30.0] - 2026-11-19
 

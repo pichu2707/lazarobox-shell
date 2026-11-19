@@ -184,6 +184,9 @@ pub enum Call {
         name: String,
         email: String,
     },
+    /// Rewrites the author of HEAD with the repo identity (`commit --amend
+    /// --reset-author --no-edit`). It names no revision: only HEAD.
+    GitCommitReauthor,
     /// A tool of a user MCP server. It is always a write tool: every call
     /// needs the user's `y`. `name` is the qualified name the model used;
     /// `server` and `tool` come from the lookup (`servers::Qualified`), never
@@ -281,6 +284,7 @@ impl std::fmt::Debug for Call {
                 .field("name_len", &name.len())
                 .field("email_len", &email.len())
                 .finish(),
+            Call::GitCommitReauthor => f.write_str("GitCommitReauthor"),
             Call::External {
                 name,
                 server,
@@ -356,6 +360,7 @@ impl Call {
             Call::GitAdd { .. } => "git_add",
             Call::GitCommit { .. } => "git_commit",
             Call::GitIdentitySet { .. } => "git_identity_set",
+            Call::GitCommitReauthor => "git_commit_reauthor",
         }
     }
 
@@ -377,12 +382,15 @@ impl Call {
         self.is_git() || self.is_git_write()
     }
 
-    /// Whether the call belongs to the GitWrite family (add, commit and the
-    /// identity write).
+    /// Whether the call belongs to the GitWrite family (add, commit, the
+    /// identity write and the re-author of HEAD).
     pub fn is_git_write(&self) -> bool {
         matches!(
             self,
-            Call::GitAdd { .. } | Call::GitCommit { .. } | Call::GitIdentitySet { .. }
+            Call::GitAdd { .. }
+                | Call::GitCommit { .. }
+                | Call::GitIdentitySet { .. }
+                | Call::GitCommitReauthor
         )
     }
 
@@ -436,6 +444,7 @@ impl Call {
             Call::GitAdd { paths } => Cow::Owned(paths.join(" ")),
             Call::GitCommit { message } => Cow::Borrowed(message),
             Call::GitIdentitySet { name, email } => Cow::Owned(format!("{name} <{email}>")),
+            Call::GitCommitReauthor => Cow::Borrowed("HEAD"),
             Call::NeedsSpecification { what } => Cow::Borrowed(what),
             Call::Glob { pattern, dir } | Call::Grep { pattern, dir } => match dir {
                 Some(dir) => Cow::Owned(format!("{pattern} in {dir}")),
@@ -567,7 +576,7 @@ const fn id(name: &'static str, required: bool) -> ArgDef {
 
 /// The built-ins in offer order. `Access::Read` is only a classification,
 /// not an approval rule: see [`Access`].
-const BUILT_INS: [ToolDef; 31] = [
+const BUILT_INS: [ToolDef; 32] = [
     ToolDef {
         name: "find_dir",
         description: "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
@@ -831,6 +840,13 @@ const BUILT_INS: [ToolDef; 31] = [
                 gate: None,
             },
         ],
+    },
+    ToolDef {
+        name: "git_commit_reauthor",
+        description: "Rewrite the author of the last commit (HEAD) of the repository at the chat's root with its current identity (set it first with git_identity_set); the message and the files stay the same. Refused when HEAD is already on a remote branch (pushed), when changes are staged, or when the commit already has that author. The user approves every call. Only HEAD can be rewritten.",
+        access: Access::Write,
+        family: Family::GitWrite,
+        args: &[],
     },
     // The GitHub reads: `gh` on the host, the repository is always `origin`.
     ToolDef {
@@ -1218,6 +1234,7 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
             },
         }),
         "git_commit" => Ok(Call::GitCommit { message: text }),
+        "git_commit_reauthor" => Ok(Call::GitCommitReauthor),
         "git_identity_set" => Ok(Call::GitIdentitySet {
             name: text,
             email: field("email"),
@@ -2530,6 +2547,32 @@ mod tests {
             parse(json!({"name": "Ana", "email": "a@b.c", "global": true})),
             Err(ToolError::ExtraArgument)
         );
+    }
+
+    // Spec S2 (#802): the re-author of HEAD is a GitWrite tool with no
+    // argument: no revision can be named.
+    #[test]
+    fn reauthor_is_a_git_write_tool_without_arguments() {
+        for set in [FamilySet::LEGACY, git_set(), exec_set()] {
+            assert!(!names(&registry_with(&[], set)).contains(&"git_commit_reauthor"));
+        }
+        let listed = registry_with(&[], git_write_set());
+        let tool = listed
+            .iter()
+            .find(|t| t.name == "git_commit_reauthor")
+            .unwrap();
+        assert_eq!(tool.access, Access::Write);
+        let parse = |args| parse_write("git_commit_reauthor", args, git_write_set());
+        let call = parse(json!({})).unwrap();
+        assert_eq!(call, Call::GitCommitReauthor);
+        assert!(call.is_git_write() && call.uses_git() && !call.is_write());
+        assert_eq!(
+            (call.name(), &*call.argument()),
+            ("git_commit_reauthor", "HEAD")
+        );
+        for extra in [json!({"rev": "HEAD~2"}), json!({"amend": true})] {
+            assert_eq!(parse(extra), Err(ToolError::ExtraArgument));
+        }
     }
 
     // Spec (git-tools, Verb boundary): no other verb exists, even with every

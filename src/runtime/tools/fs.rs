@@ -330,6 +330,7 @@ pub fn execute_within(
         | Call::GitAdd { .. }
         | Call::GitCommit { .. }
         | Call::GitIdentitySet { .. }
+        | Call::GitCommitReauthor
         | Call::ProposeBatch
         | Call::Github(_)
         | Call::IssueDraft(_)

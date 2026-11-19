@@ -1359,3 +1359,241 @@ async fn without_the_git_write_family_the_identity_write_is_unknown() {
     );
     assert!(asks.asked().is_empty());
 }
+
+/// The author and committer of HEAD, its tree and its message.
+fn head_facts(cwd: &Path) -> (String, String, String) {
+    let out = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    (
+        out(&["log", "-1", "--format=%an <%ae>|%cn <%ce>"]),
+        out(&["rev-parse", "HEAD^{tree}"]),
+        out(&["log", "-1", "--format=%B"]),
+    )
+}
+
+/// A repo world whose identity is no longer HEAD's author.
+fn reauthor_world() -> Option<World> {
+    let w = repo_world()?;
+    sh(&w.proj, &["config", "user.name", "Ana Pérez"]);
+    sh(&w.proj, &["config", "user.email", "ana@example.com"]);
+    Some(w)
+}
+
+// Spec S2 (#802): the re-author asks with HEAD's subject, its author and the
+// new one; `n` changes nothing; `y` rewrites author and committer of HEAD
+// only, keeping its tree and message.
+#[tokio::test]
+async fn a_reauthor_asks_and_rewrites_head_only_after_y() {
+    let Some(w) = reauthor_world() else { return };
+    let (old, tree, message) = head_facts(&w.proj);
+    assert_eq!(old, "Repo Dev <dev@example.com>|Repo Dev <dev@example.com>");
+    let no = Asks::new(Decision::Denied("the user declined"));
+    let out = turn(&w, Locality::Local, no.clone(), write_set())
+        .call(Call::GitCommitReauthor)
+        .await;
+    assert!(out.is_error, "{out:?}");
+    let [
+        ApprovalAsk::Reauthor {
+            commit,
+            subject,
+            from,
+            to,
+        },
+    ] = &no.asked()[..]
+    else {
+        panic!("{:?}", no.asked());
+    };
+    assert_eq!(commit.len(), 40);
+    assert_eq!(
+        (subject.as_str(), from.as_str(), to.as_str()),
+        (
+            "first",
+            "Repo Dev <dev@example.com>",
+            "Ana Pérez <ana@example.com>"
+        )
+    );
+    assert_eq!(head_facts(&w.proj).0, old);
+
+    let out = turn(&w, Locality::Cloud, Asks::new(Decision::Sent), write_set())
+        .call(Call::GitCommitReauthor)
+        .await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(
+        out.text
+            .contains("HEAD re-authored as Ana Pérez <ana@example.com>"),
+        "{out:?}"
+    );
+    let (author, after_tree, after_message) = head_facts(&w.proj);
+    assert_eq!(
+        author,
+        "Ana Pérez <ana@example.com>|Ana Pérez <ana@example.com>"
+    );
+    assert_eq!((after_tree, after_message), (tree, message));
+    assert_eq!(history(&w.proj).matches('\0').count(), 1);
+}
+
+// Spec S2: each case is refused before the prompt with its fixed text, and
+// HEAD is untouched.
+#[tokio::test]
+async fn a_reauthor_is_refused_before_the_prompt() {
+    let Some(w) = reauthor_world() else { return };
+    let before = head_facts(&w.proj);
+    let refused = |w: &World| {
+        let asks = Asks::new(Decision::Sent);
+        let call =
+            turn(w, Locality::Local, asks.clone(), write_set()).call(Call::GitCommitReauthor);
+        async move { (call.await, asks) }
+    };
+    // Staged changes would be folded in.
+    std::fs::write(w.proj.join("a.txt"), "changed\n").unwrap();
+    sh(&w.proj, &["add", "a.txt"]);
+    let (out, asks) = refused(&w).await;
+    assert!(
+        out.is_error && out.text.contains("changes are staged"),
+        "{out:?}"
+    );
+    assert!(asks.asked().is_empty());
+    sh(&w.proj, &["reset", "-q", "--hard"]);
+    // HEAD on a remote-tracking branch: pushed history.
+    sh(&w.proj, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    let (out, asks) = refused(&w).await;
+    assert!(
+        out.is_error && out.text.contains("already on a remote branch"),
+        "{out:?}"
+    );
+    assert!(asks.asked().is_empty());
+    sh(&w.proj, &["update-ref", "-d", "refs/remotes/origin/main"]);
+    // The identity is already HEAD's author.
+    sh(&w.proj, &["config", "user.name", "Repo Dev"]);
+    sh(&w.proj, &["config", "user.email", "dev@example.com"]);
+    let (out, asks) = refused(&w).await;
+    assert!(
+        out.is_error && out.text.contains("already has that author"),
+        "{out:?}"
+    );
+    assert!(asks.asked().is_empty());
+    assert_eq!(head_facts(&w.proj), before);
+
+    // No commit at all.
+    let empty = bare_world(LANDLOCK);
+    if system_git() {
+        sh(&empty.proj, &["init", "-q"]);
+        sh(&empty.proj, &["config", "user.name", "Ana"]);
+        sh(&empty.proj, &["config", "user.email", "ana@example.com"]);
+        let (out, asks) = refused(&empty).await;
+        assert!(
+            out.is_error && out.text.contains("no commit to re-author"),
+            "{out:?}"
+        );
+        assert!(asks.asked().is_empty());
+    }
+}
+
+/// Answers `y`, after running `act` in the project: what changes between the
+/// question and the answer.
+struct Meddle {
+    proj: PathBuf,
+    act: fn(&Path),
+}
+
+impl Approver for Meddle {
+    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
+        (self.act)(&self.proj);
+        async move { Decision::Sent.into() }.boxed()
+    }
+}
+
+// Spec S2: HEAD that moved between the question and the `y` is not
+// rewritten: the run refuses and the new HEAD keeps its author.
+#[tokio::test]
+async fn a_head_that_moved_after_the_question_is_not_rewritten() {
+    let Some(w) = reauthor_world() else { return };
+    let meddle = Arc::new(Meddle {
+        proj: w.proj.clone(),
+        act: |proj| {
+            std::fs::write(proj.join("c.txt"), "c\n").unwrap();
+            sh(proj, &["add", "c.txt"]);
+            sh(proj, &["commit", "-q", "-m", "second"]);
+        },
+    });
+    let (tx, rx) = mpsc::channel(64);
+    tokio::spawn(async move {
+        let mut rx = rx;
+        while rx.recv().await.is_some() {}
+    });
+    let mut scope = TurnScope::new(tx, Locality::Local, w.proj.clone());
+    scope.approver = meddle;
+    scope.families = write_set();
+    scope.stage_key = Some(key());
+    let out = w.host.dispatch(scope).call(Call::GitCommitReauthor).await;
+    assert!(
+        out.is_error && out.text.contains("changed after the question"),
+        "{out:?}"
+    );
+    assert!(
+        head_facts(&w.proj)
+            .0
+            .starts_with("Repo Dev <dev@example.com>")
+    );
+}
+
+// Spec S2: with `GitWrite` off the re-author is an unknown tool.
+#[tokio::test]
+async fn without_the_git_write_family_the_reauthor_is_unknown() {
+    let w = bare_world(LANDLOCK);
+    let asks = Asks::new(Decision::Sent);
+    let out = turn(&w, Locality::Local, asks.clone(), git_set())
+        .call(Call::GitCommitReauthor)
+        .await;
+    assert!(out.is_error, "{out:?}");
+    assert_eq!(
+        out.text,
+        crate::core::ai::tools::mcp::refusal_text(crate::core::ai::tools::ToolError::UnknownTool)
+    );
+    assert!(asks.asked().is_empty());
+}
+
+// Spec S2: a hook that refuses the amend leaves HEAD as it was, and its
+// words come back as data.
+#[tokio::test]
+async fn a_hook_that_refuses_the_reauthor_leaves_head_unchanged() {
+    let Some(w) = reauthor_world() else { return };
+    let before = head_facts(&w.proj);
+    hook(&w, "commit-msg", "echo 'msg hook says no'\nexit 1");
+    let out = turn(&w, Locality::Local, Asks::new(Decision::Sent), write_set())
+        .call(Call::GitCommitReauthor)
+        .await;
+    assert!(
+        out.is_error && out.text.contains("msg hook says no"),
+        "{out:?}"
+    );
+    assert!(out.text.contains("<untrusted-tool-output"), "{out:?}");
+    assert_eq!(head_facts(&w.proj), before);
+}
+
+// Spec S2: a hook that changes the re-authored tree makes the result an
+// error that names the file and suggests HEAD@{1}; nothing is undone.
+#[tokio::test]
+async fn a_hook_that_changes_the_tree_of_a_reauthor_is_reported() {
+    let Some(w) = reauthor_world() else { return };
+    let tree = head_facts(&w.proj).1;
+    hook(&w, "pre-commit", "echo x > extra.txt\ngit add extra.txt");
+    let out = turn(&w, Locality::Local, Asks::new(Decision::Sent), write_set())
+        .call(Call::GitCommitReauthor)
+        .await;
+    assert!(out.is_error, "{out:?}");
+    assert!(out.text.contains("extra.txt"), "{out:?}");
+    assert!(out.text.contains("git reset --soft HEAD@{1}"), "{out:?}");
+    assert!(!out.text.contains("HEAD~1"), "{out:?}");
+    let (author, after_tree, _) = head_facts(&w.proj);
+    assert!(author.starts_with("Ana Pérez <ana@example.com>"));
+    assert_ne!(after_tree, tree);
+}

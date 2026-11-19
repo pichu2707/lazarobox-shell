@@ -222,6 +222,16 @@ pub enum ApprovalAsk {
     /// `user.email`. Both passed `Identity::new` (one clean line each) before
     /// the ask. Never routed by the approval mode: every mode asks.
     GitIdentity { name: String, email: String },
+    /// Rewrite the author of HEAD. The host builds it after its checks:
+    /// `commit` is HEAD's full id (the run refuses if HEAD moved), `subject`
+    /// and `from` are one clean line each, `to` the repo identity. Never
+    /// routed by the approval mode: every mode asks.
+    Reauthor {
+        commit: String,
+        subject: String,
+        from: String,
+        to: String,
+    },
     /// Record the index as a commit. The user reads the message, the signing
     /// notice and the whole staged diff in the review view; it is never routed
     /// by the approval mode, so no mode approves it.
@@ -478,8 +488,10 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         | Call::ListPanes
         | Call::GitDiff { .. }
         | Call::GitLog { .. }
-        // The host reads the index and builds the commit review itself.
+        // The host reads the index and builds the commit review itself; it
+        // reads HEAD and builds the re-author ask the same way.
         | Call::GitCommit { .. }
+        | Call::GitCommitReauthor
         | Call::Github(_)
         // It records the worker's question on the run: nothing to approve.
         | Call::NeedsSpecification { .. }

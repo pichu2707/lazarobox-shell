@@ -184,7 +184,7 @@ const ABILITIES: [(Family, &str); 3] = [
     (Family::Exec, "run tests and builds"),
     (
         Family::GitWrite,
-        "add, commit and set the commit author with git",
+        "add, commit and set or fix the commit author with git",
     ),
 ];
 
