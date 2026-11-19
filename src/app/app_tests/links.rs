@@ -493,4 +493,37 @@ mod click {
         assert_eq!(list_of(&a), ["https://a.io/docs", LINK]);
         assert_eq!(a.update(key('1')), opened("https://a.io/docs"));
     }
+
+    // Verifier B1: the cells after the link make the URL the user reads longer.
+    #[test]
+    fn an_osc8_link_covering_part_of_a_visible_url_asks_first() {
+        let (mut a, r) = shell(&format!(
+            "{}m",
+            osc8("https://github.co", "https://github.co")
+        ));
+        assert_eq!(click(&mut a, (r.x + 3, r.y)), []);
+        assert_eq!(a.notice, shown("https://github.co"));
+    }
+
+    #[test]
+    fn a_hidden_link_redrawn_with_another_url_shows_the_new_one() {
+        let (mut a, r) = shell(&osc8("https://a.io", "⧉"));
+        assert_eq!(click(&mut a, (r.x, r.y)), []);
+        let redrawn = format!("\r{}", osc8("https://evil.io", "⧉"));
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(redrawn.into_bytes()),
+        ));
+        assert_eq!(click(&mut a, (r.x, r.y)), []);
+        assert_eq!(a.notice, shown("https://evil.io"));
+    }
+
+    #[test]
+    fn a_key_between_the_clicks_shows_the_url_again() {
+        let (mut a, r) = shell(&osc8("https://a.io", "⧉"));
+        assert_eq!(click(&mut a, (r.x, r.y)), []);
+        a.update(key('x'));
+        assert_eq!(click(&mut a, (r.x, r.y)), []);
+        assert_eq!(a.notice, shown("https://a.io"));
+    }
 }

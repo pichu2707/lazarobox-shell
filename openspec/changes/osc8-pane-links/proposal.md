@@ -10,8 +10,8 @@ AI CLIs such as Claude Code and OpenCode print links as OSC 8 hyperlinks when th
 
 pane-links D2 and D6 said "the target is exactly the text shown", and kept OSC 8 out of scope so that a click never opens a URL the user has not seen. This change replaces them for OSC 8 links only:
 
-- A link whose text is its URL opens at the first click, as before.
-- A link whose text is not its URL shows its URL in the notice at the first click (`Link to <url>: click it again to open it`), and opens only when the next click is on that same link. The owner chose this over opening at once, and over listing such links in PREFIX `u` only.
+- A link opens at the first click only when the #597 detector reads that very URL in exactly its cells. Text beside a link can change the URL the user reads (`https://github.co` drawn before a plain `m` reads `https://github.com`), so its own cells alone are not enough.
+- A link whose text is not its URL shows its URL in the notice at the first click (`Link to <url>: click it again to open it`), and opens only when the next click is on that same link, with no key pressed in between. The owner chose this over opening at once, and over listing such links in PREFIX `u` only.
 - PREFIX `u` lists the link by its URL, so the user reads the target before choosing it.
 - Only `http` and `https` targets are links (`is_link_url`, unchanged). `file://`, `vscode://` and every other scheme start nothing.
 

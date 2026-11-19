@@ -222,3 +222,26 @@ fn a_pane_keeps_max_links_and_forgets_the_oldest() {
     assert_eq!(recorder.links.len(), super::MAX_LINKS);
     assert_eq!(recorder.links[0].line, 1);
 }
+
+#[test]
+fn a_link_among_rows_of_the_same_icon_lands_on_its_own_row() {
+    let mut p = pane(5, 20);
+    feed(&mut p, "x\r\n");
+    let out = format!(
+        "⧉\r\n⧉\r\n⧉\r\n{}\r\n⧉\r\n⧉\r\n⧉\r\n",
+        link("https://a.io", "⧉")
+    );
+    feed(&mut p, &out);
+    // Lines 0..=8; the screen shows 4..=8, and the link is line 4 (row 0).
+    assert_eq!(p.hyperlinks()[0].spans, [span(0, 0, 1)]);
+}
+
+#[test]
+fn a_payload_vte_may_have_cut_is_no_link() {
+    let mut p = pane(3, 200);
+    feed(
+        &mut p,
+        &link(&format!("https://a.io/{}", "a;".repeat(14)), "x"),
+    );
+    assert_eq!(p.hyperlinks(), []);
+}

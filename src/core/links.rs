@@ -172,8 +172,17 @@ fn link(cells: &[Cell]) -> Link {
 
 /// The OSC 8 links a pane drew and the links found in its text, in reading
 /// order. Where they share a cell the OSC 8 link wins: it is where the text
-/// points to.
+/// points to. An OSC 8 link shows its URL only when the text holds that very
+/// link in those very cells: text beside it can make the URL read differently
+/// (`https://github.co` drawn before `m`).
 pub fn merge(drawn: Vec<Link>, found: Vec<Link>) -> Vec<Link> {
+    let drawn: Vec<Link> = (drawn.into_iter())
+        .map(|mut link| {
+            let read = |other: &Link| other.url == link.url && other.spans == link.spans;
+            link.hidden = link.hidden || !found.iter().any(read);
+            link
+        })
+        .collect();
     let shares_a_cell = |link: &Link| {
         (link.spans.iter()).any(|span| {
             (drawn.iter().flat_map(|other| &other.spans)).any(|theirs| {

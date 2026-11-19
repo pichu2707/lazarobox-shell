@@ -2224,7 +2224,11 @@ impl App {
 
     pub fn update(&mut self, event: AppEvent) -> Vec<Effect> {
         let mut effects = match event {
-            AppEvent::Key(key) => self.on_key(key),
+            AppEvent::Key(key) => {
+                // Only a click right after the one that showed a URL opens it.
+                self.shown_link = None;
+                self.on_key(key)
+            }
             AppEvent::Mouse(mouse) => self.on_mouse(mouse),
             AppEvent::Paste(text) => self.on_paste(&text),
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),

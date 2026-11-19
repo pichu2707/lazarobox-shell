@@ -265,3 +265,23 @@ fn a_drawn_link_wins_over_the_text_it_covers_and_the_rest_stay_in_order() {
         .collect();
     assert_eq!(urls, ["https://c.io", "https://a.io/real", "https://d.io"]);
 }
+
+#[test]
+fn a_drawn_link_shows_its_url_only_when_the_text_reads_that_link_there() {
+    let drawn = |text: &str| Link {
+        url: "https://github.co".into(),
+        spans: vec![span(0, 0, 17)],
+        hidden: text != "https://github.co",
+    };
+    let alone = merge(
+        vec![drawn("https://github.co")],
+        detect(&[row("https://github.co")]),
+    );
+    assert!(!alone[0].hidden);
+    let longer = merge(
+        vec![drawn("https://github.co")],
+        detect(&[row("https://github.com")]),
+    );
+    assert_eq!(longer.len(), 1);
+    assert!(longer[0].hidden, "the text reads https://github.com");
+}
