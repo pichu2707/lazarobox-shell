@@ -959,8 +959,15 @@ fn the_stored_trail_never_reaches_a_model_request() {
     recovered(&mut a, vec![old]);
 
     let effects = keys(&mut a, "rr");
-    let (request, _) = turn_of(&effects).expect("the resume turn");
+    let (request, orch) = turn_of(&effects).expect("the resume turn");
+    assert!(
+        request
+            .messages
+            .last()
+            .is_some_and(|m| m.content.contains("port the parser"))
+    );
     assert!(!format!("{request:?}").contains("TRAILMARK"));
+    assert!(!format!("{orch:?}").contains("TRAILMARK"));
     let turn = turn_id(&effects);
 
     a.update(event(row(RunId(900), 1, WorkerStatus::Running)));
@@ -975,8 +982,11 @@ fn the_stored_trail_never_reaches_a_model_request() {
         turn,
         StreamEvent::Done(Finish::Stop),
     ));
-    let (request, _) = turn_of(&next).expect("the continuation turn");
+    let (request, orch) = turn_of(&next).expect("the continuation turn");
+    let last = request.messages.last().map(|m| m.content.as_str());
+    assert_eq!(last, Some("LEDGER-TEXT"));
     assert!(!format!("{request:?}").contains("TRAILMARK"));
+    assert!(!format!("{orch:?}").contains("TRAILMARK"));
 
     a.update(event(OrchestraEvent::Stopped {
         run: RunId(900),
