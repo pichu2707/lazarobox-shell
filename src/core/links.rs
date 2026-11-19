@@ -38,6 +38,9 @@ pub struct Span {
 pub struct Link {
     pub url: String,
     pub spans: Vec<Span>,
+    /// The text drawn is not the URL (an OSC 8 link with other text): the
+    /// user sees where it goes before it opens.
+    pub hidden: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -163,6 +166,7 @@ fn link(cells: &[Cell]) -> Link {
     Link {
         url: cells.iter().map(|cell| cell.ch).collect(),
         spans,
+        hidden: false,
     }
 }
 

@@ -32,6 +32,7 @@ fn a_link_says_its_text_and_its_columns() {
         [Link {
             url: "https://a.io/x".into(),
             spans: vec![span(0, 4, 18)],
+            hidden: false,
         }]
     );
 }
@@ -169,6 +170,7 @@ fn a_link_that_wraps_is_one_link_with_a_span_per_row() {
         [Link {
             url: "https://a.io/long/path".into(),
             spans: vec![span(0, 2, 17), span(1, 0, 7)],
+            hidden: false,
         }]
     );
 }
@@ -205,6 +207,7 @@ fn the_drawing_at_the_start_of_a_row_is_not_text() {
         [Link {
             url: "https://a.io/long".into(),
             spans: vec![span(0, 2, 17), span(1, 2, 4)],
+            hidden: false,
         }]
     );
 }

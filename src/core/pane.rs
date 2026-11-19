@@ -13,6 +13,8 @@ use super::copy::{LineSpan, LineText};
 use super::mouse::{MouseEncoding, MouseFacts, MouseMode};
 use super::osc7;
 
+mod hyperlinks;
+
 /// DA1 reply: VT620-class terminal with no extensions.
 const DA1_REPLY: &[u8] = b"\x1b[?62;c";
 /// How far past the view a wrapped link is followed.
@@ -119,11 +121,17 @@ struct Responder {
     host: Option<String>,
     /// Mode 1004: the child wants `CSI I` / `CSI O` when focus changes.
     focus_reports: bool,
+    /// OSC 8 hyperlinks the child drew.
+    links: hyperlinks::Recorder,
 }
 
 impl Callbacks for Responder {
-    // OSC 7 never replies: the payload is validated and kept, or dropped.
-    fn unhandled_osc(&mut self, _: &mut Screen, params: &[&[u8]]) {
+    // OSC 7 and OSC 8 never reply: the payload is validated and kept, or
+    // dropped.
+    fn unhandled_osc(&mut self, screen: &mut Screen, params: &[&[u8]]) {
+        if self.links.on_osc(screen, params) {
+            return;
+        }
         if let Some(path) = osc7::parse(params, self.host.as_deref()) {
             self.cwd = Some(path);
         }
@@ -235,6 +243,11 @@ impl Pane {
             self.set_scrollback(1);
         }
         let pinned = self.scrollback_offset() == 1;
+        self.parser.callbacks_mut().links.base = hyperlinks::Base {
+            line: self.first_line + h0,
+            history: h0,
+            pinned,
+        };
         self.parser.process(bytes);
         self.refresh_history_len();
         let h1 = self.history_len;
@@ -272,6 +285,7 @@ impl Pane {
 
     fn bump_generation(&mut self) {
         self.line_generation = self.line_generation.wrapping_add(1);
+        self.parser.callbacks_mut().links.clear();
     }
 
     pub fn resize(&mut self, size: PaneSize) {
@@ -443,6 +457,20 @@ impl Pane {
     /// the view. Without them, half a link would pass for a whole one. The
     /// scrollback offset is restored.
     pub fn link_rows(&mut self) -> (Vec<LineText>, usize) {
+        let cols = self.parser.screen().size().1;
+        let (first, last, top) = self.link_window();
+        let span = LineSpan {
+            first,
+            last,
+            first_col: 0,
+            last_col: cols.saturating_sub(1),
+        };
+        (self.read_lines(span), top - first)
+    }
+
+    /// The stable lines `first..=last` [`Pane::link_rows`] reads, and the
+    /// first one in view.
+    fn link_window(&mut self) -> (usize, usize, usize) {
         let (rows, cols) = self.parser.screen().size();
         let live = self.first_line + self.history_len;
         let top = live.saturating_sub(self.scrollback_offset());
@@ -469,7 +497,7 @@ impl Pane {
         while last - bottom < LINK_ROWS_PAST_VIEW && last < end && wrapped(self, last) {
             last += 1;
         }
-        (self.read_lines(span(first, last)), top - first)
+        (first, last, top)
     }
 
     /// Cells `from..=to` of a viewport row. A range starting on the right half
