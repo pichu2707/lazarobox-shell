@@ -1560,3 +1560,40 @@ async fn without_the_git_write_family_the_reauthor_is_unknown() {
     );
     assert!(asks.asked().is_empty());
 }
+
+// Spec S2: a hook that refuses the amend leaves HEAD as it was, and its
+// words come back as data.
+#[tokio::test]
+async fn a_hook_that_refuses_the_reauthor_leaves_head_unchanged() {
+    let Some(w) = reauthor_world() else { return };
+    let before = head_facts(&w.proj);
+    hook(&w, "commit-msg", "echo 'msg hook says no'\nexit 1");
+    let out = turn(&w, Locality::Local, Asks::new(Decision::Sent), write_set())
+        .call(Call::GitCommitReauthor)
+        .await;
+    assert!(
+        out.is_error && out.text.contains("msg hook says no"),
+        "{out:?}"
+    );
+    assert!(out.text.contains("<untrusted-tool-output"), "{out:?}");
+    assert_eq!(head_facts(&w.proj), before);
+}
+
+// Spec S2: a hook that changes the re-authored tree makes the result an
+// error that names the file and suggests HEAD@{1}; nothing is undone.
+#[tokio::test]
+async fn a_hook_that_changes_the_tree_of_a_reauthor_is_reported() {
+    let Some(w) = reauthor_world() else { return };
+    let tree = head_facts(&w.proj).1;
+    hook(&w, "pre-commit", "echo x > extra.txt\ngit add extra.txt");
+    let out = turn(&w, Locality::Local, Asks::new(Decision::Sent), write_set())
+        .call(Call::GitCommitReauthor)
+        .await;
+    assert!(out.is_error, "{out:?}");
+    assert!(out.text.contains("extra.txt"), "{out:?}");
+    assert!(out.text.contains("git reset --soft HEAD@{1}"), "{out:?}");
+    assert!(!out.text.contains("HEAD~1"), "{out:?}");
+    let (author, after_tree, _) = head_facts(&w.proj);
+    assert!(author.starts_with("Ana Pérez <ana@example.com>"));
+    assert_ne!(after_tree, tree);
+}

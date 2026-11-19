@@ -13,8 +13,11 @@ pub struct Head {
     /// The full object name: the run compares it, so HEAD cannot move
     /// between the question and the amend.
     pub id: String,
-    /// `Name <email>`, made one clean line.
+    /// `Name <email>`, made one clean line and cut for the question.
     pub author: String,
+    /// `Name <email>` as git recorded it, whole: what the "already that
+    /// author" check compares.
+    pub raw_author: String,
     /// The first line of the message, made one clean line.
     pub subject: String,
 }
@@ -47,6 +50,7 @@ pub fn parse_head(raw: &str) -> Option<Head> {
     Some(Head {
         id: id.to_owned(),
         author: cut(&format!("{name} <{email}>")),
+        raw_author: format!("{name} <{email}>"),
         subject: cut(subject),
     })
 }
@@ -200,6 +204,7 @@ mod tests {
             Some(Head {
                 id: ID.into(),
                 author: "Old Name <old@x.org>".into(),
+                raw_author: "Old Name <old@x.org>".into(),
                 subject: "fix: ?thing".into(),
             })
         );
@@ -208,6 +213,11 @@ mod tests {
             parse_head(&long).unwrap().subject.chars().count(),
             HEAD_SHOWN
         );
+        // The shown author is cut; the compared one is whole.
+        let wide = format!("{ID}\0{}\0e@x.org\0s", "n".repeat(200));
+        let head = parse_head(&wide).unwrap();
+        assert_eq!(head.author.chars().count(), HEAD_SHOWN);
+        assert_eq!(head.raw_author, format!("{} <e@x.org>", "n".repeat(200)));
         for bad in [
             "",
             "x\0n\0e\0s",

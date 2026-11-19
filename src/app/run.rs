@@ -730,7 +730,9 @@ impl App {
                 from,
                 to,
             } => Some(ApprovalPrompt {
-                target: "rewrite the author of your last commit (HEAD, not pushed)".to_owned(),
+                target:
+                    "rewrite the author of your last commit (HEAD; no remote branch here holds it)"
+                        .to_owned(),
                 command: format!(
                     "{} {subject} | author: {from} -> {to}",
                     commit.get(..7).unwrap_or(commit)

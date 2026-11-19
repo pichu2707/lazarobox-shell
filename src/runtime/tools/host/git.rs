@@ -369,8 +369,17 @@ async fn reauthor_checks(
     who: &pure::Identity,
 ) -> Result<pure::Head, &'static str> {
     let dir = &opened.repo.dir;
-    let raw = text_of(opened, pure::head_argv(dir), true).await;
-    let head = raw.as_deref().and_then(pure::parse_head).ok_or(NO_HEAD)?;
+    // An unborn HEAD is git's fatal exit 128; any other failure is a failure,
+    // not "no commit".
+    let read = exec(opened, pure::head_argv(dir), true).await?;
+    let head = match (read.done.ended.exit, read.done.ended.timed_out) {
+        (Some(0), false) => match runtime::status_output(&read.done) {
+            Output::Text(raw) => pure::parse_head(&raw).ok_or(FAILED)?,
+            _ => return Err(FAILED),
+        },
+        (Some(128), false) => return Err(NO_HEAD),
+        _ => return Err(FAILED),
+    };
     let staged = exec(opened, pure::staged_argv(dir), true).await?;
     match (staged.done.ended.exit, staged.done.ended.timed_out) {
         (Some(0), false) => {}
@@ -383,7 +392,7 @@ async fn reauthor_checks(
         Some(_) => return Err(PUSHED),
         None => return Err(FAILED),
     }
-    if head.author == pure::author_of(who) {
+    if head.raw_author == pure::author_of(who) {
         return Err(SAME_AUTHOR);
     }
     Ok(head)
