@@ -10,6 +10,10 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- **The `gh` failure notice now shows in an orchestrator worker's view.** A worker whose `gh` read fails with unrecognised stderr gets the notice as a line of its transcript. It is display-only: it never reaches the worker's result, the run ledger or any model (#811).
+
 ## [1.31.1] - 2026-11-19
 
 ### Changed
