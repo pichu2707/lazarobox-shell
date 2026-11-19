@@ -412,6 +412,20 @@ mod tests {
         }
     }
 
+    // The longest run-list reason (a 24-character token plus the ellipsis)
+    // is drawn whole at 62 and 80 columns, never clipped.
+    #[test]
+    fn the_run_list_reason_is_never_clipped_at_62_and_80_columns() {
+        let token = format!("{}…", "a".repeat(24));
+        let why = format!("`{token}` is not on the run list");
+        for width in [62, 80] {
+            let mut prompt = explained("cd a");
+            prompt.why = Some(why.clone());
+            let rows = parts(&prompt, width, 12);
+            assert!(rows.contains(&Part::Why(why.clone())), "{width}: {rows:?}");
+        }
+    }
+
     // The reason sits between the command and the keys when there is room.
     #[test]
     fn the_reason_is_drawn_between_the_command_and_the_keys() {

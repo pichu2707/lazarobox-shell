@@ -372,6 +372,9 @@ pub fn parse(text: &str) -> Result<SafeCommand<'_>, Fallback> {
     }
 }
 
+/// The reason of a first word that is not one of the seven verbs.
+pub const NOT_SAFE: &str = "not a safe command";
+
 fn fallback(at: Range<usize>, why: &'static str) -> Fallback {
     Fallback { at, why }
 }
@@ -465,7 +468,7 @@ fn finish<'a>(
         let why = if words[0].contains('=') {
             "environment assignment"
         } else {
-            "not a safe command"
+            NOT_SAFE
         };
         return Err(fallback(at(words[0]), why));
     };

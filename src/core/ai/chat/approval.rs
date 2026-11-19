@@ -805,6 +805,9 @@ pub fn reason_line(fallback: &Fallback, command: &str) -> String {
     if token.chars().nth(MAX_TOKEN_CHARS).is_some() {
         shown.push('…');
     }
+    if fallback.why == exec::NOT_SAFE {
+        return format!("`{shown}` is not on the run list");
+    }
     format!("{}: `{shown}`", fallback.why)
 }
 
@@ -1794,7 +1797,16 @@ mod tests {
             reason_line(&fallback, text)
         };
         assert_eq!(line("cd a && ls"), "shell metacharacter: `&&`");
-        assert_eq!(line("cargo build"), "not a safe command: `cargo`");
+        assert_eq!(line("cargo build"), "`cargo` is not on the run list");
+        assert_eq!(line("gh issue list"), "`gh` is not on the run list");
+        // A non-verb first word with another reason keeps that reason.
+        assert_eq!(line("FOO=1 ls"), "environment assignment: `FOO=1`");
+        // A long token is cut after 24 characters, with an ellipsis.
+        let long = "a".repeat(30);
+        assert_eq!(
+            line(&format!("{long} x")),
+            format!("`{}…` is not on the run list", "a".repeat(24))
+        );
         assert_eq!(line("ls -R src"), "flag not allowed: `-R`");
         // Nothing to name: no token, or a token that is only a space.
         assert_eq!(line("ls "), "trailing space");
