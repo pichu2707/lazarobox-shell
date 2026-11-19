@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-11-19
+
 ### Added
 
 - **A run that finishes, or whose turn fails, now lists its step trail.** The
@@ -3083,7 +3085,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.29.1...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.30.0...HEAD
+[1.30.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.29.1...v1.30.0
 [1.29.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.29.0...v1.29.1
 [1.29.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.28.2...v1.29.0
 [1.28.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.28.1...v1.28.2
