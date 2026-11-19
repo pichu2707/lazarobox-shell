@@ -52,7 +52,7 @@ use crate::core::ai::sanitize::{clean, redact_tokens};
 use crate::core::{
     ai::{
         chat::{
-            INTERRUPTED,
+            GH_FAILED_NOTICE, INTERRUPTED,
             adapters::{Adapter, adapter_for, is_cli_engine},
             approval::{ApprovalAsk, worker_label},
             engine::Usage,
@@ -509,6 +509,12 @@ impl Tracer {
                 status: *status,
                 summary: summary.clone(),
             }),
+            // A failed `gh` read's stderr, for the worker view only (#811):
+            // third-party text, so it never feeds a model. Only the host's
+            // own gh notice passes; the worker's turn loop drops notices.
+            StreamEvent::Notice(line) if line.starts_with(GH_FAILED_NOTICE) => {
+                self.send(TraceItem::Notice(line.clone()));
+            }
             _ => {}
         }
     }
