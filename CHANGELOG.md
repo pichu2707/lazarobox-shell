@@ -10,11 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **Acceptance judges correct and rule again.** A failed criterion now feeds the bounded correction with its own lines: what it fixes (`correction 1/3 · fixes C2 · at: ...`) and what it changed (`correction 1/3 done · changes: src/a.rs 44-48` or `changes: none`, read from the staged files, never from the worker's text). The judges that failed then rule again on the new diff and show their own lines; a failing or missing verdict keeps the criterion open. When the last round fails, `judge: rounds exhausted (3) · open: C2 · missing: ...` says what is left, and the batch reaches you with the criterion open. Each judge start and verdict is a step of the run's step trail.
+
 ## [1.32.0] - 2026-11-20
 
 ### Added
 
-- **Acceptance judges in the orchestrator's review.** A run that writes now asks for your consent once (`y judge the changes · n skip the judges, Esc too`) and judges each batch against the run's agreed criteria: one read-only judge for a small change, two for several files, a large goal, 16 KB or more of staged text or a medium or high tier, none for a read-only goal. Every verdict is a transcript line (`judge 1/1: pass · 3 criteria met`, `pass · 2 met, 1 unverified (C3: tests not seen)`, `fail · 1 of 3 criteria not met` with one `C2 not met · at: <file>:<lines>` line per failed criterion, `no verdict · <reason>`, `judges agree: pass`, `judges disagree · ... · missing: ...`); two judges that disagree start no correction. A failed criterion feeds the existing bounded correction: a line says what it fixes (`correction 1/3 · fixes C2 · at: ...`), another what it changed (`correction 1/3 done · changes: src/a.rs 44-48` or `changes: none`, read from the staged files, never from the worker's text); the judges that failed then rule again and show their own lines, and when the corrections are spent `judge: rounds exhausted (3) · open: C2 · missing: ...` says what is left. Each judge start and verdict is a step of the run's step trail. Declining marks every batch `not judged`, and the receipt says so. A judge never approves: the batch review stays yours. Until the judge rows of the models menu exist, judges use the Review row, and two judges on one model say `judges are not independent`.
+- **Acceptance judges in the orchestrator's review.** A run that writes now asks for your consent once (`y judge the changes · n skip the judges, Esc too`) and judges each batch against the run's agreed criteria: one read-only judge for a small change, two for several files, a large goal, 16 KB or more of staged text or a medium or high tier, none for a read-only goal. Every verdict is a transcript line (`judge 1/1: pass · 3 criteria met`, `pass · 2 met, 1 unverified (C3: tests not seen)`, `fail · 1 of 3 criteria not met` with one `C2 not met · at: <file>:<lines>` line per failed criterion, `no verdict · <reason>`, `judges agree: pass`, `judges disagree · ... · missing: ...`); two judges that disagree start no correction. A failed criterion feeds the existing single bounded correction. Declining marks every batch `not judged`, and the receipt says so. A judge never approves: the batch review stays yours. Until the judge rows of the models menu exist, judges use the Review row, and two judges on one model say `judges are not independent`.
 
 ### Changed
 
