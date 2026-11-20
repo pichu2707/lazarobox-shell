@@ -46,6 +46,12 @@ const NO_GH: &str =
     "gh is not installed: install the GitHub CLI (https://cli.github.com) and try again";
 const START_FAILED: &str = "gh could not be started";
 const LOGGED_OUT: &str = "gh is not logged in: run gh auth login in a shell pane and try again";
+const TOKEN_REJECTED: &str =
+    "gh's token was rejected: run gh auth login in a shell pane and try again";
+const SCOPE_UNKNOWN: &str =
+    "gh's token lacks a required scope: run gh auth refresh in a shell pane and try again";
+const NOT_GITHUB: &str =
+    "this folder is not a GitHub repository: it has no git repository or no github.com remote";
 const TIMED_OUT: &str = "GitHub did not answer in time";
 const TOO_LARGE: &str = "the reply is too large";
 const TOO_LARGE_COMMENTS: &str = "the reply is too large; try without comments";
@@ -286,6 +292,63 @@ pub(super) fn why_failed(stderr: &str) -> Option<&'static str> {
     }
 }
 
+/// The OAuth scopes a lazarobox sentence may name. A scope is named only when
+/// one of these appears in the stderr, so no text of `gh` is ever copied.
+const KNOWN_SCOPES: [&str; 12] = [
+    "read:project",
+    "project",
+    "repo",
+    "read:org",
+    "workflow",
+    "gist",
+    "admin:org",
+    "notifications",
+    "read:user",
+    "user",
+    "delete_repo",
+    "write:org",
+];
+
+/// The fixed sentence for an authentication, scope or repository failure of
+/// `gh`, picked by substrings of its stderr: what to run, never `gh`'s text.
+/// A scope is named only from [`KNOWN_SCOPES`].
+fn auth_failure(stderr: &str) -> Option<String> {
+    let low = stderr.to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| low.contains(n));
+    if has(&[
+        "required scope",
+        "insufficient_scopes",
+        "missing scope",
+        "missing the scope",
+    ]) {
+        let scope = low
+            .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-')))
+            .find_map(|word| KNOWN_SCOPES.iter().find(|known| **known == word));
+        return Some(match scope {
+            Some(scope) => format!(
+                "gh's token lacks the {scope} scope: run gh auth refresh -s {scope} in a shell pane and try again"
+            ),
+            None => SCOPE_UNKNOWN.to_owned(),
+        });
+    }
+    if has(&[
+        "http 401",
+        "bad credentials",
+        "authentication required",
+        "token in gh_token is invalid",
+        "token in github_token is invalid",
+        "token is invalid",
+    ]) {
+        return Some(TOKEN_REJECTED.to_owned());
+    }
+    has(&[
+        "not a git repository",
+        "no git remotes found",
+        "none of the git remotes configured",
+    ])
+    .then(|| NOT_GITHUB.to_owned())
+}
+
 /// The most characters of `gh`'s stderr the user is shown.
 const STDERR_SHOWN: usize = 300;
 
@@ -336,6 +399,11 @@ fn failure(split: &Split, call: &GhCall, slug: &Slug) -> Option<(String, Option<
         (ended.exit, number, stderr.contains("with the number of"))
     {
         format!("#{n} was not found in {slug}")
+    } else if let (Some(code), Some(auth)) =
+        (ended.exit.filter(|code| *code != 0), auth_failure(&stderr))
+    {
+        notice = Some(stderr_notice(code, &stderr));
+        auth
     } else if ended.exit != Some(0) {
         match ended.exit {
             Some(code) => {

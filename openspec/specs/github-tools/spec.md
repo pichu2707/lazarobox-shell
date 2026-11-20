@@ -201,6 +201,9 @@ Every failure MUST give the user a visible message in the result row (and the sa
 - no `origin`, a folder with no repository, and an `origin` not on GitHub: see The repository is always origin;
 - `gh` is not installed: the message says so and says to install the GitHub CLI and try again;
 - `gh` is not logged in: the message says so and says to run `gh auth login` and try again;
+- `gh` rejects its token (`HTTP 401`, bad credentials, authentication required, an invalid token): the message says `gh`'s token was rejected and to run `gh auth login` in a shell pane and try again;
+- `gh`'s token lacks an OAuth scope: the message says `gh`'s token lacks the scope and to run `gh auth refresh -s <scope>` in a shell pane and try again. The scope is named only when it is one of a fixed list of known scopes found in the stderr (for example `project`, `read:project`); otherwise the message says a required scope is missing and to run `gh auth refresh`. A scope name is never copied from the stderr;
+- the folder is not a git repository, has no git remote or no remote on a GitHub host (as `gh` reports it): the message says the folder is not a GitHub repository;
 - `gh` does not answer in time: the message says GitHub did not answer in time and no result is shown;
 - the issue or PR number does not exist in the repository: the message names the number and the repository and says it was not found;
 - any other `gh` failure: a short message that `gh` failed, with no raw `gh` output carrying content. A failure MAY append one fixed cause, `: rate limit reached`, `: not found or no access` or `: network error`, chosen from known patterns in the stderr; these sentences are lazarobox constants, never `gh` text, and a rate-limit pattern wins over an HTTP 403 it rides on. An unknown stderr keeps the plain `gh failed (exit N)`. The stderr itself is shown to the USER only: on the "any other exit failure" branch (a nonzero exit code that is not logged out, not found, a timeout, over the size cap or a killed process; those keep their fixed sentence and add no notice) a chat turn's pane gets a notice `gh failed (exit N), it said: <stderr>` (or `gh failed (exit N) and printed nothing`), sanitized (escapes, links, control and bidi characters dropped, token-shaped secrets redacted) to one line and cut at 300 characters with `…`. A repeated identical failure is shown again with a count, never dropped. The same notice appears in an orchestrator worker's view, as a display-only transcript line of that worker, each repeat on its own line with no count (#811). It MUST NEVER reach a model: not in the tool result, not in its summary, not in any text sent back to the engine, and for a worker not in its result, the run ledger, a re-ask or the coordinator's prompt.
@@ -215,6 +218,12 @@ The status of each is `error`, except a declined consent, which is `denied`.
 - GIVEN a fake `gh` that reports no authentication
 - WHEN any GitHub tool is called
 - THEN the row says `gh` is not logged in and to run `gh auth login`, and the result is `error`
+
+#### Scenario: gh token rejected or missing scope [auto]
+- GIVEN a fake `gh` that exits 1 with `HTTP 401: Bad credentials`, or with a missing-scope message naming `project`
+- WHEN any GitHub tool is called
+- THEN the result is `error` with the fixed sentence for the rejected token or for the `project` scope, each with the command to run, never the bare `gh failed (exit 1)`
+- AND the stderr is shown to the user in a notice only, and no text of it is in the result the model reads
 
 #### Scenario: gh timeout [auto]
 - GIVEN a fake `gh` that exceeds the time bound

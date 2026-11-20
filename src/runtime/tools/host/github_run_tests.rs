@@ -985,3 +985,70 @@ async fn the_classified_failures_add_no_notice() {
     assert!(out.is_error, "{}", out.text);
     assert!(notice_lines(&events).is_empty(), "{events:?}");
 }
+
+// Issue #816: an auth, scope or repository failure of `gh` gets a fixed
+// sentence that names the action, never the bare `gh failed (exit 1)`.
+#[tokio::test]
+async fn auth_scope_and_repo_failures_get_fixed_sentences_with_the_action() {
+    const REJECTED: &str =
+        "gh's token was rejected: run gh auth login in a shell pane and try again";
+    const NOT_GITHUB: &str =
+        "this folder is not a GitHub repository: it has no git repository or no github.com remote";
+    let cases = [
+        (
+            "HTTP 401: Bad credentials (https://api.github.com/graphql)",
+            REJECTED,
+        ),
+        ("gh: authentication required", REJECTED),
+        ("The token in GH_TOKEN is invalid.", REJECTED),
+        (
+            "error: your authentication token is missing required scopes [project]",
+            "gh's token lacks the project scope: run gh auth refresh -s project in a shell pane and try again",
+        ),
+        (
+            "Your token has not been granted the required scopes to execute this query. read:project",
+            "gh's token lacks the read:project scope: run gh auth refresh -s read:project in a shell pane and try again",
+        ),
+        (
+            "INSUFFICIENT_SCOPES: SECRET-TOKEN-123",
+            "gh's token lacks a required scope: run gh auth refresh in a shell pane and try again",
+        ),
+        (
+            "fatal: not a git repository (or any of the parent directories): .git",
+            NOT_GITHUB,
+        ),
+        ("no git remotes found", NOT_GITHUB),
+        (
+            "none of the git remotes configured for this repository point to a known GitHub host.",
+            NOT_GITHUB,
+        ),
+    ];
+    for (stderr, want) in cases {
+        let script = format!("echo '{stderr} SECRET-TOKEN-123' >&2; exit 1");
+        let rig = rig(Some(ORIGIN), &script);
+        let (out, events) = one(&rig, list()).await;
+        assert!(out.is_error, "{stderr}");
+        assert_eq!(out.text, want, "{stderr}");
+        // The raw stderr reaches the user's notice only, never the model.
+        assert!(!out.text.contains("SECRET-TOKEN-123"), "{}", out.text);
+        assert!(!out.text.contains(stderr), "{}", out.text);
+        let notices = notice_lines(&events);
+        assert_eq!(notices.len(), 1, "{stderr}: {notices:?}");
+        assert!(
+            notices[0].starts_with("gh failed (exit 1), it said:"),
+            "{notices:?}"
+        );
+    }
+}
+
+// A scope name comes from a fixed list, never from the stderr.
+#[tokio::test]
+async fn a_scope_the_list_does_not_know_is_not_named() {
+    let script = "echo 'missing required scopes [evil-scope-SECRET-TOKEN-123]' >&2; exit 1";
+    let rig = rig(Some(ORIGIN), script);
+    let (out, _) = one(&rig, list()).await;
+    assert_eq!(
+        out.text,
+        "gh's token lacks a required scope: run gh auth refresh in a shell pane and try again"
+    );
+}
