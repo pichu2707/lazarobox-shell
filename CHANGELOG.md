@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.31.4] - 2026-11-20
+
 ### Fixed
 
 - **`gh` auth, scope and repository failures now say what to do.** A GitHub read that failed with a rejected token (`HTTP 401`, bad credentials), a missing OAuth scope (`project`, `read:project`, ...) or a folder that is not a GitHub repository used to end with the bare `gh failed (exit 1)`. It now gives a fixed sentence with the command to run (`gh auth login`, `gh auth refresh -s <scope>`). The scope is named only from a fixed list, and `gh`'s own text still goes to the user's notice only, never to the model (#816).
@@ -3158,7 +3160,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.3...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.4...HEAD
+[1.31.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.3...v1.31.4
 [1.31.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.2...v1.31.3
 [1.31.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.1...v1.31.2
 [1.31.1]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.0...v1.31.1
