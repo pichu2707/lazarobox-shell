@@ -738,6 +738,23 @@ pub fn changed(before: &StagedDiff, after: &StagedDiff) -> Vec<(String, Span)> {
     out
 }
 
+/// `correction <r>/<of> done · changes: ...` (D12), from [`changed`] only.
+pub fn changes_line(r: u32, of: u32, changes: &[(String, Span)]) -> String {
+    let each: Vec<String> = changes
+        .iter()
+        .map(|(path, span)| match span {
+            Span::Lines(start, end) => format!("{path} {start}-{end}"),
+            Span::Whole | Span::None => path.clone(),
+        })
+        .collect();
+    let what = if each.is_empty() {
+        "none".to_owned()
+    } else {
+        each.join(", ")
+    };
+    format!("correction {r}/{of} done \u{b7} changes: {what}")
+}
+
 /// The text of the run's judge consent (D10): the level rule and the models
 /// that would judge, as one clean line.
 pub fn consent_text(models: &[String]) -> String {

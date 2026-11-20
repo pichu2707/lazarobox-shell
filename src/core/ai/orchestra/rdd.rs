@@ -598,6 +598,46 @@ impl Review {
         self.stopped.get_or_insert_with(|| why.to_owned());
     }
 
+    /// `correction <r>/<of> · fixes <C#|[lens]> · at: <place>` for target `at`.
+    pub fn fix_line(&self, at: usize, r: u32, of: u32) -> String {
+        let found = &self.findings[at];
+        let what = match self.criterion(at) {
+            Some(criterion) => format!("C{criterion}"),
+            None => format!("[{}]", found.lens.id()),
+        };
+        format!(
+            "correction {r}/{of} \u{b7} fixes {what} \u{b7} {}",
+            found.place()
+        )
+    }
+
+    /// The judge criterion finding `at` came from; `None` for a lens finding.
+    fn criterion(&self, at: usize) -> Option<usize> {
+        let target = self.targets.iter().find(|(found, _)| *found == at);
+        target.map(|(_, criterion)| *criterion)
+    }
+
+    /// `judge: rounds exhausted (<rounds>) · open: <ids> · missing: <what>`
+    /// while a judge criterion is still a blocker; `None` otherwise.
+    pub fn exhausted_line(&self, rounds: u32) -> Option<String> {
+        let open: Vec<(usize, &str)> = (self.blockers().into_iter())
+            .filter_map(|at| Some((self.criterion(at)?, self.findings[at].text.as_str())))
+            .collect();
+        let ids: Vec<String> = open.iter().map(|(c, _)| format!("C{c}")).collect();
+        let missing: Vec<&str> = (open.iter())
+            .map(|(c, text)| {
+                let prefix = format!("C{c}: ");
+                text.strip_prefix(prefix.as_str()).unwrap_or(text)
+            })
+            .collect();
+        (!open.is_empty()).then(|| {
+            let (ids, missing) = (ids.join(", "), missing.join("; "));
+            format!(
+                "judge: rounds exhausted ({rounds}) \u{b7} open: {ids} \u{b7} missing: {missing}"
+            )
+        })
+    }
+
     /// No correction ran because `rounds` were already spent.
     pub fn note_limit(&mut self, rounds: u32) {
         self.limit = Some(rounds);
