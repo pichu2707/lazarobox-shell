@@ -492,6 +492,13 @@ impl Lab {
         Ok((run, handle))
     }
 
+    /// The judge consent of `run` is declined, for the tests that are not
+    /// about the judges: no ask comes between a proposal and its batch review.
+    fn decline_judges(&self, run: RunId) {
+        self.manager
+            .on_run(pane(), run, |live| live.judges = Some(false));
+    }
+
     /// Closes the steps a `code` spawn needs on the live run.
     fn open_steps(&self, run: RunId) {
         (self.manager.on_run(pane(), run, |live| {
@@ -2753,6 +2760,7 @@ impl Lab {
         };
         let (run, handle) = self.manager.start(pane(), scope).unwrap();
         self.open_steps(run);
+        self.decline_judges(run);
         (run, handle)
     }
 
@@ -2994,6 +3002,7 @@ async fn a_run_that_ends_under_a_batch_review(end: RunEnd) {
     };
     let (run, handle) = lab.manager.start(pane(), scope).unwrap();
     lab.open_steps(run);
+    lab.decline_judges(run);
     handle.call(spawn(Task::Code, "write a")).await;
     let mut client = worker_client(&lab.seen).await;
     let call = tool_call(
@@ -6617,6 +6626,7 @@ mod clock;
 mod commands;
 mod gate_wait;
 mod gates;
+mod judges;
 mod parallel;
 mod rounds;
 

@@ -38,6 +38,7 @@ fn with_parallel(lab: &Lab, roster: Roster, parallel: usize) -> (RunId, OrchHand
     };
     let (run, handle) = lab.manager.start(pane(), scope).unwrap();
     lab.open_steps(run);
+    lab.decline_judges(run);
     (run, handle)
 }
 
@@ -255,6 +256,7 @@ mod writers {
         };
         let (run, handle) = lab.manager.start(pane(), scope).unwrap();
         lab.open_steps(run);
+        lab.decline_judges(run);
         (run, handle)
     }
 

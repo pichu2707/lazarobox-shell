@@ -489,6 +489,24 @@ pub struct Judging {
     pub independent: bool,
 }
 
+impl Judging {
+    /// What the transcript says before any judge speaks: the level line, the
+    /// thin or dropped criteria and two judges on one model.
+    pub fn notes(&self) -> Vec<String> {
+        let mut notes = vec![self.level.clone()];
+        if self.standard.thin {
+            notes.push(thin_line());
+        }
+        if self.standard.dropped > 0 {
+            notes.push(dropped_line(self.standard.dropped));
+        }
+        if !self.independent {
+            notes.extend(self.models.first().map(|model| independence_line(model)));
+        }
+        notes
+    }
+}
+
 /// The longest evidence, location or fault text, in characters.
 pub const EVIDENCE_CHARS: usize = 120;
 

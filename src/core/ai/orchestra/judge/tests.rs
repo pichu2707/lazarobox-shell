@@ -918,3 +918,26 @@ fn the_standard_notes_are_lines_of_their_own() {
         "judge: judges are not independent \u{b7} both on claude \u{203a} opus"
     );
 }
+
+// Spec (criteria are thin; judges not independent): what is said before the
+// verdicts, in order, and nothing when there is nothing to say.
+#[test]
+fn the_notes_before_the_verdicts_name_thin_criteria_dropped_ones_and_one_model() {
+    let standard = standard("goal", &[], &[], Vec::new());
+    let mut judging = Judging {
+        granted: true,
+        level: "judge: two judges".to_owned(),
+        models: vec!["claude \u{203a} opus".to_owned(); 2],
+        standard,
+        independent: false,
+    };
+    judging.standard.dropped = 2;
+    let notes = judging.notes();
+    assert_eq!(notes[0], "judge: two judges");
+    assert!(notes[1].contains("thin") && notes[2].contains("2 criteria not judged"));
+    assert!(notes[3].contains("not independent"), "{notes:?}");
+    judging.independent = true;
+    judging.standard.thin = false;
+    judging.standard.dropped = 0;
+    assert_eq!(judging.notes(), ["judge: two judges"]);
+}
