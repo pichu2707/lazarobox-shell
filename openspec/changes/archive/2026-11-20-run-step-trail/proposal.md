@@ -12,7 +12,7 @@ fact or after a restart.
 - The trail is stored with the run, survives a restart, and is shown with the
   stop report (turn cap, run timeout, cancel) and with an interrupted run named
   after a restart.
-- Capped at 60 steps of 160 bytes; the count of dropped steps is kept and the
+- Capped at 60 steps of 180 bytes (`trail::LINE_BYTES`); the count of dropped steps is kept and the
   report says "N earlier steps not shown". Lines are cleaned and token-redacted
   with the same helpers as the transcript (`clean`, `redact_tokens`).
 - Never silent: a failed run save now says the step trail may be missing.

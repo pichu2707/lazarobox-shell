@@ -36,8 +36,8 @@ Later:
       with a stop report; not for a replaced run).
 - [x] A resumed run (Prefix r r) starts an empty trail: see Slice 4a below.
 - [x] Worker tool calls enter the trail: see Slice 4b below.
-- [ ] Acceptance-judges S2: push judge steps through `Trail::call` / `handoff`
-      (out of scope for Slice 4).
+- Acceptance-judges S2: judge steps through `Trail::call` / `handoff` moved
+  to `acceptance-judges` task 7.8c (out of scope for this change).
 
 ## Slice 4 (spec: `specs/run-step-trail/spec.md`, design: `design.md`)
 
@@ -105,7 +105,7 @@ Close-out:
       run's step trail).
 - [x] 4a.12 `cargo test`, `cargo clippy --all-targets -- -D warnings`,
       `cargo fmt --check` all green (not from a worktree under `/tmp`).
-- [ ] 4a.13 `rm -rf target` in the worktree. Open the PR, merge after green CI
+- [x] 4a.13 `rm -rf target` in the worktree. Open the PR, merge after green CI
       and clean review.
 
 Order: 4a.1-4a.5 (parallel, independent test files) -> 4a.6 -> 4a.7 -> 4a.8 ->
@@ -184,7 +184,7 @@ Close-out:
       trail, per-share report).
 - [x] 4b.18 `cargo test`, `cargo clippy --all-targets -- -D warnings`,
       `cargo fmt --check` all green.
-- [ ] 4b.19 `rm -rf target` in the worktree. Open the PR, merge after green CI
+- [x] 4b.19 `rm -rf target` in the worktree. Open the PR, merge after green CI
       and clean review.
 
 Order: 4b.1-4b.8 (parallel, independent test files) -> 4b.9 -> 4b.10 ->
