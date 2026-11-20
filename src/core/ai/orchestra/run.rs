@@ -10,6 +10,7 @@ use super::changes::{Change, ChangeLedger, Disclosure};
 use super::claims::Audit;
 use super::commands::{Commands, Ran};
 use super::feature::{FeatureDoc, FeatureError};
+use super::judge::{self, Standard, standard};
 use super::ledger::{
     Facts, FinishError, Handoff, HandoffError, Judgement, Ledger, Row, Trail, Unit,
 };
@@ -560,6 +561,25 @@ impl Run {
         };
         let author = (author.engine.as_str(), author.model.as_deref());
         review::notices(id, author, (engine.as_str(), model.as_deref()))
+    }
+
+    /// The `engine › model` the judges run on: the review assignment until the
+    /// judge rows exist. `None` when it cannot run.
+    pub fn judge_model(&self) -> Option<String> {
+        let Availability::Ready { engine, model } = self.roster.get(Task::Review) else {
+            return None;
+        };
+        Some(format!(
+            "{engine} \u{203a} {}",
+            model.as_deref().unwrap_or("default")
+        ))
+    }
+
+    /// What the judges rule against: the goal, the closed handoffs and, for a
+    /// Large goal, the specs of its feature document.
+    pub fn judge_standard(&self, goal: &str) -> Standard {
+        let specs = self.feature.as_ref().map_or(&[][..], FeatureDoc::specs);
+        standard(goal, &judge::handoff_notes(&self.steps), specs, Vec::new())
     }
 
     /// What worker `id` reported using so far; `None` when its engine

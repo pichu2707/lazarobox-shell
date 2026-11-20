@@ -43,8 +43,8 @@ use super::{
     mcp::{Dispatch, Hub, Outcome, external::Slot},
     prompts::load_prompt,
     tools::{
-        Answered, Approver, Late, OrchHandle, Orchestra, Pending, ToolHost, TurnScope, WorkerScope,
-        fs::load_roots, pending,
+        Answered, Approver, Judges, Late, OrchHandle, Orchestra, Pending, ToolHost, TurnScope,
+        WorkerScope, fs::load_roots, pending,
     },
 };
 use crate::core::ai::chat::prompts::{read_only_worker_system, worker_system};
@@ -75,6 +75,7 @@ use crate::core::{
             errors::classify,
             event::{Degrade, shared_engine_notice},
             feature::FeatureError,
+            judge::JudgeLevel,
             ledger::{FinishError, Handoff, HandoffError, Judgement, Unit},
             limit::Count,
             review::Assessment,
@@ -558,6 +559,9 @@ struct Live {
     told_shared: HashSet<String>,
     /// What the run keeps for its receipt-driven reviews (S7b).
     review: review::State,
+    /// The user's judge consent (J9): `None` until answered. A cancelled ask
+    /// is not an answer.
+    judges: Option<bool>,
     /// Ends the run when its wall clock passes (`run_timeout_mins`).
     clock: Option<JoinHandle<()>>,
 }
@@ -767,6 +771,7 @@ impl RunManager {
             alerted: None,
             retry: HashMap::new(),
             review: review::State::default(),
+            judges: None,
             turn_over: false,
             waiting: false,
             told_undelegated: false,
@@ -2146,6 +2151,26 @@ impl Orchestra for Bound {
             && run == self.run
         {
             manager.unread(self.pane, run, worker, path);
+        }
+    }
+
+    fn judge_level(&self, run: RunId, changes: &[Change], assessment: &Assessment) -> JudgeLevel {
+        let manager = self.manager.upgrade().filter(|_| run == self.run);
+        manager.map_or(JudgeLevel::None, |manager| {
+            manager.judge_level(self.pane, run, changes, assessment)
+        })
+    }
+
+    fn judges(&self, run: RunId) -> Judges {
+        let manager = self.manager.upgrade().filter(|_| run == self.run);
+        manager.map_or(Judges::Declined, |manager| manager.judges(self.pane, run))
+    }
+
+    fn judges_answered(&self, run: RunId, granted: bool) {
+        if let Some(manager) = self.manager.upgrade()
+            && run == self.run
+        {
+            manager.judges_answered(self.pane, run, granted);
         }
     }
 

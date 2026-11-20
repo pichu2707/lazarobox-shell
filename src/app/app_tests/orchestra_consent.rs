@@ -105,4 +105,6 @@ fn the_judge_consent_prompt_is_one_line_naming_the_models() {
         prompt.keys.contains("y judge") && prompt.keys.contains("n skip"),
         "{prompt:?}"
     );
+    // Esc declines here, as everywhere: only a cancelled turn leaves it open.
+    assert!(prompt.keys.contains("Esc"), "{prompt:?}");
 }

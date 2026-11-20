@@ -13,6 +13,7 @@ use super::{
     tests::{Scripted, events, fixture, pair, read, run_cmd, scope},
     *,
 };
+use crate::core::ai::orchestra::judge::JudgeLevel;
 use crate::core::{
     ai::{
         chat::{
@@ -41,7 +42,7 @@ use crate::core::{
     layout::PaneId,
 };
 use crate::runtime::tools::{
-    Answered, Late, Orchestra, Pending, Waits, WorkerScope, approver::ENDED,
+    Answered, Judges, Late, Orchestra, Pending, Waits, WorkerScope, approver::ENDED,
 };
 
 /// A run manager that answers every call with `answer` and remembers them.
@@ -408,6 +409,10 @@ struct Scoped {
     late: usize,
     /// The run ended (`live` says so).
     ended: std::sync::atomic::AtomicBool,
+    /// The judge level every batch gets.
+    level: JudgeLevel,
+    /// The run's judge consent as recorded.
+    judged: Mutex<Option<bool>>,
 }
 
 impl Scoped {
@@ -451,6 +456,8 @@ impl Scoped {
             gone: false,
             late: 0,
             ended: Default::default(),
+            level: JudgeLevel::None,
+            judged: Mutex::default(),
         })
     }
 
@@ -517,6 +524,24 @@ impl Orchestra for Scoped {
 
     fn cheap(&self, _: RunId, _: WorkerId) -> bool {
         self.cheap
+    }
+
+    fn judge_level(&self, _: RunId, _: &[Change], _: &Assessment) -> JudgeLevel {
+        self.level
+    }
+
+    fn judges(&self, _: RunId) -> Judges {
+        match *self.judged.lock().unwrap() {
+            Some(true) => Judges::Granted,
+            Some(false) => Judges::Declined,
+            None => Judges::Ask("claude > opus judges".to_owned()),
+        }
+    }
+
+    fn judges_answered(&self, _: RunId, granted: bool) {
+        *self.judged.lock().unwrap() = Some(granted);
+        let line = format!("judges answered {granted}");
+        self.log.lock().unwrap().push(line);
     }
 
     fn pause(&self, _: RunId, _: WorkerId) -> Option<crate::runtime::tools::pending::Waiting> {
@@ -1423,6 +1448,8 @@ struct ByAsk {
     asks: Mutex<Vec<ApprovalAsk>>,
     /// The answer to the limit ask (W9b).
     limit: Decision,
+    /// The answer to the judge consent of the run.
+    judges: Decision,
     /// The worker's own count of asks, and what it was as each limit ask began.
     own: Pending,
     limit_held: Mutex<Vec<usize>>,
@@ -1438,6 +1465,7 @@ impl ByAsk {
             consent,
             batch,
             limit,
+            judges: Decision::Sent,
             own: handle.own.clone(),
             limit_held: Mutex::default(),
             log: handle.log.clone(),
@@ -1452,6 +1480,7 @@ impl Approver for ByAsk {
         let (kind, answer) = match ask {
             ApprovalAsk::Consent { .. } => ("consent", self.consent),
             ApprovalAsk::Batch(_) => ("batch", self.batch),
+            ApprovalAsk::JudgeConsent { .. } => ("judges", self.judges),
             ApprovalAsk::Limit { .. } => {
                 self.limit_held.lock().unwrap().push(self.own.count());
                 ("limit", self.limit)
@@ -2855,4 +2884,172 @@ async fn a_batch_whose_outside_files_cannot_be_judged_is_not_proposed() {
         "{out:?}"
     );
     assert!(fake.log.lock().unwrap().is_empty());
+}
+
+// ---- acceptance-judges S2a: the gate and the judge consent ----
+
+/// A fake whose batches get `level` judges, and a user who answers the judge
+/// consent with `judges`.
+fn judged(home: &Path, level: JudgeLevel, judges: Decision) -> (Arc<Scoped>, Arc<ByAsk>) {
+    let mut fake = Scoped::over(home, &["~/dev/app"]);
+    Arc::get_mut(&mut fake).unwrap().level = level;
+    let mut user = ByAsk::new(&fake, Decision::Sent, Decision::Sent);
+    Arc::get_mut(&mut user).unwrap().judges = judges;
+    (fake, user)
+}
+
+// Spec (The gate is wider than before): a low-tier one-file batch is judged,
+// the consent is asked first, once, and the review is told it is judges only.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_low_tier_batch_with_a_judge_level_asks_the_judge_consent_then_reviews() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = judged(&home, JudgeLevel::One, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    assert!(!d.call(write_call("new.rs", "fn x() {}")).await.is_error);
+    assert!(!d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(
+        *fake.log.lock().unwrap(),
+        ["judges", "judges answered true", "review Judges", "batch"]
+    );
+    let asks = user.asks.lock().unwrap().clone();
+    let ApprovalAsk::JudgeConsent { text, .. } = &asks[0] else {
+        panic!("{asks:?}");
+    };
+    assert!(text.contains("claude"), "{text}");
+}
+
+// Spec (Read-only goal gets none; lens review keeps its own gate and ask): no
+// level and a passive set means no ask and no review, as before.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn no_judge_level_asks_no_judge_consent_and_a_high_change_keeps_its_own_ask() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = judged(&home, JudgeLevel::None, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    assert!(!d.call(write_call("new.rs", "fn x() {}")).await.is_error);
+    assert!(!d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(*fake.log.lock().unwrap(), ["batch"]);
+    assert!(!d.call(write_call("Cargo.lock", "x")).await.is_error);
+    assert!(!d.call(Call::ProposeBatch).await.is_error);
+    let log = fake.log.lock().unwrap().clone();
+    assert_eq!(log[1..], ["consent", "review Granted", "batch"], "{log:?}");
+}
+
+// Spec (Consent once per run): three batches, one ask.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_judge_consent_is_asked_once_over_three_batches() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = judged(&home, JudgeLevel::One, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    for n in 0..3 {
+        assert!(
+            !d.call(write_call("new.rs", &format!("fn x{n}() {{}}")))
+                .await
+                .is_error
+        );
+        assert!(!d.call(Call::ProposeBatch).await.is_error);
+    }
+    let log = fake.log.lock().unwrap().clone();
+    assert_eq!(log.iter().filter(|l| *l == "judges").count(), 1, "{log:?}");
+    assert_eq!(log.iter().filter(|l| *l == "review Judges").count(), 3);
+}
+
+// Spec (Declined leaves changes not judged): the decline is recorded once and
+// every batch still reaches the run manager, which marks it `not judged`.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_declined_judge_consent_is_recorded_and_not_asked_again() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = judged(&home, JudgeLevel::One, DECLINED);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    for n in 0..2 {
+        assert!(
+            !d.call(write_call("new.rs", &format!("fn x{n}() {{}}")))
+                .await
+                .is_error
+        );
+        assert!(!d.call(Call::ProposeBatch).await.is_error);
+    }
+    let log = fake.log.lock().unwrap().clone();
+    assert_eq!(
+        log,
+        [
+            "judges",
+            "judges answered false",
+            "review Judges",
+            "batch",
+            "review Judges",
+            "batch"
+        ]
+    );
+}
+
+// Spec (Consent once per run, D10): a cancelled ask records nothing, says so
+// in a row, and the next judged batch asks again.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cancelled_judge_consent_records_nothing_and_asks_again_next_batch() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let (fake, user) = judged(&home, JudgeLevel::One, Decision::Denied("turn ended"));
+    let (d, rows) = writer_rows(&host, &home, fake.clone(), user.clone());
+    for n in 0..2 {
+        assert!(
+            !d.call(write_call("new.rs", &format!("fn x{n}() {{}}")))
+                .await
+                .is_error
+        );
+        assert!(!d.call(Call::ProposeBatch).await.is_error);
+    }
+    tokio::task::yield_now().await;
+    let log = fake.log.lock().unwrap().clone();
+    assert_eq!(log.iter().filter(|l| *l == "judges").count(), 2, "{log:?}");
+    assert!(
+        !log.iter().any(|l| l.starts_with("judges answered")),
+        "{log:?}"
+    );
+    let seen = result_summaries(&rows);
+    assert!(
+        seen.iter()
+            .any(|(status, text)| *status == ToolStatus::Denied
+                && text.contains("consent not answered (turn ended)")),
+        "{seen:?}"
+    );
+}
+
+// Spec (Declining the lens consent does not cancel the judges): the two asks
+// never answer each other.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn declining_the_lens_consent_leaves_the_judge_consent_to_its_own_answer() {
+    let (_dir, home, host) = fixture();
+    project(&home);
+    let mut fake = Scoped::over(&home, &["~/dev/app"]);
+    Arc::get_mut(&mut fake).unwrap().level = JudgeLevel::Two;
+    let user = ByAsk::new(&fake, DECLINED, Decision::Sent);
+    let d = writer(&host, Locality::Cloud, &home, fake.clone(), user.clone());
+    assert!(!d.call(write_call("Cargo.lock", "x")).await.is_error);
+    assert!(!d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(
+        *fake.log.lock().unwrap(),
+        [
+            "consent",
+            "judges",
+            "judges answered true",
+            "review Declined",
+            "batch"
+        ]
+    );
 }

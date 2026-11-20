@@ -20,6 +20,7 @@ use crate::{
             RunId, WorkerId, WorkerKey,
             changes::Change,
             commands::Ran,
+            judge::JudgeLevel,
             limit::Count,
             review::{self, Assessment},
             tools::OrchCall,
@@ -40,6 +41,18 @@ pub enum Answered {
     /// Nobody was asked: the author is cheap and its change is always
     /// reviewed (D21).
     Mandatory,
+    /// No lens review is due (a low-tier change by a strong author): only the
+    /// judges look at it.
+    Judges,
+}
+
+/// Where the run's judge consent stands (J9): asked once per run.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Judges {
+    Granted,
+    Declined,
+    /// Not answered yet: the text to ask the user with.
+    Ask(String),
 }
 
 /// Why a path was not reviewed.
@@ -115,6 +128,26 @@ pub trait Orchestra: Send + Sync {
     fn assess(&self, _run: RunId, changes: &[Change]) -> Assessment {
         review::assess(changes, None)
     }
+
+    /// How many judges `changes` get (acceptance-judges D1); `None` (the
+    /// default) when the run cannot say or the goal is read-only.
+    fn judge_level(
+        &self,
+        _run: RunId,
+        _changes: &[Change],
+        _assessment: &Assessment,
+    ) -> JudgeLevel {
+        JudgeLevel::None
+    }
+
+    /// Where the judge consent of `run` stands, and the text to ask with.
+    fn judges(&self, _run: RunId) -> Judges {
+        Judges::Declined
+    }
+
+    /// The user answered the judge consent of `run`: `granted` or declined.
+    /// A cancelled or expired ask is never recorded.
+    fn judges_answered(&self, _run: RunId, _granted: bool) {}
 
     /// Runs the receipt-driven review of `changes` (S7b), the user's answer
     /// to the consent being `answered`. Returns when it ended; it never

@@ -201,6 +201,10 @@ pub enum NoVerdict {
     Unparseable,
     Inconsistent,
     Unseen,
+    /// The judge's engine could not start it.
+    Refused,
+    /// The judge ended without a text (failed, timed out or cancelled).
+    Failed,
 }
 
 /// A criterion as a judge ruled it.
@@ -234,6 +238,16 @@ pub struct Ruling {
 }
 
 impl Ruling {
+    /// A judge that gave no verdict, for `why`, over `count` criteria.
+    pub fn none(why: NoVerdict, count: usize) -> Self {
+        Self {
+            verdict: Err(why),
+            criteria: vec![None; count],
+            faults: Vec::new(),
+            malformed: 0,
+        }
+    }
+
     /// The criteria a judge could not verify: number and reason.
     pub fn unverified(&self) -> Vec<(usize, &str)> {
         let rows = self.criteria.iter().enumerate();
@@ -260,6 +274,8 @@ impl NoVerdict {
             Self::Unparseable => "unparseable",
             Self::Inconsistent => "inconsistent",
             Self::Unseen => "unseen",
+            Self::Refused => "refused",
+            Self::Failed => "failed",
         }
     }
 }
@@ -327,6 +343,149 @@ pub fn agree(rulings: &[Ruling]) -> Agreement {
     Agreement::Disagree { missing }
 }
 
+/// The most criterion lines one judge shows; the receipt names the rest.
+const SHOWN_CRITERIA: usize = 8;
+
+/// The transcript lines of judge `at` of `of` (spec: every verdict is a
+/// visible line): its verdict, and for a fail one line per fault with its
+/// place. `note` is the runtime's text for a judge that was refused.
+pub fn judge_lines(at: usize, of: usize, ruling: &Ruling, note: Option<&str>) -> Vec<String> {
+    let who = format!("judge {at}/{of}");
+    let rows = ruling.criteria.iter().flatten();
+    let met = rows.filter(|(state, _)| *state == State::Met).count();
+    match ruling.verdict {
+        Err(why) => {
+            let note = note.map_or_else(String::new, |text| format!(" ({})", plain_line(text)));
+            vec![format!("{who}: no verdict \u{b7} {}{note}", why.word())]
+        }
+        Ok(Verdict::Pass) => {
+            let head = match (ruling.hollow(), ruling.faults.is_empty()) {
+                (false, _) => "pass",
+                (true, true) => "pass, nothing verified",
+                (true, false) => "pass, but it contradicts itself",
+            };
+            let unverified = ruling.unverified();
+            let detail = if unverified.is_empty() {
+                format!("{met} criteria met")
+            } else {
+                format!("{met} met, {}", unverified_text(&unverified))
+            };
+            vec![format!("{who}: {head} \u{b7} {detail}")]
+        }
+        Ok(Verdict::Fail) => {
+            let rows = ruling.criteria.iter().flatten();
+            let failed = rows.filter(|(state, _)| *state == State::NotMet).count();
+            let mut lines = vec![format!(
+                "{who}: fail \u{b7} {failed} of {} criteria not met",
+                ruling.criteria.len()
+            )];
+            for fault in ruling.faults.iter().take(SHOWN_CRITERIA) {
+                let place = fault.at.as_deref().unwrap_or("unknown");
+                lines.push(format!(
+                    "{who} \u{b7} C{} not met \u{b7} at: {place} \u{b7} {}",
+                    fault.criterion, fault.text
+                ));
+            }
+            if let Some(more) = ruling
+                .faults
+                .len()
+                .checked_sub(SHOWN_CRITERIA)
+                .filter(|n| *n > 0)
+            {
+                lines.push(format!("{who}: +{more} more in the receipt"));
+            }
+            lines
+        }
+    }
+}
+
+/// The ruling of each judge, in order: `refusals` holds why a judge did not
+/// start (`None`: it runs), `texts` the answers of the judges that run, in
+/// their order. A refused judge takes no text.
+pub fn rulings(
+    refusals: &[Option<String>],
+    texts: Vec<Option<String>>,
+    count: usize,
+) -> Vec<(Ruling, Option<String>)> {
+    let mut texts = texts.into_iter();
+    let each = |why: &Option<String>| match why {
+        Some(why) => (Ruling::none(NoVerdict::Refused, count), Some(why.clone())),
+        None => match texts.next().flatten() {
+            Some(text) => (parse_ruling(&text, count), None),
+            None => (Ruling::none(NoVerdict::Failed, count), None),
+        },
+    };
+    refusals.iter().map(each).collect()
+}
+
+/// `<u> unverified (C3: tests not seen, ...)`.
+fn unverified_text<T: AsRef<str>>(unverified: &[(usize, T)]) -> String {
+    let each: Vec<String> = unverified
+        .iter()
+        .map(|(at, why)| format!("C{at}: {}", why.as_ref()))
+        .collect();
+    format!("{} unverified ({})", unverified.len(), each.join(", "))
+}
+
+/// The line that says how two judges ended together.
+pub fn agreement_line(agreement: &Agreement, rulings: &[Ruling]) -> String {
+    match agreement {
+        Agreement::Pass { unverified, clean } => {
+            let mut line = "judges agree: pass".to_owned();
+            if !unverified.is_empty() {
+                line.push_str(&format!(" \u{b7} {}", unverified_text(unverified)));
+            }
+            if !clean {
+                line.push_str(" \u{b7} not clean, see the judge lines");
+            }
+            line
+        }
+        Agreement::Fail(faults) => {
+            let mut ids: Vec<usize> = faults.iter().map(|f| f.criterion).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            format!("judges agree: fail \u{b7} {} criteria not met", ids.len())
+        }
+        Agreement::Disagree { missing } => {
+            let said: Vec<String> = rulings
+                .iter()
+                .enumerate()
+                .map(|(at, ruling)| {
+                    let word = match ruling.verdict {
+                        Ok(Verdict::Pass) => "pass",
+                        Ok(Verdict::Fail) => "fail",
+                        Err(_) => "no verdict",
+                    };
+                    format!("judge {} {word}", at + 1)
+                })
+                .collect();
+            format!(
+                "judges disagree \u{b7} {} \u{b7} missing: {missing}",
+                said.join(", ")
+            )
+        }
+    }
+}
+
+/// Said before the verdicts when the standard holds only the goal.
+pub fn thin_line() -> String {
+    "judge: criteria are thin \u{b7} judged against the goal and the resolve/classify reasons"
+        .to_owned()
+}
+
+/// Said when criteria past the cap were left out.
+pub fn dropped_line(count: usize) -> String {
+    format!("judge: {count} criteria not judged (cap {MAX_CRITERIA})")
+}
+
+/// Said when both judges run on one model.
+pub fn independence_line(model: &str) -> String {
+    format!(
+        "judge: judges are not independent \u{b7} both on {}",
+        plain_line(model)
+    )
+}
+
 /// One time the judges ruled over a change: the first, or after a correction.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Round {
@@ -347,6 +506,24 @@ pub struct Judging {
     pub standard: Standard,
     /// The judges ran on different models (false: both on one model).
     pub independent: bool,
+}
+
+impl Judging {
+    /// What the transcript says before any judge speaks: the level line, the
+    /// thin or dropped criteria and two judges on one model.
+    pub fn notes(&self) -> Vec<String> {
+        let mut notes = vec![self.level.clone()];
+        if self.standard.thin {
+            notes.push(thin_line());
+        }
+        if self.standard.dropped > 0 {
+            notes.push(dropped_line(self.standard.dropped));
+        }
+        if !self.independent {
+            notes.extend(self.models.first().map(|model| independence_line(model)));
+        }
+        notes
+    }
 }
 
 /// The longest evidence, location or fault text, in characters.

@@ -251,6 +251,9 @@ pub struct ToolHost {
     gh: github::Gh,
     /// Windows drives set by a test; otherwise the ones the runtime found.
     drives: std::sync::OnceLock<WinDrives>,
+    /// Held while a judge consent is asked, so two workers' first batches
+    /// of a run ask once.
+    judge_ask: tokio::sync::Mutex<()>,
 }
 
 impl ToolHost {
@@ -282,6 +285,7 @@ impl ToolHost {
             roster: Roster::default(),
             gh: github::Gh::default(),
             drives: std::sync::OnceLock::new(),
+            judge_ask: Default::default(),
         })
     }
 

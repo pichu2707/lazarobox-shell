@@ -151,6 +151,7 @@ fn local_run(
         ..lab.scope(local_code(review), &["~/dev/app"])
     };
     let (run, handle) = lab.begin(scope).unwrap();
+    lab.decline_judges(run);
     (lab, run, handle)
 }
 

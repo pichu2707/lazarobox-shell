@@ -29,9 +29,10 @@ use std::collections::{HashMap, HashSet};
 
 use super::*;
 use crate::core::ai::{
-    chat::prompts::{lens_builtin, refuter_builtin, validator_builtin},
+    chat::prompts::{judge_builtin, lens_builtin, refuter_builtin, validator_builtin},
     orchestra::{
         changes::StagedDiff,
+        judge::{self, JudgeLevel, Judging, agreement_line, judge_lines, judge_prompt},
         rdd::{
             Consent, Finding, Lens, Outcome as Ended, Prompt, Refutation, Review, ReviewError,
             correction_prompt, lens_prompt, parse_verdicts, refuter_prompt, says_unseen,
@@ -374,6 +375,71 @@ impl RunManager {
         self.receipt(pane, run, worker);
     }
 
+    /// How many judges `changes` get: none for a read-only goal.
+    pub(super) fn judge_level(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        changes: &[Change],
+        assessment: &Assessment,
+    ) -> JudgeLevel {
+        let level = self.on_run(pane, run, |live| {
+            let steps = live.run.steps();
+            judge::level(steps.read_only(), steps.size(), changes, assessment.tier)
+        });
+        level.unwrap_or(JudgeLevel::None)
+    }
+
+    /// Where the judge consent stands, and what to ask the user with.
+    pub(super) fn judges(&self, pane: PaneId, run: RunId) -> Judges {
+        let kept = self.on_run(pane, run, |live| (live.judges, live.run.judge_model()));
+        match kept {
+            Some((Some(true), _)) => Judges::Granted,
+            Some((None, model)) => Judges::Ask(judge::consent_text(&Vec::from_iter(model))),
+            _ => Judges::Declined,
+        }
+    }
+
+    /// The user answered the judge consent: kept for the run; a decline is
+    /// said once, here.
+    pub(super) fn judges_answered(&self, pane: PaneId, run: RunId, granted: bool) {
+        self.on_run(pane, run, |live| live.judges = Some(granted));
+        if !granted {
+            let line = "judges: declined; this run's changes go on not judged".to_owned();
+            self.say(pane, run, line);
+        }
+    }
+
+    /// What the judges of a batch are set up with; `None` when it gets none
+    /// or the user has not answered the consent.
+    fn judging(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        changes: &[Change],
+        assessment: &Assessment,
+    ) -> Option<Judging> {
+        let set = self.on_run(pane, run, |live| {
+            let steps = live.run.steps();
+            let (size, tier) = (steps.size(), assessment.tier);
+            let level = judge::level(steps.read_only(), size, changes, tier);
+            let granted = live.judges?;
+            let count = if level == JudgeLevel::Two { 2 } else { 1 };
+            let model = live
+                .run
+                .judge_model()
+                .unwrap_or_else(|| "unavailable".to_owned());
+            Some(Judging {
+                granted,
+                level: judge::level_line(level, size, changes, tier)?,
+                models: vec![model; count],
+                standard: live.run.judge_standard(&live.goal),
+                independent: level != JudgeLevel::Two,
+            })
+        });
+        set.flatten()
+    }
+
     fn say(&self, pane: PaneId, run: RunId, text: String) {
         self.send(pane, OrchestraEvent::Review { run, text });
     }
@@ -419,23 +485,33 @@ impl RunManager {
         answered: Answered,
     ) -> Result<Vec<Change>, String> {
         let of = format!("review of worker {}", worker.0);
+        let judging = self.judging(pane, run, &changes, &assessment);
         let mut review = Review::new(assessment);
+        judging
+            .iter()
+            .for_each(|set| review.set_judging(set.clone()));
+        let judging = judging.filter(|judging| judging.granted);
         let unanswered = match &answered {
             Answered::Granted | Answered::Mandatory => None,
-            Answered::Declined => {
+            Answered::Declined | Answered::Judges if judging.is_none() => {
                 let _ = review.consent(Consent::Declined);
+                let text = match answered {
+                    Answered::Judges => "the change was not judged",
+                    _ => "the change was not reviewed (declined)",
+                };
                 self.say(
                     pane,
                     run,
-                    format!(
-                        "{of}: the change was not reviewed (declined); your batch review follows"
-                    ),
+                    format!("{of}: {text}; your batch review follows"),
                 );
                 let kept = Reviewed::new(worker, review, Some(Ended::NotReviewed));
                 self.keep(pane, run, kept, &changes, &changes);
                 return Ok(changes);
             }
-            Answered::Unanswered(why) => Some(why.clone()),
+            Answered::Unanswered(why) if judging.is_none() => Some(why.clone()),
+            // The lens review is not due or was not agreed to; the judges
+            // still run (their consent is their own).
+            _ => None,
         };
         if let Some(why) = unanswered {
             let _ = review.consent(Consent::Declined);
@@ -457,6 +533,19 @@ impl RunManager {
             Consent::Granted
         };
         let _ = review.consent(given);
+        let lenses = matches!(answered, Answered::Granted | Answered::Mandatory);
+        if !lenses {
+            let _ = review.no_lenses_needed();
+            if answered != Answered::Judges {
+                let why = match &answered {
+                    Answered::Unanswered(_) => "was not answered",
+                    _ => "was declined",
+                };
+                let line = format!("{of}: the lens review {why}; the judges still run");
+                review.note_gap(&format!("the lens review {why}"));
+                self.say(pane, run, line);
+            }
+        }
         let mut guard = Guard {
             manager: self.clone(),
             pane,
@@ -485,6 +574,7 @@ impl RunManager {
                 &mut reviewed,
                 &mut review,
                 &mut guard,
+                (lenses, judging.as_ref()),
             )
             .await
             .err()
@@ -563,8 +653,12 @@ impl RunManager {
                 // The text is a lens worker's, clipped; the receipt (7b.3)
                 // names every open blocker whole.
                 let first: String = first.chars().take(120).collect();
+                let place = (open.first())
+                    .and_then(|&at| review.findings().get(at))
+                    .and_then(|found| found.at.as_deref())
+                    .map_or_else(String::new, |at| format!(" \u{b7} at: {at}"));
                 format!(
-                    "{of}: {} blocker(s) open for your decision: {first}",
+                    "{of}: {} blocker(s) open for your decision: {first}{place}",
                     open.len()
                 )
             }
@@ -678,6 +772,7 @@ impl RunManager {
         reviewed: &mut [Change],
         review: &mut Review,
         guard: &mut Guard,
+        (lenses_due, judging): (bool, Option<&Judging>),
     ) -> Result<(), Stop> {
         let other = |why: String| Stop::Other(why);
         let wrap = || {
@@ -693,9 +788,13 @@ impl RunManager {
         for notice in notices {
             self.say(pane, run, notice);
         }
+        for note in judging.map(Judging::notes).unwrap_or_default() {
+            self.say(pane, run, note);
+        }
         let diff = self.diff_text(pane, run, worker).await;
         let mut lenses = Vec::new();
-        for lens in DEFAULT_LENSES {
+        let due: &[Lens] = if lenses_due { &DEFAULT_LENSES } else { &[] };
+        for &lens in due {
             review
                 .pick(lens.id(), DEFAULT_WHY)
                 .map_err(|e| other(refused(e)))?;
@@ -713,9 +812,29 @@ impl RunManager {
             }
             lenses.push((lens, id));
         }
-        let ids: Vec<_> = lenses.iter().map(|(_, id)| *id).collect();
-        let texts = self.finished(pane, run, worker, &ids).await?;
-        for ((lens, id), text) in lenses.iter().zip(texts) {
+        // The judges start with the lenses; a refused one gave no verdict and
+        // does not halt the review (D8).
+        let mut judges: Vec<(Option<WorkerId>, Option<String>)> = Vec::new();
+        for _ in judging.iter().flat_map(|judging| &judging.models) {
+            let Some(judging) = judging else { continue };
+            let prompt = judge_prompt(wrap()?, &judging.standard, changes, &diff);
+            guard.note(&prompt);
+            let system = Some(judge_builtin(profile));
+            let started = self.start_review(pane, run, Role::Reader, worker, prompt.text, system);
+            judges.push(match started {
+                Ok(id) => {
+                    guard.spawned.push(id);
+                    (Some(id), self.refused_at_start(pane, run, id))
+                }
+                Err(why) => (None, Some(why)),
+            });
+        }
+        let live = judges
+            .iter()
+            .filter_map(|(id, why)| id.filter(|_| why.is_none()));
+        let ids: Vec<_> = lenses.iter().map(|(_, id)| *id).chain(live).collect();
+        let mut texts = self.finished(pane, run, worker, &ids).await?.into_iter();
+        for ((lens, id), text) in lenses.iter().zip(texts.by_ref()) {
             let text = text.ok_or_else(|| {
                 other(format!(
                     "lens {} (worker {}) did not finish",
@@ -724,6 +843,26 @@ impl RunManager {
                 ))
             })?;
             review.report(*lens, &text).map_err(|e| other(refused(e)))?;
+        }
+        if let Some(judging) = judging {
+            let count = judging.standard.criteria.len();
+            let refusals: Vec<_> = judges.iter().map(|(_, why)| why.clone()).collect();
+            let given = judge::rulings(&refusals, texts.collect(), count);
+            let mut rulings = Vec::new();
+            for (at, (ruling, note)) in given.into_iter().enumerate() {
+                let note = note.map(|why| refusal_reason(&why));
+                for line in judge_lines(at + 1, judges.len(), &ruling, note.as_deref()) {
+                    self.say(pane, run, line);
+                }
+                rulings.push(ruling);
+            }
+            let agreement = judge::agree(&rulings);
+            if rulings.len() > 1 {
+                self.say(pane, run, agreement_line(&agreement, &rulings));
+            }
+            review
+                .judged(&agreement, &rulings)
+                .map_err(|e| other(refused(e)))?;
         }
         let asked = review.to_refute();
         if !asked.is_empty() {
