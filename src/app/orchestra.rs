@@ -219,6 +219,16 @@ impl App {
             }
             return kept;
         }
+        // A judge's start or verdict is a step of the run's trail only.
+        if let OrchestraEvent::Judge {
+            run,
+            who,
+            verdict,
+            reason,
+        } = &event
+        {
+            return self.keep_handoff(id, *run, (who, verdict, reason));
+        }
         // The steps of a run that stops, for its report (#771); first, the
         // ones taken before the run was known join it.
         let named = match &event {
@@ -474,7 +484,7 @@ impl App {
                 }
             }
             // Handled before the pane is borrowed.
-            OrchestraEvent::Trace { .. } => {}
+            OrchestraEvent::Trace { .. } | OrchestraEvent::Judge { .. } => {}
             // Handled before the pane is borrowed.
             OrchestraEvent::Continue(_) | OrchestraEvent::Undelegated { .. } => {}
             OrchestraEvent::Notice { text } => chat.push_system_line(text),

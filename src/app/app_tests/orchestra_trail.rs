@@ -1111,3 +1111,31 @@ fn the_trail_labels_follow_the_apps_refusal_texts() {
         );
     }
 }
+
+// Acceptance judges (S2b, 7.8c): a judge's start and verdict are steps of the
+// run's trail, in lazarobox's own words.
+#[test]
+fn a_judge_start_and_verdict_enter_the_run_trail() {
+    let (mut a, _turn) = running();
+    a.update(event(row(RUN, 1, WorkerStatus::Running)));
+    let judge = |verdict: &str, reason: &str| {
+        event(OrchestraEvent::Judge {
+            run: RUN,
+            who: "judge 1/2".to_owned(),
+            verdict: verdict.to_owned(),
+            reason: reason.to_owned(),
+        })
+    };
+    a.update(judge("started", "read-only, over the staged change"));
+    let effects = a.update(judge("fail", "1 of 5 criteria not met"));
+    let kept = trails(&effects);
+    let trail = &kept.last().expect("saved").1;
+    assert!(
+        trail.contains("handoff judge 1/2 started: read-only, over the staged change"),
+        "{trail}"
+    );
+    assert!(
+        trail.contains("handoff judge 1/2 fail: 1 of 5 criteria not met"),
+        "{trail}"
+    );
+}

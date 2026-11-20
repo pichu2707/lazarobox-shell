@@ -961,6 +961,42 @@ mod judges {
     }
 
     #[test]
+    fn the_correction_line_names_the_criterion_or_lens_and_its_place() {
+        let mut review = consented(&[Lens::Risk]);
+        review
+            .report(Lens::Risk, "FINDING severe change observed: boom")
+            .unwrap();
+        let rulings = [fail_c2("src/a.rs:40-52")];
+        review.judged(&agree(&rulings), &rulings).unwrap();
+        assert_eq!(
+            review.fix_line(1, 1, 3),
+            "correction 1/3 \u{b7} fixes C2 \u{b7} at: src/a.rs:40-52"
+        );
+        assert_eq!(
+            review.fix_line(0, 2, 3),
+            "correction 2/3 \u{b7} fixes [risk] \u{b7} at: unknown"
+        );
+    }
+
+    #[test]
+    fn the_exhausted_line_names_the_open_criteria_and_what_is_missing() {
+        let mut review = judge_review();
+        assert_eq!(review.exhausted_line(3), None);
+        let rulings = [fail_c2("src/a.rs:4")];
+        review.judged(&agree(&rulings), &rulings).unwrap();
+        assert_eq!(
+            review.exhausted_line(3).as_deref(),
+            Some(
+                "judge: rounds exhausted (3) \u{b7} open: C2 \u{b7} missing: the check is missing"
+            )
+        );
+        let mut lens = consented(&[Lens::Risk]);
+        lens.report(Lens::Risk, "FINDING severe change observed: boom")
+            .unwrap();
+        assert_eq!(lens.exhausted_line(3), None);
+    }
+
+    #[test]
     fn judging_needs_consent_once_and_before_the_correction() {
         let mut review = high();
         let rulings = [pass()];

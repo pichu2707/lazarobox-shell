@@ -248,6 +248,27 @@ impl Ruling {
         }
     }
 
+    /// How the run step trail records this ruling: the verdict word and a
+    /// reason built from counts and fixed words only (never judge text).
+    pub fn step(&self) -> (&'static str, String) {
+        let count = |want: State| {
+            let rows = self.criteria.iter().flatten();
+            rows.filter(|(state, _)| *state == want).count()
+        };
+        match self.verdict {
+            Ok(Verdict::Pass) => ("pass", format!("{} criteria met", count(State::Met))),
+            Ok(Verdict::Fail) => (
+                "fail",
+                format!(
+                    "{} of {} criteria not met",
+                    count(State::NotMet),
+                    self.criteria.len()
+                ),
+            ),
+            Err(why) => ("no verdict", why.word().to_owned()),
+        }
+    }
+
     /// The criteria a judge could not verify: number and reason.
     pub fn unverified(&self) -> Vec<(usize, &str)> {
         let rows = self.criteria.iter().enumerate();
@@ -736,6 +757,23 @@ pub fn changed(before: &StagedDiff, after: &StagedDiff) -> Vec<(String, Span)> {
         }
     }
     out
+}
+
+/// `correction <r>/<of> done · changes: ...` (D12), from [`changed`] only.
+pub fn changes_line(r: u32, of: u32, changes: &[(String, Span)]) -> String {
+    let each: Vec<String> = changes
+        .iter()
+        .map(|(path, span)| match span {
+            Span::Lines(start, end) => format!("{path} {start}-{end}"),
+            Span::Whole | Span::None => path.clone(),
+        })
+        .collect();
+    let what = if each.is_empty() {
+        "none".to_owned()
+    } else {
+        each.join(", ")
+    };
+    format!("correction {r}/{of} done \u{b7} changes: {what}")
 }
 
 /// The text of the run's judge consent (D10): the level rule and the models

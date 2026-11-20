@@ -194,6 +194,15 @@ pub enum OrchestraEvent {
     /// blocker) the first blocker's text, a lens worker's own words clipped
     /// to 120 characters on one line. The receipt handoff is 7b.3.
     Review { run: RunId, text: String },
+    /// A judge started or ruled, for the run's step trail only (acceptance
+    /// judges, run-step-trail D14): `who`, `verdict` and `reason` are fixed
+    /// lazarobox text, never what a judge wrote.
+    Judge {
+        run: RunId,
+        who: String,
+        verdict: String,
+        reason: String,
+    },
     /// A line for the pane's transcript that belongs to no run yet (a floor
     /// of run ids that could not be read, S9). `text` is lazarobox's own.
     Notice { text: String },
