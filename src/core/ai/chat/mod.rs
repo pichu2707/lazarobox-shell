@@ -149,6 +149,14 @@ pub const BUSY: &str = "still answering: wait for it or press Esc to cancel";
 pub const FULL: &str = "this conversation is full: start a new one";
 /// System line for an answer that ended with no text at all.
 pub const NO_ANSWER: &str = "the model sent no answer";
+/// System line for a turn whose last round, after a tool call, had no text.
+pub const AFTER_TOOL_NO_ANSWER: &str = "the model sent no answer after its last tool call";
+
+/// System line for a turn that ended with a command typed into pane `number`
+/// and not run. Display only; it never names the command.
+pub fn waiting_for_enter(number: usize) -> String {
+    format!("waiting for you: press Enter in pane {number} to run it, then send a message to go on")
+}
 /// System line for a CLI the jail refused to start.
 pub const JAIL_ERROR: &str = "the CLI did not start: its jail could not be enforced";
 
@@ -466,6 +474,14 @@ pub struct ChatState {
     approval_mode: ApprovalMode,
     /// Commands typed or run without a prompt in the turn in flight.
     auto_typed: u8,
+    /// The pane of the last command of this turn typed and not run.
+    typed_not_run: Option<usize>,
+    /// A command the runtime was asked to type, until its result arrives.
+    expected_typed: Option<(CallId, usize)>,
+    /// Text arrived since the last tool call of this turn.
+    text_since_tool: bool,
+    /// A notice arrived since the last tool call of this turn.
+    notice_since_tool: bool,
     /// Consecutive grammar or policy fallbacks of `run` (D23).
     run_fallbacks: u8,
     /// The conversation read GitHub text: no command of it runs, for good.
@@ -622,6 +638,10 @@ impl ChatState {
             armed_at: None,
             approval_mode: ApprovalMode::default(),
             auto_typed: 0,
+            typed_not_run: None,
+            expected_typed: None,
+            text_since_tool: false,
+            notice_since_tool: false,
             run_fallbacks: 0,
             github_read: false,
             block_why: BlockWhy::Marker,
@@ -1115,6 +1135,19 @@ impl ChatState {
     /// Commands typed without a prompt in the turn in flight.
     pub fn auto_typed(&self) -> u8 {
         self.auto_typed
+    }
+
+    /// A command of this turn was typed into pane `number` and not run: the
+    /// turn ends with a line saying the user must press Enter there.
+    pub fn note_typed_not_run(&mut self, number: usize) {
+        self.typed_not_run = Some(number);
+    }
+
+    /// `call`'s command was sent to the runtime to be typed into pane
+    /// `number`. It counts as typed only when the result says `Ok`: a busy or
+    /// gone pane is denied and nothing is written.
+    pub fn expect_typed(&mut self, call: CallId, number: usize) {
+        self.expected_typed = Some((call, number));
     }
 
     /// One more command was typed without a prompt in this turn.
@@ -1799,6 +1832,10 @@ impl ChatState {
         self.turn_usage = None;
         self.clean_end = false;
         self.auto_typed = 0;
+        self.typed_not_run = None;
+        self.expected_typed = None;
+        self.text_since_tool = false;
+        self.notice_since_tool = false;
         self.run_fallbacks = 0;
         self.phase = Phase::Waiting { slow: false };
         self.started = Some(now);
@@ -1902,10 +1939,12 @@ impl ChatState {
             // The same `gh` failure twice is two failures: it counts instead
             // of being dropped like a repeated notice.
             StreamEvent::Notice(line) if line.starts_with(GH_FAILED_NOTICE) => {
+                self.notice_since_tool = true;
                 self.push_collapsing_line(line.clone(), line);
                 Follow::Nothing
             }
             StreamEvent::Notice(line) => {
+                self.notice_since_tool = true;
                 let entry = Entry::System(line);
                 if !self.entries.contains(&entry) {
                     self.entries.push(entry);
@@ -1964,7 +2003,14 @@ impl ChatState {
                 if let Some(f) = self.fill.as_mut() {
                     f.fill.used += answer;
                 }
-                let line = (self.phase != Phase::Streaming).then(|| NO_ANSWER.to_owned());
+                let line = if self.phase != Phase::Streaming {
+                    Some(NO_ANSWER.to_owned())
+                } else {
+                    // Text came before a tool call, but the last round said
+                    // nothing, and no notice has said why.
+                    (!self.text_since_tool && !self.notice_since_tool)
+                        .then(|| AFTER_TOOL_NO_ANSWER.to_owned())
+                };
                 self.finish(MsgStatus::Complete, line, now);
                 Follow::Nothing
             }
@@ -2059,6 +2105,7 @@ impl ChatState {
             }));
             self.phase = Phase::Streaming;
         }
+        self.text_since_tool = true;
         let Some(answer) = self.answer_mut() else {
             return Follow::Nothing;
         };
@@ -2151,6 +2198,10 @@ impl ChatState {
         if let Some(line) = line {
             self.entries.push(Entry::System(line));
         }
+        self.expected_typed = None;
+        if let Some(number) = self.typed_not_run.take() {
+            self.entries.push(Entry::System(waiting_for_enter(number)));
+        }
         if let Some(line) = usage_line {
             self.entries.push(Entry::Usage(line));
         }
@@ -2232,6 +2283,8 @@ mod anchor_tests;
 mod compact_tests;
 #[cfg(test)]
 mod context_tests;
+#[cfg(test)]
+mod end_note_tests;
 #[cfg(test)]
 mod folder_picker_tests;
 #[cfg(test)]

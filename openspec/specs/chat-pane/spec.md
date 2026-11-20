@@ -135,6 +135,18 @@ A send MUST append the user message, show a waiting state and start one request.
 - WHEN the end of the stream is detected
 - THEN `Hel` is kept, the system line `stream interrupted` is shown and the pane is idle
 
+A turn MUST NOT end silently. When the final event arrives and the model sent no text since its last tool call (it may have sent text before it), the pane MUST add the system line `the model sent no answer after its last tool call`, unless a notice or error line of that stretch (an empty-answer or stopped notice, the tool limit, a failure, an interrupt, too long, a jail refusal) already says why; a turn with no text at all keeps `the model sent no answer`. When a turn ends with at least one command of that turn typed into a pane and not run (typed by `auto`, or by `y` when `run` could not run it), the pane MUST add one system line, `waiting for you: press Enter in pane N to run it, then send a message to go on`, with the pane number of the last such command and never the command text. The line is display-only: it is never stored and never sent to a model. Nothing resumes the turn after the Enter; the user sends a message.
+
+#### Scenario: Empty last round after a tool call [auto]
+- GIVEN a turn whose model sent text, then a tool call and its result
+- WHEN the final event arrives with no text after that call
+- THEN the system line `the model sent no answer after its last tool call` is shown once
+
+#### Scenario: Command typed and not run [auto]
+- GIVEN a turn in which a command was typed into pane 2 and not run
+- WHEN the turn ends
+- THEN the system line `waiting for you: press Enter in pane 2 to run it, then send a message to go on` is shown and it does not contain the command
+
 #### Scenario: Error lines are not context [auto]
 - GIVEN a conversation that ended with an error system line
 - WHEN the next message is sent

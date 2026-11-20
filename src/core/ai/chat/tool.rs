@@ -48,6 +48,8 @@ impl ChatState {
         if self.tool_row(id).is_some() {
             return;
         }
+        self.text_since_tool = false;
+        self.notice_since_tool = false;
         if let Phase::Waiting { slow } = &mut self.phase {
             *slow = false;
             self.clock_reset();
@@ -78,6 +80,11 @@ impl ChatState {
             && row.result.is_none()
         {
             row.result = Some((status, summary));
+            if let Some((_, number)) = self.expected_typed.take_if(|(call, _)| *call == id)
+                && status == ToolStatus::Ok
+            {
+                self.typed_not_run = Some(number);
+            }
         }
     }
 

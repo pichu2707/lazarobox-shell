@@ -13,6 +13,7 @@ baseline.
 ### Fixed
 
 - **`gh` auth, scope and repository failures now say what to do.** A GitHub read that failed with a rejected token (`HTTP 401`, bad credentials), a missing OAuth scope (`project`, `read:project`, ...) or a folder that is not a GitHub repository used to end with the bare `gh failed (exit 1)`. It now gives a fixed sentence with the command to run (`gh auth login`, `gh auth refresh -s <scope>`). The scope is named only from a fixed list, and `gh`'s own text still goes to the user's notice only, never to the model (#816).
+- **A turn no longer ends silently after a tool call (#816).** When the model streamed text, called a tool and then sent nothing, the chat shows `the model sent no answer after its last tool call` (unless a notice or error already said why). When a turn ends with a command typed into a pane and not run, it shows `waiting for you: press Enter in pane N to run it, then send a message to go on`: display-only, with the pane number and never the command. Nothing resumes the turn after the Enter yet.
 
 ## [1.31.3] - 2026-11-19
 

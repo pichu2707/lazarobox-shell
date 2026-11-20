@@ -853,6 +853,8 @@ In **run** mode lazarobox does what `auto` does not: a search or navigation comm
 
 The model receives `NOT RUN YET` with the reason (for example, that the pane has a half-typed line), so it does not take the command for granted, and the result row says `typed, not run`, not just `ok`. In `ask` and `auto`, which never press Enter, the result also says `NOT RUN YET`.
 
+When a turn ends with a command typed and not run, the pane adds `waiting for you: press Enter in pane N to run it, then send a message to go on` (the pane number, never the command). Nothing resumes the turn after the Enter: send a message to go on.
+
 The `Ctrl+Space`, `e` confirmation (a block of the response, not a model call) only types, also in `run`. In `ask` and `auto`, `y` still does not press Enter.
 
 **Runs on its own.** `cd`, `pwd`, `ls`, `tree`, `find`, `grep` and `rg`, when all their paths, and the pane's directory if none is given, are inside the chat folder. `pwd` runs anywhere and a `cd` without a path goes to `~`. `tree`, `grep` and `rg` also only act inside `$HOME`.
