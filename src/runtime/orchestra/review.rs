@@ -32,10 +32,7 @@ use crate::core::ai::{
     chat::prompts::{judge_builtin, lens_builtin, refuter_builtin, validator_builtin},
     orchestra::{
         changes::StagedDiff,
-        judge::{
-            self, JudgeLevel, Judging, NoVerdict, Ruling, agreement_line, judge_lines,
-            judge_prompt, parse_ruling,
-        },
+        judge::{self, JudgeLevel, Judging, agreement_line, judge_lines, judge_prompt},
         rdd::{
             Consent, Finding, Lens, Outcome as Ended, Prompt, Refutation, Review, ReviewError,
             correction_prompt, lens_prompt, parse_verdicts, refuter_prompt, says_unseen,
@@ -540,8 +537,12 @@ impl RunManager {
         if !lenses {
             let _ = review.no_lenses_needed();
             if answered != Answered::Judges {
-                let line = format!("{of}: the lens review was declined; the judges still run");
-                review.note_gap("the lens review was declined");
+                let why = match &answered {
+                    Answered::Unanswered(_) => "was not answered",
+                    _ => "was declined",
+                };
+                let line = format!("{of}: the lens review {why}; the judges still run");
+                review.note_gap(&format!("the lens review {why}"));
                 self.say(pane, run, line);
             }
         }
@@ -813,21 +814,24 @@ impl RunManager {
         }
         // The judges start with the lenses; a refused one gave no verdict and
         // does not halt the review (D8).
-        let mut judges = Vec::new();
+        let mut judges: Vec<(Option<WorkerId>, Option<String>)> = Vec::new();
         for _ in judging.iter().flat_map(|judging| &judging.models) {
-            let Some(judging) = judging else { break };
+            let Some(judging) = judging else { continue };
             let prompt = judge_prompt(wrap()?, &judging.standard, changes, &diff);
             guard.note(&prompt);
             let system = Some(judge_builtin(profile));
             let started = self.start_review(pane, run, Role::Reader, worker, prompt.text, system);
-            let id = started.map_err(Stop::Start)?;
-            guard.spawned.push(id);
-            judges.push((id, self.refused_at_start(pane, run, id)));
+            judges.push(match started {
+                Ok(id) => {
+                    guard.spawned.push(id);
+                    (Some(id), self.refused_at_start(pane, run, id))
+                }
+                Err(why) => (None, Some(why)),
+            });
         }
         let live = judges
             .iter()
-            .filter(|(_, why)| why.is_none())
-            .map(|(id, _)| *id);
+            .filter_map(|(id, why)| id.filter(|_| why.is_none()));
         let ids: Vec<_> = lenses.iter().map(|(_, id)| *id).chain(live).collect();
         let mut texts = self.finished(pane, run, worker, &ids).await?.into_iter();
         for ((lens, id), text) in lenses.iter().zip(texts.by_ref()) {
@@ -842,14 +846,11 @@ impl RunManager {
         }
         if let Some(judging) = judging {
             let count = judging.standard.criteria.len();
+            let refusals: Vec<_> = judges.iter().map(|(_, why)| why.clone()).collect();
+            let given = judge::rulings(&refusals, texts.collect(), count);
             let mut rulings = Vec::new();
-            for (at, (_, refusal)) in judges.iter().enumerate() {
-                let (ruling, note) = match (refusal, texts.next()) {
-                    (Some(why), _) => (Ruling::none(NoVerdict::Refused, count), Some(why)),
-                    (None, Some(Some(text))) => (parse_ruling(&text, count), None),
-                    (None, _) => (Ruling::none(NoVerdict::Failed, count), None),
-                };
-                let note = note.map(|why| refusal_reason(why));
+            for (at, (ruling, note)) in given.into_iter().enumerate() {
+                let note = note.map(|why| refusal_reason(&why));
                 for line in judge_lines(at + 1, judges.len(), &ruling, note.as_deref()) {
                     self.say(pane, run, line);
                 }

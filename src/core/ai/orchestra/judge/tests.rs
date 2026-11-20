@@ -941,3 +941,21 @@ fn the_notes_before_the_verdicts_name_thin_criteria_dropped_ones_and_one_model()
     judging.standard.dropped = 0;
     assert_eq!(judging.notes(), ["judge: two judges"]);
 }
+
+// Review of S2a (D8): a refused judge takes no text; the live judge's verdict is kept.
+#[test]
+fn a_refused_judge_does_not_eat_the_text_of_the_live_one() {
+    let refused = [Some("not installed".to_owned()), None];
+    let live = vec![Some("CRITERION C1 met | ok\nVERDICT pass".to_owned())];
+    let got = rulings(&refused, live, 1);
+    assert_eq!(got[0].0.verdict, Err(NoVerdict::Refused));
+    assert_eq!(got[0].1.as_deref(), Some("not installed"));
+    assert_eq!(got[1].0.verdict, Ok(Verdict::Pass));
+    let got = rulings(&[None, None], vec![None], 1);
+    assert_eq!(got[0].0.verdict, Err(NoVerdict::Failed));
+    assert_eq!(
+        got[1].0.verdict,
+        Err(NoVerdict::Failed),
+        "a missing text is failed"
+    );
+}

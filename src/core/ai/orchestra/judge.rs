@@ -399,6 +399,25 @@ pub fn judge_lines(at: usize, of: usize, ruling: &Ruling, note: Option<&str>) ->
     }
 }
 
+/// The ruling of each judge, in order: `refusals` holds why a judge did not
+/// start (`None`: it runs), `texts` the answers of the judges that run, in
+/// their order. A refused judge takes no text.
+pub fn rulings(
+    refusals: &[Option<String>],
+    texts: Vec<Option<String>>,
+    count: usize,
+) -> Vec<(Ruling, Option<String>)> {
+    let mut texts = texts.into_iter();
+    let each = |why: &Option<String>| match why {
+        Some(why) => (Ruling::none(NoVerdict::Refused, count), Some(why.clone())),
+        None => match texts.next().flatten() {
+            Some(text) => (parse_ruling(&text, count), None),
+            None => (Ruling::none(NoVerdict::Failed, count), None),
+        },
+    };
+    refusals.iter().map(each).collect()
+}
+
 /// `<u> unverified (C3: tests not seen, ...)`.
 fn unverified_text<T: AsRef<str>>(unverified: &[(usize, T)]) -> String {
     let each: Vec<String> = unverified
