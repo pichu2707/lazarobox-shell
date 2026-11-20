@@ -605,6 +605,7 @@ fn status_of(event: &OrchestraEvent) -> Option<WorkerStatus> {
         | OrchestraEvent::Continue(_)
         | OrchestraEvent::Stopped { .. }
         | OrchestraEvent::Review { .. }
+        | OrchestraEvent::Judge { .. }
         | OrchestraEvent::Filled { .. }
         | OrchestraEvent::Closed { .. }
         | OrchestraEvent::Trace { .. }
@@ -1653,6 +1654,7 @@ fn story(events: &[OrchestraEvent]) -> Vec<(u32, Option<WorkerStatus>)> {
             | OrchestraEvent::Continue(_)
             | OrchestraEvent::Stopped { .. }
             | OrchestraEvent::Review { .. }
+            | OrchestraEvent::Judge { .. }
             | OrchestraEvent::Filled { .. }
             | OrchestraEvent::Closed { .. }
             | OrchestraEvent::Trace { .. }

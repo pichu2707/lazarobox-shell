@@ -46,6 +46,9 @@ use crate::core::ai::{
     },
 };
 
+/// A judge worker (`None` when it never started) and why it was refused.
+type Started = (Option<WorkerId>, Option<String>);
+
 /// The lenses every review runs until the orchestrator can pick them.
 const DEFAULT_LENSES: [Lens; 2] = [Lens::Risk, Lens::Reliability];
 
@@ -447,6 +450,27 @@ impl RunManager {
         self.send(pane, OrchestraEvent::Review { run, text });
     }
 
+    /// A judge's step for the run trail: fixed text only (D14).
+    fn trail(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        (at, of): (usize, usize),
+        (word, why): (&str, String),
+    ) {
+        let who = format!("judge {}/{of}", at + 1);
+        let (verdict, reason) = (word.to_owned(), why);
+        self.send(
+            pane,
+            OrchestraEvent::Judge {
+                run,
+                who,
+                verdict,
+                reason,
+            },
+        );
+    }
+
     /// Ends the workers of a review and unparks its proposer.
     pub(super) fn release(
         self: &Arc<Self>,
@@ -817,10 +841,10 @@ impl RunManager {
         }
         // The judges start with the lenses; a refused one gave no verdict and
         // does not halt the review (D8).
-        let count = judging.map_or(0, |judging| judging.models.len());
+        let labels: Vec<usize> = (0..judging.map_or(0, |j| j.models.len())).collect();
         let judges = match judging {
             Some(judging) => {
-                self.start_judges(pane, run, worker, guard, judging, count, changes, &diff)?
+                self.start_judges(pane, run, worker, guard, judging, &labels, changes, &diff)?
             }
             None => Vec::new(),
         };
@@ -840,7 +864,6 @@ impl RunManager {
             review.report(*lens, &text).map_err(|e| other(refused(e)))?;
         }
         if let Some(judging) = judging {
-            let labels: Vec<usize> = (0..judges.len()).collect();
             let rulings = self.ruled(pane, run, judging, &judges, texts.collect(), &labels);
             let agreement = judge::agree(&rulings);
             if rulings.len() > 1 {
@@ -1109,15 +1132,15 @@ impl RunManager {
         worker: WorkerId,
         guard: &mut Guard,
         judging: &Judging,
-        count: usize,
+        labels: &[usize],
         changes: &[Change],
         diff: &StagedDiff,
-    ) -> Result<Vec<(Option<WorkerId>, Option<String>)>, Stop> {
+    ) -> Result<Vec<Started>, Stop> {
         let profile = self
             .on_run(pane, run, |live| live.profile)
             .ok_or(Stop::Start(ENDED.to_owned()))?;
         let mut started = Vec::new();
-        for _ in 0..count {
+        for _ in labels {
             let nonce = (self.nonce)()
                 .ok_or_else(|| Stop::Start("a prompt cannot be wrapped now".to_owned()))?;
             let prompt = judge_prompt(nonce, &judging.standard, changes, diff);
@@ -1126,6 +1149,9 @@ impl RunManager {
             let id = self.start_review(pane, run, Role::Reader, worker, prompt.text, system);
             started.push(match id {
                 Ok(id) => {
+                    let place = (labels[started.len()], judging.models.len());
+                    let what = "read-only, over the staged change".to_owned();
+                    self.trail(pane, run, place, ("started", what));
                     guard.spawned.push(id);
                     (Some(id), self.refused_at_start(pane, run, id))
                 }
@@ -1142,7 +1168,7 @@ impl RunManager {
         pane: PaneId,
         run: RunId,
         judging: &Judging,
-        judges: &[(Option<WorkerId>, Option<String>)],
+        judges: &[Started],
         texts: Vec<Option<String>>,
         labels: &[usize],
     ) -> Vec<Ruling> {
@@ -1153,6 +1179,7 @@ impl RunManager {
         let mut rulings = Vec::new();
         for (&at, (ruling, note)) in labels.iter().zip(given) {
             let note = note.map(|why| refusal_reason(&why));
+            self.trail(pane, run, (at, of), ruling.step());
             for line in judge_lines(at + 1, of, &ruling, note.as_deref()) {
                 self.say(pane, run, line);
             }
@@ -1180,8 +1207,7 @@ impl RunManager {
             .filter(|(_, ruling)| ruling.verdict == Ok(judge::Verdict::Fail))
             .map(|(at, _)| at)
             .collect();
-        let count = failed.len();
-        let judges = self.start_judges(pane, run, worker, guard, judging, count, fresh, after)?;
+        let judges = self.start_judges(pane, run, worker, guard, judging, &failed, fresh, after)?;
         let live = (judges.iter()).filter_map(|(id, why)| id.filter(|_| why.is_none()));
         let ids: Vec<_> = live.collect();
         let texts = self.finished(pane, run, worker, &ids).await?;

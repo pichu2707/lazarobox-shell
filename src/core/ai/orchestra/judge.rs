@@ -248,6 +248,27 @@ impl Ruling {
         }
     }
 
+    /// How the run step trail records this ruling: the verdict word and a
+    /// reason built from counts and fixed words only (never judge text).
+    pub fn step(&self) -> (&'static str, String) {
+        let count = |want: State| {
+            let rows = self.criteria.iter().flatten();
+            rows.filter(|(state, _)| *state == want).count()
+        };
+        match self.verdict {
+            Ok(Verdict::Pass) => ("pass", format!("{} criteria met", count(State::Met))),
+            Ok(Verdict::Fail) => (
+                "fail",
+                format!(
+                    "{} of {} criteria not met",
+                    count(State::NotMet),
+                    self.criteria.len()
+                ),
+            ),
+            Err(why) => ("no verdict", why.word().to_owned()),
+        }
+    }
+
     /// The criteria a judge could not verify: number and reason.
     pub fn unverified(&self) -> Vec<(usize, &str)> {
         let rows = self.criteria.iter().enumerate();

@@ -465,3 +465,33 @@ async fn exhausted_rounds_name_the_open_criterion_and_the_batch_reaches_the_user
     assert_eq!(kept[0].outcome, Some(Ended::BlockersOpen));
     assert_eq!(kept[0].review.limit(), Some(3));
 }
+
+// Run step trail (7.8c): a judge's start and verdict are events for the trail
+// with fixed text only, before and after its lines.
+#[tokio::test]
+async fn each_judge_start_and_verdict_is_sent_for_the_step_trail() {
+    let (mut lab, _run, _h) = Batch::one(Some(true)).run(fails).await;
+    let steps: Vec<_> = lab
+        .sent()
+        .into_iter()
+        .filter_map(|event| match event {
+            OrchestraEvent::Judge {
+                who,
+                verdict,
+                reason,
+                ..
+            } => Some((who, verdict, reason)),
+            _ => None,
+        })
+        .collect();
+    let want = |who: &str, verdict: &str, reason: &str| {
+        (who.to_owned(), verdict.to_owned(), reason.to_owned())
+    };
+    assert_eq!(
+        steps,
+        [
+            want("judge 1/1", "started", "read-only, over the staged change"),
+            want("judge 1/1", "fail", "1 of 5 criteria not met"),
+        ]
+    );
+}
