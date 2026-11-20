@@ -32,7 +32,10 @@ use crate::core::ai::{
     chat::prompts::{judge_builtin, lens_builtin, refuter_builtin, validator_builtin},
     orchestra::{
         changes::StagedDiff,
-        judge::{self, JudgeLevel, Judging, agreement_line, judge_lines, judge_prompt},
+        judge::{
+            self, JudgeLevel, Judging, Ruling, agreement_line, changes_line, judge_lines,
+            judge_prompt,
+        },
         rdd::{
             Consent, Finding, Lens, Outcome as Ended, Prompt, Refutation, Review, ReviewError,
             correction_prompt, lens_prompt, parse_verdicts, refuter_prompt, says_unseen,
@@ -814,21 +817,13 @@ impl RunManager {
         }
         // The judges start with the lenses; a refused one gave no verdict and
         // does not halt the review (D8).
-        let mut judges: Vec<(Option<WorkerId>, Option<String>)> = Vec::new();
-        for _ in judging.iter().flat_map(|judging| &judging.models) {
-            let Some(judging) = judging else { continue };
-            let prompt = judge_prompt(wrap()?, &judging.standard, changes, &diff);
-            guard.note(&prompt);
-            let system = Some(judge_builtin(profile));
-            let started = self.start_review(pane, run, Role::Reader, worker, prompt.text, system);
-            judges.push(match started {
-                Ok(id) => {
-                    guard.spawned.push(id);
-                    (Some(id), self.refused_at_start(pane, run, id))
-                }
-                Err(why) => (None, Some(why)),
-            });
-        }
+        let count = judging.map_or(0, |judging| judging.models.len());
+        let judges = match judging {
+            Some(judging) => {
+                self.start_judges(pane, run, worker, guard, judging, count, changes, &diff)?
+            }
+            None => Vec::new(),
+        };
         let live = judges
             .iter()
             .filter_map(|(id, why)| id.filter(|_| why.is_none()));
@@ -845,17 +840,8 @@ impl RunManager {
             review.report(*lens, &text).map_err(|e| other(refused(e)))?;
         }
         if let Some(judging) = judging {
-            let count = judging.standard.criteria.len();
-            let refusals: Vec<_> = judges.iter().map(|(_, why)| why.clone()).collect();
-            let given = judge::rulings(&refusals, texts.collect(), count);
-            let mut rulings = Vec::new();
-            for (at, (ruling, note)) in given.into_iter().enumerate() {
-                let note = note.map(|why| refusal_reason(&why));
-                for line in judge_lines(at + 1, judges.len(), &ruling, note.as_deref()) {
-                    self.say(pane, run, line);
-                }
-                rulings.push(ruling);
-            }
+            let labels: Vec<usize> = (0..judges.len()).collect();
+            let rulings = self.ruled(pane, run, judging, &judges, texts.collect(), &labels);
             let agreement = judge::agree(&rulings);
             if rulings.len() > 1 {
                 self.say(pane, run, agreement_line(&agreement, &rulings));
@@ -901,6 +887,9 @@ impl RunManager {
                     worker.0
                 ),
             );
+            if let Some(line) = review.exhausted_line(spent) {
+                self.say(pane, run, line);
+            }
             return Ok(());
         }
         let targets = match review.begin_correction() {
@@ -908,12 +897,24 @@ impl RunManager {
             Err(ReviewError::NoBlockers) => return Ok(()),
             Err(e) => return Err(other(refused(e))),
         };
-        self.on_run(pane, run, |live| {
-            *live.review.corrections.entry(worker).or_default() += 1;
+        let round = self.on_run(pane, run, |live| {
+            let rounds = live.review.corrections.entry(worker).or_default();
+            *rounds += 1;
+            *rounds
         });
+        let round = round.unwrap_or(1);
+        for &at in &targets {
+            self.say(pane, run, review.fix_line(at, round, MAX_CORRECTIONS));
+        }
         let open = self
             .correct(
-                pane, run, worker, guard, changes, reviewed, review, &targets,
+                pane,
+                run,
+                worker,
+                guard,
+                (changes, reviewed),
+                review,
+                (&targets, round, judging),
             )
             .await?;
         review
@@ -979,10 +980,9 @@ impl RunManager {
         run: RunId,
         worker: WorkerId,
         guard: &mut Guard,
-        changes: &[Change],
-        reviewed: &mut [Change],
-        review: &Review,
-        targets: &[usize],
+        (changes, reviewed): (&[Change], &mut [Change]),
+        review: &mut Review,
+        (targets, round, judging): (&[usize], u32, Option<&Judging>),
     ) -> Result<Vec<usize>, Stop> {
         let nonce = (self.nonce)()
             .ok_or_else(|| Stop::Start("a prompt cannot be wrapped now".to_owned()))?;
@@ -1011,6 +1011,11 @@ impl RunManager {
             self.say(pane, run, "the correction did not finish".to_owned());
             return Ok(targets.to_vec());
         }
+        // What changed is lazarobox's reading of the staged text, never the
+        // worker's account (D12).
+        let after = self.diff_text(pane, run, worker).await;
+        let made = judge::changed(&diff, &after);
+        self.say(pane, run, changes_line(round, MAX_CORRECTIONS, &made));
         // The check reads what is staged now, not the listing of before; a
         // correction that staged nothing new fixed nothing.
         let Some(fresh) = self.restaged(pane, run, worker, changes).await else {
@@ -1036,18 +1041,20 @@ impl RunManager {
             );
             return Ok(targets.to_vec());
         }
-        let checked = self
-            .refute(
-                pane,
-                run,
-                worker,
-                guard,
-                &fresh,
-                review,
-                targets,
-                Check::Validate,
-            )
-            .await;
+        // Lens targets go to the validator; judge targets to the judges that
+        // failed, who rule again (D8 step 9).
+        let (judged, lensed): (Vec<usize>, Vec<usize>) =
+            (targets.iter()).partition(|&&at| review.findings()[at].lens == Lens::Judge);
+        let checked = if lensed.is_empty() {
+            Ok(None)
+        } else {
+            let check = Check::Validate;
+            let args = (pane, run, worker);
+            let asked = self.refute(
+                args.0, args.1, args.2, guard, &fresh, review, &lensed, check,
+            );
+            asked.await
+        };
         let text = match checked {
             Ok(text) => text,
             Err(Stop::Start(why)) => {
@@ -1060,20 +1067,128 @@ impl RunManager {
             }
             Err(other) => return Err(other),
         };
+        let mut open_judges = Vec::new();
+        if let (Some(judging), false) = (judging, judged.is_empty()) {
+            let again = self
+                .rejudge(pane, run, worker, guard, judging, &fresh, &after, review)
+                .await;
+            open_judges = match again {
+                Ok(open) => open,
+                Err(Stop::Start(why)) => {
+                    self.say(pane, run, format!("the judges could not rule again: {why}"));
+                    judged
+                }
+                Err(other) => return Err(other),
+            };
+        }
         // What the check looked at is what was last reviewed.
         for kept in reviewed.iter_mut() {
             if let Some(now) = fresh.iter().find(|now| now.path == kept.path) {
                 kept.hash.clone_from(&now.hash);
             }
         }
-        let verdicts = parse_verdicts(&text.unwrap_or_default(), targets.len());
-        // Only an explicit "refuted" clears a blocker: upheld and unsettled
-        // (or no answer) leave it open.
-        let open = targets.iter().zip(verdicts.answers);
-        Ok(open
+        let verdicts = parse_verdicts(&text.unwrap_or_default(), lensed.len());
+        // Only an explicit "refuted" clears a lens blocker: upheld and
+        // unsettled (or no answer) leave it open.
+        let open = lensed.iter().zip(verdicts.answers);
+        let mut open: Vec<usize> = open
             .filter(|(_, answer)| *answer != Some(Refutation::Refuted))
             .map(|(at, _)| *at)
-            .collect())
+            .collect();
+        open.extend(open_judges);
+        Ok(open)
+    }
+
+    /// Starts `count` judges over `diff`; a refused one is `(.., Some(why))`
+    /// and gives no verdict.
+    #[allow(clippy::too_many_arguments)]
+    fn start_judges(
+        self: &Arc<Self>,
+        pane: PaneId,
+        run: RunId,
+        worker: WorkerId,
+        guard: &mut Guard,
+        judging: &Judging,
+        count: usize,
+        changes: &[Change],
+        diff: &StagedDiff,
+    ) -> Result<Vec<(Option<WorkerId>, Option<String>)>, Stop> {
+        let profile = self
+            .on_run(pane, run, |live| live.profile)
+            .ok_or(Stop::Start(ENDED.to_owned()))?;
+        let mut started = Vec::new();
+        for _ in 0..count {
+            let nonce = (self.nonce)()
+                .ok_or_else(|| Stop::Start("a prompt cannot be wrapped now".to_owned()))?;
+            let prompt = judge_prompt(nonce, &judging.standard, changes, diff);
+            guard.note(&prompt);
+            let system = Some(judge_builtin(profile));
+            let id = self.start_review(pane, run, Role::Reader, worker, prompt.text, system);
+            started.push(match id {
+                Ok(id) => {
+                    guard.spawned.push(id);
+                    (Some(id), self.refused_at_start(pane, run, id))
+                }
+                Err(why) => (None, Some(why)),
+            });
+        }
+        Ok(started)
+    }
+
+    /// Says what each judge ruled (`labels` are their numbers from 0) and
+    /// returns the rulings.
+    fn ruled(
+        &self,
+        pane: PaneId,
+        run: RunId,
+        judging: &Judging,
+        judges: &[(Option<WorkerId>, Option<String>)],
+        texts: Vec<Option<String>>,
+        labels: &[usize],
+    ) -> Vec<Ruling> {
+        let count = judging.standard.criteria.len();
+        let refusals: Vec<_> = judges.iter().map(|(_, why)| why.clone()).collect();
+        let given = judge::rulings(&refusals, texts, count);
+        let of = judging.models.len();
+        let mut rulings = Vec::new();
+        for (&at, (ruling, note)) in labels.iter().zip(given) {
+            let note = note.map(|why| refusal_reason(&why));
+            for line in judge_lines(at + 1, of, &ruling, note.as_deref()) {
+                self.say(pane, run, line);
+            }
+            rulings.push(ruling);
+        }
+        rulings
+    }
+
+    /// The judges that failed rule again over the corrected change, each
+    /// with its own lines; returns the judge targets still open.
+    #[allow(clippy::too_many_arguments)]
+    async fn rejudge(
+        self: &Arc<Self>,
+        pane: PaneId,
+        run: RunId,
+        worker: WorkerId,
+        guard: &mut Guard,
+        judging: &Judging,
+        fresh: &[Change],
+        after: &StagedDiff,
+        review: &mut Review,
+    ) -> Result<Vec<usize>, Stop> {
+        let rulings = review.rounds().first().map(|round| &round.rulings);
+        let failed: Vec<usize> = (rulings.into_iter().flatten().enumerate())
+            .filter(|(_, ruling)| ruling.verdict == Ok(judge::Verdict::Fail))
+            .map(|(at, _)| at)
+            .collect();
+        let count = failed.len();
+        let judges = self.start_judges(pane, run, worker, guard, judging, count, fresh, after)?;
+        let live = (judges.iter()).filter_map(|(id, why)| id.filter(|_| why.is_none()));
+        let ids: Vec<_> = live.collect();
+        let texts = self.finished(pane, run, worker, &ids).await?;
+        let rulings = self.ruled(pane, run, judging, &judges, texts, &failed);
+        review
+            .rejudged(&rulings)
+            .map_err(|e| Stop::Other(refused(e)))
     }
 
     /// The staged change set now; `None` when it cannot be read.

@@ -1,7 +1,7 @@
 //! The acceptance judges inside the review (acceptance-judges S2a): the level
 //! of a batch, the judge workers, the consent once per run and the lines.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::*;
 use crate::core::ai::{chat::prompts::judge_builtin, orchestra::judge::JudgeLevel};
@@ -99,6 +99,9 @@ struct Batch {
     consent: Option<bool>,
     restage: Option<Restage>,
     roster: Roster,
+    diff: fn() -> StagedDiff,
+    /// Corrections the worker already spent.
+    spent: u32,
 }
 
 impl Batch {
@@ -109,6 +112,8 @@ impl Batch {
             consent,
             restage: None,
             roster: codex_both(),
+            diff: staged_text,
+            spent: 0,
         }
     }
 
@@ -119,6 +124,8 @@ impl Batch {
             consent,
             restage: Some(restaged_differently),
             roster: codex_both(),
+            diff: staged_text,
+            spent: 0,
         }
     }
 
@@ -126,7 +133,7 @@ impl Batch {
         let lab = lab_with(Script::By(by), |m, home| RunManager {
             scratch: |_| false,
             restage: self.restage,
-            diff: Some(staged_text),
+            diff: Some(self.diff),
             ..tooled(m, home)
         });
         let (run, handle) = lab.begin(lab.scope(self.roster, &[])).unwrap();
@@ -135,6 +142,10 @@ impl Batch {
         if let Some(granted) = self.consent {
             handle.judges_answered(run, granted);
         }
+        let worker = WorkerId(1);
+        lab.manager.on_run(pane(), run, |live| {
+            live.review.corrections.insert(worker, self.spent);
+        });
         let assessment = handle.assess(run, &self.changes);
         let done = handle.review(run, WorkerId(1), self.changes, assessment, self.answered);
         let ended = timeout(Duration::from_secs(10), done).await;
@@ -245,7 +256,8 @@ async fn on_a_high_change_lenses_and_two_judges_run_and_one_correction_covers_bo
     let (mut lab, run, _h) = Batch::high(Answered::Granted, Some(true)).run(fails).await;
     let requests = lab.seen.requests();
     assert_eq!(requests.iter().filter(|r| is_lens(r)).count(), 2);
-    assert_eq!(judge_requests(&lab).len(), 2);
+    // Both failed, so both rule again over the corrected change.
+    assert_eq!(judge_requests(&lab).len(), 4);
     assert_eq!(requests.iter().filter(|r| is_correction(r)).count(), 1);
     let lines = said(&mut lab);
     for want in [
@@ -257,7 +269,7 @@ async fn on_a_high_change_lenses_and_two_judges_run_and_one_correction_covers_bo
         assert!(lines.iter().any(|l| l.contains(want)), "{want}: {lines:?}");
     }
     let kept = lab.manager.reviews(pane(), run);
-    assert_eq!(kept[0].review.rounds().len(), 1);
+    assert_eq!(kept[0].review.rounds().len(), 2);
 }
 
 // Spec (Disagreement is visible and does not correct).
@@ -361,4 +373,95 @@ fn the_orchestrator_cannot_spawn_a_judge_by_kind() {
     use crate::core::ai::orchestra::tools::{OrchError, parse};
     let args = serde_json::json!({"kind": "judge", "prompt": "rule it"});
     assert_eq!(parse("spawn_agent", &args), Err(OrchError::BadKind));
+}
+
+static FIXED: AtomicBool = AtomicBool::new(false);
+
+/// The judge fails until the correction ran, then passes.
+fn fails_until_fixed(request: &ChatRequest) -> Option<&'static str> {
+    if is_correction(request) {
+        FIXED.store(true, Ordering::SeqCst);
+        return Some("staged the fix in src/b.rs");
+    }
+    if is_judge(request) && FIXED.load(Ordering::SeqCst) {
+        return Some(text_of(criteria_of(request), "pass"));
+    }
+    fails(request)
+}
+
+/// What is staged: one line before the correction, another after it.
+fn staged_after_fix() -> StagedDiff {
+    let mut diff = staged_text();
+    if FIXED.load(Ordering::SeqCst) {
+        diff.files[0].text = "yanked = 2\n".to_owned();
+    }
+    diff
+}
+
+fn at_of(lines: &[String], needle: &str) -> Option<usize> {
+    lines.iter().position(|l| l.contains(needle))
+}
+
+// Spec (Corrections say what they change; Worker claim is not trusted): the
+// target before, lazarobox's own `changes:` after (never the worker's `src/b.rs`),
+// and the judge that failed rules again with its own lines.
+#[tokio::test]
+async fn a_correction_says_what_it_fixes_what_it_changed_and_the_judge_rules_again() {
+    FIXED.store(false, Ordering::SeqCst);
+    let mut batch = Batch::one(Some(true));
+    batch.restage = Some(restaged_differently);
+    batch.diff = staged_after_fix;
+    let (mut lab, run, _h) = batch.run(fails_until_fixed).await;
+    let lines = said(&mut lab);
+    let before = at_of(
+        &lines,
+        "correction 1/3 \u{b7} fixes C1 \u{b7} at: src/a.rs:4-6",
+    );
+    let after = at_of(&lines, "correction 1/3 done \u{b7} changes: Cargo.lock 1-1");
+    let again = at_of(&lines, "judge 1/1: pass");
+    assert!(
+        before < after && after < again && before.is_some(),
+        "{lines:?}"
+    );
+    assert!(!lines.iter().any(|l| l.contains("src/b.rs")), "{lines:?}");
+    assert_eq!(judge_requests(&lab).len(), 2);
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].review.rounds().len(), 2);
+    assert_eq!(kept[0].outcome, Some(Ended::Corrected));
+}
+
+// Spec (a correction that changed nothing says so): and the failing judge
+// still rules again; its fail keeps the criterion open.
+#[tokio::test]
+async fn a_correction_that_changed_nothing_says_none_and_a_failing_rejudge_keeps_it_open() {
+    let mut batch = Batch::one(Some(true));
+    batch.restage = Some(restaged_differently);
+    let (mut lab, run, _h) = batch.run(fails).await;
+    let lines = said(&mut lab);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "correction 1/3 done \u{b7} changes: none"),
+        "{lines:?}"
+    );
+    assert_eq!(judge_requests(&lab).len(), 2);
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].outcome, Some(Ended::BlockersOpen));
+}
+
+// Spec (Exhausted rounds say what is missing): no correction starts, the
+// line names the open criterion and what is missing.
+#[tokio::test]
+async fn exhausted_rounds_name_the_open_criterion_and_the_batch_reaches_the_user() {
+    let mut batch = Batch::one(Some(true));
+    batch.restage = Some(restaged_differently);
+    batch.spent = 3;
+    let (mut lab, run, _h) = batch.run(fails).await;
+    assert!(lab.seen.requests().iter().all(|r| !is_correction(r)));
+    let lines = said(&mut lab);
+    let want = "judge: rounds exhausted (3) \u{b7} open: C1 \u{b7} missing: the pin is missing";
+    assert!(lines.iter().any(|l| l == want), "{lines:?}");
+    let kept = lab.manager.reviews(pane(), run);
+    assert_eq!(kept[0].outcome, Some(Ended::BlockersOpen));
+    assert_eq!(kept[0].review.limit(), Some(3));
 }
