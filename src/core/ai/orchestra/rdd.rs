@@ -620,7 +620,7 @@ impl Review {
     /// `judge: rounds exhausted (<rounds>) · open: <ids> · missing: <what>`
     /// while a judge criterion is still a blocker; `None` otherwise.
     pub fn exhausted_line(&self, rounds: u32) -> Option<String> {
-        let open: Vec<(usize, &str)> = (self.blockers().into_iter())
+        let open: Vec<(usize, &str)> = (self.open().into_iter())
             .filter_map(|at| Some((self.criterion(at)?, self.findings[at].text.as_str())))
             .collect();
         let ids: Vec<String> = open.iter().map(|(c, _)| format!("C{c}")).collect();

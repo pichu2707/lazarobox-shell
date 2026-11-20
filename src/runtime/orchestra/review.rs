@@ -943,6 +943,13 @@ impl RunManager {
         review
             .finish_correction(&open)
             .map_err(|e| other(refused(e)))?;
+        // The last round just ran: nobody reviews this batch again, so say now
+        // what is still open.
+        if round >= MAX_CORRECTIONS
+            && let Some(line) = review.exhausted_line(round)
+        {
+            self.say(pane, run, line);
+        }
         Ok(())
     }
 
@@ -1202,6 +1209,8 @@ impl RunManager {
         after: &StagedDiff,
         review: &mut Review,
     ) -> Result<Vec<usize>, Stop> {
+        // The first round is the one that failed: a review has one correction
+        // (`CorrectionUsed`), so there is no later round to prefer.
         let rulings = review.rounds().first().map(|round| &round.rulings);
         let failed: Vec<usize> = (rulings.into_iter().flatten().enumerate())
             .filter(|(_, ruling)| ruling.verdict == Ok(judge::Verdict::Fail))

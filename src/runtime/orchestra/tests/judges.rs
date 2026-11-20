@@ -375,6 +375,8 @@ fn the_orchestrator_cannot_spawn_a_judge_by_kind() {
     assert_eq!(parse("spawn_agent", &args), Err(OrchError::BadKind));
 }
 
+// Only `a_correction_says_what_it_fixes...` uses this flag, so no other test
+// reads it while it changes.
 static FIXED: AtomicBool = AtomicBool::new(false);
 
 /// The judge fails until the correction ran, then passes.
@@ -494,4 +496,21 @@ async fn each_judge_start_and_verdict_is_sent_for_the_step_trail() {
             want("judge 1/1", "fail", "1 of 5 criteria not met"),
         ]
     );
+}
+
+// Review fix: the round that uses the last correction says the rounds are
+// exhausted at once; no later review has to run for the user to see it.
+#[tokio::test]
+async fn the_last_correction_round_says_the_rounds_are_exhausted_when_it_fails() {
+    let mut batch = Batch::one(Some(true));
+    batch.restage = Some(restaged_differently);
+    batch.spent = 2;
+    let (mut lab, _run, _h) = batch.run(fails).await;
+    let lines = said(&mut lab);
+    let said_it: Vec<_> = lines
+        .iter()
+        .filter(|l| l.starts_with("judge: rounds exhausted (3)"))
+        .collect();
+    assert_eq!(said_it.len(), 1, "{lines:?}");
+    assert!(said_it[0].contains("open: C1"), "{said_it:?}");
 }
