@@ -798,3 +798,123 @@ fn the_consent_text_names_the_level_rule_and_the_models_in_one_clean_line() {
     let size = format!("{} KB", BIG_BYTES / 1024);
     assert!(text.contains(&size), "{text:?}");
 }
+
+// Spec (Every verdict and failed criterion is a visible line).
+#[test]
+fn a_pass_line_counts_the_met_criteria_and_names_the_unverified_ones() {
+    assert_eq!(
+        judge_lines(1, 1, &clean_pass(), None),
+        ["judge 1/1: pass \u{b7} 2 criteria met"]
+    );
+    let some = pass_with(&[
+        (State::Met, "a"),
+        (State::Met, "b"),
+        (State::Unknown, "tests not seen"),
+    ]);
+    assert_eq!(
+        judge_lines(1, 1, &some, None),
+        ["judge 1/1: pass \u{b7} 2 met, 1 unverified (C3: tests not seen)"]
+    );
+}
+
+// From the S1a verify (W2, W4): a hollow pass never reads as a clean one.
+#[test]
+fn a_hollow_pass_line_says_so() {
+    let nothing = pass_with(&[(State::Unknown, "a"), (State::Unknown, "b")]);
+    let line = &judge_lines(2, 2, &nothing, None)[0];
+    assert!(
+        line.starts_with("judge 2/2: pass, nothing verified"),
+        "{line}"
+    );
+    let text = "CRITERION C1 met | ok\nFINDING C1 | at: src/a.rs:3 | wrong\nVERDICT pass";
+    let line = &judge_lines(1, 1, &parse_ruling(text, 1), None)[0];
+    assert!(line.contains("contradicts itself"), "{line}");
+}
+
+#[test]
+fn a_fail_gets_a_summary_and_one_line_per_criterion_with_its_place() {
+    let lines = judge_lines(1, 2, &fail_at(2, "src/a.rs:40-52"), None);
+    assert_eq!(lines[0], "judge 1/2: fail \u{b7} 1 of 2 criteria not met");
+    assert_eq!(
+        lines[1],
+        "judge 1/2 \u{b7} C2 not met \u{b7} at: src/a.rs:40-52 \u{b7} broken"
+    );
+    let text = "CRITERION C1 not met | bad\nFINDING C1 | nowhere | broken\nVERDICT fail";
+    let lines = judge_lines(1, 1, &parse_ruling(text, 1), None);
+    assert!(lines[1].contains("at: unknown"), "{lines:?}");
+}
+
+#[test]
+fn a_fail_shows_at_most_eight_criterion_lines_then_a_count() {
+    let rows: String = (1..=10)
+        .map(|n| format!("CRITERION C{n} not met | bad\n"))
+        .collect();
+    let ruling = parse_ruling(&format!("{rows}VERDICT fail"), 10);
+    let lines = judge_lines(1, 1, &ruling, None);
+    assert_eq!(lines.len(), 1 + 8 + 1, "{lines:?}");
+    assert_eq!(lines[0], "judge 1/1: fail \u{b7} 10 of 10 criteria not met");
+    assert_eq!(lines[9], "judge 1/1: +2 more in the receipt");
+}
+
+#[test]
+fn no_verdict_names_its_reason_and_the_refusal_its_text() {
+    let line = &judge_lines(2, 2, &no_verdict(), None)[0];
+    assert_eq!(line, "judge 2/2: no verdict \u{b7} unparseable");
+    let refused = Ruling::none(NoVerdict::Refused, 2);
+    let line = &judge_lines(1, 1, &refused, Some("engine not installed"))[0];
+    assert_eq!(
+        line,
+        "judge 1/1: no verdict \u{b7} refused (engine not installed)"
+    );
+    assert_eq!(refused.criteria.len(), 2);
+    assert_eq!(
+        agree(&[refused]),
+        Agreement::Disagree {
+            missing: "judge 1 gave no verdict (refused)".to_owned()
+        }
+    );
+}
+
+// Spec (Agreement of two judges): the agreement is its own line.
+#[test]
+fn the_agreement_line_names_the_outcome_and_what_is_missing() {
+    let rulings = [clean_pass(), clean_pass()];
+    assert_eq!(
+        agreement_line(&agree(&rulings), &rulings),
+        "judges agree: pass"
+    );
+    let rulings = [
+        pass_with(&[(State::Met, "a"), (State::Unknown, "tests not seen")]),
+        clean_pass(),
+    ];
+    assert_eq!(
+        agreement_line(&agree(&rulings), &rulings),
+        "judges agree: pass \u{b7} 1 unverified (C2: tests not seen)"
+    );
+    let hollow = pass_with(&[(State::Unknown, "a"), (State::Unknown, "b")]);
+    let rulings = [hollow, clean_pass()];
+    assert!(agreement_line(&agree(&rulings), &rulings).contains("not clean"));
+    let rulings = [fail_at(1, "src/a.rs:4"), fail_at(2, "src/b.rs:9")];
+    assert_eq!(
+        agreement_line(&agree(&rulings), &rulings),
+        "judges agree: fail \u{b7} 2 criteria not met"
+    );
+    let rulings = [clean_pass(), fail_at(2, "src/a.rs:4")];
+    assert_eq!(
+        agreement_line(&agree(&rulings), &rulings),
+        "judges disagree \u{b7} judge 1 pass, judge 2 fail \u{b7} missing: judge 2 fails C2"
+    );
+    let rulings = [clean_pass(), no_verdict()];
+    let line = agreement_line(&agree(&rulings), &rulings);
+    assert!(line.contains("judge 2 no verdict"), "{line}");
+}
+
+#[test]
+fn the_standard_notes_are_lines_of_their_own() {
+    assert!(thin_line().starts_with("judge: criteria are thin"));
+    assert_eq!(dropped_line(3), "judge: 3 criteria not judged (cap 12)");
+    assert_eq!(
+        independence_line("claude \u{203a} opus"),
+        "judge: judges are not independent \u{b7} both on claude \u{203a} opus"
+    );
+}
