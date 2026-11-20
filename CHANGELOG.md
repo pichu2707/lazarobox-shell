@@ -10,6 +10,10 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gh` auth, scope and repository failures now say what to do.** A GitHub read that failed with a rejected token (`HTTP 401`, bad credentials), a missing OAuth scope (`project`, `read:project`, ...) or a folder that is not a GitHub repository used to end with the bare `gh failed (exit 1)`. It now gives a fixed sentence with the command to run (`gh auth login`, `gh auth refresh -s <scope>`). The scope is named only from a fixed list, and `gh`'s own text still goes to the user's notice only, never to the model (#816).
+
 ## [1.31.3] - 2026-11-19
 
 ### Changed

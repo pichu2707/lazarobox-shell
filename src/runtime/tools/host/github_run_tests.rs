@@ -275,6 +275,8 @@ fn the_environment_filter_drops_what_could_redirect_gh_and_keeps_the_login() {
         ("GH_PROMPT_DISABLED", "1"),
         ("GH_TOKEN", "keep"),
         ("HOME", "/h"),
+        ("LANGUAGE", "C"),
+        ("LC_MESSAGES", "C"),
         ("NO_COLOR", "1"),
         ("PATH", "/login/bin"),
     ]
@@ -984,4 +986,196 @@ async fn the_classified_failures_add_no_notice() {
     let (out, events) = one(&rig, list()).await;
     assert!(out.is_error, "{}", out.text);
     assert!(notice_lines(&events).is_empty(), "{events:?}");
+}
+
+// Issue #816: git's messages are localized, so gh runs with English messages
+// and the UTF-8 character set kept; an inherited LC_ALL would override both.
+#[test]
+fn gh_runs_with_english_messages_and_keeps_the_character_set() {
+    let os = |s: &str| OsString::from(s);
+    let vars = [
+        ("LC_MESSAGES", "es_ES.UTF-8"),
+        ("LANGUAGE", "es"),
+        ("LC_ALL", "es_ES.UTF-8"),
+        ("LC_CTYPE", "en_US.UTF-8"),
+    ]
+    .map(|(n, v)| (os(n), os(v)));
+    let mut got = gh_env(vars, &os("/p"));
+    got.sort();
+    let want: Vec<(OsString, OsString)> = [
+        ("LANGUAGE", "C"),
+        ("LC_CTYPE", "es_ES.UTF-8"),
+        ("LC_MESSAGES", "C"),
+        ("PATH", "/p"),
+    ]
+    .map(|(n, v)| (os(n), os(v)))
+    .into_iter()
+    .chain([
+        (os("GH_NO_UPDATE_NOTIFIER"), os("1")),
+        (os("GH_PROMPT_DISABLED"), os("1")),
+        (os("NO_COLOR"), os("1")),
+    ])
+    .collect();
+    let mut want = want;
+    want.sort();
+    assert_eq!(got, want);
+}
+
+// Issue #816: the real stderr of a bad token names `gh auth login` too, and
+// still is a rejected token, not a logged-out gh; exit 4 stays logged out.
+#[tokio::test]
+async fn the_real_401_is_a_rejected_token_and_exit_4_stays_logged_out() {
+    let real = "HTTP 401: Bad credentials (https://api.github.com/graphql)\nTry authenticating with:  gh auth login -h github.com";
+    let r = rig(
+        Some(ORIGIN),
+        &format!("printf '%s\\n' '{real}' >&2; exit 1"),
+    );
+    let (out, _) = one(&r, list()).await;
+    assert_eq!(
+        out.text,
+        "gh's token was rejected: run gh auth login in a shell pane and try again"
+    );
+    let r = rig(Some(ORIGIN), "echo 'HTTP 401: Bad credentials' >&2; exit 4");
+    let (out, _) = one(&r, list()).await;
+    assert_eq!(
+        out.text,
+        "gh is not logged in: run gh auth login in a shell pane and try again"
+    );
+}
+
+// The scope comes from the required part of the message, not from the
+// granted scopes listed before it; a required scope outside the read-only
+// list is not named.
+#[tokio::test]
+async fn the_scope_is_taken_from_the_required_part_only() {
+    let unknown =
+        "gh's token lacks a required scope: run gh auth refresh in a shell pane and try again";
+    let cases = [
+        (
+            "Token scopes: 'repo', 'workflow'. your authentication token is missing required scopes [read:project]",
+            "gh's token lacks the read:project scope: run gh auth refresh -s read:project in a shell pane and try again",
+        ),
+        (
+            "Token scopes: 'repo'. missing required scopes [workflow]. run: gh auth refresh -s workflow",
+            unknown,
+        ),
+        (
+            "missing required scopes. To request it, run: gh auth refresh -s project",
+            "gh's token lacks the project scope: run gh auth refresh -s project in a shell pane and try again",
+        ),
+        ("missing required scopes [delete_repo]", unknown),
+        ("Token scopes: 'repo'. INSUFFICIENT_SCOPES", unknown),
+    ];
+    for (stderr, want) in cases {
+        let rig = rig(Some(ORIGIN), &format!("echo \"{stderr}\" >&2; exit 1"));
+        let (out, _) = one(&rig, list()).await;
+        assert_eq!(out.text, want, "{stderr}");
+    }
+}
+
+// Precedence: a rate limit wins over the auth branch; exit 0 never
+// classifies; a view's not-found still wins; the fixed git sentence needs the
+// English text gh prints.
+#[tokio::test]
+async fn precedence_between_the_failure_branches() {
+    let cases: Vec<(&str, Call, &str)> = vec![
+        (
+            "echo 'HTTP 403: API rate limit exceeded. HTTP 401 Bad credentials' >&2; exit 1",
+            list(),
+            "gh failed (exit 1): rate limit reached",
+        ),
+        (
+            "echo 'GraphQL: Could not resolve to an issue or pull request with the number of 5. HTTP 401' >&2; exit 1",
+            view(5, false),
+            "#5 was not found in o/r",
+        ),
+        (
+            "echo 'failed to run git: fatal: not a git repository (or any of the parent directories): .git' >&2; exit 1",
+            list(),
+            "this folder is not a GitHub repository: it has no git repository or no github.com remote",
+        ),
+        (
+            "echo 'fatal: no es un repositorio git' >&2; exit 1",
+            list(),
+            "gh failed (exit 1)",
+        ),
+    ];
+    for (script, call, want) in cases {
+        let rig = rig(Some(ORIGIN), script);
+        let (out, _) = one(&rig, call).await;
+        assert_eq!(out.text, want, "{script}");
+    }
+    let rig = rig(
+        Some(ORIGIN),
+        "echo 'HTTP 401: Bad credentials' >&2; echo '[]'",
+    );
+    let (out, _) = one(&rig, list()).await;
+    assert!(!out.text.contains("rejected"), "{}", out.text);
+}
+
+// Issue #816: an auth, scope or repository failure of `gh` gets a fixed
+// sentence that names the action, never the bare `gh failed (exit 1)`.
+#[tokio::test]
+async fn auth_scope_and_repo_failures_get_fixed_sentences_with_the_action() {
+    const REJECTED: &str =
+        "gh's token was rejected: run gh auth login in a shell pane and try again";
+    const NOT_GITHUB: &str =
+        "this folder is not a GitHub repository: it has no git repository or no github.com remote";
+    let cases = [
+        (
+            "HTTP 401: Bad credentials (https://api.github.com/graphql)",
+            REJECTED,
+        ),
+        ("gh: authentication required", REJECTED),
+        ("The token in GH_TOKEN is invalid.", REJECTED),
+        (
+            "error: your authentication token is missing required scopes [project]",
+            "gh's token lacks the project scope: run gh auth refresh -s project in a shell pane and try again",
+        ),
+        (
+            "Your token has not been granted the required scopes to execute this query. Run: gh auth refresh -s read:project",
+            "gh's token lacks the read:project scope: run gh auth refresh -s read:project in a shell pane and try again",
+        ),
+        (
+            "INSUFFICIENT_SCOPES: SECRET-TOKEN-123",
+            "gh's token lacks a required scope: run gh auth refresh in a shell pane and try again",
+        ),
+        (
+            "failed to run git: fatal: not a git repository (or any of the parent directories): .git",
+            NOT_GITHUB,
+        ),
+        ("no git remotes found", NOT_GITHUB),
+        (
+            "none of the git remotes configured for this repository point to a known GitHub host.",
+            NOT_GITHUB,
+        ),
+    ];
+    for (stderr, want) in cases {
+        let script = format!("echo '{stderr} SECRET-TOKEN-123' >&2; exit 1");
+        let rig = rig(Some(ORIGIN), &script);
+        let (out, events) = one(&rig, list()).await;
+        assert!(out.is_error, "{stderr}");
+        assert_eq!(out.text, want, "{stderr}");
+        // The raw stderr reaches the user's notice only, never the model.
+        assert!(!out.text.contains("SECRET-TOKEN-123"), "{}", out.text);
+        assert!(!out.text.contains(stderr), "{}", out.text);
+        let notices = notice_lines(&events);
+        assert_eq!(notices.len(), 1, "{stderr}: {notices:?}");
+        assert!(
+            notices[0].starts_with("gh failed (exit 1), it said:"),
+            "{notices:?}"
+        );
+    }
+}
+
+// A scope name comes from a fixed list, never from the stderr.
+#[tokio::test]
+async fn a_scope_the_list_does_not_know_is_not_named() {
+    let script = "echo 'missing required scopes [evil-scope-SECRET-TOKEN-123]' >&2; exit 1";
+    let rig = rig(Some(ORIGIN), script);
+    let (out, _) = one(&rig, list()).await;
+    assert_eq!(
+        out.text,
+        "gh's token lacks a required scope: run gh auth refresh in a shell pane and try again"
+    );
 }
