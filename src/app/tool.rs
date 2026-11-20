@@ -495,8 +495,10 @@ impl App {
             Ok(bytes) => bytes,
             Err(refused) => return Self::deny(id, turn, call, refused.reason),
         };
+        let number = self.pane_number(target).unwrap_or(0);
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.note_auto_typed();
+            chat.note_typed_not_run(number);
         }
         if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
             pty.line_pending = Some(call);
@@ -506,7 +508,7 @@ impl App {
             chat: id,
             target,
             bytes,
-            number: self.pane_number(target).unwrap_or(0),
+            number,
             turn,
             call,
         }]

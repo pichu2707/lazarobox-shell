@@ -376,6 +376,9 @@ impl App {
                 let number = self.pane_number(target).unwrap_or(0);
                 if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
                     chat.push_system_line(run_sent_line(number, not_run));
+                    if call.is_some() {
+                        chat.note_typed_not_run(number);
+                    }
                 }
                 // The line stays unsent, and an auto call must not land on it.
                 if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
