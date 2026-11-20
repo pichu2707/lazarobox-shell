@@ -80,6 +80,11 @@ impl ChatState {
             && row.result.is_none()
         {
             row.result = Some((status, summary));
+            if let Some((_, number)) = self.expected_typed.take_if(|(call, _)| *call == id)
+                && status == ToolStatus::Ok
+            {
+                self.typed_not_run = Some(number);
+            }
         }
     }
 

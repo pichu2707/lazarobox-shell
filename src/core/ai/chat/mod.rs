@@ -476,6 +476,8 @@ pub struct ChatState {
     auto_typed: u8,
     /// The pane of the last command of this turn typed and not run.
     typed_not_run: Option<usize>,
+    /// A command the runtime was asked to type, until its result arrives.
+    expected_typed: Option<(CallId, usize)>,
     /// Text arrived since the last tool call of this turn.
     text_since_tool: bool,
     /// A notice arrived since the last tool call of this turn.
@@ -637,6 +639,7 @@ impl ChatState {
             approval_mode: ApprovalMode::default(),
             auto_typed: 0,
             typed_not_run: None,
+            expected_typed: None,
             text_since_tool: false,
             notice_since_tool: false,
             run_fallbacks: 0,
@@ -1138,6 +1141,13 @@ impl ChatState {
     /// turn ends with a line saying the user must press Enter there.
     pub fn note_typed_not_run(&mut self, number: usize) {
         self.typed_not_run = Some(number);
+    }
+
+    /// `call`'s command was sent to the runtime to be typed into pane
+    /// `number`. It counts as typed only when the result says `Ok`: a busy or
+    /// gone pane is denied and nothing is written.
+    pub fn expect_typed(&mut self, call: CallId, number: usize) {
+        self.expected_typed = Some((call, number));
     }
 
     /// One more command was typed without a prompt in this turn.
@@ -1823,6 +1833,7 @@ impl ChatState {
         self.clean_end = false;
         self.auto_typed = 0;
         self.typed_not_run = None;
+        self.expected_typed = None;
         self.text_since_tool = false;
         self.notice_since_tool = false;
         self.run_fallbacks = 0;
@@ -2187,6 +2198,7 @@ impl ChatState {
         if let Some(line) = line {
             self.entries.push(Entry::System(line));
         }
+        self.expected_typed = None;
         if let Some(number) = self.typed_not_run.take() {
             self.entries.push(Entry::System(waiting_for_enter(number)));
         }

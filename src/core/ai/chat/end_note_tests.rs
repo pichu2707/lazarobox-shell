@@ -2,7 +2,7 @@
 //! no text after the last tool call, and a command typed but not run.
 
 use super::engine::{CallId, ChatError, Finish, ToolStatus};
-use super::next_step::EMPTY_NOTICE;
+use super::next_step::{EMPTY_NOTICE, STOPPED_NOTICE};
 use super::state_tests::{chat, sent, systems};
 use super::*;
 
@@ -16,9 +16,13 @@ fn call(id: u64) -> StreamEvent {
 }
 
 fn result(id: u64) -> StreamEvent {
+    result_with(id, ToolStatus::Ok)
+}
+
+fn result_with(id: u64, status: ToolStatus) -> StreamEvent {
     StreamEvent::ToolResult {
         id: CallId(id),
-        status: ToolStatus::Ok,
+        status,
         summary: "typed, not run".into(),
     }
 }
@@ -143,4 +147,81 @@ fn the_waiting_line_follows_a_turn_that_ended_with_an_error() {
     state.note_typed_not_run(1);
     state.apply(turn, StreamEvent::Error(ChatError::Failed("boom".into())));
     assert_eq!(systems(&state), ["boom", waiting_for_enter(1).as_str()]);
+}
+
+#[test]
+fn an_auto_typed_command_counts_only_once_the_runtime_typed_it() {
+    for (status, shown) in [
+        (ToolStatus::Ok, true),
+        (ToolStatus::Denied, false),
+        (ToolStatus::Error, false),
+    ] {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "go");
+        state.apply(turn, call(1));
+        state.expect_typed(CallId(1), 2);
+        state.apply(turn, result_with(1, status));
+        state.apply(turn, delta("ok"));
+        state.apply(turn, done());
+        let want: Vec<String> = shown.then(|| waiting_for_enter(2)).into_iter().collect();
+        assert_eq!(systems(&state), want, "{status:?}");
+    }
+}
+
+#[test]
+fn an_auto_typed_command_with_no_result_gives_no_line() {
+    let mut state = chat();
+    let (turn, _) = sent(&mut state, "go");
+    state.apply(turn, call(1));
+    state.expect_typed(CallId(1), 2);
+    state.apply(turn, delta("ok"));
+    state.apply(turn, done());
+    assert!(systems(&state).is_empty());
+}
+
+#[test]
+fn a_late_note_after_the_turn_ended_does_not_reach_the_next_turn() {
+    let mut state = chat();
+    let (turn, _) = sent(&mut state, "go");
+    state.apply(turn, delta("ok"));
+    state.apply(turn, done());
+    state.note_typed_not_run(4);
+    let (turn, _) = sent(&mut state, "again");
+    state.apply(turn, delta("ok"));
+    state.apply(turn, done());
+    assert!(systems(&state).is_empty());
+}
+
+#[test]
+fn every_end_notice_after_the_last_tool_call_stands_alone() {
+    let notices = [
+        STOPPED_NOTICE.to_owned(),
+        "tool limit reached for this turn".to_owned(),
+    ];
+    for line in notices {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "go");
+        state.apply(turn, delta("Let me check."));
+        state.apply(turn, call(1));
+        state.apply(turn, result(1));
+        state.apply(turn, StreamEvent::Notice(line.clone()));
+        state.apply(turn, done());
+        assert_eq!(systems(&state), [line.as_str()]);
+    }
+}
+
+#[test]
+fn too_long_and_jail_endings_keep_one_line() {
+    let mut state = chat();
+    let (turn, _) = sent(&mut state, "go");
+    state.apply(turn, delta("Let me check."));
+    state.apply(turn, call(1));
+    state.apply(turn, StreamEvent::Error(ChatError::Truncated));
+    assert_eq!(systems(&state), [TOO_LONG]);
+    let mut state = chat();
+    let (turn, _) = sent(&mut state, "go");
+    state.apply(turn, delta("Let me check."));
+    state.apply(turn, call(1));
+    state.apply(turn, StreamEvent::Error(ChatError::Jail("no bwrap".into())));
+    assert_eq!(systems(&state), [jail_error("no bwrap")]);
 }

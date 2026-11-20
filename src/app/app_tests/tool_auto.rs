@@ -85,7 +85,7 @@ fn resuming_a_conversation_resets_the_mode_to_the_config() {
 use super::tool_approval::{announce, announce_now, decision, live, pending, run, shell_output};
 use crate::core::ai::chat::{
     approval::{ANOTHER_PENDING, ApprovalAsk},
-    engine::{CallId, Decision},
+    engine::{CallId, Decision, StreamEvent},
 };
 
 /// `live()` with the chat in `auto` mode.
@@ -528,12 +528,11 @@ fn five_commands_a_turn_with_enter_between_and_the_sixth_prompts() {
 // 2e-3.6: Prefix a ------------------------------------------------------------
 
 fn lines(a: &App) -> Vec<String> {
-    use crate::core::ai::chat::Entry;
     run_pane::chat(a, id2())
         .entries()
         .iter()
         .filter_map(|e| match e {
-            Entry::System(line) => Some(line.clone()),
+            crate::core::ai::chat::Entry::System(line) => Some(line.clone()),
             _ => None,
         })
         .collect()
@@ -798,4 +797,69 @@ fn a_chat_read_keeps_its_answers_in_every_mode() {
             .collect();
         assert_eq!(effects, want, "{case}");
     }
+}
+
+// #816: the end-of-turn line for a command typed and not run ------------------
+
+const WAITING: &str =
+    "waiting for you: press Enter in pane 1 to run it, then send a message to go on";
+
+fn ends_turn(a: &mut App, turn: u64) -> Vec<String> {
+    a.update(AppEvent::Chat(
+        id2(),
+        turn,
+        StreamEvent::Done(crate::core::ai::chat::engine::Finish::Stop),
+    ));
+    (chat_of(a).entries().iter())
+        .filter_map(|e| match e {
+            crate::core::ai::chat::Entry::System(line) => Some(line.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_auto_typed_command_ends_the_turn_with_the_waiting_line() {
+    let (mut a, turn) = auto_live();
+    announce(&mut a, turn, 1, run("secret-cmd"));
+    result(&mut a, turn, 1, ToolStatus::Ok);
+    let lines = ends_turn(&mut a, turn);
+    assert!(lines.iter().any(|l| l == WAITING), "{lines:?}");
+}
+
+#[test]
+fn an_auto_type_the_runtime_refused_leaves_no_waiting_line() {
+    for status in [ToolStatus::Denied, ToolStatus::Error] {
+        let (mut a, turn) = auto_live();
+        announce(&mut a, turn, 1, run("secret-cmd"));
+        result(&mut a, turn, 1, status);
+        let lines = ends_turn(&mut a, turn);
+        assert!(
+            !lines.iter().any(|l| l.contains("waiting for you")),
+            "{lines:?}"
+        );
+    }
+}
+
+#[test]
+fn y_typing_a_command_ends_the_turn_with_the_waiting_line() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, run("secret-cmd"));
+    a.update(key('y'));
+    let lines = ends_turn(&mut a, turn);
+    assert!(lines.iter().any(|l| l == WAITING), "{lines:?}");
+    assert!(!WAITING.contains("secret-cmd"));
+}
+
+#[test]
+fn a_y_the_pane_refuses_leaves_no_waiting_line() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, run("secret-cmd"));
+    shell_output(&mut a, b"\x1b[?1049h");
+    a.update(key('y'));
+    let lines = ends_turn(&mut a, turn);
+    assert!(
+        !lines.iter().any(|l| l.contains("waiting for you")),
+        "{lines:?}"
+    );
 }
