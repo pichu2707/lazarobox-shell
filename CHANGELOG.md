@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-11-20
+
 ### Added
 
 - **Acceptance judges in the orchestrator's review.** A run that writes now asks for your consent once (`y judge the changes · n skip the judges, Esc too`) and judges each batch against the run's agreed criteria: one read-only judge for a small change, two for several files, a large goal, 16 KB or more of staged text or a medium or high tier, none for a read-only goal. Every verdict is a transcript line (`judge 1/1: pass · 3 criteria met`, `pass · 2 met, 1 unverified (C3: tests not seen)`, `fail · 1 of 3 criteria not met` with one `C2 not met · at: <file>:<lines>` line per failed criterion, `no verdict · <reason>`, `judges agree: pass`, `judges disagree · ... · missing: ...`); two judges that disagree start no correction. A failed criterion feeds the existing single bounded correction. Declining marks every batch `not judged`, and the receipt says so. A judge never approves: the batch review stays yours. Until the judge rows of the models menu exist, judges use the Review row, and two judges on one model say `judges are not independent`.
@@ -3168,7 +3170,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.4...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.32.0...HEAD
+[1.32.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.4...v1.32.0
 [1.31.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.3...v1.31.4
 [1.31.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.2...v1.31.3
 [1.31.2]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.1...v1.31.2
