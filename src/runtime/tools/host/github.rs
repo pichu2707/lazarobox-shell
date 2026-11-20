@@ -170,7 +170,12 @@ pub(super) fn gh_env(
     vars: impl IntoIterator<Item = (OsString, OsString)>,
     path: &OsStr,
 ) -> Vec<(OsString, OsString)> {
-    const OURS: [(&str, &str); 3] = [
+    // Messages in English, because the fixed sentences match gh's (and git's)
+    // text; LC_CTYPE keeps the character set. LC_ALL would override both, so
+    // its value moves to LC_CTYPE.
+    const OURS: [(&str, &str); 5] = [
+        ("LC_MESSAGES", "C"),
+        ("LANGUAGE", "C"),
         ("GH_PROMPT_DISABLED", "1"),
         ("GH_NO_UPDATE_NOTIFIER", "1"),
         ("NO_COLOR", "1"),
@@ -195,16 +200,24 @@ pub(super) fn gh_env(
         "GLAMOUR_STYLE",
         "GH_SPINNER_DISABLED",
     ];
+    let vars: Vec<_> = vars.into_iter().collect();
+    let lc_all = vars
+        .iter()
+        .find(|(name, value)| name == "LC_ALL" && !value.is_empty())
+        .map(|(_, value)| value.clone());
     let mut env: Vec<_> = vars
         .into_iter()
         .filter(|(name, _)| {
             let name = name.to_string_lossy();
             name != "PATH"
+                && name != "LC_ALL"
+                && !(lc_all.is_some() && name == "LC_CTYPE")
                 && !DROPPED.contains(&&*name)
                 && !OURS.iter().any(|(ours, _)| *ours == name)
         })
         .collect();
     env.extend(OURS.map(|(n, v)| (n.into(), v.into())));
+    env.extend(lc_all.map(|value| ("LC_CTYPE".into(), value)));
     env.push(("PATH".into(), path.to_owned()));
     env
 }
@@ -292,39 +305,56 @@ pub(super) fn why_failed(stderr: &str) -> Option<&'static str> {
     }
 }
 
-/// The OAuth scopes a lazarobox sentence may name. A scope is named only when
-/// one of these appears in the stderr, so no text of `gh` is ever copied.
-const KNOWN_SCOPES: [&str; 12] = [
-    "read:project",
-    "project",
-    "repo",
-    "read:org",
-    "workflow",
-    "gist",
-    "admin:org",
-    "notifications",
-    "read:user",
-    "user",
-    "delete_repo",
-    "write:org",
-];
+/// The read-only OAuth scopes a lazarobox sentence may name. A scope is named
+/// only when it is one of these and sits in the required part of the message,
+/// so no text of `gh` is ever copied.
+const KNOWN_SCOPES: [&str; 5] = ["read:project", "project", "read:org", "read:user", "repo"];
+
+/// The scope `gh` says is required: the words inside the `[...]` after
+/// `required scope`, else the word after `gh auth refresh -s`. `None` unless
+/// every word is a known scope; the first is named.
+fn required_scope(low: &str) -> Option<&'static str> {
+    let words = |text: &str| -> Vec<String> {
+        text.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-')))
+            .filter(|w| !w.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    let after = |marker: &str| low.find(marker).map(|i| &low[i + marker.len()..]);
+    let listed = after("required scope").and_then(|rest| {
+        rest.split_once('[')?
+            .1
+            .split_once(']')
+            .map(|(inside, _)| words(inside))
+    });
+    let listed = listed.or_else(|| {
+        after("gh auth refresh -s").map(|rest| words(rest).into_iter().take(1).collect())
+    })?;
+    let known = |w: &String| KNOWN_SCOPES.iter().find(|k| **k == w);
+    listed
+        .iter()
+        .all(|w| known(w).is_some())
+        .then(|| known(listed.first()?))
+        .flatten()
+        .copied()
+}
 
 /// The fixed sentence for an authentication, scope or repository failure of
 /// `gh`, picked by substrings of its stderr: what to run, never `gh`'s text.
-/// A scope is named only from [`KNOWN_SCOPES`].
+/// A rate limit is not one of these: it keeps its own cause.
 fn auth_failure(stderr: &str) -> Option<String> {
     let low = stderr.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| low.contains(n));
+    if has(&["rate limit", "http 429"]) {
+        return None;
+    }
     if has(&[
         "required scope",
         "insufficient_scopes",
         "missing scope",
         "missing the scope",
     ]) {
-        let scope = low
-            .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-')))
-            .find_map(|word| KNOWN_SCOPES.iter().find(|known| **known == word));
-        return Some(match scope {
+        return Some(match required_scope(&low) {
             Some(scope) => format!(
                 "gh's token lacks the {scope} scope: run gh auth refresh -s {scope} in a shell pane and try again"
             ),
@@ -342,9 +372,9 @@ fn auth_failure(stderr: &str) -> Option<String> {
         return Some(TOKEN_REJECTED.to_owned());
     }
     has(&[
-        "not a git repository",
+        "failed to run git: fatal: not a git repository",
         "no git remotes found",
-        "none of the git remotes configured",
+        "none of the git remotes configured for this repository point to a known github host",
     ])
     .then(|| NOT_GITHUB.to_owned())
 }
@@ -393,7 +423,7 @@ fn failure(split: &Split, call: &GhCall, slug: &Slug) -> Option<(String, Option<
             _ => TOO_LARGE,
         }
         .to_owned()
-    } else if ended.exit == Some(4) || stderr.contains("gh auth login") {
+    } else if ended.exit == Some(4) {
         LOGGED_OUT.to_owned()
     } else if let (Some(1), Some(n), true) =
         (ended.exit, number, stderr.contains("with the number of"))
@@ -404,6 +434,8 @@ fn failure(split: &Split, call: &GhCall, slug: &Slug) -> Option<(String, Option<
     {
         notice = Some(stderr_notice(code, &stderr));
         auth
+    } else if stderr.contains("gh auth login") {
+        LOGGED_OUT.to_owned()
     } else if ended.exit != Some(0) {
         match ended.exit {
             Some(code) => {
