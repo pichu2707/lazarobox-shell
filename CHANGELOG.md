@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-11-20
+
 ### Added
 
 - **Acceptance judges correct and rule again.** A failed criterion now feeds the bounded correction with its own lines: what it fixes (`correction 1/3 · fixes C2 · at: ...`) and what it changed (`correction 1/3 done · changes: src/a.rs 44-48` or `changes: none`, read from the staged files, never from the worker's text). The judges that failed then rule again on the new diff and show their own lines; a failing or missing verdict keeps the criterion open. When the last round fails, `judge: rounds exhausted (3) · open: C2 · missing: ...` says what is left, and the batch reaches you with the criterion open. Each judge start and verdict is a step of the run's step trail.
@@ -3174,7 +3176,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.32.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.33.0...HEAD
+[1.33.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.32.0...v1.33.0
 [1.32.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.4...v1.32.0
 [1.31.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.3...v1.31.4
 [1.31.3]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.2...v1.31.3
