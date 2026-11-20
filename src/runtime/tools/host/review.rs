@@ -18,15 +18,19 @@ use std::sync::atomic::Ordering;
 use super::{Owed, ToolHost, ToolStatus, TurnScope};
 use crate::{
     core::ai::{
-        chat::engine::{Answer, CallId, Decision, StreamEvent},
+        chat::{
+            approval::ApprovalAsk,
+            engine::{Answer, CallId, Decision, StreamEvent},
+        },
         orchestra::{
             changes::Change,
+            judge::JudgeLevel,
             rdd::consent_ask,
             review::{Assessment, Tier},
         },
         tools::summary::clip,
     },
-    runtime::tools::{Answered, Late, WorkerScope},
+    runtime::tools::{Answered, Judges, Late, WorkerScope},
 };
 
 /// The row of the consent, a call of its own.
@@ -34,6 +38,8 @@ const ROW: &str = "review";
 
 /// What the model is told when the user declined the review of a batch.
 pub(super) const NOT_REVIEWED: &str = "not reviewed";
+/// What the user's `n` to the judge consent denies with.
+const NOT_JUDGED: &str = "not judged";
 /// What the user's `n` to the consent denies with.
 const USER_DECLINED: &str = "the user declined";
 
@@ -70,6 +76,7 @@ pub(super) async fn before_batch_with(
         return;
     }
     let assessment = worker.handle.assess(worker.run, &changes);
+    let level = worker.handle.judge_level(worker.run, &changes, &assessment);
     let mut reviewed = false;
     // The set as last reviewed: the review hands it back with the hashes of
     // the files it corrected and checked.
@@ -77,18 +84,26 @@ pub(super) async fn before_batch_with(
     // A cheap author is told by its spec as spawned, before the tier: its
     // change is reviewed with no ask, whatever the tier (D21).
     let cheap = worker.handle.cheap(worker.run, worker.worker);
-    if cheap || assessment.tier >= Tier::High {
+    let lenses = cheap || assessment.tier >= Tier::High;
+    if lenses || level != JudgeLevel::None {
         // The consent and the review are not the worker's own work: its
         // deadline stops until the review returns (D6, owner item 3).
         let _paused = worker.handle.pause(worker.run, worker.worker);
         let answered = if cheap {
             Answered::Mandatory
-        } else {
+        } else if lenses {
             let Some(answered) = consent(host, scope, worker, &assessment, &changes).await else {
                 return;
             };
             answered
+        } else {
+            Answered::Judges
         };
+        // The judges' consent is its own ask, once per run: neither answer
+        // stands for the other (J9).
+        if level != JudgeLevel::None && judge_consent(host, scope, worker).await.is_none() {
+            return;
+        }
         let granted = matches!(answered, Answered::Granted | Answered::Mandatory);
         let started = worker
             .handle
@@ -167,6 +182,42 @@ async fn consent(
     changes: &[Change],
 ) -> Option<Answered> {
     let ask = consent_ask(worker.key(), &worker.ask_label(), assessment, changes);
+    ask_user(host, scope, ask, "review a high-risk change?", NOT_REVIEWED).await
+}
+
+/// The run's judge consent: asked at the first judged batch, on a call of its
+/// own, and kept by the run manager. `None` when nobody can be asked; `Some`
+/// otherwise, with whether an answer is recorded (a cancelled ask is said and
+/// not recorded, and the next judged batch asks again).
+async fn judge_consent(host: &ToolHost, scope: &TurnScope, worker: &WorkerScope) -> Option<bool> {
+    // One ask per run, whichever worker proposes first.
+    let _one = host.judge_ask.lock().await;
+    let Judges::Ask(text) = worker.handle.judges(worker.run) else {
+        return Some(true);
+    };
+    let ask = ApprovalAsk::JudgeConsent {
+        run: worker.run,
+        text,
+    };
+    let answered = ask_user(host, scope, ask, "judge this run's changes?", NOT_JUDGED).await?;
+    match answered {
+        Answered::Granted | Answered::Mandatory | Answered::Judges => {
+            worker.handle.judges_answered(worker.run, true);
+        }
+        Answered::Declined => worker.handle.judges_answered(worker.run, false),
+        Answered::Unanswered(_) => return Some(false),
+    }
+    Some(true)
+}
+
+/// Announces `ask` on a call of its own and waits for the user.
+async fn ask_user(
+    host: &ToolHost,
+    scope: &TurnScope,
+    ask: ApprovalAsk,
+    question: &str,
+    declined: &str,
+) -> Option<Answered> {
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     let pending = scope.approver.ask(id, &ask);
     let slot = scope.events.clone().reserve_owned().await.ok()?;
@@ -176,7 +227,7 @@ async fn consent(
     let announce = StreamEvent::ToolCall {
         id,
         name: ROW.to_owned(),
-        summary: clip("review a high-risk change?"),
+        summary: clip(question),
         approval: Some(Box::new(ask)),
     };
     scope.events.send(announce).await.ok()?;
@@ -195,8 +246,10 @@ async fn consent(
         | Answer::Screen(_) => Answered::Unanswered("no user answer".to_owned()),
     };
     match &answered {
-        Answered::Granted | Answered::Mandatory => owed.answer(ToolStatus::Ok, "review started"),
-        Answered::Declined => owed.answer(ToolStatus::Denied, NOT_REVIEWED),
+        Answered::Granted | Answered::Mandatory | Answered::Judges => {
+            owed.answer(ToolStatus::Ok, "started");
+        }
+        Answered::Declined => owed.answer(ToolStatus::Denied, declined),
         Answered::Unanswered(why) => {
             owed.answer(
                 ToolStatus::Denied,

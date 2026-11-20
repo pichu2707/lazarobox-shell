@@ -83,6 +83,7 @@ pub(super) fn world_with(exec: impl FnOnce(Exec) -> Exec) -> World {
         roster: Default::default(),
         gh: Default::default(),
         drives: Default::default(),
+        judge_ask: Default::default(),
     });
     World {
         _dir: dir,

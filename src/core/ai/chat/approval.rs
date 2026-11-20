@@ -1111,7 +1111,7 @@ pub const FOLDER_CHECKING_KEYS: &str = "Esc cancels";
 /// The keys of the consent prompt of a receipt-driven review.
 pub const CONSENT_KEYS: &str = "y review it · n skip the review";
 /// The keys of the judge consent of a run.
-pub const JUDGE_KEYS: &str = "y judge the changes · n skip the judges";
+pub const JUDGE_KEYS: &str = "y judge the changes · n skip the judges, Esc too";
 /// The keys of the limit ask of a `simple` worker (decision K2).
 pub const LIMIT_KEYS: &str = "y keep · n or Esc split";
 /// The keys of that ask when it lists only files outside the brief: there is

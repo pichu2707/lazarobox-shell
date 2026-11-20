@@ -101,6 +101,7 @@ fn rig_core(
         roster: Default::default(),
         gh: super::github::Gh::with_bound(bound),
         drives: Default::default(),
+        judge_ask: Default::default(),
     });
     // Without `gh` on the login PATH git is still found in the system places.
     let login = if gh_on_path {

@@ -422,7 +422,7 @@ impl RunManager {
         let mut review = Review::new(assessment);
         let unanswered = match &answered {
             Answered::Granted | Answered::Mandatory => None,
-            Answered::Declined => {
+            Answered::Declined | Answered::Judges => {
                 let _ = review.consent(Consent::Declined);
                 self.say(
                     pane,
