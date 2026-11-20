@@ -109,6 +109,7 @@ Files: `src/runtime/tools/host/review.rs` (gate `before_batch_with`, ~50), `src/
 - [ ] 7.7 RED: lines (D11, J14, spec: visible line): level line before any judge; thin-criteria line; per judge `pass · <m> criteria met`, `pass · 2 met, 1 unverified (C3: tests not seen)`, `fail · k of c criteria not met`, `no verdict · <reason>`; one `<id> not met · at: <loc> · <evidence>` per criterion (max 8 per judge then `+k more in the receipt`); `judges agree: pass` (with unverified union), `judges disagree · judge 1 pass, judge 2 fail · missing: ...` with no correction started; `verdict()` adds open judge criteria with locations; batch still waits for `y` after all pass.
 - [ ] 7.8 GREEN: line builders in `judge.rs` and emission through `RunManager::say` (`OrchestraEvent::Review`).
 - [ ] 7.8b RED then GREEN (from S1a verify W2, W4): transcript line when `Standard.dropped > 0` (`judge: <n> criteria not judged (cap 12)`); the pass line (J14) never reads as a clean pass when the ruling carries Faults on met criteria or every criterion is `unknown`: it says `pass, nothing verified` or names the contradiction.
+- [ ] 7.8c RED then GREEN (from run-step-trail, archived): each judge spawn and its verdict enter the run step trail through `Trail::call` / `handoff`, display-only like the other trail lines (run-step-trail D14).
 - [ ] 7.9 Checkpoint: production line count; if over ~380 move task 7.7/7.8 lines to S2b.
 
 ### 8. Verification
