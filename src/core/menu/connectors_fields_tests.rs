@@ -385,14 +385,17 @@ fn files_with(needle: &str) -> Vec<String> {
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let path = entry.path();
-            let name = path.to_string_lossy().into_owned();
+            // Relative to `src/`, so a checkout folder named `*tests*` does
+            // not hide every file.
+            let full = path.to_string_lossy().into_owned();
+            let name = full.rsplit("/src/").next().unwrap().to_owned();
             if path.is_dir() {
                 stack.push(path);
             } else if name.ends_with(".rs")
                 && !name.contains("tests")
                 && std::fs::read_to_string(&path).unwrap().contains(needle)
             {
-                found.push(name.rsplit("/src/").next().unwrap().to_owned());
+                found.push(name);
             }
         }
     }

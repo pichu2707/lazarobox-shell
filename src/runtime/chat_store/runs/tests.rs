@@ -566,3 +566,53 @@ fn a_database_whose_runs_lack_the_trail_column_gains_it_and_keeps_its_rows() {
     assert_eq!(count(&conn, "runs"), 1);
     assert_eq!(stored_trail(&conn, 3), None);
 }
+
+const OLD_TRAIL: &str = "cut 0\nexec cargo test -> error: exit 101";
+const RESUMED_TRAIL: &str =
+    "cut 0\nexec cargo test -> error: exit 101\nresumed from run 7\nread_file src/lib.rs -> ok";
+
+/// Stores interrupted run 7 with its trail and a resumed run 10 that carries
+/// it, as the app saves them. Returns the predecessor's bytes before the save.
+fn resumed_pair(conn: &mut Connection) -> Option<String> {
+    let mut old = run(7, RunPhase::Live, vec![worker(1, "running")]);
+    old.trail = Some(OLD_TRAIL.into());
+    save_run(conn, &old, owner(DEAD, 9), 100).unwrap();
+    recover_runs(conn, owner(55, 5), |_| false, 150).unwrap();
+    let before = stored_trail(conn, 7);
+    let mut new = run(10, RunPhase::Live, vec![worker(1, "running")]);
+    new.supersedes = Some(7);
+    new.trail = Some(RESUMED_TRAIL.into());
+    save_run(conn, &new, owner(55, 5), 200).unwrap();
+    before
+}
+
+// run-step-trail: Scenario "Predecessor row unchanged".
+#[test]
+fn predecessor_row_unchanged() {
+    let dir = TempDir::new().unwrap();
+    let mut conn = open_as(&db(&dir), me()).unwrap();
+    let before = resumed_pair(&mut conn);
+    let mut more = run(10, RunPhase::Ended, vec![]);
+    more.trail = Some(format!("{RESUMED_TRAIL}\nfinish -> ok"));
+    save_run(&mut conn, &more, owner(55, 5), 300).unwrap();
+    assert_eq!(phase_of_run(&conn, 7), "ended");
+    assert_eq!(before.as_deref(), Some(OLD_TRAIL));
+    assert_eq!(stored_trail(&conn, 7), before, "predecessor trail");
+    assert!(stored_trail(&conn, 10).unwrap().ends_with("finish -> ok"));
+}
+
+// run-step-trail: Scenario "Survives another restart", for a resumed run.
+#[test]
+fn survives_another_restart_for_a_resumed_run() {
+    let dir = TempDir::new().unwrap();
+    {
+        let mut conn = open_as(&db(&dir), me()).unwrap();
+        resumed_pair(&mut conn);
+    }
+    // The process ended: the file is reopened and the live run is recovered.
+    let mut conn = open_as(&db(&dir), me()).unwrap();
+    let found = recover_runs(&mut conn, owner(77, 8), |_| false, 400).unwrap();
+    assert_eq!(found.len(), 1, "only the resumed run is interrupted");
+    assert_eq!(found[0].id, 10);
+    assert_eq!(found[0].trail.as_deref(), Some(RESUMED_TRAIL));
+}
