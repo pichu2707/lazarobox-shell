@@ -134,8 +134,9 @@ fn a_followed_command_promises_the_chat_goes_on_and_only_for_its_pane() {
     state.note_followed(2);
     state.apply(turn, result(1));
     state.apply(turn, done());
-    assert!(systems(&state).iter().any(|l| *l
-        == "waiting for you: press Enter in pane 2 to run it; the chat goes on when it finishes"));
+    let tracked =
+        "waiting for you: press Enter in pane 2 to run it; the chat goes on when it finishes";
+    assert!(systems(&state).contains(&tracked));
     // The mark of another pane promises nothing for this one, and resets.
     let (turn, _) = sent(&mut state, "again");
     state.apply(turn, call(2));
