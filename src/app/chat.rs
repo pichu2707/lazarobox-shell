@@ -676,6 +676,9 @@ impl App {
                 if attach.is_none() {
                     chat.composer_mut().clear();
                 }
+                if !self.resume_sending {
+                    self.stop_following(id, true);
+                }
                 if let Some(model) = unknown {
                     self.announce_unknown_window(model);
                 }
@@ -737,6 +740,7 @@ impl App {
     /// pane's orchestrator run; do nothing when idle with no run.
     pub(super) fn chat_cancel_key(&mut self, id: PaneId) -> Vec<Effect> {
         self.drop_parked_send(id);
+        self.stop_following(id, false);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };

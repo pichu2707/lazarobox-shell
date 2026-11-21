@@ -58,6 +58,9 @@ pub struct Settle {
     generation: u32,
     /// Whether `anchor.line` is the cursor's line at the write.
     anchored: bool,
+    /// A line the cursor must pass as well, when the Enter was pressed on the
+    /// last row of a wrapped echo (#819).
+    floor: usize,
 }
 
 impl Settle {
@@ -71,7 +74,15 @@ impl Settle {
             typed: false,
             generation,
             anchored: true,
+            floor: 0,
         }
+    }
+
+    /// Progress means passing `line` too (the row the cursor was on at the
+    /// Enter of a command that was typed earlier).
+    pub fn with_floor(mut self, line: usize) -> Self {
+        self.floor = line;
+        self
     }
 
     /// The cursor was hidden at the write, so `anchor.line` is a placeholder:
@@ -134,7 +145,9 @@ impl Settle {
                 End::TimedOut
             });
         }
-        let progress = probe.cursor_line.is_some_and(|l| l > self.anchor.line)
+        let progress = probe
+            .cursor_line
+            .is_some_and(|l| l > self.anchor.line.max(self.floor))
             || probe.cwd.as_ref().is_some_and(|c| *c != self.anchor.cwd)
             || !self.lines_comparable();
         (probe.foreground == Some(true) && since(self.last) >= QUIET && progress)
@@ -183,6 +196,29 @@ mod tests {
         fn step(&mut self, probe: &Probe) -> Option<End> {
             self.settle.step(probe)
         }
+    }
+
+    #[test]
+    fn a_floor_makes_progress_mean_passing_it() {
+        let t0 = Instant::now();
+        let anchor = Anchor {
+            line: 5,
+            col: 12,
+            generation: 1,
+            cwd: "/home/u".into(),
+        };
+        let mut settle = Settle::new(anchor, t0).with_floor(7);
+        let mut probe = Probe {
+            now: t0 + MS(400),
+            foreground: Some(true),
+            cwd: Some("/home/u".into()),
+            cursor_line: Some(7),
+            generation: 1,
+            alt_screen: false,
+        };
+        assert_eq!(settle.step(&probe), None, "still on the floor row");
+        probe.cursor_line = Some(8);
+        assert_eq!(settle.step(&probe), Some(End::Settled));
     }
 
     #[test]

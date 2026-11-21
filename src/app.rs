@@ -90,6 +90,7 @@ mod star;
 mod summary;
 mod tags;
 mod tool;
+mod typed_run;
 mod write;
 
 use auto_run::RunSlot;
@@ -153,6 +154,11 @@ pub enum Confirm {
     ClosePane,
     /// Waiting for `y` to close the active tab.
     CloseTab,
+    /// Waiting for `y` to close the focused pane, whose command a chat waits
+    /// for (a run in flight, or one the user ran from a typed line).
+    ClosePaneWaited,
+    /// Waiting for `y` to close the active tab, with such a pane in it.
+    CloseTabWaited,
 }
 
 impl InputMode {
@@ -167,6 +173,12 @@ impl InputMode {
             Self::Confirm(Confirm::Quit) => "Quit? (y/n)",
             Self::Confirm(Confirm::ClosePane) => "Close pane? (y/n)",
             Self::Confirm(Confirm::CloseTab) => "Close tab? (y/n)",
+            Self::Confirm(Confirm::CloseTabWaited) => {
+                "Close tab? a command the chat waits for is running (y/n)"
+            }
+            Self::Confirm(Confirm::ClosePaneWaited) => {
+                "Close pane? a command the chat waits for is running (y/n)"
+            }
             Self::Menu => "MENU",
             Self::Links => "LINKS",
         }
@@ -610,6 +622,13 @@ pub enum Effect {
         command: String,
         scope: RunScope,
     },
+    /// The command the user ran in `report`'s pane ended (#819): the runtime
+    /// words the report like a run's and answers with `RunEvent::Resume`.
+    ResumeNote {
+        chat: PaneId,
+        command: String,
+        report: Box<RunReport>,
+    },
     /// Close the tool session of chat `pane`: its socket goes and every call
     /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
     EndToolSession(PaneId),
@@ -869,6 +888,8 @@ struct PtyPane {
     /// The user wrote to this pane since its last Enter or Ctrl+C: its line
     /// may hold text a run would join (design D21).
     user_dirty: bool,
+    /// The command a chat typed here and the user may press Enter on (#819).
+    typed: Option<typed_run::Typed>,
     /// The last key forwarded here was Tab, BackTab or an arrow: a completion
     /// menu may be open, and the next Enter then only accepts an entry.
     after_menu: bool,
@@ -951,6 +972,7 @@ impl PaneState {
                 line_pending: None,
                 run: None,
                 user_dirty: false,
+                typed: None,
                 after_menu: false,
             })),
             size,
@@ -1081,6 +1103,12 @@ pub struct App {
     ended_runs: HashSet<RunId>,
     /// The runs saved to the local store, and what is said about it (S9).
     run_keep: run_store::RunKeep,
+    /// Commands the user ran that wait for the others of their chat (#819):
+    /// chat, pane number and the worded report, `None` until the runtime sends it.
+    held_resumes: Vec<(PaneId, usize, Option<String>)>,
+    /// The send in flight is the resume of a followed command: it forgets no
+    /// other typed line.
+    resume_sending: bool,
     /// Run saves whose wait ran out: their late answer is dropped.
     lost_saves: HashSet<(PaneId, crate::core::ai::memory::port::SaveId)>,
     /// What still runs in the panes, named by the open quit prompt.
@@ -1290,6 +1318,8 @@ impl App {
             run_stores: HashMap::new(),
             ended_runs: HashSet::new(),
             run_keep: run_store::RunKeep::default(),
+            held_resumes: Vec::new(),
+            resume_sending: false,
             lost_saves: HashSet::new(),
             still_running: Vec::new(),
             serving_others: false,
@@ -1644,6 +1674,14 @@ impl App {
         self.input
     }
 
+    /// Whether a chat waits on a command in any of the panes `ids` (a run in
+    /// flight, or one the user ran from a typed line).
+    fn waits_on_command(&self, ids: impl IntoIterator<Item = PaneId>) -> bool {
+        ids.into_iter()
+            .filter_map(|id| self.panes.get(&id).and_then(PaneState::pty))
+            .any(|pty| pty.run.is_some())
+    }
+
     /// The statusline label when it says more than [`InputMode::label`]: the
     /// quit prompt naming what still runs in the panes, in at most `room`
     /// columns. Three jobs at most, each shortened to [`JOB_NAME_MAX`]
@@ -1655,6 +1693,13 @@ impl App {
             .map(String::as_str)
             .chain(self.serving_others.then_some(SHARED_SERVER))
             .collect();
+        if self.input == InputMode::Confirm(Confirm::Quit)
+            && running.is_empty()
+            && self.waits_on_command(self.panes.keys().copied())
+        {
+            let label = "Quit? a command the chat waits for is running (y/n)";
+            return (text_width(label) <= room).then(|| label.to_owned());
+        }
         if self.input != InputMode::Confirm(Confirm::Quit) || running.is_empty() {
             return None;
         }
@@ -3019,10 +3064,12 @@ impl App {
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(self.enter_copy()),
             Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
             Step::Run(PrefixAction::ClosePane) if self.tabs.len() > 1 || self.tab_panes() > 1 => {
-                InputMode::Confirm(Confirm::ClosePane)
+                let waited = usize::from(self.waits_on_command([self.tab().focus]));
+                InputMode::Confirm([Confirm::ClosePane, Confirm::ClosePaneWaited][waited])
             }
             Step::Run(PrefixAction::CloseTab) if self.tabs.len() > 1 => {
-                InputMode::Confirm(Confirm::CloseTab)
+                let waited = usize::from(self.waits_on_command(self.tab().tree.leaves()));
+                InputMode::Confirm([Confirm::CloseTab, Confirm::CloseTabWaited][waited])
             }
             // Closing the last pane of the only tab quits; so does closing the only tab.
             Step::Run(PrefixAction::ClosePane | PrefixAction::CloseTab) => {
@@ -3277,7 +3324,7 @@ impl App {
             self.drop_parked_send(id);
             self.drop_note_choices(id);
             self.drop_folder_state(id);
-            self.drop_run_slots(|slot| slot.chat == id);
+            self.drop_chat_slots(id);
         }
         if index == self.active {
             self.active = index.min(self.tabs.len() - 1);
@@ -3576,7 +3623,7 @@ impl App {
                 self.drop_parked_send(id);
                 self.drop_note_choices(id);
                 self.drop_folder_state(id);
-                self.drop_run_slots(|slot| slot.chat == id);
+                self.drop_chat_slots(id);
                 self.tabs[t].zoom = false;
                 if id == self.tabs[t].focus {
                     let tiling = tile(&self.tabs[t].tree, body);
@@ -3672,8 +3719,8 @@ impl App {
         }
         match confirm {
             Confirm::Quit => self.quit_effects(),
-            Confirm::CloseTab => self.close_tab(),
-            Confirm::ClosePane => {
+            Confirm::CloseTab | Confirm::CloseTabWaited => self.close_tab(),
+            Confirm::ClosePane | Confirm::ClosePaneWaited => {
                 let id = self.tab().focus;
                 let stop = self.stop_effect(id);
                 let mut effects = self.remove_pane(id);
@@ -9427,6 +9474,8 @@ mod app_tests {
     mod tool_run_settle;
     /// `y` in `run` mode runs a model's command; elsewhere it types.
     mod tool_run_y;
+    /// A typed command the user ran resumes the chat (#819).
+    mod typed_resume;
     /// The `/write` grant reaches the next spawn.
     mod write_ceiling;
     /// `/write`, its dialog and where the grant ends.

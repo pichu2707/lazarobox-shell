@@ -380,6 +380,9 @@ impl App {
                         chat.note_typed_not_run(number);
                     }
                 }
+                if let Some(call) = call {
+                    self.track_typed(id, target, call, command);
+                }
                 // The line stays unsent, and an auto call must not land on it.
                 if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
                     pty.line_pending = Some(call.map_or(BLOCK_LINE, |(_, call)| call));

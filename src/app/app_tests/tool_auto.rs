@@ -329,6 +329,20 @@ fn user_in_the_shell(a: &mut App) {
     a.tab_mut().focus = PaneId::FIRST;
 }
 
+/// The command the user ran with Enter finishes: since #819 the pane is
+/// `executing` until it does, and a later call prompts meanwhile.
+fn finish_run(a: &mut App) {
+    shell_output(a, b"\r\nout\r\n$ ");
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    a.update(AppEvent::Run(
+        PaneId::FIRST,
+        crate::app::RunEvent::Probe {
+            foreground: Some(true),
+            cwd: Some(LAUNCH.into()),
+        },
+    ));
+}
+
 #[test]
 fn a_later_auto_call_to_a_marked_pane_prompts() {
     let (mut a, turn) = marked();
@@ -355,6 +369,7 @@ fn enter_and_ctrl_c_in_the_shell_clear_the_mark() {
         let (mut a, turn) = marked();
         user_in_the_shell(&mut a);
         a.update(send);
+        finish_run(&mut a);
         a.tab_mut().focus = id2();
         assert!(!prompts(&mut a, turn, 2), "cleared");
     }
@@ -389,6 +404,7 @@ fn enter_clears_the_mark_also_with_an_extended_keyboard_protocol() {
     shell_output(&mut a, b"\x1b[>1u");
     user_in_the_shell(&mut a);
     a.update(chat_live::plain(KeyCode::Enter));
+    finish_run(&mut a);
     a.tab_mut().focus = id2();
     assert!(!prompts(&mut a, turn, 2));
 }
@@ -467,6 +483,7 @@ fn enter_in_the_shell_clears_the_mark_of_a_line_typed_with_y() {
     set_mode(&mut a, ApprovalMode::Auto);
     user_in_the_shell(&mut a);
     a.update(chat_live::plain(KeyCode::Enter));
+    finish_run(&mut a);
     a.tab_mut().focus = id2();
     assert!(!prompts(&mut a, turn, 2));
 }
@@ -519,6 +536,7 @@ fn five_commands_a_turn_with_enter_between_and_the_sixth_prompts() {
         );
         user_in_the_shell(&mut a);
         a.update(chat_live::plain(KeyCode::Enter));
+        finish_run(&mut a);
         a.tab_mut().focus = id2();
     }
     assert_eq!(auto_typed(&a), 5);
@@ -802,7 +820,7 @@ fn a_chat_read_keeps_its_answers_in_every_mode() {
 // #816: the end-of-turn line for a command typed and not run ------------------
 
 const WAITING: &str =
-    "waiting for you: press Enter in pane 1 to run it, then send a message to go on";
+    "waiting for you: press Enter in pane 1 to run it; the chat goes on when it finishes";
 
 fn ends_turn(a: &mut App, turn: u64) -> Vec<String> {
     a.update(AppEvent::Chat(

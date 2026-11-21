@@ -495,7 +495,10 @@ mod tests {
     fn reason(event: &RunEvent) -> Option<&'static str> {
         match event {
             RunEvent::Refused { reason, .. } => Some(reason),
-            RunEvent::Checked { .. } | RunEvent::NotRun { .. } | RunEvent::Probe { .. } => None,
+            RunEvent::Checked { .. }
+            | RunEvent::NotRun { .. }
+            | RunEvent::Probe { .. }
+            | RunEvent::Resume { .. } => None,
         }
     }
 
