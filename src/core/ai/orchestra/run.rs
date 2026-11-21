@@ -580,14 +580,13 @@ impl Run {
         ))
     }
 
-    /// Whether the two judges run on different models: both rows must be
-    /// ready and differ. The roster holds the fallback of each row already
+    /// Whether the two judges run on one model: both rows must be ready and
+    /// equal. An unusable row says nothing here; its refusal line speaks. The
+    /// roster holds the fallback of each row already
     /// (`AiConfig::resolve_judges`).
-    pub fn judges_independent(&self) -> bool {
-        let ready = |task| matches!(self.roster.get(task), Availability::Ready { .. });
-        ready(Task::JudgeA)
-            && ready(Task::JudgeB)
-            && self.roster.get(Task::JudgeA) != self.roster.get(Task::JudgeB)
+    pub fn judges_share_a_model(&self) -> bool {
+        let (a, b) = (self.roster.get(Task::JudgeA), self.roster.get(Task::JudgeB));
+        matches!(a, Availability::Ready { .. }) && a == b
     }
 
     /// Why the judge row of `task` cannot run; `None` when it can. A judge

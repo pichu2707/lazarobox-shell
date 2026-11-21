@@ -47,6 +47,14 @@ impl Task {
         Self::JudgeB,
     ];
 
+    /// Whether a cleared slot is absent from the file, not written empty.
+    pub fn removable(self) -> bool {
+        matches!(
+            self,
+            Self::Orchestrate | Self::Simple | Self::JudgeA | Self::JudgeB
+        )
+    }
+
     /// The roles `Set all ODD + RDD roles` and its aggregate cover.
     pub const ROLES: [Self; 2] = [Self::JudgeA, Self::JudgeB];
 
@@ -3965,6 +3973,16 @@ mod tests {
         let config = cfg(&[review]);
         assert_eq!(config.resolve(Task::JudgeA).0, asg("codex", "default"));
         assert_eq!(config.resolve(Task::JudgeB).0, asg("codex", "default"));
+    }
+
+    // Review m7: a cleared slot of these is absent from the file.
+    #[test]
+    fn only_the_role_tasks_are_removable() {
+        let removable: Vec<_> = Task::ALL.into_iter().filter(|t| t.removable()).collect();
+        assert_eq!(
+            removable,
+            [Task::Orchestrate, Task::Simple, Task::JudgeA, Task::JudgeB]
+        );
     }
 
     // Spec (ai-task-models, S3): the roles aggregate.

@@ -746,24 +746,51 @@ async fn an_unreadable_norm_file_shows_its_line() {
     assert!(user_of(&judge_requests(&lab)[0]).contains("norms from CLAUDE.md"));
 }
 
-// m2: the judges are independent only when both rows are ready and differ.
+// Review M1: only two ready rows on one model share it; an unusable row says
+// nothing about independence (its refusal line speaks).
 #[tokio::test]
-async fn the_judges_are_independent_only_when_both_rows_are_ready_and_differ() {
+async fn the_judges_share_a_model_only_when_both_rows_are_ready_and_equal() {
     let lab = lab(Script::Hang);
     let ask = |extra: &[(Task, &str, &str)]| {
         let (run, _h) = lab
             .begin(lab.scope(judge_roster(&[BASE.as_slice(), extra].concat()), &[]))
             .unwrap();
         lab.manager
-            .on_run(pane(), run, |live| live.run.judges_independent())
+            .on_run(pane(), run, |live| live.run.judges_share_a_model())
             .unwrap()
     };
     let a = (Task::JudgeA, "claude", "sonnet");
-    assert!(ask(&[a, (Task::JudgeB, "codex", "default")]));
-    assert!(!ask(&[a, (Task::JudgeB, "claude", "sonnet")]));
+    assert!(!ask(&[a, (Task::JudgeB, "codex", "default")]));
+    assert!(ask(&[a, (Task::JudgeB, "claude", "sonnet")]));
     assert!(
         !ask(&[a, (Task::JudgeB, "gemini", "pro")]),
         "an unusable row"
     );
-    assert!(!ask(&[]), "both fall back to review");
+    assert!(ask(&[]), "both fall back to review");
+}
+
+// Review m6: the consent names every judge row once, and one that cannot run
+// as unavailable, never dropped.
+#[tokio::test]
+async fn the_consent_lists_each_model_once_and_names_an_unavailable_row() {
+    let lab = lab(Script::Hang);
+    let text_of = |extra: &[(Task, &str, &str)]| {
+        let (run, h) = lab
+            .begin(lab.scope(judge_roster(&[BASE.as_slice(), extra].concat()), &[]))
+            .unwrap();
+        let Judges::Ask(text) = h.judges(run) else {
+            panic!("not answered yet");
+        };
+        text
+    };
+    let same = text_of(&[]);
+    assert_eq!(same.matches("codex").count(), 1, "{same}");
+    let split = text_of(&[
+        (Task::JudgeA, "claude", "sonnet"),
+        (Task::JudgeB, "gemini", "pro"),
+    ]);
+    assert!(
+        split.contains("claude") && split.contains("judge-b unavailable"),
+        "{split}"
+    );
 }

@@ -70,6 +70,9 @@ pub const MAX_CRITERIA: usize = 12;
 /// The most of each norm file a judge reads.
 pub const NORM_BYTES: usize = 8 * 1024;
 
+/// The bytes read past [`NORM_BYTES`] so a secret on the cut is masked whole.
+pub const NORM_SLACK: usize = 256;
+
 /// One thing the change is ruled against, with a stable id (`C1`, `C2`...).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Criterion {
@@ -168,13 +171,20 @@ pub fn standard(goal: &str, notes: &[String], specs: &[Spec], norms: Vec<Norm>) 
 /// file. `total` is the file's size, so a head read with `take` still says it
 /// was cut. `None` when nothing is left.
 pub fn norm(name: &str, bytes: &[u8], total: u64) -> Option<Norm> {
-    let head = &bytes[..bytes.len().min(NORM_BYTES)];
-    let head = match std::str::from_utf8(head) {
-        Err(cut) if cut.error_len().is_none() => &head[..cut.valid_up_to()],
-        _ => head,
+    let kept = bytes.len().min(NORM_BYTES);
+    // A window past the cut is masked first, so a secret that starts before
+    // byte 8 KiB is never left half shown by the cut.
+    let window = &bytes[..bytes.len().min(NORM_BYTES + NORM_SLACK)];
+    let window = match std::str::from_utf8(window) {
+        Err(cut) if cut.error_len().is_none() => &window[..cut.valid_up_to()],
+        _ => window,
     };
-    // Redacted like any text sent to a worker, before anything else reads it.
-    let masked = redact(&clean(&String::from_utf8_lossy(head)));
+    let mut masked = redact(&clean(&String::from_utf8_lossy(window)));
+    let mut end = masked.text.len().min(NORM_BYTES);
+    while !masked.text.is_char_boundary(end) {
+        end -= 1;
+    }
+    masked.text.truncate(end);
     let text: String = masked
         .text
         .split_inclusive('\n')
@@ -183,7 +193,7 @@ pub fn norm(name: &str, bytes: &[u8], total: u64) -> Option<Norm> {
     (!text.trim().is_empty()).then(|| Norm {
         name: name.to_owned(),
         text,
-        cut_from: (total > head.len() as u64).then_some(total.max(bytes.len() as u64)),
+        cut_from: (total > kept as u64).then_some(total.max(bytes.len() as u64)),
         redacted: masked.hits,
     })
 }

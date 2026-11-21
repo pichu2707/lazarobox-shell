@@ -1073,3 +1073,37 @@ fn a_norm_is_redacted_and_says_how_many_secrets() {
     let cut = norm("AGENTS.md", &long, 12 * 1024).unwrap();
     assert_eq!(cut.cut_from, Some(12 * 1024));
 }
+
+// Review m1: terminal controls and bidi marks never reach a judge.
+#[test]
+fn control_and_bidi_characters_never_reach_the_norm_or_the_prompt() {
+    let got = norm("AGENTS.md", "rules\x1b[31m\u{202e}\r\n".as_bytes(), 12).unwrap();
+    let standard = standard("g", &[], &[], vec![got.clone()]);
+    let prompt = judge_prompt(
+        NONCE,
+        &standard,
+        &[change("a.rs", 1)],
+        &StagedDiff::default(),
+    );
+    for bad in ['\x1b', '\u{202e}', '\r'] {
+        assert!(!got.text.contains(bad), "{:?}", got.text);
+        assert!(!prompt.text.contains(bad), "{bad:?}");
+    }
+    assert!(got.text.contains("rules"));
+}
+
+// Review m2: a secret that straddles the 8 KiB cut is masked before the cut.
+#[test]
+fn a_secret_across_the_cut_does_not_leak_its_first_characters() {
+    let mut bytes = vec![b'a'; NORM_BYTES - 5];
+    bytes.extend_from_slice(b" ghp_abcdefgh12345678\n");
+    bytes.resize(NORM_BYTES + 400, b'b');
+    let got = norm("AGENTS.md", &bytes, bytes.len() as u64).unwrap();
+    assert!(
+        !got.text.contains("ghp_"),
+        "{}",
+        &got.text[NORM_BYTES - 40..]
+    );
+    assert!(got.text.len() <= NORM_BYTES);
+    assert_eq!(got.cut_from, Some(bytes.len() as u64));
+}

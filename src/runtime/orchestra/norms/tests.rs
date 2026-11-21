@@ -48,8 +48,19 @@ fn a_symlink_to_a_regular_file_inside_the_origin_is_read() {
     write(dir.path(), "AGENTS.md", "agent rules\n");
     std::os::unix::fs::symlink("AGENTS.md", dir.path().join("CLAUDE.md")).unwrap();
     let read = read(dir.path());
-    assert_eq!(read.norms.len(), 2);
+    assert_eq!(read.norms.len(), 1, "the same file is sent once");
+    assert_eq!(read.norms[0].name, "AGENTS.md");
     assert!(read.said.is_empty(), "{:?}", read.said);
+}
+
+// Review m3: a link to nothing is not a missing file: it says so.
+#[test]
+fn a_dangling_symlink_says_it_could_not_be_read() {
+    let dir = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink("nowhere.md", dir.path().join("AGENTS.md")).unwrap();
+    let read = read(dir.path());
+    assert!(read.norms.is_empty());
+    assert_eq!(read.said, ["judge: AGENTS.md could not be read"]);
 }
 
 // D3: a link out of the origin is never followed, and says so.

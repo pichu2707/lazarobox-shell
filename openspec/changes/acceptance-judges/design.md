@@ -85,6 +85,8 @@ No migration. Each slice reverts alone. S2a reverts the gate to `cheap || High`.
 6. **ASCII.** The spec's lines use `·` and `›`. The review lines already go through `say`. Whether the app sanitizes them to ASCII is [I], to check in S2a. The close wait line and the guidance hint use the spec's text unless that path is ASCII-only (guidance tests assert ASCII, guidance.rs:249 [R]); the hint falls back to `Enter finish anyway | Esc keep working`.
 7. **Disagreement vs lens corrections.** Contested criteria are never corrected, but lens blockers in the same high review still are (D7).
 
+Accepted risk (S3 norms I/O): races that swap a parent directory between the check and the open, and in-origin link targets such as `.env`, are guarded only by redaction of the norm text; `openat2` with `RESOLVE_BENEATH` is a possible later hardening.
+
 ## Open questions
 
 None blocking. [I] items: whether the app keeps non-ASCII characters in review lines; the exact key-dispatch position for `answer_close`; how `Live` exposes the run id to the coordinator's host scope for D10.

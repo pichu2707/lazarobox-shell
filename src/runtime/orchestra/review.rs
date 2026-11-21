@@ -401,11 +401,16 @@ impl RunManager {
     /// Where the judge consent stands, and what to ask the user with.
     pub(super) fn judges(&self, pane: PaneId, run: RunId) -> Judges {
         let kept = self.on_run(pane, run, |live| {
-            let mut models: Vec<String> = Task::ROLES
-                .iter()
-                .filter_map(|task| live.run.judge_model(*task))
-                .collect();
-            models.dedup();
+            let mut models: Vec<String> = Vec::new();
+            for task in Task::ROLES {
+                let model = live
+                    .run
+                    .judge_model(task)
+                    .unwrap_or_else(|| format!("{} unavailable", task.id()));
+                if !models.contains(&model) {
+                    models.push(model);
+                }
+            }
             (live.judges, models)
         });
         match kept {
@@ -451,7 +456,7 @@ impl RunManager {
                 level: judge::level_line(level, size, changes, tier)?,
                 models,
                 standard: live.run.judge_standard(&live.goal, norms),
-                independent: count == 1 || live.run.judges_independent(),
+                independent: count == 1 || !live.run.judges_share_a_model(),
             })
         });
         set.flatten()
