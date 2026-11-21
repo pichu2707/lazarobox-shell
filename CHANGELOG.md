@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-11-21
+
 ### Added
 
 - **A command you run goes on by itself (#819).** The waiting line now reads `waiting for you: press Enter in pane N to run it; the chat goes on when it finishes`. When the model typed a command into a pane and you press Enter on exactly that line, with no other key, paste or wheel in the pane since it was typed, the chat follows the command with the same finish detection and 10 s limit as the `run` mode and then goes on by itself: the model gets a fixed note that you ran it plus the pane output through the same cap and redaction as `run` (the exit status is not known). Any other key before the Enter, or Ctrl+U, means the line may have changed: nothing resumes and `typed command changed: send a message to go on` is shown. A timeout, typing in the pane meanwhile, a full-screen program, Esc or a new message end the wait with a line saying so and send nothing. It needs the pane's folder to be readable, so it is off where the `run` mode is, and it never applies to an orchestrator run. Closing the pane or tab of a command the chat waits for (or quitting) warns first (`Close pane? a command the chat waits for is running (y/n)`) and the chat says `pane N closed; send a message to go on`.
@@ -3181,7 +3183,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.33.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.34.0...HEAD
+[1.34.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.33.0...v1.34.0
 [1.33.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.32.0...v1.33.0
 [1.32.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.4...v1.32.0
 [1.31.4]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.3...v1.31.4
