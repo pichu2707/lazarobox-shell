@@ -32,11 +32,11 @@ fn the_orchestrate_and_gate_rows_read_their_defaults() {
     let m = menu(Some("claude"), Some("sonnet"), Some(machine()));
     assert_eq!(value_of(&m, "orchestrate"), "(default)");
     assert_eq!(value_of(&m, "Orchestrator"), "off");
-    let labels: Vec<_> = MODELS_SECTION.items.iter().map(|i| i.label).collect();
+    let labels: Vec<_> = MODELS_SECTIONS[0].items.iter().map(|i| i.label).collect();
     let at = labels.iter().position(|l| *l == "orchestrate").unwrap();
     assert_eq!(labels[at - 1], "summarize");
     assert_eq!(labels[at + 1], "simple");
-    assert_eq!(labels[at + 2], "Hugging Face");
+    assert_eq!(labels.len(), at + 2);
     let labels: Vec<_> = TOOLS_SECTION.items.iter().map(|i| i.label).collect();
     let gate = labels.iter().position(|l| *l == "Orchestrator").unwrap();
     assert_eq!(labels[gate - 1], "Approval");
@@ -216,7 +216,7 @@ fn set_all_from_the_menu_leaves_orchestrate_alone() {
 }
 
 // Spec (config-menu): Simple row and picker [W8]: the row reads its default,
-// `j` walks orchestrate, simple, Hugging Face.
+// `j` walks orchestrate, simple, then the roles section.
 #[test]
 fn the_simple_row_reads_its_default_and_sits_between_orchestrate_and_hugging_face() {
     let mut m = menu(Some("claude"), Some("sonnet"), Some(machine()));
@@ -225,7 +225,7 @@ fn the_simple_row_reads_its_default_and_sits_between_orchestrate_and_hugging_fac
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "simple");
     press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Hugging Face");
+    assert_eq!(selected_label(&m), "Set all ODD + RDD roles");
 }
 
 #[test]

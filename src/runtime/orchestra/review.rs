@@ -154,6 +154,8 @@ pub(super) struct State {
     pub(super) corrections: HashMap<WorkerId, u32>,
     /// What review workers could not read, by worker.
     pub(super) unread: HashMap<WorkerId, Vec<String>>,
+    /// The repo norms the judges rule against, read once per run.
+    pub(super) norms: Option<norms::Read>,
 }
 
 impl State {
@@ -398,10 +400,22 @@ impl RunManager {
 
     /// Where the judge consent stands, and what to ask the user with.
     pub(super) fn judges(&self, pane: PaneId, run: RunId) -> Judges {
-        let kept = self.on_run(pane, run, |live| (live.judges, live.run.judge_model()));
+        let kept = self.on_run(pane, run, |live| {
+            let mut models: Vec<String> = Vec::new();
+            for task in Task::ROLES {
+                let model = live
+                    .run
+                    .judge_model(task)
+                    .unwrap_or_else(|| format!("{} unavailable", task.id()));
+                if !models.contains(&model) {
+                    models.push(model);
+                }
+            }
+            (live.judges, models)
+        });
         match kept {
             Some((Some(true), _)) => Judges::Granted,
-            Some((None, model)) => Judges::Ask(judge::consent_text(&Vec::from_iter(model))),
+            Some((None, models)) => Judges::Ask(judge::consent_text(&models)),
             _ => Judges::Declined,
         }
     }
@@ -424,6 +438,7 @@ impl RunManager {
         run: RunId,
         changes: &[Change],
         assessment: &Assessment,
+        norms: Vec<judge::Norm>,
     ) -> Option<Judging> {
         let set = self.on_run(pane, run, |live| {
             let steps = live.run.steps();
@@ -431,19 +446,47 @@ impl RunManager {
             let level = judge::level(steps.read_only(), size, changes, tier);
             let granted = live.judges?;
             let count = if level == JudgeLevel::Two { 2 } else { 1 };
-            let model = live
-                .run
-                .judge_model()
-                .unwrap_or_else(|| "unavailable".to_owned());
+            let models = Task::ROLES[..count]
+                .iter()
+                .map(|task| live.run.judge_model(*task))
+                .map(|model| model.unwrap_or_else(|| "unavailable".to_owned()))
+                .collect();
             Some(Judging {
                 granted,
                 level: judge::level_line(level, size, changes, tier)?,
-                models: vec![model; count],
-                standard: live.run.judge_standard(&live.goal),
-                independent: level != JudgeLevel::Two,
+                models,
+                standard: live.run.judge_standard(&live.goal, norms),
+                independent: count == 1 || !live.run.judges_share_a_model(),
             })
         });
         set.flatten()
+    }
+
+    /// The repo norms of the run: read once on the blocking pool, kept in the
+    /// run, their lines said once. Empty until the judges are consented to.
+    async fn norms(&self, pane: PaneId, run: RunId) -> Vec<judge::Norm> {
+        let kept = self.on_run(pane, run, |live| match (live.judges, &live.review.norms) {
+            (Some(true), None) => Err(live.origin.clone()),
+            (Some(true), Some(read)) => Ok(read.norms.clone()),
+            _ => Ok(Vec::new()),
+        });
+        let origin = match kept {
+            Some(Ok(norms)) => return norms,
+            Some(Err(origin)) => origin,
+            None => return Vec::new(),
+        };
+        let read = tokio::task::spawn_blocking(move || norms::read(&origin)).await;
+        let read = read.unwrap_or_else(|_| norms::Read {
+            norms: Vec::new(),
+            said: vec!["judge: the norms could not be read".to_owned()],
+        });
+        let first = self.on_run(pane, run, |live| live.review.norms.replace(read.clone()));
+        if first.is_some_and(|before| before.is_none()) {
+            for line in read.said {
+                self.say(pane, run, line);
+            }
+        }
+        read.norms
     }
 
     fn say(&self, pane: PaneId, run: RunId, text: String) {
@@ -512,7 +555,8 @@ impl RunManager {
         answered: Answered,
     ) -> Result<Vec<Change>, String> {
         let of = format!("review of worker {}", worker.0);
-        let judging = self.judging(pane, run, &changes, &assessment);
+        let norms = self.norms(pane, run).await;
+        let judging = self.judging(pane, run, &changes, &assessment, norms);
         let mut review = Review::new(assessment);
         judging
             .iter()
@@ -807,9 +851,21 @@ impl RunManager {
         };
         // The lenses, the refuter and the correction are internal workers
         // (D22): `max_workers` bounds the coordinator's, not these.
+        // The review row, then each judge row (one line said once even when
+        // two rows resolve to the same model).
+        let judge_rows = judging.map_or(0, |j| j.models.len());
         let (profile, notices) = self
             .on_run(pane, run, |live| {
-                (live.profile, live.run.review_notices(worker))
+                let rows = [Task::Review, Task::JudgeA, Task::JudgeB];
+                let mut notices: Vec<String> = Vec::new();
+                for task in &rows[..1 + judge_rows] {
+                    for notice in live.run.review_notices(worker, *task) {
+                        if !notices.contains(&notice) {
+                            notices.push(notice);
+                        }
+                    }
+                }
+                (live.profile, notices)
             })
             .ok_or_else(|| Stop::Start(ENDED.to_owned()))?;
         for notice in notices {
@@ -1153,7 +1209,18 @@ impl RunManager {
             let prompt = judge_prompt(nonce, &judging.standard, changes, diff);
             guard.note(&prompt);
             let system = Some(judge_builtin(profile));
-            let id = self.start_review(pane, run, Role::Reader, worker, prompt.text, system);
+            let task = Task::ROLES[labels[started.len()]];
+            // A judge row that cannot run gives no verdict, with its reason,
+            // and no worker: nothing halts the review (D8).
+            if let Some(why) = self
+                .on_run(pane, run, |live| live.run.judge_refusal(task))
+                .flatten()
+            {
+                started.push((None, Some(why)));
+                continue;
+            }
+            let id =
+                self.start_review_as(task, pane, run, (Role::Reader, worker), prompt.text, system);
             started.push(match id {
                 Ok(id) => {
                     let place = (labels[started.len()], judging.models.len());
@@ -1304,6 +1371,19 @@ impl RunManager {
         } else {
             Task::Review
         };
+        self.start_review_as(task, pane, run, (role, proposer), prompt, system)
+    }
+
+    /// [`Self::start_review`] on the row of `task` (a judge row for a judge).
+    fn start_review_as(
+        self: &Arc<Self>,
+        task: Task,
+        pane: PaneId,
+        run: RunId,
+        (role, proposer): (Role, WorkerId),
+        prompt: String,
+        system: Option<&'static str>,
+    ) -> Result<WorkerId, String> {
         let started = self.on_run(pane, run, |live| {
             let id = live
                 .run

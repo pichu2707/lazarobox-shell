@@ -551,22 +551,27 @@ impl Run {
     }
 
     /// The notices a review of worker `id`'s change says as it starts (D22):
-    /// the Review row as the roster resolved it against the author's spec.
-    /// Empty when the row cannot run (the lens is refused, and that says so).
-    pub fn review_notices(&self, id: WorkerId) -> Vec<String> {
+    /// the row of `task` (`review`, or a judge row) as the roster resolved it
+    /// against the author's spec. Empty when the row cannot run (the worker
+    /// is refused, and that says so).
+    pub fn review_notices(&self, id: WorkerId, task: Task) -> Vec<String> {
         let (Some(author), Availability::Ready { engine, model }) =
-            (self.spec(id), self.roster.get(Task::Review))
+            (self.spec(id), self.roster.get(task))
         else {
             return Vec::new();
         };
         let author = (author.engine.as_str(), author.model.as_deref());
-        review::notices(id, author, (engine.as_str(), model.as_deref()))
+        let row = (engine.as_str(), model.as_deref());
+        match task {
+            Task::JudgeA | Task::JudgeB => review::judge_notices(id, author, row),
+            _ => review::notices(id, author, row),
+        }
     }
 
-    /// The `engine › model` the judges run on: the review assignment until the
-    /// judge rows exist. `None` when it cannot run.
-    pub fn judge_model(&self) -> Option<String> {
-        let Availability::Ready { engine, model } = self.roster.get(Task::Review) else {
+    /// The `engine \u{203a} model` the judge of `task` (`judge-a` or `judge-b`)
+    /// runs on, as the roster resolved it. `None` when it cannot run.
+    pub fn judge_model(&self, task: Task) -> Option<String> {
+        let Availability::Ready { engine, model } = self.roster.get(task) else {
             return None;
         };
         Some(format!(
@@ -575,11 +580,30 @@ impl Run {
         ))
     }
 
-    /// What the judges rule against: the goal, the closed handoffs and, for a
-    /// Large goal, the specs of its feature document.
-    pub fn judge_standard(&self, goal: &str) -> Standard {
+    /// Whether the two judges run on one model: both rows must be ready and
+    /// equal. An unusable row says nothing here; its refusal line speaks. The
+    /// roster holds the fallback of each row already
+    /// (`AiConfig::resolve_judges`).
+    pub fn judges_share_a_model(&self) -> bool {
+        let (a, b) = (self.roster.get(Task::JudgeA), self.roster.get(Task::JudgeB));
+        matches!(a, Availability::Ready { .. }) && a == b
+    }
+
+    /// Why the judge row of `task` cannot run; `None` when it can. A judge
+    /// that cannot run is no verdict, never a worker that halts the run.
+    pub fn judge_refusal(&self, task: Task) -> Option<String> {
+        match self.roster.get(task) {
+            Availability::Ready { .. } => None,
+            Availability::Unassigned => Some(format!("no engine assigned to {}", task.id())),
+            other => guidance(other),
+        }
+    }
+
+    /// What the judges rule against: the goal, the closed handoffs, for a
+    /// Large goal the specs of its feature document, and the repo `norms`.
+    pub fn judge_standard(&self, goal: &str, norms: Vec<judge::Norm>) -> Standard {
         let specs = self.feature.as_ref().map_or(&[][..], FeatureDoc::specs);
-        standard(goal, &judge::handoff_notes(&self.steps), specs, Vec::new())
+        standard(goal, &judge::handoff_notes(&self.steps), specs, norms)
     }
 
     /// What worker `id` reported using so far; `None` when its engine

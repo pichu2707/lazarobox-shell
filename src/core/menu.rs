@@ -267,6 +267,9 @@ pub enum ItemKind {
     Toggle(Choice),
     /// An AI assignment row; `None` is `Set all tasks`.
     Assign(Option<Task>),
+    /// `Set all ODD + RDD roles`: the judges of [`Task::ROLES`], never the
+    /// five tasks of `Set all tasks`.
+    AssignRoles,
     /// The running version, and the newer one when the update check found it.
     /// Not a setting: `[updates] check` stays config-only. `h`/`l` do nothing
     /// here; Enter acts only when an update is available.
@@ -302,7 +305,7 @@ impl ItemKind {
     const fn needs_ai(&self) -> bool {
         matches!(
             self,
-            Self::Draft(_) | Self::Assign(_) | Self::HfAccount | Self::Usage
+            Self::Draft(_) | Self::Assign(_) | Self::AssignRoles | Self::HfAccount | Self::Usage
         )
     }
 }
@@ -559,48 +562,68 @@ pub static USAGE_SECTION: Section = Section {
 };
 
 /// The Models tab: the task rows (their labels are the task ids; their key
-/// path is `Task::table`) and the `Hugging Face` account.
-pub static MODELS_SECTION: Section = Section {
-    title: "Models",
-    items: &[
-        Item {
-            label: "Set all tasks",
-            kind: ItemKind::Assign(None),
-        },
-        Item {
-            label: "general",
-            kind: ItemKind::Assign(Some(Task::General)),
-        },
-        Item {
-            label: "code",
-            kind: ItemKind::Assign(Some(Task::Code)),
-        },
-        Item {
-            label: "chat",
-            kind: ItemKind::Assign(Some(Task::Chat)),
-        },
-        Item {
-            label: "review",
-            kind: ItemKind::Assign(Some(Task::Review)),
-        },
-        Item {
-            label: "summarize",
-            kind: ItemKind::Assign(Some(Task::Summarize)),
-        },
-        Item {
-            label: "orchestrate",
-            kind: ItemKind::Assign(Some(Task::Orchestrate)),
-        },
-        Item {
-            label: "simple",
-            kind: ItemKind::Assign(Some(Task::Simple)),
-        },
-        Item {
-            label: "Hugging Face",
-            kind: ItemKind::HfAccount,
-        },
-    ],
-};
+/// path is `Task::table`), then the `ODD + RDD roles` section (its title is
+/// drawn, never selected) and the `Hugging Face` account.
+pub static MODELS_SECTIONS: [Section; 2] = [
+    Section {
+        title: "Models",
+        items: &[
+            Item {
+                label: "Set all tasks",
+                kind: ItemKind::Assign(None),
+            },
+            Item {
+                label: "general",
+                kind: ItemKind::Assign(Some(Task::General)),
+            },
+            Item {
+                label: "code",
+                kind: ItemKind::Assign(Some(Task::Code)),
+            },
+            Item {
+                label: "chat",
+                kind: ItemKind::Assign(Some(Task::Chat)),
+            },
+            Item {
+                label: "review",
+                kind: ItemKind::Assign(Some(Task::Review)),
+            },
+            Item {
+                label: "summarize",
+                kind: ItemKind::Assign(Some(Task::Summarize)),
+            },
+            Item {
+                label: "orchestrate",
+                kind: ItemKind::Assign(Some(Task::Orchestrate)),
+            },
+            Item {
+                label: "simple",
+                kind: ItemKind::Assign(Some(Task::Simple)),
+            },
+        ],
+    },
+    Section {
+        title: "ODD + RDD roles",
+        items: &[
+            Item {
+                label: "Set all ODD + RDD roles",
+                kind: ItemKind::AssignRoles,
+            },
+            Item {
+                label: "judge-a",
+                kind: ItemKind::Assign(Some(Task::JudgeA)),
+            },
+            Item {
+                label: "judge-b",
+                kind: ItemKind::Assign(Some(Task::JudgeB)),
+            },
+            Item {
+                label: "Hugging Face",
+                kind: ItemKind::HfAccount,
+            },
+        ],
+    },
+];
 
 /// The Connectors tab: one row that opens the area.
 pub static CONNECTORS_SECTION: Section = Section {
@@ -777,7 +800,7 @@ pub static TABS: [Tab; TAB_COUNT] = [
     },
     Tab {
         label: "Models",
-        sections: std::slice::from_ref(&MODELS_SECTION),
+        sections: &MODELS_SECTIONS,
         needs_ai: true,
         note: false,
         caution: false,
@@ -846,6 +869,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .filter_map(|item| match &item.kind {
             ItemKind::Choice(choice) | ItemKind::Toggle(choice) => Some((item, choice)),
             ItemKind::Assign(_)
+            | ItemKind::AssignRoles
             | ItemKind::Draft(_)
             | ItemKind::Updates
             | ItemKind::HfAccount
@@ -901,7 +925,8 @@ const fn view_body() -> usize {
         let mut items = 0;
         let mut section = 0;
         while section < TABS[tab].sections.len() {
-            items += TABS[tab].sections[section].items.len();
+            // A section after the first draws its title as a row.
+            items += TABS[tab].sections[section].items.len() + (section > 0) as usize;
             section += 1;
         }
         if TABS[tab].note {
@@ -2159,7 +2184,10 @@ impl MenuState {
 
     /// Whether the selection is on an AI task row (the ones with a picker).
     pub fn on_ai_row(&self) -> bool {
-        matches!(self.selected_kind(), Some(ItemKind::Assign(_)))
+        matches!(
+            self.selected_kind(),
+            Some(ItemKind::Assign(_) | ItemKind::AssignRoles)
+        )
     }
 
     /// Whether the selection is on a row of the AI draft that is not a
@@ -2254,6 +2282,7 @@ impl MenuState {
         let row = match picker.target {
             Target::All => "Set all tasks",
             Target::Task(task) => task.id(),
+            Target::Roles => "Set all ODD + RDD roles",
         };
         let mut title = match &picker.level {
             Level::Engines => format!("Engine for {row}"),
@@ -2297,6 +2326,7 @@ impl MenuState {
         match self.selected_kind()? {
             ItemKind::Assign(None) => Some(Target::All),
             ItemKind::Assign(Some(task)) => Some(Target::Task(*task)),
+            ItemKind::AssignRoles => Some(Target::Roles),
             ItemKind::Choice(_)
             | ItemKind::Toggle(_)
             | ItemKind::Draft(_)
@@ -2346,8 +2376,9 @@ impl MenuState {
         // menu has a single tab (no bar is drawn then).
         let titled = self.tabs().count() == 1;
         let sections = table().get(self.tab).map_or(&[][..], |tab| tab.sections);
-        for section in sections {
-            if titled {
+        for (at, section) in sections.iter().enumerate() {
+            // Past the first, a section of the tab keeps its title.
+            if titled || at > 0 {
                 rows.push(Row::Title(Cow::Borrowed(section.title)));
             }
             for item in section
@@ -2356,10 +2387,15 @@ impl MenuState {
                 .filter(|item| self.ai.is_some() || !item.kind.needs_ai())
             {
                 rows.push(match &item.kind {
-                    ItemKind::Assign(task) => {
+                    ItemKind::Assign(_) | ItemKind::AssignRoles => {
                         let row = Row::Item {
                             label: item.label,
-                            value: self.ai.as_ref().map(|ai| Cow::Owned(ai.value(*task))),
+                            value: self.ai.as_ref().map(|ai| {
+                                Cow::Owned(match &item.kind {
+                                    ItemKind::Assign(task) => ai.value(*task),
+                                    _ => ai.draft().roles_aggregate(),
+                                })
+                            }),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -3739,6 +3775,9 @@ mod update_tests;
 
 #[cfg(test)]
 mod orchestrator_tests;
+
+#[cfg(test)]
+mod roles_tests;
 
 #[cfg(test)]
 mod hub_tests;

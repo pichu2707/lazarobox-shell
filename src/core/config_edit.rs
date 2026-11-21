@@ -1791,6 +1791,30 @@ other = 1
         assert_eq!(out, rest);
     }
 
+    // Spec (configuration, S3): a cleared judge slot is absent from the file,
+    // and a file that never had one stays byte for byte as it was.
+    #[test]
+    fn clearing_a_judge_slot_removes_its_keys() {
+        use crate::core::ai::config::Task;
+        for task in Task::ROLES {
+            let edit = |key, value: &'static str| ConfigEdit {
+                table: task.table(),
+                key,
+                value: std::borrow::Cow::Borrowed(value),
+            };
+            let rest = "[ai]\nengine = \"x\"\n";
+            let with_slot = format!(
+                "{rest}\n[{}]\nengine = \"ollama\"\nmodel = \"m\"\n",
+                task.table()
+            );
+            let clear = [edit("engine", ""), edit("model", "")];
+            let out = apply_edit(Some(&with_slot), &clear).unwrap();
+            assert_eq!(out.trim_end(), rest.trim_end());
+            let out = apply_edit(Some(rest), &clear).unwrap();
+            assert_eq!(out, rest);
+        }
+    }
+
     #[test]
     fn the_other_tasks_still_write_empty_strings_when_cleared() {
         let out = apply_edit(None, &code_edits("", "")).unwrap();

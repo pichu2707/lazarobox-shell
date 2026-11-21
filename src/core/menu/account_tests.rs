@@ -50,11 +50,11 @@ fn pasted() -> MenuState {
 // after the task rows, and reads `not connected` with no token.
 #[test]
 fn the_account_row_is_last_and_reads_not_connected_without_a_token() {
-    let items = MODELS_SECTION.items;
+    let items = MODELS_SECTIONS[1].items;
     let last = items.last().unwrap();
     assert_eq!(last.label, "Hugging Face");
     assert!(matches!(last.kind, ItemKind::HfAccount));
-    assert_eq!(items[items.len() - 2].label, "simple");
+    assert_eq!(items[items.len() - 2].label, "judge-b");
     let m = open_with(TokenFacts::default(), None);
     assert_eq!(row_value(&m), "not connected");
     let m = on_row(TokenFacts::default(), None);

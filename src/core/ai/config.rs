@@ -27,10 +27,15 @@ pub enum Task {
     /// The worker role for direct, fully specified tasks. Appended after
     /// `Orchestrate` so earlier slot indices hold; never part of `SET_ALL`.
     Simple,
+    /// The first acceptance judge; a role of the `ODD + RDD roles` section,
+    /// never part of `SET_ALL`.
+    JudgeA,
+    /// The second acceptance judge.
+    JudgeB,
 }
 
 impl Task {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::General,
         Self::Code,
         Self::Chat,
@@ -38,7 +43,20 @@ impl Task {
         Self::Summarize,
         Self::Orchestrate,
         Self::Simple,
+        Self::JudgeA,
+        Self::JudgeB,
     ];
+
+    /// Whether a cleared slot is absent from the file, not written empty.
+    pub fn removable(self) -> bool {
+        matches!(
+            self,
+            Self::Orchestrate | Self::Simple | Self::JudgeA | Self::JudgeB
+        )
+    }
+
+    /// The roles `Set all ODD + RDD roles` and its aggregate cover.
+    pub const ROLES: [Self; 2] = [Self::JudgeA, Self::JudgeB];
 
     /// The five tasks `Set all tasks` and its aggregate cover: `Orchestrate`
     /// is a role with its own row, never part of the sweep.
@@ -60,6 +78,8 @@ impl Task {
             Self::Summarize => "summarize",
             Self::Orchestrate => "orchestrate",
             Self::Simple => "simple",
+            Self::JudgeA => "judge-a",
+            Self::JudgeB => "judge-b",
         }
     }
 
@@ -74,6 +94,8 @@ impl Task {
             Self::Summarize => "ai.tasks.summarize",
             Self::Orchestrate => "ai.tasks.orchestrate",
             Self::Simple => "ai.tasks.simple",
+            Self::JudgeA => "ai.tasks.judge-a",
+            Self::JudgeB => "ai.tasks.judge-b",
         }
     }
 }
@@ -292,6 +314,13 @@ pub struct Assignment {
     pub model: Option<String>,
 }
 
+/// The resolved assignment of each judge.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct JudgeModels {
+    pub a: Assignment,
+    pub b: Assignment,
+}
+
 /// The default engram port, used when neither the file nor `ENGRAM_PORT`
 /// gives a valid one.
 pub const DEFAULT_ENGRAM_PORT: u16 = 7437;
@@ -449,7 +478,7 @@ const MCP_ENV_NAME_MAX: usize = 64;
 /// they live under `[ai]` too.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AiConfig {
-    slots: [Assignment; 7],
+    slots: [Assignment; 9],
     profile: Profile,
     context: bool,
     notify: NotifyMode,
@@ -792,6 +821,15 @@ impl AiConfig {
     /// general.
     pub fn resolve(&self, task: Task) -> (Assignment, bool) {
         let own = self.get(task);
+        if matches!(task, Task::JudgeA | Task::JudgeB) {
+            let judges = self.resolve_judges();
+            let chosen = if task == Task::JudgeA {
+                judges.a
+            } else {
+                judges.b
+            };
+            return (chosen, own.engine.is_none());
+        }
         if task != Task::General && own.engine.is_none() {
             (self.get(Task::General).clone(), true)
         } else {
@@ -828,6 +866,37 @@ impl AiConfig {
             .all(|t| self.effective_label(*t) == first)
         {
             first
+        } else {
+            "(mixed)".to_owned()
+        }
+    }
+
+    /// The models of the two judges (acceptance-judges J10, J11). `a` is its
+    /// own assignment, else `review`, else the run default (`general`). `b` is
+    /// its own, else `review` when assigned and different from `a`, else `a`.
+    pub fn resolve_judges(&self) -> JudgeModels {
+        let a = match self.get(Task::JudgeA) {
+            own if own.engine.is_some() => own.clone(),
+            _ => self.resolve(Task::Review).0,
+        };
+        let review = self.get(Task::Review);
+        let b = match self.get(Task::JudgeB) {
+            own if own.engine.is_some() => own.clone(),
+            _ if review.engine.is_some() && *review != a => review.clone(),
+            _ => a.clone(),
+        };
+        JudgeModels { a, b }
+    }
+
+    /// The `Set all ODD + RDD roles` value: `(not set)` when no role is
+    /// assigned, the shared assignment, else `(mixed)`.
+    pub fn roles_aggregate(&self) -> String {
+        let [first, rest @ ..] = Task::ROLES;
+        if rest.iter().all(|task| self.get(*task) == self.get(first)) {
+            match self.get(first).engine {
+                None => "(not set)".to_owned(),
+                Some(_) => self.label(first),
+            }
         } else {
             "(mixed)".to_owned()
         }
@@ -2278,7 +2347,9 @@ mod tests {
                 "review",
                 "summarize",
                 "orchestrate",
-                "simple"
+                "simple",
+                "judge-a",
+                "judge-b"
             ]
         );
         let tables: Vec<&str> = Task::ALL.iter().map(|t| t.table()).collect();
@@ -2291,7 +2362,9 @@ mod tests {
                 "ai.tasks.review",
                 "ai.tasks.summarize",
                 "ai.tasks.orchestrate",
-                "ai.tasks.simple"
+                "ai.tasks.simple",
+                "ai.tasks.judge-a",
+                "ai.tasks.judge-b"
             ]
         );
     }
@@ -3746,7 +3819,7 @@ mod tests {
     // Spec (ai-task-models): Task set integrity [W8]; Set all excludes Simple.
     #[test]
     fn simple_is_the_seventh_task_and_set_all_is_unchanged() {
-        assert_eq!(Task::ALL.len(), 7);
+        assert_eq!(Task::ALL.len(), 9);
         assert_eq!(Task::Simple as usize, 6);
         assert_eq!(Task::Simple.id(), "simple");
         assert_eq!(Task::Simple.table(), "ai.tasks.simple");
@@ -3787,6 +3860,151 @@ mod tests {
         assert_eq!(config.get(Task::Code), &asg("codex", "default"));
         assert_eq!(config.get(Task::Orchestrate), &asg("claude", "sonnet"));
         assert_eq!(config.get(Task::Simple), &asg("ollama", "llama3:8b"));
+    }
+
+    // Spec (ai-task-models, S3): the judge rows are the eighth and ninth task.
+    #[test]
+    fn the_judges_are_the_last_two_tasks_and_set_all_stays_at_five() {
+        assert_eq!(Task::JudgeA as usize, 7);
+        assert_eq!(Task::JudgeB as usize, 8);
+        assert_eq!(Task::Orchestrate as usize, 5);
+        assert_eq!(Task::JudgeA.id(), "judge-a");
+        assert_eq!(Task::JudgeB.id(), "judge-b");
+        assert_eq!(Task::JudgeA.table(), "ai.tasks.judge-a");
+        assert_eq!(Task::JudgeB.table(), "ai.tasks.judge-b");
+        assert_eq!(Task::ROLES, [Task::JudgeA, Task::JudgeB]);
+        assert_eq!(Task::SET_ALL, Task::ALL[..5]);
+    }
+
+    // Spec (configuration, S3): both judge tables are parsed, absent means
+    // unassigned, a wrong type is flagged by its key.
+    #[test]
+    fn the_judge_slots_are_parsed_and_flag_a_wrong_type() {
+        let (config, problems) = read_text(
+            "[ai.tasks.judge-a]\nengine = \"claude\"\nmodel = \"opus\"\n[ai.tasks.judge-b]\nengine = \"codex\"\nmodel = \"default\"\n",
+        );
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(config.get(Task::JudgeA), &asg("claude", "opus"));
+        assert_eq!(config.get(Task::JudgeB), &asg("codex", "default"));
+        let (config, _) = read_text("[ai]\nengine = \"codex\"\nmodel = \"default\"\n");
+        assert_eq!(config.get(Task::JudgeA), &Assignment::default());
+        assert_eq!(config.label(Task::JudgeB), "(default)");
+        let (_, problems) = read_text("[ai.tasks.judge-a]\nengine = 3\n");
+        assert_eq!(problems, vec!["ai.tasks.judge-a.engine: expected a string"]);
+        let (_, problems) = read_text("[ai.tasks]\njudge-b = 1\n");
+        assert_eq!(problems, vec!["ai.tasks.judge-b: expected a table"]);
+    }
+
+    // Spec (configuration, S3): the ids are known keys now, so the table is
+    // no unknown-key note.
+    #[test]
+    fn a_judge_table_is_a_known_key() {
+        let text = "[ai.tasks.judge-a]\nengine = \"claude\"\nmodel = \"opus\"\n";
+        let (_, _, notice) = crate::core::config::Config::load_with_ai(Ok(text.into()), None);
+        assert_eq!(notice, None);
+    }
+
+    // Spec (ai-task-models, S3): judge-a own, else review, else general.
+    #[test]
+    fn judge_a_is_its_own_then_review_then_general() {
+        let general = (Task::General, Some("claude"), Some("opus"));
+        let review = (Task::Review, Some("codex"), Some("default"));
+        let own = (Task::JudgeA, Some("gemini"), Some("pro"));
+        assert_eq!(
+            cfg(&[general, review, own]).resolve_judges().a,
+            asg("gemini", "pro")
+        );
+        assert_eq!(
+            cfg(&[general, review]).resolve_judges().a,
+            asg("codex", "default")
+        );
+        assert_eq!(cfg(&[general]).resolve_judges().a, asg("claude", "opus"));
+    }
+
+    // Spec (ai-task-models, S3): judge-b own, else review when it differs
+    // from a, else a (not independent).
+    #[test]
+    fn judge_b_is_its_own_then_a_different_review_then_a() {
+        let general = (Task::General, Some("claude"), Some("opus"));
+        let review = (Task::Review, Some("codex"), Some("default"));
+        let b = (Task::JudgeB, Some("gemini"), Some("pro"));
+        let both = cfg(&[general, review, b]).resolve_judges();
+        assert_eq!(
+            (both.b.clone(), both.b != both.a),
+            (asg("gemini", "pro"), true)
+        );
+        let by_review = cfg(&[general, review]).resolve_judges();
+        assert_eq!(by_review.a, asg("codex", "default"));
+        // Review is `a`, so b falls to `a` and they are not independent.
+        assert_eq!(
+            (by_review.b.clone(), by_review.b != by_review.a),
+            (asg("codex", "default"), false)
+        );
+        let own_a = (Task::JudgeA, Some("gemini"), Some("pro"));
+        let split = cfg(&[general, review, own_a]).resolve_judges();
+        assert_eq!(
+            (split.b.clone(), split.b != split.a),
+            (asg("codex", "default"), true)
+        );
+        let one = cfg(&[general]).resolve_judges();
+        assert_eq!(
+            (one.b.clone(), one.b != one.a),
+            (asg("claude", "opus"), false)
+        );
+    }
+
+    // Spec (ai-task-models, S3): an own judge-b equal to a is not independent.
+    #[test]
+    fn an_own_judge_b_equal_to_a_is_not_independent() {
+        let a = (Task::JudgeA, Some("claude"), Some("opus"));
+        let b = (Task::JudgeB, Some("claude"), Some("opus"));
+        let set = cfg(&[a, b]).resolve_judges();
+        assert_eq!(
+            (set.b.clone(), set.b != set.a),
+            (asg("claude", "opus"), false)
+        );
+    }
+
+    // The effective assignment of a judge task is its fallback chain, so the
+    // roster of a run needs no special case.
+    #[test]
+    fn resolving_a_judge_task_follows_the_judge_chain() {
+        let review = (Task::Review, Some("codex"), Some("default"));
+        let config = cfg(&[review]);
+        assert_eq!(config.resolve(Task::JudgeA).0, asg("codex", "default"));
+        assert_eq!(config.resolve(Task::JudgeB).0, asg("codex", "default"));
+    }
+
+    // Review m7: a cleared slot of these is absent from the file.
+    #[test]
+    fn only_the_role_tasks_are_removable() {
+        let removable: Vec<_> = Task::ALL.into_iter().filter(|t| t.removable()).collect();
+        assert_eq!(
+            removable,
+            [Task::Orchestrate, Task::Simple, Task::JudgeA, Task::JudgeB]
+        );
+    }
+
+    // Spec (ai-task-models, S3): the roles aggregate.
+    #[test]
+    fn the_roles_aggregate_is_not_set_shared_or_mixed() {
+        assert_eq!(cfg(&[]).roles_aggregate(), "(not set)");
+        let a = (Task::JudgeA, Some("claude"), Some("opus"));
+        let b = (Task::JudgeB, Some("claude"), Some("opus"));
+        assert_eq!(cfg(&[a, b]).roles_aggregate(), "claude › opus");
+        let other = (Task::JudgeB, Some("codex"), Some("default"));
+        assert_eq!(cfg(&[a, other]).roles_aggregate(), "(mixed)");
+        assert_eq!(cfg(&[a]).roles_aggregate(), "(mixed)");
+    }
+
+    // Spec (ai-task-models, S3): an untouched file gains no judge table.
+    #[test]
+    fn the_aggregate_ignores_the_judges() {
+        let config = cfg(&[
+            (Task::General, Some("claude"), Some("opus")),
+            (Task::JudgeA, Some("ollama"), Some("llama3:8b")),
+        ]);
+        assert_eq!(config.aggregate(), "claude › opus");
     }
 
     // Spec (ai-task-models): the aggregate ignores `simple`.

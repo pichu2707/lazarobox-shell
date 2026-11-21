@@ -62,6 +62,7 @@ pub fn builtin(profile: Profile, task: Task) -> &'static str {
         ),
         (Profile::Analyst, Task::Simple) => include_str!("prompts/analyst/simple.md"),
         (Profile::Programmer, Task::Simple) => include_str!("prompts/programmer/simple.md"),
+        (profile, Task::JudgeA | Task::JudgeB) => judge_builtin(profile),
     }
 }
 

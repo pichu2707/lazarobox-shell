@@ -9,12 +9,8 @@ use crate::core::ai::config::{ApprovalMode, NotifyMode, Profile};
 fn drafts() -> Vec<(&'static Item, &'static AiChoice)> {
     SECTIONS
         .iter()
-        .chain([
-            &MODELS_SECTION,
-            &TOOLS_SECTION,
-            &CHAT_SECTION,
-            &USAGE_SECTION,
-        ])
+        .chain(MODELS_SECTIONS.iter())
+        .chain([&TOOLS_SECTION, &CHAT_SECTION, &USAGE_SECTION])
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match &item.kind {
             ItemKind::Draft(choice) => Some((item, choice)),
