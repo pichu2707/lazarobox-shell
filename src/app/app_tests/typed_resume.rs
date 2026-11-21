@@ -110,6 +110,7 @@ fn a_settled_command_resumes_the_chat_with_its_report() {
 #[test]
 fn the_resume_event_starts_a_turn_with_the_fixed_note_and_the_text() {
     let mut a = typed_live();
+    a.held_resumes.push((id2(), 1, None));
     let effects = a.update(AppEvent::Run(
         id2(),
         RunEvent::Resume {
@@ -135,6 +136,7 @@ fn a_resume_the_chat_cannot_take_is_said() {
         .unwrap()
         .composer_mut()
         .insert('x');
+    a.held_resumes.push((id2(), 1, None));
     let effects = a.update(AppEvent::Run(
         id2(),
         RunEvent::Resume {
@@ -279,6 +281,7 @@ fn a_command_typed_with_y_in_ask_mode_is_followed_too() {
 }
 
 fn resume(a: &mut App, number: usize) -> Vec<Effect> {
+    a.held_resumes.push((id2(), number, None));
     a.update(AppEvent::Run(
         id2(),
         RunEvent::Resume {
@@ -632,4 +635,80 @@ fn an_untracked_typed_line_keeps_the_old_waiting_line() {
     a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
     assert!(says(&a, WAITS_UNTRACKED), "{:?}", system_lines(&a));
     assert!(!says(&a, WAITS_TRACKED));
+}
+
+fn resume_event(a: &mut App, number: usize, text: &str) -> Vec<Effect> {
+    a.update(AppEvent::Run(
+        id2(),
+        RunEvent::Resume {
+            number,
+            text: text.to_owned(),
+        },
+    ))
+}
+
+// Final review, 1: an output held for another command is never stranded.
+#[test]
+fn a_new_message_drops_the_held_output_and_says_so() {
+    let (mut a, _) = two_followed();
+    settle_pane(&mut a, SHELL);
+    assert!(resume_event(&mut a, 1, "OUT-ONE").is_empty());
+    let availability = a.turn_availability(id2());
+    a.send_text(id2(), "something else", &availability);
+    assert!(says(&a, &format!("pane 1: {NOT_SENT}")));
+    assert!(a.held_resumes.is_empty(), "nothing is sent stale later");
+}
+
+#[test]
+fn esc_drops_the_held_output_and_says_so() {
+    let (mut a, _) = two_followed();
+    settle_pane(&mut a, SHELL);
+    resume_event(&mut a, 1, "OUT-ONE");
+    a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(says(&a, &format!("pane 1: {NOT_SENT}")));
+    assert!(a.held_resumes.is_empty());
+}
+
+#[test]
+fn closing_the_other_pane_sends_the_held_output_now() {
+    let (mut a, second) = two_followed();
+    settle_pane(&mut a, SHELL);
+    assert!(resume_event(&mut a, 1, "OUT-ONE").is_empty());
+    let effects = a.deny_closing_runs(&[second]);
+    assert!(
+        effects.iter().any(|e| matches!(e, Effect::ChatSend { .. })),
+        "{effects:?}"
+    );
+    assert!(a.held_resumes.is_empty());
+}
+
+#[test]
+fn closing_the_chat_forgets_what_it_held() {
+    let (mut a, _) = two_followed();
+    settle_pane(&mut a, SHELL);
+    resume_event(&mut a, 1, "OUT-ONE");
+    a.drop_chat_slots(id2());
+    assert!(a.held_resumes.is_empty());
+}
+
+// Final review, 2: a report still on its way counts as a command followed.
+#[test]
+fn both_commands_settling_before_the_first_report_returns_send_one_note() {
+    let (mut a, second) = two_followed();
+    assert_eq!(settle_pane(&mut a, SHELL).len(), 1);
+    assert_eq!(settle_pane(&mut a, second).len(), 1);
+    assert!(
+        resume_event(&mut a, 1, "OUT-ONE").is_empty(),
+        "pane 2's report is due"
+    );
+    let sent = resume_event(&mut a, 2, "OUT-TWO");
+    assert!(matches!(sent[..], [Effect::ChatSend { .. }]), "{sent:?}");
+    let note = chat_of(&a).messages().last().unwrap().text.clone();
+    assert!(
+        note.contains("OUT-ONE") && note.contains("OUT-TWO"),
+        "{note}"
+    );
 }

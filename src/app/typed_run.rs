@@ -30,6 +30,10 @@ const STALE: &str = "typed command is from an earlier turn; send a message to go
 /// pane is still in flight).
 const NOT_FOLLOWED: &str = "could not follow the command: send a message to go on";
 
+/// Why an output of a finished command did not reach the model.
+const NOT_SENT: &str =
+    "the command finished but its output was not sent; send a message to continue";
+
 /// Said to the chat when the pane of the command it waits for closes.
 pub(super) fn closed_line(number: usize) -> String {
     format!("pane {number} closed; send a message to go on")
@@ -69,10 +73,8 @@ impl App {
         if self.orchestrating(chat) {
             return;
         }
-        let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) else {
-            return;
-        };
-        let Some(cwd) = pty.proc_cwd.clone() else {
+        let pty = self.panes.get_mut(&target).and_then(PaneState::pty_mut);
+        let Some(pty) = pty.filter(|pty| pty.proc_cwd.is_some()) else {
             return;
         };
         let line = pty.emu.live_cursor_line();
@@ -85,7 +87,7 @@ impl App {
                 line: line.unwrap_or(0),
                 col: pty.emu.live_cursor().map_or(0, |(_, col)| col),
                 generation: pty.emu.line_generation(),
-                cwd,
+                cwd: pty.proc_cwd.clone().unwrap_or_default(),
             },
             anchored: line.is_some(),
             floor: 0,
@@ -148,25 +150,22 @@ impl App {
         let n = report.number;
         let line = match report.end {
             End::Settled => format!("pane {n}: the command finished"),
-            End::TimedOut => format!(
-                "pane {n}: the command did not finish in {} s; send a message to go on",
-                TIMEOUT.as_secs()
-            ),
-            End::Unconfirmed => {
-                format!("pane {n}: could not confirm the command finished; send a message to go on")
-            }
-            End::UserTyped => {
-                format!("pane {n}: you typed while the command ran; send a message to go on")
-            }
-            End::FullScreen => {
-                format!(
-                    "pane {n}: the command opened a full-screen program; send a message to go on"
-                )
-            }
             End::PaneGone => closed_line(n),
+            end => {
+                let why = match end {
+                    End::TimedOut => {
+                        format!("the command did not finish in {} s", TIMEOUT.as_secs())
+                    }
+                    End::Unconfirmed => "could not confirm the command finished".to_owned(),
+                    End::UserTyped => "you typed while the command ran".to_owned(),
+                    _ => "the command opened a full-screen program".to_owned(),
+                };
+                format!("pane {n}: {why}; send a message to go on")
+            }
         };
         self.say_in_chat(chat, line);
         if report.end == End::Settled {
+            self.held_resumes.push((chat, n, None));
             return vec![Effect::ResumeNote {
                 chat,
                 command,
@@ -177,36 +176,42 @@ impl App {
         self.flush_resumes(chat)
     }
 
-    /// Whether another command the user ran is still followed for `chat`.
-    fn still_following(&self, chat: PaneId) -> bool {
-        (self.panes.values().filter_map(PaneState::pty))
-            .any(|pty| pty.run.as_ref().is_some_and(|s| s.resume && s.chat == chat))
-    }
-
     /// The runtime worded the report of the command the user ran in pane
     /// `number`: it waits for the other commands of its chat, and then one
-    /// note carries every output.
+    /// note carries every output. A report nobody waits for any more (a new
+    /// message or Esc dropped it) is ignored.
     pub(super) fn resume_turn(&mut self, chat: PaneId, number: usize, text: &str) -> Vec<Effect> {
-        self.held_resumes.push((chat, number, text.to_owned()));
+        let Some(held) =
+            (self.held_resumes.iter_mut()).find(|h| h.0 == chat && h.1 == number && h.2.is_none())
+        else {
+            return Vec::new();
+        };
+        held.2 = Some(text.to_owned());
         self.flush_resumes(chat)
+    }
+
+    /// The outputs of panes `numbers` will not reach the model.
+    fn say_not_sent(&mut self, chat: PaneId, numbers: impl Iterator<Item = usize>) {
+        for n in numbers {
+            self.say_in_chat(chat, format!("pane {n}: {NOT_SENT}"));
+        }
     }
 
     /// Sends the held outputs of `chat` when it follows nothing else: the
     /// chat must be idle with no draft (a send would clear it).
-    fn flush_resumes(&mut self, chat: PaneId) -> Vec<Effect> {
-        if self.still_following(chat) {
+    pub(super) fn flush_resumes(&mut self, chat: PaneId) -> Vec<Effect> {
+        // Another command of the chat is followed, or its report is on its way.
+        let waiting = (self.panes.values().filter_map(PaneState::pty))
+            .any(|pty| pty.run.as_ref().is_some_and(|s| s.resume && s.chat == chat))
+            || (self.held_resumes.iter()).any(|(c, _, text)| *c == chat && text.is_none());
+        if waiting {
             return Vec::new();
         }
-        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_resumes)
-            .into_iter()
-            .partition(|(c, ..)| *c == chat);
-        self.held_resumes = rest;
-        if mine.is_empty() {
-            return Vec::new();
-        }
-        let numbers: Vec<String> = mine.iter().map(|(_, n, _)| n.to_string()).collect();
+        let mine: Vec<_> = self.held_resumes.extract_if(.., |h| h.0 == chat).collect();
+        let numbers: Vec<usize> = mine.iter().map(|h| h.1).collect();
         let note = (mine.iter())
-            .map(|(_, n, text)| {
+            .filter_map(|(_, n, text)| Some((n, text.as_ref()?)))
+            .map(|(n, text)| {
                 format!(
                     "lazarobox: the user ran the command you typed in pane {n}, and it finished.\n{text}"
                 )
@@ -217,24 +222,16 @@ impl App {
             .is_some_and(|c| c.phase() == Phase::Idle && c.composer().is_empty());
         let availability = self.turn_availability(chat);
         let mut effects = Vec::new();
-        if ready && availability != Availability::Checking {
-            self.say_in_chat(
-                chat,
-                format!("going on with the output of pane {}", numbers.join(", ")),
-            );
+        if ready && availability != Availability::Checking && !numbers.is_empty() {
+            let shown: Vec<String> = numbers.iter().map(usize::to_string).collect();
+            let shown = shown.join(", ");
+            self.say_in_chat(chat, format!("going on with the output of pane {shown}"));
             self.resume_sending = true;
             effects = self.send_with(chat, &note, &availability, None);
             self.resume_sending = false;
         }
         if effects.is_empty() {
-            for number in numbers {
-                self.say_in_chat(
-                    chat,
-                    format!(
-                        "pane {number}: the command finished but its output was not sent; send a message to continue"
-                    ),
-                );
-            }
+            self.say_not_sent(chat, numbers.into_iter());
         }
         effects
     }
@@ -243,7 +240,6 @@ impl App {
     /// is not followed any more, and said. With `typed`, a line not yet run
     /// is forgotten too (the message changed what the model knows).
     pub(super) fn stop_following(&mut self, chat: PaneId, typed: bool) {
-        let mut lines = Vec::new();
         for id in self.panes.keys().copied().collect::<Vec<_>>() {
             let number = self.pane_number(id).unwrap_or(0);
             let Some(pty) = self.panes.get_mut(&id).and_then(PaneState::pty_mut) else {
@@ -253,12 +249,15 @@ impl App {
                 t.stale = true;
             }
             if pty.run.take_if(|s| s.resume && s.chat == chat).is_some() {
-                lines.push(format!("stopped waiting for the command in pane {number}"));
+                self.say_in_chat(
+                    chat,
+                    format!("stopped waiting for the command in pane {number}"),
+                );
             }
         }
-        for line in lines {
-            self.say_in_chat(chat, line);
-        }
+        // What was held for the commands it stopped following is not sent.
+        let held: Vec<_> = self.held_resumes.extract_if(.., |h| h.0 == chat).collect();
+        self.say_not_sent(chat, held.into_iter().map(|h| h.1));
     }
 
     pub(super) fn say_in_chat(&mut self, chat: PaneId, line: String) {

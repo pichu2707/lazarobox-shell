@@ -98,10 +98,10 @@ impl RunSlot {
 
     /// The pane's number when the run was written (0 while it is checked).
     fn number(&self) -> usize {
-        match &self.stage {
-            Stage::Running(run) => run.number,
-            Stage::Checking => 0,
-        }
+        let Stage::Running(run) = &self.stage else {
+            return 0;
+        };
+        run.number
     }
 
     /// Pty output reached the pane: the quiet starts again.
@@ -524,28 +524,33 @@ impl App {
             }
         }
         // The user's own run has no call to deny: the chat is told instead.
+        // The others of that chat may be the last the held outputs wait for.
+        let mut effects: Vec<Effect> = Vec::new();
         for slot in slots.iter().filter(|s| s.resume && !ids.contains(&s.chat)) {
             self.say_in_chat(slot.chat, closed_line(slot.number()));
+            effects.extend(self.flush_resumes(slot.chat));
         }
         // A run that was written is parked: it ends with a report, not a denial.
-        (slots.into_iter())
-            .filter(|slot| !ids.contains(&slot.chat) && !slot.resume)
-            .flat_map(|slot| match slot.stage {
-                Stage::Checking => Self::deny(slot.chat, slot.turn, slot.call, PANE_GONE),
-                Stage::Running(run) => vec![Effect::RunDone {
-                    chat: slot.chat,
-                    turn: slot.turn,
-                    call: slot.call,
-                    report: Box::new(RunReport {
-                        number: run.number,
-                        end: End::PaneGone,
-                        cwd: None,
-                        cd_target: None,
-                        output: None,
-                    }),
-                }],
-            })
-            .collect()
+        effects.extend(
+            (slots.into_iter())
+                .filter(|slot| !ids.contains(&slot.chat) && !slot.resume)
+                .flat_map(|slot| match slot.stage {
+                    Stage::Checking => Self::deny(slot.chat, slot.turn, slot.call, PANE_GONE),
+                    Stage::Running(run) => vec![Effect::RunDone {
+                        chat: slot.chat,
+                        turn: slot.turn,
+                        call: slot.call,
+                        report: Box::new(RunReport {
+                            number: run.number,
+                            end: End::PaneGone,
+                            cwd: None,
+                            cd_target: None,
+                            output: None,
+                        }),
+                    }],
+                }),
+        );
+        effects
     }
 
     /// Chat `id` is gone: its runs go too, the ones the user ran included.
@@ -554,6 +559,7 @@ impl App {
             pty.run.take_if(|slot| slot.chat == id);
             pty.typed.take_if(|t| t.chat == id);
         }
+        self.held_resumes.retain(|(chat, ..)| *chat != id);
     }
 
     /// Drops every run slot that `stale` names, which frees the pane's

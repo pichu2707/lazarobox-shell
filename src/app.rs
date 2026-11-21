@@ -1103,9 +1103,9 @@ pub struct App {
     ended_runs: HashSet<RunId>,
     /// The runs saved to the local store, and what is said about it (S9).
     run_keep: run_store::RunKeep,
-    /// Outputs of commands the user ran that wait for the others of their chat
-    /// (#819): chat, pane number and the worded report.
-    held_resumes: Vec<(PaneId, usize, String)>,
+    /// Commands the user ran that wait for the others of their chat (#819):
+    /// chat, pane number and the worded report, `None` until the runtime sends it.
+    held_resumes: Vec<(PaneId, usize, Option<String>)>,
     /// The send in flight is the resume of a followed command: it forgets no
     /// other typed line.
     resume_sending: bool,
@@ -1676,9 +1676,9 @@ impl App {
 
     /// Whether a chat waits on a command in any of the panes `ids` (a run in
     /// flight, or one the user ran from a typed line).
-    fn waits_on_command(&self, ids: &[PaneId]) -> bool {
-        ids.iter()
-            .filter_map(|id| self.panes.get(id).and_then(PaneState::pty))
+    fn waits_on_command(&self, ids: impl IntoIterator<Item = PaneId>) -> bool {
+        ids.into_iter()
+            .filter_map(|id| self.panes.get(&id).and_then(PaneState::pty))
             .any(|pty| pty.run.is_some())
     }
 
@@ -1693,10 +1693,9 @@ impl App {
             .map(String::as_str)
             .chain(self.serving_others.then_some(SHARED_SERVER))
             .collect();
-        let all: Vec<PaneId> = self.panes.keys().copied().collect();
         if self.input == InputMode::Confirm(Confirm::Quit)
             && running.is_empty()
-            && self.waits_on_command(&all)
+            && self.waits_on_command(self.panes.keys().copied())
         {
             let label = "Quit? a command the chat waits for is running (y/n)";
             return (text_width(label) <= room).then(|| label.to_owned());
@@ -3065,20 +3064,12 @@ impl App {
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(self.enter_copy()),
             Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
             Step::Run(PrefixAction::ClosePane) if self.tabs.len() > 1 || self.tab_panes() > 1 => {
-                let focus = [self.tab().focus];
-                InputMode::Confirm(if self.waits_on_command(&focus) {
-                    Confirm::ClosePaneWaited
-                } else {
-                    Confirm::ClosePane
-                })
+                let waited = usize::from(self.waits_on_command([self.tab().focus]));
+                InputMode::Confirm([Confirm::ClosePane, Confirm::ClosePaneWaited][waited])
             }
             Step::Run(PrefixAction::CloseTab) if self.tabs.len() > 1 => {
-                let leaves = self.tab().tree.leaves();
-                InputMode::Confirm(if self.waits_on_command(&leaves) {
-                    Confirm::CloseTabWaited
-                } else {
-                    Confirm::CloseTab
-                })
+                let waited = usize::from(self.waits_on_command(self.tab().tree.leaves()));
+                InputMode::Confirm([Confirm::CloseTab, Confirm::CloseTabWaited][waited])
             }
             // Closing the last pane of the only tab quits; so does closing the only tab.
             Step::Run(PrefixAction::ClosePane | PrefixAction::CloseTab) => {
