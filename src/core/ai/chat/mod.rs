@@ -154,10 +154,16 @@ pub const AFTER_TOOL_NO_ANSWER: &str = "the model sent no answer after its last 
 
 /// System line for a turn that ended with a command typed into pane `number`
 /// and not run. Display only; it never names the command.
-pub fn waiting_for_enter(number: usize) -> String {
-    format!(
-        "waiting for you: press Enter in pane {number} to run it; the chat goes on when it finishes"
-    )
+///
+/// With `followed` the app tracks the typed line and goes on after the Enter;
+/// without it nothing does, and the line says the user must send a message.
+pub fn waiting_for_enter(number: usize, followed: bool) -> String {
+    let then = if followed {
+        "; the chat goes on when it finishes"
+    } else {
+        ", then send a message to go on"
+    };
+    format!("waiting for you: press Enter in pane {number} to run it{then}")
 }
 /// System line for a CLI the jail refused to start.
 pub const JAIL_ERROR: &str = "the CLI did not start: its jail could not be enforced";
@@ -478,6 +484,8 @@ pub struct ChatState {
     auto_typed: u8,
     /// The pane of the last command of this turn typed and not run.
     typed_not_run: Option<usize>,
+    /// The pane whose typed line the app follows after the user's Enter.
+    followed: Option<usize>,
     /// A command the runtime was asked to type, until its result arrives.
     expected_typed: Option<(CallId, usize)>,
     /// Text arrived since the last tool call of this turn.
@@ -641,6 +649,7 @@ impl ChatState {
             approval_mode: ApprovalMode::default(),
             auto_typed: 0,
             typed_not_run: None,
+            followed: None,
             expected_typed: None,
             text_since_tool: false,
             notice_since_tool: false,
@@ -1143,6 +1152,12 @@ impl ChatState {
     /// turn ends with a line saying the user must press Enter there.
     pub fn note_typed_not_run(&mut self, number: usize) {
         self.typed_not_run = Some(number);
+    }
+
+    /// The typed line in pane `number` is followed: the chat goes on by itself
+    /// after the user's Enter there.
+    pub fn note_followed(&mut self, number: usize) {
+        self.followed = Some(number);
     }
 
     /// `call`'s command was sent to the runtime to be typed into pane
@@ -1835,6 +1850,7 @@ impl ChatState {
         self.clean_end = false;
         self.auto_typed = 0;
         self.typed_not_run = None;
+        self.followed = None;
         self.expected_typed = None;
         self.text_since_tool = false;
         self.notice_since_tool = false;
@@ -2202,7 +2218,9 @@ impl ChatState {
         }
         self.expected_typed = None;
         if let Some(number) = self.typed_not_run.take() {
-            self.entries.push(Entry::System(waiting_for_enter(number)));
+            let followed = self.followed.take() == Some(number);
+            self.entries
+                .push(Entry::System(waiting_for_enter(number, followed)));
         }
         if let Some(line) = usage_line {
             self.entries.push(Entry::Usage(line));

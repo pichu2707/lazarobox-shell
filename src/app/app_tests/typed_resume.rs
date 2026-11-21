@@ -601,3 +601,35 @@ fn a_denial_of_another_turns_call_keeps_the_typed_line() {
     in_shell(&mut a, enter());
     assert!(slot(&a).is_some(), "the line of turn 1 call 1 stays");
 }
+
+const WAITS_TRACKED: &str =
+    "waiting for you: press Enter in pane 1 to run it; the chat goes on when it finishes";
+const WAITS_UNTRACKED: &str =
+    "waiting for you: press Enter in pane 1 to run it, then send a message to go on";
+
+#[test]
+fn a_tracked_typed_line_promises_the_chat_goes_on() {
+    let a = typed_live();
+    assert!(says(&a, WAITS_TRACKED), "{:?}", system_lines(&a));
+    assert!(!says(&a, WAITS_UNTRACKED));
+}
+
+#[test]
+fn an_untracked_typed_line_keeps_the_old_waiting_line() {
+    let (mut a, turn) = live();
+    a.panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+        .set_approval_mode(ApprovalMode::Auto);
+    a.panes
+        .get_mut(&SHELL)
+        .and_then(PaneState::pty_mut)
+        .unwrap()
+        .proc_cwd = None;
+    announce(&mut a, turn, 1, run("echo hi"));
+    result(&mut a, turn, 1, ToolStatus::Ok);
+    a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
+    assert!(says(&a, WAITS_UNTRACKED), "{:?}", system_lines(&a));
+    assert!(!says(&a, WAITS_TRACKED));
+}

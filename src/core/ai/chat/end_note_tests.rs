@@ -117,12 +117,37 @@ fn a_typed_command_gets_one_waiting_line_with_the_pane_only() {
     state.apply(turn, result(1));
     state.apply(turn, delta("Typed it."));
     state.apply(turn, done());
-    assert_eq!(systems(&state), [waiting_for_enter(2)]);
+    assert_eq!(systems(&state), [waiting_for_enter(2, false)]);
     assert_eq!(
-        waiting_for_enter(2),
-        "waiting for you: press Enter in pane 2 to run it; the chat goes on when it finishes"
+        waiting_for_enter(2, false),
+        "waiting for you: press Enter in pane 2 to run it, then send a message to go on"
     );
-    assert!(!waiting_for_enter(2).contains("secret-command"));
+    assert!(!waiting_for_enter(2, false).contains("secret-command"));
+}
+
+#[test]
+fn a_followed_command_promises_the_chat_goes_on_and_only_for_its_pane() {
+    let mut state = chat();
+    let (turn, _) = sent(&mut state, "go");
+    state.apply(turn, call(1));
+    state.note_typed_not_run(2);
+    state.note_followed(2);
+    state.apply(turn, result(1));
+    state.apply(turn, done());
+    assert!(systems(&state).iter().any(|l| *l
+        == "waiting for you: press Enter in pane 2 to run it; the chat goes on when it finishes"));
+    // The mark of another pane promises nothing for this one, and resets.
+    let (turn, _) = sent(&mut state, "again");
+    state.apply(turn, call(2));
+    state.note_typed_not_run(3);
+    state.note_followed(2);
+    state.apply(turn, result(2));
+    state.apply(turn, done());
+    assert!(
+        systems(&state)
+            .iter()
+            .any(|l| l.ends_with("then send a message to go on"))
+    );
 }
 
 #[test]
@@ -133,11 +158,11 @@ fn two_typed_commands_still_give_one_line_and_it_resets_each_turn() {
     state.note_typed_not_run(3);
     state.apply(turn, delta("ok"));
     state.apply(turn, done());
-    assert_eq!(systems(&state), [waiting_for_enter(3)]);
+    assert_eq!(systems(&state), [waiting_for_enter(3, false)]);
     let (turn, _) = sent(&mut state, "again");
     state.apply(turn, delta("ok"));
     state.apply(turn, done());
-    assert_eq!(systems(&state), [waiting_for_enter(3)]);
+    assert_eq!(systems(&state), [waiting_for_enter(3, false)]);
 }
 
 #[test]
@@ -146,7 +171,10 @@ fn the_waiting_line_follows_a_turn_that_ended_with_an_error() {
     let (turn, _) = sent(&mut state, "go");
     state.note_typed_not_run(1);
     state.apply(turn, StreamEvent::Error(ChatError::Failed("boom".into())));
-    assert_eq!(systems(&state), ["boom", waiting_for_enter(1).as_str()]);
+    assert_eq!(
+        systems(&state),
+        ["boom", waiting_for_enter(1, false).as_str()]
+    );
 }
 
 #[test]
@@ -163,7 +191,10 @@ fn an_auto_typed_command_counts_only_once_the_runtime_typed_it() {
         state.apply(turn, result_with(1, status));
         state.apply(turn, delta("ok"));
         state.apply(turn, done());
-        let want: Vec<String> = shown.then(|| waiting_for_enter(2)).into_iter().collect();
+        let want: Vec<String> = shown
+            .then(|| waiting_for_enter(2, false))
+            .into_iter()
+            .collect();
         assert_eq!(systems(&state), want, "{status:?}");
     }
 }

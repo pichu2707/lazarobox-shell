@@ -93,6 +93,10 @@ impl App {
             edited: false,
             stale: false,
         });
+        let number = self.pane_number(target).unwrap_or(0);
+        if let Some(chat) = self.panes.get_mut(&chat).and_then(PaneState::chat_mut) {
+            chat.note_followed(number);
+        }
     }
 
     /// The user pressed Enter in `target` with `typed` on its line; `exact`
