@@ -500,6 +500,7 @@ impl App {
             chat.note_auto_typed();
             chat.expect_typed(call, number);
         }
+        self.track_typed(id, target, (turn, call), command);
         if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
             pty.line_pending = Some(call);
         }
@@ -549,6 +550,9 @@ impl App {
             if pty.line_pending.is_some_and(&stale) {
                 pty.line_pending = None;
             }
+            if pty.typed.as_ref().is_some_and(|t| stale(t.call)) {
+                pty.typed = None;
+            }
         }
     }
 
@@ -570,7 +574,16 @@ impl App {
                 | KeyCode::Left
                 | KeyCode::Right
         );
+        let mut followed = None;
         if let Some(pty) = self.focused_state_mut().pty_mut() {
+            // The typed line is followed only when this Enter is the first key
+            // of the pane since the typing (#819).
+            let exact = enter && !pty.after_menu && !pty.user_dirty;
+            if enter {
+                followed = pty.typed.take().map(|typed| (typed, exact));
+            } else if let Some(typed) = pty.typed.as_mut() {
+                typed.edited = true;
+            }
             // After Tab or an arrow, Enter may only accept a menu entry and
             // leave the line in place: stay dirty until the next bare Enter.
             let ends_line = (enter && !pty.after_menu)
@@ -581,7 +594,11 @@ impl App {
             }
             pty.user_dirty = !ends_line;
         }
-        self.note_typed(self.tab().focus);
+        let focus = self.tab().focus;
+        self.note_typed(focus);
+        if let Some((typed, exact)) = followed {
+            self.follow_enter(focus, typed, exact);
+        }
     }
 
     /// Marks pane `id` dirty: the user's paste, wheel or prefix literal

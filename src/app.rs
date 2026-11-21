@@ -90,6 +90,7 @@ mod star;
 mod summary;
 mod tags;
 mod tool;
+mod typed_run;
 mod write;
 
 use auto_run::RunSlot;
@@ -610,6 +611,13 @@ pub enum Effect {
         command: String,
         scope: RunScope,
     },
+    /// The command the user ran in `report`'s pane ended (#819): the runtime
+    /// words the report like a run's and answers with `RunEvent::Resume`.
+    ResumeNote {
+        chat: PaneId,
+        command: String,
+        report: Box<RunReport>,
+    },
     /// Close the tool session of chat `pane`: its socket goes and every call
     /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
     EndToolSession(PaneId),
@@ -869,6 +877,8 @@ struct PtyPane {
     /// The user wrote to this pane since its last Enter or Ctrl+C: its line
     /// may hold text a run would join (design D21).
     user_dirty: bool,
+    /// The command a chat typed here and the user may press Enter on (#819).
+    typed: Option<typed_run::Typed>,
     /// The last key forwarded here was Tab, BackTab or an arrow: a completion
     /// menu may be open, and the next Enter then only accepts an entry.
     after_menu: bool,
@@ -951,6 +961,7 @@ impl PaneState {
                 line_pending: None,
                 run: None,
                 user_dirty: false,
+                typed: None,
                 after_menu: false,
             })),
             size,
@@ -9427,6 +9438,8 @@ mod app_tests {
     mod tool_run_settle;
     /// `y` in `run` mode runs a model's command; elsewhere it types.
     mod tool_run_y;
+    /// A typed command the user ran resumes the chat (#819).
+    mod typed_resume;
     /// The `/write` grant reaches the next spawn.
     mod write_ceiling;
     /// `/write`, its dialog and where the grant ends.

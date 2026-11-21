@@ -15,7 +15,7 @@
 //! the check's `canonicalize` and the shell's `chdir` is not seen (it needs a
 //! local attacker who can write a path component).
 
-use super::*;
+use super::{typed_run::Typed, *};
 use crate::core::ai::{
     chat::{
         approval::{ApprovalAsk, NO_CWD, NOT_ALLOWED, Route},
@@ -48,6 +48,10 @@ pub(super) struct RunSlot {
     /// The user approved it with `y`: a write step that refuses it types the
     /// command instead of asking again.
     by_user: bool,
+    /// Not a run of the model's: the user pressed Enter on a command the model
+    /// typed, and the end of it resumes the chat (#819). It has no call to
+    /// answer, so no turn event or closing pane finishes it.
+    pub(super) resume: bool,
 }
 
 /// Where a run is: waiting for its check, or written and being settled.
@@ -66,6 +70,29 @@ struct Running {
 }
 
 impl RunSlot {
+    /// The user's Enter on the typed line `typed`, written at `written` in
+    /// pane `number`: settled like a run, with no call to answer.
+    pub(super) fn following(typed: Typed, number: usize, written: Instant) -> Self {
+        let settle = Settle::new(typed.anchor, written);
+        Self {
+            chat: typed.chat,
+            turn: typed.turn,
+            call: typed.call,
+            command: typed.command,
+            stage: Stage::Running(Running {
+                settle: if typed.anchored {
+                    settle
+                } else {
+                    settle.unanchored()
+                },
+                cd_target: None,
+                number,
+            }),
+            by_user: false,
+            resume: true,
+        }
+    }
+
     /// Pty output reached the pane: the quiet starts again.
     pub(super) fn output(&mut self, now: Instant) {
         if let Stage::Running(run) = &mut self.stage {
@@ -124,6 +151,10 @@ pub enum RunEvent {
         foreground: Option<bool>,
         cwd: Option<PathBuf>,
     },
+    /// The command the user ran in pane `number` finished (#819): the runtime
+    /// worded its report, output capped and redacted, and the chat goes on
+    /// with it. The event is addressed to the chat.
+    Resume { number: usize, text: String },
 }
 
 impl RunEvent {
@@ -133,7 +164,7 @@ impl RunEvent {
             Self::Checked { call, .. } | Self::Refused { call, .. } | Self::NotRun { call, .. } => {
                 Some(*call)
             }
-            Self::Probe { .. } => None,
+            Self::Probe { .. } | Self::Resume { .. } => None,
         }
     }
 }
@@ -167,6 +198,7 @@ impl App {
                 command: command.to_owned(),
                 stage: Stage::Checking,
                 by_user: false,
+                resume: false,
             });
         }
         vec![Effect::CheckRun {
@@ -186,10 +218,11 @@ impl App {
     /// write is emitted, and stays until the run settles or the call ends.
     pub(super) fn on_run(&mut self, target: PaneId, event: RunEvent) -> Vec<Effect> {
         let Some(call) = event.call() else {
-            let RunEvent::Probe { foreground, cwd } = event else {
-                return Vec::new();
+            return match event {
+                RunEvent::Probe { foreground, cwd } => self.on_probe(target, foreground, cwd),
+                RunEvent::Resume { number, text } => self.resume_turn(target, number, &text),
+                _ => Vec::new(),
             };
-            return self.on_probe(target, foreground, cwd);
         };
         let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) else {
             return Vec::new();
@@ -233,7 +266,7 @@ impl App {
                 Some(reason.to_owned())
             }
             RunEvent::NotRun { reason, .. } => Some(reason.to_owned()),
-            RunEvent::Probe { .. } => return Vec::new(),
+            RunEvent::Probe { .. } | RunEvent::Resume { .. } => return Vec::new(),
             RunEvent::Checked { cwd, cd_target, .. } => {
                 match self.auto_route(slot.chat, target, &ask, true) {
                     Route::AutoRun(safe) => {
@@ -285,6 +318,7 @@ impl App {
             command: command.to_owned(),
             stage: Stage::Checking,
             by_user: true,
+            resume: false,
         };
         self.auto_run(slot, target, bytes, (cwd, None))
     }
@@ -422,6 +456,7 @@ impl App {
             call,
             command,
             stage: Stage::Running(run),
+            resume,
             ..
         }) = pty.run.take()
         else {
@@ -443,6 +478,9 @@ impl App {
             cd_target: run.cd_target,
             output,
         };
+        if resume {
+            return self.end_follow(chat, command, report);
+        }
         if let Some(chat) = self.panes.get_mut(&chat).and_then(PaneState::chat_mut) {
             chat.clear_run_fallbacks();
             if let Some(line) = system_line(&command, &report) {
@@ -476,7 +514,7 @@ impl App {
         }
         // A run that was written is parked: it ends with a report, not a denial.
         (slots.into_iter())
-            .filter(|slot| !ids.contains(&slot.chat))
+            .filter(|slot| !ids.contains(&slot.chat) && !slot.resume)
             .flat_map(|slot| match slot.stage {
                 Stage::Checking => Self::deny(slot.chat, slot.turn, slot.call, PANE_GONE),
                 Stage::Running(run) => vec![Effect::RunDone {
@@ -501,7 +539,10 @@ impl App {
     pub(super) fn drop_run_slots(&mut self, stale: impl Fn(&RunSlot) -> bool) -> bool {
         let mut dropped = false;
         for pty in self.panes.values_mut().filter_map(PaneState::pty_mut) {
-            dropped |= pty.run.take_if(|slot| stale(slot)).is_some();
+            dropped |= pty
+                .run
+                .take_if(|slot| !slot.resume && stale(slot))
+                .is_some();
         }
         dropped
     }

@@ -38,7 +38,7 @@ pub use pending::Pending;
 /// A random nonce for one result, `None` when the system gives no randomness
 /// (the call then fails closed rather than use a guessable delimiter). Read
 /// from `/dev/urandom`, which Linux and macOS both have.
-fn new_nonce() -> Option<String> {
+pub(crate) fn new_nonce() -> Option<String> {
     use std::io::Read;
     let mut bytes = [0u8; 8];
     std::fs::File::open("/dev/urandom")

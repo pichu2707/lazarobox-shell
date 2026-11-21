@@ -853,7 +853,7 @@ In **run** mode lazarobox does what `auto` does not: a search or navigation comm
 
 The model receives `NOT RUN YET` with the reason (for example, that the pane has a half-typed line), so it does not take the command for granted, and the result row says `typed, not run`, not just `ok`. In `ask` and `auto`, which never press Enter, the result also says `NOT RUN YET`.
 
-When a turn ends with a command typed and not run, the pane adds `waiting for you: press Enter in pane N to run it, then send a message to go on` (the pane number, never the command). Nothing resumes the turn after the Enter: send a message to go on.
+When a turn ends with a command typed and not run, the pane adds `waiting for you: press Enter in pane N to run it, then send a message to go on` (the pane number, never the command). If you then press Enter on exactly that line (no other key, paste or wheel in the pane since it was typed, and the line was empty before), the chat follows the command with the finish detection and the 10 s limit of the `run` mode and goes on by itself: the model gets a fixed note that you ran it and the pane output, capped and redacted like in `run` mode (the exit status is not known). If you changed the line first (any other key, Ctrl+C or Ctrl+U), the pane shows `typed command changed: send a message to go on` and nothing resumes. A timeout, typing in the pane meanwhile, a full-screen program, Esc or a new message end the wait with a line and send nothing. It needs the pane's folder to be readable and never applies to an orchestrator run.
 
 The `Ctrl+Space`, `e` confirmation (a block of the response, not a model call) only types, also in `run`. In `ask` and `auto`, `y` still does not press Enter.
 

@@ -2160,6 +2160,25 @@ impl Panes {
                         chats.finish(chat, turn, call, report);
                     }
                 }
+                // The command the user ran ended: its report is worded here, off
+                // the UI thread, with the same cap, redaction and wrapper as a
+                // run's (no nonce, no output), and the chat goes on with it.
+                Effect::ResumeNote {
+                    chat,
+                    command,
+                    report,
+                } => {
+                    let nonce = tools::new_nonce();
+                    let words =
+                        crate::core::ai::tools::report::words(&command, &report, nonce.as_deref());
+                    feedback.push(AppEvent::Run(
+                        chat,
+                        crate::app::RunEvent::Resume {
+                            number: report.number,
+                            text: words.text,
+                        },
+                    ));
+                }
                 // The pane's real directory is read here (the kernel resolves the
                 // link, no disk is touched); the paths are checked on the
                 // blocking pool and the answer comes back on the run channel.
@@ -6070,6 +6089,36 @@ mod tests {
         panes.chats.as_ref().unwrap().waits().end_turn(id(9), 1);
         panes.apply(vec![run_done(1)]);
         assert!(matches!(wait.await, Decision::Denied(_)));
+    }
+
+    // #819: the report of a command the user ran is worded with the run's
+    // words (output redacted and wrapped) and goes back to the chat.
+    #[test]
+    fn a_resume_note_answers_the_chat_with_the_wording_of_a_run() {
+        use crate::core::ai::tools::{report::RunReport, settle::End};
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let report = RunReport {
+            number: 2,
+            end: End::Settled,
+            cwd: None,
+            cd_target: None,
+            output: Some("token ghp_abcdefghijklmnopqrstuvwxyz0123456789 done".to_owned()),
+        };
+        let (_, feedback) = panes.apply(vec![Effect::ResumeNote {
+            chat: id(9),
+            command: "echo hi".to_owned(),
+            report: Box::new(report),
+        }]);
+        let [AppEvent::Run(chat, crate::app::RunEvent::Resume { number, text })] = &feedback[..]
+        else {
+            panic!("{feedback:?}");
+        };
+        assert_eq!((*chat, *number), (id(9), 2));
+        assert!(text.starts_with("Ran in pane 2."), "{text}");
+        assert!(
+            !text.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+            "{text}"
+        );
     }
 
     // Design D22: one probe per named pane, read from the pane's handle; a
