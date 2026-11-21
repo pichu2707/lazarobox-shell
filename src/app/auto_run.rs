@@ -15,7 +15,10 @@
 //! the check's `canonicalize` and the shell's `chdir` is not seen (it needs a
 //! local attacker who can write a path component).
 
-use super::{typed_run::Typed, *};
+use super::{
+    typed_run::{Typed, closed_line},
+    *,
+};
 use crate::core::ai::{
     chat::{
         approval::{ApprovalAsk, NO_CWD, NOT_ALLOWED, Route},
@@ -73,7 +76,7 @@ impl RunSlot {
     /// The user's Enter on the typed line `typed`, written at `written` in
     /// pane `number`: settled like a run, with no call to answer.
     pub(super) fn following(typed: Typed, number: usize, written: Instant) -> Self {
-        let settle = Settle::new(typed.anchor, written);
+        let settle = Settle::new(typed.anchor, written).with_floor(typed.floor);
         Self {
             chat: typed.chat,
             turn: typed.turn,
@@ -90,6 +93,14 @@ impl RunSlot {
             }),
             by_user: false,
             resume: true,
+        }
+    }
+
+    /// The pane's number when the run was written (0 while it is checked).
+    fn number(&self) -> usize {
+        match &self.stage {
+            Stage::Running(run) => run.number,
+            Stage::Checking => 0,
         }
     }
 
@@ -511,6 +522,10 @@ impl App {
             if let Some(pty) = self.panes.get_mut(id).and_then(PaneState::pty_mut) {
                 slots.extend(pty.run.take());
             }
+        }
+        // The user's own run has no call to deny: the chat is told instead.
+        for slot in slots.iter().filter(|s| s.resume && !ids.contains(&s.chat)) {
+            self.say_in_chat(slot.chat, closed_line(slot.number()));
         }
         // A run that was written is parked: it ends with a report, not a denial.
         (slots.into_iter())

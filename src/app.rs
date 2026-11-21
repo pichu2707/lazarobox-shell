@@ -154,6 +154,9 @@ pub enum Confirm {
     ClosePane,
     /// Waiting for `y` to close the active tab.
     CloseTab,
+    /// Waiting for `y` to close the focused pane, whose command a chat waits
+    /// for (a run in flight, or one the user ran from a typed line).
+    ClosePaneWaited,
 }
 
 impl InputMode {
@@ -168,6 +171,9 @@ impl InputMode {
             Self::Confirm(Confirm::Quit) => "Quit? (y/n)",
             Self::Confirm(Confirm::ClosePane) => "Close pane? (y/n)",
             Self::Confirm(Confirm::CloseTab) => "Close tab? (y/n)",
+            Self::Confirm(Confirm::ClosePaneWaited) => {
+                "Close pane? a command the chat waits for is running (y/n)"
+            }
             Self::Menu => "MENU",
             Self::Links => "LINKS",
         }
@@ -3030,7 +3036,12 @@ impl App {
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(self.enter_copy()),
             Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
             Step::Run(PrefixAction::ClosePane) if self.tabs.len() > 1 || self.tab_panes() > 1 => {
-                InputMode::Confirm(Confirm::ClosePane)
+                let waited = self.focused_pty().is_some_and(|pty| pty.run.is_some());
+                InputMode::Confirm(if waited {
+                    Confirm::ClosePaneWaited
+                } else {
+                    Confirm::ClosePane
+                })
             }
             Step::Run(PrefixAction::CloseTab) if self.tabs.len() > 1 => {
                 InputMode::Confirm(Confirm::CloseTab)
@@ -3684,7 +3695,7 @@ impl App {
         match confirm {
             Confirm::Quit => self.quit_effects(),
             Confirm::CloseTab => self.close_tab(),
-            Confirm::ClosePane => {
+            Confirm::ClosePane | Confirm::ClosePaneWaited => {
                 let id = self.tab().focus;
                 let stop = self.stop_effect(id);
                 let mut effects = self.remove_pane(id);

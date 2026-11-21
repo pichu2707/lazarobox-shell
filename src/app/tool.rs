@@ -581,6 +581,8 @@ impl App {
             let exact = enter && !pty.after_menu && !pty.user_dirty;
             if enter {
                 followed = pty.typed.take().map(|typed| (typed, exact));
+            } else if ctrl('c') {
+                pty.typed = None;
             } else if let Some(typed) = pty.typed.as_mut() {
                 typed.edited = true;
             }

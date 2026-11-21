@@ -25,7 +25,14 @@ use crate::core::ai::{
 /// Said when the Enter ran something other than the typed line.
 pub(super) const CHANGED: &str = "typed command changed: send a message to go on";
 /// Said when the Enter cannot be followed for another reason.
+/// Said when the line was typed before the user's last message.
+const STALE: &str = "typed command is from an earlier turn; send a message to go on";
 const NOT_FOLLOWED: &str = "could not follow the command: send a message to go on";
+
+/// Said to the chat when the pane of the command it waits for closes.
+pub(super) fn closed_line(number: usize) -> String {
+    format!("pane {number} closed; send a message to go on")
+}
 
 /// A model's command typed into a pane and not yet run.
 pub(super) struct Typed {
@@ -37,10 +44,14 @@ pub(super) struct Typed {
     pub(super) anchor: Anchor,
     /// Whether the cursor was visible then (see `Settle::unanchored`).
     pub(super) anchored: bool,
+    /// The cursor row at the Enter (see `Settle::with_floor`).
+    pub(super) floor: usize,
     /// The line was empty and untouched before the typing.
     clean: bool,
     /// A key other than Enter reached the pane since.
     pub(super) edited: bool,
+    /// A new message made the line stale: the Enter says so.
+    stale: bool,
 }
 
 impl App {
@@ -76,22 +87,40 @@ impl App {
                 cwd,
             },
             anchored: line.is_some(),
+            floor: 0,
             clean: pty.line_pending.is_none() && !pty.user_dirty,
             edited: false,
+            stale: false,
         });
     }
 
     /// The user pressed Enter in `target` with `typed` on its line; `exact`
     /// says no key, paste or wheel touched the line since the typing.
-    pub(super) fn follow_enter(&mut self, target: PaneId, typed: Typed, exact: bool) {
+    pub(super) fn follow_enter(&mut self, target: PaneId, mut typed: Typed, exact: bool) {
+        if !self.panes.contains_key(&typed.chat) {
+            return;
+        }
         let busy =
             (self.panes.get(&target).and_then(PaneState::pty)).is_none_or(|p| p.run.is_some());
-        let why = if !(exact && typed.clean && !typed.edited) {
+        let why = if typed.stale {
+            STALE
+        } else if !(exact && typed.clean && !typed.edited) {
             CHANGED
         } else if busy {
             NOT_FOLLOWED
         } else {
             let number = self.pane_number(target).unwrap_or(0);
+            // The wait is measured from where the Enter finds the cursor; a
+            // line that was reflowed since the typing is no longer comparable.
+            if let Some(pty) = self.panes.get(&target).and_then(PaneState::pty) {
+                let (line, generation) = (pty.emu.live_cursor_line(), pty.emu.line_generation());
+                if generation != typed.anchor.generation {
+                    typed.anchor.line = line.unwrap_or(0);
+                    typed.anchor.generation = generation;
+                    typed.anchored = line.is_some();
+                }
+                typed.floor = line.unwrap_or(0);
+            }
             let slot = RunSlot::following(typed, number, (self.clock)());
             if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
                 pty.run = Some(slot);
@@ -161,7 +190,7 @@ impl App {
             self.say_in_chat(
                 chat,
                 format!(
-                    "pane {number}: the command finished but the chat could not go on; send a message to continue"
+                    "pane {number}: the command finished but its output was not sent; send a message to continue"
                 ),
             );
         }
@@ -178,8 +207,8 @@ impl App {
             let Some(pty) = self.panes.get_mut(&id).and_then(PaneState::pty_mut) else {
                 continue;
             };
-            if typed {
-                pty.typed.take_if(|t| t.chat == chat);
+            if let Some(t) = pty.typed.as_mut().filter(|t| typed && t.chat == chat) {
+                t.stale = true;
             }
             if pty.run.take_if(|s| s.resume && s.chat == chat).is_some() {
                 lines.push(format!("stopped waiting for the command in pane {number}"));
@@ -190,7 +219,7 @@ impl App {
         }
     }
 
-    fn say_in_chat(&mut self, chat: PaneId, line: String) {
+    pub(super) fn say_in_chat(&mut self, chat: PaneId, line: String) {
         if let Some(chat) = self.panes.get_mut(&chat).and_then(PaneState::chat_mut) {
             chat.push_system_line(line);
             self.dirty = true;

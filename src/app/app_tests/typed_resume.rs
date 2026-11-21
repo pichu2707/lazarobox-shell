@@ -143,13 +143,13 @@ fn a_resume_the_chat_cannot_take_is_said() {
     assert!(effects.is_empty(), "{effects:?}");
     assert!(says(
         &a,
-        "pane 1: the command finished but the chat could not go on; send a message to continue"
+        "pane 1: the command finished but its output was not sent; send a message to continue"
     ));
 }
 
 #[test]
 fn an_edited_line_is_not_followed_and_says_so() {
-    for edit in [key('x'), ctrl('c'), ctrl('u')] {
+    for edit in [key('x'), ctrl('u')] {
         let mut a = typed_live();
         in_shell(&mut a, edit);
         in_shell(&mut a, enter());
@@ -273,4 +273,157 @@ fn a_command_typed_with_y_in_ask_mode_is_followed_too() {
     a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
     in_shell(&mut a, enter());
     assert!(slot(&a).is_some());
+}
+
+fn resume(a: &mut App, number: usize) -> Vec<Effect> {
+    a.update(AppEvent::Run(
+        id2(),
+        RunEvent::Resume {
+            number,
+            text: "Ran.".to_owned(),
+        },
+    ))
+}
+
+const NOT_SENT: &str =
+    "the command finished but its output was not sent; send a message to continue";
+
+// Review of #824, 1: a pane that closes during the wait is said.
+#[test]
+fn a_pane_closing_during_the_wait_says_so() {
+    let mut a = typed_live();
+    in_shell(&mut a, enter());
+    let effects = a.deny_closing_runs(&[SHELL]);
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(says(&a, "pane 1 closed; send a message to go on"));
+}
+
+// 2: a line forgotten because of a new message is said at the next Enter.
+#[test]
+fn enter_on_a_line_from_an_earlier_turn_says_so() {
+    let mut a = typed_live();
+    let availability = a.turn_availability(id2());
+    a.send_text(id2(), "something else", &availability);
+    in_shell(&mut a, enter());
+    assert!(slot(&a).is_none());
+    let line = "typed command is from an earlier turn; send a message to go on";
+    assert!(says(&a, line), "{:?}", system_lines(&a));
+    in_shell(&mut a, enter());
+    let n = system_lines(&a).iter().filter(|l| *l == line).count();
+    assert_eq!(n, 1, "said once");
+}
+
+// 3: Ctrl+C forgets the line; a closed chat is not told anything.
+#[test]
+fn ctrl_c_forgets_the_typed_line_so_a_later_enter_says_nothing() {
+    let mut a = typed_live();
+    in_shell(&mut a, ctrl('c'));
+    in_shell(&mut a, enter());
+    assert!(slot(&a).is_none());
+    assert!(!says(&a, CHANGED));
+    assert_eq!(a.notice, None);
+}
+
+#[test]
+fn a_closed_chat_leaves_no_notice_at_the_enter() {
+    let mut a = typed_live();
+    a.panes.remove(&id2());
+    in_shell(&mut a, enter());
+    assert!(slot(&a).is_none());
+    assert_eq!(a.notice, None);
+}
+
+// 4: the progress is measured from where the Enter found the cursor.
+#[test]
+fn a_wrapped_command_does_not_settle_before_it_prints_anything() {
+    let mut a = typed_live();
+    shell_output(&mut a, "$ ".repeat(90).as_bytes());
+    in_shell(&mut a, enter());
+    let t0 = now();
+    assert_eq!(probe(&mut a, 400, t0), vec![], "nothing moved yet");
+    shell_output(&mut a, b"\r\nout\r\n$ ");
+    assert_eq!(probe(&mut a, 800, t0).len(), 1);
+}
+
+// 5 and 6: a second resume while the chat is busy says whose output is lost.
+#[test]
+fn a_resume_while_the_chat_is_busy_says_the_output_was_not_sent() {
+    let mut a = typed_live();
+    assert!(!resume(&mut a, 1).is_empty(), "the first one goes");
+    assert!(resume(&mut a, 2).is_empty());
+    assert!(says(&a, &format!("pane 2: {NOT_SENT}")));
+}
+
+// 6: the orchestrator guard, paste and wheel, a menu key.
+#[test]
+fn an_orchestrating_chat_tracks_no_typed_line() {
+    let (mut a, turn) = live();
+    a.ai.orchestrator.enabled = true;
+    let chat = a
+        .panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap();
+    chat.set_approval_mode(ApprovalMode::Auto);
+    chat.set_orch(true);
+    a.update(AppEvent::Cwd(SHELL, LAUNCH.into()));
+    announce(&mut a, turn, 1, run("echo hi"));
+    assert!(a.orchestrating(id2()));
+    in_shell(&mut a, enter());
+    assert!(slot(&a).is_none());
+    assert!(!says(&a, CHANGED));
+}
+
+#[test]
+fn a_paste_wheel_or_menu_key_before_the_enter_counts_as_an_edit() {
+    for touch in ["paste", "wheel", "tab"] {
+        let mut a = typed_live();
+        match touch {
+            "paste" => drop(in_shell(&mut a, AppEvent::Paste("x".into()))),
+            "wheel" => a.mark_dirty(SHELL),
+            _ => drop(in_shell(
+                &mut a,
+                AppEvent::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            )),
+        }
+        in_shell(&mut a, enter());
+        assert!(slot(&a).is_none(), "{touch}");
+        assert!(says(&a, CHANGED), "{touch}");
+    }
+}
+
+// Owner: closing a pane whose command the chat waits for asks first.
+fn close_prompt(a: &mut App) {
+    a.tab_mut().focus = SHELL;
+    press(a, "wq");
+}
+
+#[test]
+fn closing_a_pane_the_chat_waits_on_asks_and_y_closes_it_with_a_line() {
+    let mut a = typed_live();
+    in_shell(&mut a, enter());
+    close_prompt(&mut a);
+    assert_eq!(a.input(), InputMode::Confirm(Confirm::ClosePaneWaited));
+    assert!(a.input().label().contains("the chat waits for"));
+    let effects = a.update(key('y'));
+    assert!(effects.contains(&Effect::ClosePane(SHELL)), "{effects:?}");
+    assert!(says(&a, "pane 1 closed; send a message to go on"));
+}
+
+#[test]
+fn declining_the_close_changes_nothing() {
+    let mut a = typed_live();
+    in_shell(&mut a, enter());
+    close_prompt(&mut a);
+    let effects = a.update(key('n'));
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(slot(&a).is_some(), "still followed");
+    assert!(!says(&a, "pane 1 closed; send a message to go on"));
+}
+
+#[test]
+fn a_pane_nobody_waits_on_keeps_the_plain_close_prompt() {
+    let mut a = typed_live();
+    close_prompt(&mut a);
+    assert_eq!(a.input(), InputMode::Confirm(Confirm::ClosePane));
 }
