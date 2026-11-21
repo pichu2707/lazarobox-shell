@@ -199,6 +199,29 @@ mod tests {
     }
 
     #[test]
+    fn a_floor_makes_progress_mean_passing_it() {
+        let t0 = Instant::now();
+        let anchor = Anchor {
+            line: 5,
+            col: 12,
+            generation: 1,
+            cwd: "/home/u".into(),
+        };
+        let mut settle = Settle::new(anchor, t0).with_floor(7);
+        let mut probe = Probe {
+            now: t0 + MS(400),
+            foreground: Some(true),
+            cwd: Some("/home/u".into()),
+            cursor_line: Some(7),
+            generation: 1,
+            alt_screen: false,
+        };
+        assert_eq!(settle.step(&probe), None, "still on the floor row");
+        probe.cursor_line = Some(8);
+        assert_eq!(settle.step(&probe), Some(End::Settled));
+    }
+
+    #[test]
     fn the_anchor_is_known_only_once_a_cursor_line_was_seen() {
         let r = run();
         assert_eq!(r.settle.anchor().map(|a| a.line), Some(5));

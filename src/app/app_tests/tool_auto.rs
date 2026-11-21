@@ -820,7 +820,7 @@ fn a_chat_read_keeps_its_answers_in_every_mode() {
 // #816: the end-of-turn line for a command typed and not run ------------------
 
 const WAITING: &str =
-    "waiting for you: press Enter in pane 1 to run it, then send a message to go on";
+    "waiting for you: press Enter in pane 1 to run it; the chat goes on when it finishes";
 
 fn ends_turn(a: &mut App, turn: u64) -> Vec<String> {
     a.update(AppEvent::Chat(

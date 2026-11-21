@@ -155,7 +155,9 @@ pub const AFTER_TOOL_NO_ANSWER: &str = "the model sent no answer after its last 
 /// System line for a turn that ended with a command typed into pane `number`
 /// and not run. Display only; it never names the command.
 pub fn waiting_for_enter(number: usize) -> String {
-    format!("waiting for you: press Enter in pane {number} to run it, then send a message to go on")
+    format!(
+        "waiting for you: press Enter in pane {number} to run it; the chat goes on when it finishes"
+    )
 }
 /// System line for a CLI the jail refused to start.
 pub const JAIL_ERROR: &str = "the CLI did not start: its jail could not be enforced";

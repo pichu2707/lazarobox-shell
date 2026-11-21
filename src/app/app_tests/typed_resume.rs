@@ -16,6 +16,7 @@ use crate::core::ai::{
         settle::End,
     },
 };
+use crate::core::pty::PtyEvent;
 
 const SHELL: PaneId = PaneId::FIRST;
 const CHANGED: &str = "typed command changed: send a message to go on";
@@ -102,7 +103,8 @@ fn a_settled_command_resumes_the_chat_with_its_report() {
     shell_output(&mut a, b"\r\nhi\r\n$ ");
     assert_eq!(probe(&mut a, 400, t0), vec![resume_note(End::Settled)]);
     assert!(slot(&a).is_none(), "the executing mark is released");
-    assert!(says(&a, "pane 1: the command finished, going on"));
+    assert!(says(&a, "pane 1: the command finished"));
+    assert!(!says(&a, "pane 1: the command finished, going on"));
 }
 
 #[test]
@@ -145,6 +147,7 @@ fn a_resume_the_chat_cannot_take_is_said() {
         &a,
         "pane 1: the command finished but its output was not sent; send a message to continue"
     ));
+    assert!(!says(&a, "going on with the output of pane 1"));
 }
 
 #[test]
@@ -445,7 +448,7 @@ fn two_tabs_waiting() -> App {
 }
 
 #[test]
-fn closing_a_tab_with_a_waited_pane_asks_and_y_tells_the_chat() {
+fn closing_a_tab_with_a_waited_pane_asks_first_and_y_closes_its_pane() {
     let mut a = two_tabs_waiting();
     press(&mut a, "tc");
     assert_eq!(a.input(), InputMode::Confirm(Confirm::CloseTabWaited));
@@ -475,4 +478,126 @@ fn the_quit_prompt_says_a_command_the_chat_waits_for_is_running() {
         a.status_label(80).as_deref(),
         Some("Quit? a command the chat waits for is running (y/n)")
     );
+}
+
+#[test]
+fn a_resume_that_goes_says_so_once() {
+    let mut a = typed_live();
+    assert!(!resume(&mut a, 1).is_empty());
+    assert!(says(&a, "going on with the output of pane 1"));
+}
+
+/// A chat, an `auto` turn that typed `echo one` in pane 1 and `echo two` in a
+/// second shell, both followed after the user's Enter in each.
+fn two_followed() -> (App, PaneId) {
+    let (mut a, turn) = live();
+    a.panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+        .set_approval_mode(ApprovalMode::Auto);
+    a.update(AppEvent::Cwd(SHELL, LAUNCH.into()));
+    announce(&mut a, turn, 1, run("echo one"));
+    result(&mut a, turn, 1, ToolStatus::Ok);
+    a.tab_mut().focus = SHELL;
+    press(&mut a, "wv");
+    let second = a.focused();
+    a.update(AppEvent::Cwd(second, LAUNCH.into()));
+    a.tab_mut().focus = id2();
+    a.tab_mut().last_shell = Some(second);
+    announce(&mut a, turn, 2, run("echo two"));
+    result(&mut a, turn, 2, ToolStatus::Ok);
+    a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
+    for pane in [SHELL, second] {
+        a.tab_mut().focus = pane;
+        a.update(enter());
+    }
+    a.tab_mut().focus = id2();
+    (a, second)
+}
+
+fn settle_pane(a: &mut App, pane: PaneId) -> Vec<Effect> {
+    a.update(AppEvent::Pty(
+        pane,
+        PtyEvent::Output(b"\r\nout\r\n$ ".to_vec()),
+    ));
+    at(now() + 1_000);
+    a.update(AppEvent::Run(
+        pane,
+        RunEvent::Probe {
+            foreground: Some(true),
+            cwd: Some(LAUNCH.into()),
+        },
+    ))
+}
+
+#[test]
+fn two_followed_commands_reach_the_model_in_one_combined_note() {
+    let (mut a, second) = two_followed();
+    assert_eq!(settle_pane(&mut a, SHELL).len(), 1);
+    let held = a.update(AppEvent::Run(
+        id2(),
+        RunEvent::Resume {
+            number: 1,
+            text: "OUT-ONE".to_owned(),
+        },
+    ));
+    assert!(held.is_empty(), "the other command is still running");
+    assert_eq!(settle_pane(&mut a, second).len(), 1);
+    let sent = a.update(AppEvent::Run(
+        id2(),
+        RunEvent::Resume {
+            number: 2,
+            text: "OUT-TWO".to_owned(),
+        },
+    ));
+    assert!(matches!(sent[..], [Effect::ChatSend { .. }]), "{sent:?}");
+    let note = chat_of(&a).messages().last().unwrap().text.clone();
+    assert!(
+        note.contains("OUT-ONE") && note.contains("OUT-TWO"),
+        "{note}"
+    );
+}
+
+#[test]
+fn a_held_output_goes_when_the_other_command_ends_without_resuming() {
+    let (mut a, second) = two_followed();
+    settle_pane(&mut a, SHELL);
+    a.update(AppEvent::Run(
+        id2(),
+        RunEvent::Resume {
+            number: 1,
+            text: "OUT-ONE".to_owned(),
+        },
+    ));
+    in_shell_of(&mut a, second, key('q'));
+    let effects = settle_pane(&mut a, second);
+    assert!(
+        matches!(effects[..], [Effect::ChatSend { .. }]),
+        "{effects:?}"
+    );
+}
+
+fn in_shell_of(a: &mut App, pane: PaneId, event: AppEvent) {
+    a.tab_mut().focus = pane;
+    a.update(event);
+    a.tab_mut().focus = id2();
+}
+
+#[test]
+fn closing_the_chat_drops_the_commands_it_follows() {
+    let mut a = typed_live();
+    in_shell(&mut a, enter());
+    a.tab_mut().focus = id2();
+    press(&mut a, "wq");
+    a.update(key('y'));
+    assert!(slot(&a).is_none());
+}
+
+#[test]
+fn a_denial_of_another_turns_call_keeps_the_typed_line() {
+    let mut a = typed_live();
+    a.clear_line_pending(id2(), 999, CallId(1));
+    in_shell(&mut a, enter());
+    assert!(slot(&a).is_some(), "the line of turn 1 call 1 stays");
 }

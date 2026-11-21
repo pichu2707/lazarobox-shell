@@ -1103,6 +1103,12 @@ pub struct App {
     ended_runs: HashSet<RunId>,
     /// The runs saved to the local store, and what is said about it (S9).
     run_keep: run_store::RunKeep,
+    /// Outputs of commands the user ran that wait for the others of their chat
+    /// (#819): chat, pane number and the worded report.
+    held_resumes: Vec<(PaneId, usize, String)>,
+    /// The send in flight is the resume of a followed command: it forgets no
+    /// other typed line.
+    resume_sending: bool,
     /// Run saves whose wait ran out: their late answer is dropped.
     lost_saves: HashSet<(PaneId, crate::core::ai::memory::port::SaveId)>,
     /// What still runs in the panes, named by the open quit prompt.
@@ -1312,6 +1318,8 @@ impl App {
             run_stores: HashMap::new(),
             ended_runs: HashSet::new(),
             run_keep: run_store::RunKeep::default(),
+            held_resumes: Vec::new(),
+            resume_sending: false,
             lost_saves: HashSet::new(),
             still_running: Vec::new(),
             serving_others: false,
@@ -3325,7 +3333,7 @@ impl App {
             self.drop_parked_send(id);
             self.drop_note_choices(id);
             self.drop_folder_state(id);
-            self.drop_run_slots(|slot| slot.chat == id);
+            self.drop_chat_slots(id);
         }
         if index == self.active {
             self.active = index.min(self.tabs.len() - 1);
@@ -3624,7 +3632,7 @@ impl App {
                 self.drop_parked_send(id);
                 self.drop_note_choices(id);
                 self.drop_folder_state(id);
-                self.drop_run_slots(|slot| slot.chat == id);
+                self.drop_chat_slots(id);
                 self.tabs[t].zoom = false;
                 if id == self.tabs[t].focus {
                     let tiling = tile(&self.tabs[t].tree, body);

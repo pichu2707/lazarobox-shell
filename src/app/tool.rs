@@ -165,7 +165,7 @@ impl App {
                 }
                 // A refused write left nothing on the line.
                 if status == ToolStatus::Denied {
-                    self.clear_line_pending(|marked| marked == call);
+                    self.clear_line_pending(id, turn, call);
                 }
                 Vec::new()
             }
@@ -543,14 +543,17 @@ impl App {
         Vec::new()
     }
 
-    /// Clears the line-pending mark of every shell pane whose marked call
-    /// `stale` names.
-    fn clear_line_pending(&mut self, stale: impl Fn(CallId) -> bool) {
+    /// Clears the line-pending mark of every shell pane whose marked call is
+    /// `call` of `turn` in chat `chat`. A pane that tracks its typed line
+    /// answers to the whole triple, never to the call id alone.
+    pub(super) fn clear_line_pending(&mut self, chat: PaneId, turn: u64, call: CallId) {
         for pty in self.panes.values_mut().filter_map(PaneState::pty_mut) {
-            if pty.line_pending.is_some_and(&stale) {
+            let mine = pty
+                .typed
+                .as_ref()
+                .is_none_or(|t| (t.chat, t.turn, t.call) == (chat, turn, call));
+            if mine && pty.line_pending == Some(call) {
                 pty.line_pending = None;
-            }
-            if pty.typed.as_ref().is_some_and(|t| stale(t.call)) {
                 pty.typed = None;
             }
         }

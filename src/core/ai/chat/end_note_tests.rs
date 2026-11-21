@@ -120,7 +120,7 @@ fn a_typed_command_gets_one_waiting_line_with_the_pane_only() {
     assert_eq!(systems(&state), [waiting_for_enter(2)]);
     assert_eq!(
         waiting_for_enter(2),
-        "waiting for you: press Enter in pane 2 to run it, then send a message to go on"
+        "waiting for you: press Enter in pane 2 to run it; the chat goes on when it finishes"
     );
     assert!(!waiting_for_enter(2).contains("secret-command"));
 }

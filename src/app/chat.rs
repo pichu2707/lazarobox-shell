@@ -676,7 +676,9 @@ impl App {
                 if attach.is_none() {
                     chat.composer_mut().clear();
                 }
-                self.stop_following(id, true);
+                if !self.resume_sending {
+                    self.stop_following(id, true);
+                }
                 if let Some(model) = unknown {
                     self.announce_unknown_window(model);
                 }

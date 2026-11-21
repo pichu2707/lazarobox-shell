@@ -24,9 +24,10 @@ use crate::core::ai::{
 
 /// Said when the Enter ran something other than the typed line.
 pub(super) const CHANGED: &str = "typed command changed: send a message to go on";
-/// Said when the Enter cannot be followed for another reason.
 /// Said when the line was typed before the user's last message.
 const STALE: &str = "typed command is from an earlier turn; send a message to go on";
+/// Said when the Enter cannot be followed for another reason (a run of the
+/// pane is still in flight).
 const NOT_FOLLOWED: &str = "could not follow the command: send a message to go on";
 
 /// Said to the chat when the pane of the command it waits for closes.
@@ -142,7 +143,7 @@ impl App {
     ) -> Vec<Effect> {
         let n = report.number;
         let line = match report.end {
-            End::Settled => format!("pane {n}: the command finished, going on"),
+            End::Settled => format!("pane {n}: the command finished"),
             End::TimedOut => format!(
                 "pane {n}: the command did not finish in {} s; send a message to go on",
                 TIMEOUT.as_secs()
@@ -158,41 +159,78 @@ impl App {
                     "pane {n}: the command opened a full-screen program; send a message to go on"
                 )
             }
-            End::PaneGone => format!("pane {n} closed; send a message to go on"),
+            End::PaneGone => closed_line(n),
         };
         self.say_in_chat(chat, line);
-        if report.end != End::Settled {
-            return Vec::new();
+        if report.end == End::Settled {
+            return vec![Effect::ResumeNote {
+                chat,
+                command,
+                report: Box::new(report),
+            }];
         }
-        vec![Effect::ResumeNote {
-            chat,
-            command,
-            report: Box::new(report),
-        }]
+        // The last command of the chat to end may free outputs held for it.
+        self.flush_resumes(chat)
+    }
+
+    /// Whether another command the user ran is still followed for `chat`.
+    fn still_following(&self, chat: PaneId) -> bool {
+        (self.panes.values().filter_map(PaneState::pty))
+            .any(|pty| pty.run.as_ref().is_some_and(|s| s.resume && s.chat == chat))
     }
 
     /// The runtime worded the report of the command the user ran in pane
-    /// `number`: the chat goes on with it when it is idle and its composer
-    /// holds no draft (a send would clear it).
+    /// `number`: it waits for the other commands of its chat, and then one
+    /// note carries every output.
     pub(super) fn resume_turn(&mut self, chat: PaneId, number: usize, text: &str) -> Vec<Effect> {
+        self.held_resumes.push((chat, number, text.to_owned()));
+        self.flush_resumes(chat)
+    }
+
+    /// Sends the held outputs of `chat` when it follows nothing else: the
+    /// chat must be idle with no draft (a send would clear it).
+    fn flush_resumes(&mut self, chat: PaneId) -> Vec<Effect> {
+        if self.still_following(chat) {
+            return Vec::new();
+        }
+        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_resumes)
+            .into_iter()
+            .partition(|(c, ..)| *c == chat);
+        self.held_resumes = rest;
+        if mine.is_empty() {
+            return Vec::new();
+        }
+        let numbers: Vec<String> = mine.iter().map(|(_, n, _)| n.to_string()).collect();
+        let note = (mine.iter())
+            .map(|(_, n, text)| {
+                format!(
+                    "lazarobox: the user ran the command you typed in pane {n}, and it finished.\n{text}"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
         let ready = (self.panes.get(&chat).and_then(PaneState::chat_state))
             .is_some_and(|c| c.phase() == Phase::Idle && c.composer().is_empty());
-        let note = format!(
-            "lazarobox: the user ran the command you typed in pane {number}, and it finished.\n{text}"
-        );
         let availability = self.turn_availability(chat);
-        let effects = if ready && availability != Availability::Checking {
-            self.send_with(chat, &note, &availability, None)
-        } else {
-            Vec::new()
-        };
-        if effects.is_empty() {
+        let mut effects = Vec::new();
+        if ready && availability != Availability::Checking {
             self.say_in_chat(
                 chat,
-                format!(
-                    "pane {number}: the command finished but its output was not sent; send a message to continue"
-                ),
+                format!("going on with the output of pane {}", numbers.join(", ")),
             );
+            self.resume_sending = true;
+            effects = self.send_with(chat, &note, &availability, None);
+            self.resume_sending = false;
+        }
+        if effects.is_empty() {
+            for number in numbers {
+                self.say_in_chat(
+                    chat,
+                    format!(
+                        "pane {number}: the command finished but its output was not sent; send a message to continue"
+                    ),
+                );
+            }
         }
         effects
     }

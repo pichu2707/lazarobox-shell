@@ -548,6 +548,14 @@ impl App {
             .collect()
     }
 
+    /// Chat `id` is gone: its runs go too, the ones the user ran included.
+    pub(super) fn drop_chat_slots(&mut self, id: PaneId) {
+        for pty in self.panes.values_mut().filter_map(PaneState::pty_mut) {
+            pty.run.take_if(|slot| slot.chat == id);
+            pty.typed.take_if(|t| t.chat == id);
+        }
+    }
+
     /// Drops every run slot that `stale` names, which frees the pane's
     /// `executing` mark, and says whether there was one. A late answer for a
     /// dropped slot is ignored.
