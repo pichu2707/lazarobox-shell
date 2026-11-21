@@ -43,6 +43,8 @@ pub enum Target {
     /// `Set all tasks`: the choice is written to the five tasks of
     /// [`Task::SET_ALL`], never to `orchestrate`.
     All,
+    /// `Set all ODD + RDD roles`: the judges of [`Task::ROLES`].
+    Roles,
     Task(Task),
 }
 
@@ -54,6 +56,11 @@ impl Target {
             Self::Task(task) => draft.set(task, assignment),
             Self::All => {
                 for task in Task::SET_ALL {
+                    draft.set(task, assignment.clone());
+                }
+            }
+            Self::Roles => {
+                for task in Task::ROLES {
                     draft.set(task, assignment.clone());
                 }
             }
@@ -130,6 +137,10 @@ pub struct PickRow {
 fn current_assignment(target: Target, draft: &AiConfig) -> Option<Assignment> {
     match target {
         Target::Task(task) => Some(draft.get(task).clone()),
+        Target::Roles => {
+            let first = draft.get(Task::ROLES[0]);
+            (Task::ROLES.iter().all(|t| draft.get(*t) == first)).then(|| first.clone())
+        }
         Target::All => {
             let first = draft.resolve(Task::SET_ALL[0]).0;
             Task::SET_ALL
@@ -217,6 +228,7 @@ pub fn engine_rows(
     let current = current_assignment(target, draft);
     let current_engine = current.as_ref().and_then(|a| a.engine.as_deref());
     let clear_label = match target {
+        Target::Roles | Target::Task(Task::JudgeA | Task::JudgeB) => "(default)",
         Target::Task(task) if task != Task::General => "(default · use general)",
         _ => "none",
     };

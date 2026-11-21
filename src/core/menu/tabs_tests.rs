@@ -19,7 +19,7 @@ const SETTINGS: [&str; 10] = [
     "Feedback",
 ];
 
-const MODELS: [&str; 9] = [
+const MODELS: [&str; 12] = [
     "Set all tasks",
     "general",
     "code",
@@ -28,6 +28,9 @@ const MODELS: [&str; 9] = [
     "summarize",
     "orchestrate",
     "simple",
+    "Set all ODD + RDD roles",
+    "judge-a",
+    "judge-b",
     "Hugging Face",
 ];
 
@@ -88,7 +91,12 @@ fn tabs_are_well_formed_in_the_five_tab_order() {
 
 #[test]
 fn every_section_is_in_exactly_one_tab() {
-    let ai = [&MODELS_SECTION, &TOOLS_SECTION, &CHAT_SECTION];
+    let ai = [
+        &MODELS_SECTIONS[0],
+        &MODELS_SECTIONS[1],
+        &TOOLS_SECTION,
+        &CHAT_SECTION,
+    ];
     for section in SECTIONS.iter().chain(ai) {
         let homes = TABS
             .iter()
@@ -98,7 +106,7 @@ fn every_section_is_in_exactly_one_tab() {
         assert_eq!(homes, 1, "{}", section.title);
     }
     let total: usize = TABS.iter().map(|t| t.sections.len()).sum();
-    assert_eq!(total, SECTIONS.len() + 4, "no foreign section");
+    assert_eq!(total, SECTIONS.len() + 5, "no foreign section");
 }
 
 #[test]
@@ -113,10 +121,12 @@ fn the_rows_sit_on_their_tab_in_the_tab_map_order() {
     }
     assert_eq!(
         seen,
-        [SETTINGS.len(), MODELS.len(), TOOLS.len(), CHAT.len()]
+        // The roles section draws its title as a row of the Models tab.
+        [SETTINGS.len(), MODELS.len() + 1, TOOLS.len(), CHAT.len()]
     );
     let labels = |s: &Section| s.items.iter().map(|i| i.label).collect::<Vec<_>>();
-    assert_eq!(labels(&MODELS_SECTION), MODELS);
+    let models: Vec<_> = MODELS_SECTIONS.iter().flat_map(labels).collect();
+    assert_eq!(models, MODELS);
     assert_eq!(labels(&TOOLS_SECTION), TOOLS);
     assert_eq!(labels(&CHAT_SECTION), CHAT);
 }
@@ -133,7 +143,7 @@ static HIDDEN: [Tab; TAB_COUNT] = [
     },
     Tab {
         label: "Models",
-        sections: std::slice::from_ref(&MODELS_SECTION),
+        sections: &MODELS_SECTIONS,
         needs_ai: true,
         note: false,
         caution: false,
@@ -704,8 +714,13 @@ fn titles_are_gone_when_the_menu_is_tabbed() {
     let mut m = menu(None, None, Some(machine()));
     for _ in 0..4 {
         let rows = m.rows(&Config::default());
+        // Only the roles section of the Models tab keeps its title.
+        let titles: Vec<_> = rows.iter().filter(|r| matches!(r, Row::Title(_))).collect();
+        let want = if m.active_tab() == 1 { 1 } else { 0 };
+        assert_eq!(titles.len(), want, "{rows:?}");
         assert!(
-            rows.iter().all(|r| matches!(r, Row::Item { .. })),
+            rows.iter()
+                .all(|r| matches!(r, Row::Item { .. } | Row::Title(_))),
             "{rows:?}"
         );
         tab(&mut m);

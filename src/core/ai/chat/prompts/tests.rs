@@ -17,7 +17,7 @@ fn resolve(profile: Profile, task_file: Override, general_file: Override) -> Res
 // [K1, W6]": each `orchestrate` prompt is at most 6 KiB (owner, 2026-11-10:
 // "si, sube el tope a 6 KiB"), every other built-in at most 4 KiB.
 #[test]
-fn the_table_has_fourteen_distinct_non_empty_prompts_within_their_caps() {
+fn the_table_has_eighteen_distinct_non_empty_prompts_within_their_caps() {
     let mut count = 0;
     for task in Task::ALL {
         let cap = if task == Task::Orchestrate {
@@ -41,7 +41,7 @@ fn the_table_has_fourteen_distinct_non_empty_prompts_within_their_caps() {
             "{task:?}"
         );
     }
-    assert_eq!(count, 14);
+    assert_eq!(count, 18);
 }
 
 // Spec (prompt-profiles): Built-ins exist (the orchestrate prompt), one per
@@ -987,5 +987,15 @@ fn the_orchestrate_prompts_say_nothing_comes_before_authorize() {
             assert!(prompt.contains(rule), "{profile:?}: {rule}");
         }
         assert!(prompt.len() <= 6144, "{profile:?}: {}", prompt.len());
+    }
+}
+
+// Spec (acceptance-judges S3): both judge rows run the judge prompt.
+#[test]
+fn both_judge_tasks_use_the_judge_prompt() {
+    for profile in Profile::ALL {
+        for task in [Task::JudgeA, Task::JudgeB] {
+            assert_eq!(builtin(profile, task), judge_builtin(profile));
+        }
     }
 }
