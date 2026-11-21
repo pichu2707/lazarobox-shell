@@ -580,10 +580,24 @@ impl Run {
         ))
     }
 
-    /// Whether the two judges run on different models. The roster holds the
-    /// fallback of each row already (`AiConfig::resolve_judges`).
+    /// Whether the two judges run on different models: both rows must be
+    /// ready and differ. The roster holds the fallback of each row already
+    /// (`AiConfig::resolve_judges`).
     pub fn judges_independent(&self) -> bool {
-        self.roster.get(Task::JudgeA) != self.roster.get(Task::JudgeB)
+        let ready = |task| matches!(self.roster.get(task), Availability::Ready { .. });
+        ready(Task::JudgeA)
+            && ready(Task::JudgeB)
+            && self.roster.get(Task::JudgeA) != self.roster.get(Task::JudgeB)
+    }
+
+    /// Why the judge row of `task` cannot run; `None` when it can. A judge
+    /// that cannot run is no verdict, never a worker that halts the run.
+    pub fn judge_refusal(&self, task: Task) -> Option<String> {
+        match self.roster.get(task) {
+            Availability::Ready { .. } => None,
+            Availability::Unassigned => Some(format!("no engine assigned to {}", task.id())),
+            other => guidance(other),
+        }
     }
 
     /// What the judges rule against: the goal, the closed handoffs, for a

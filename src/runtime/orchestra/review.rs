@@ -471,7 +471,10 @@ impl RunManager {
             None => return Vec::new(),
         };
         let read = tokio::task::spawn_blocking(move || norms::read(&origin)).await;
-        let read = read.unwrap_or_default();
+        let read = read.unwrap_or_else(|_| norms::Read {
+            norms: Vec::new(),
+            said: vec!["judge: the norms could not be read".to_owned()],
+        });
         let first = self.on_run(pane, run, |live| live.review.norms.replace(read.clone()));
         if first.is_some_and(|before| before.is_none()) {
             for line in read.said {
@@ -1202,6 +1205,15 @@ impl RunManager {
             guard.note(&prompt);
             let system = Some(judge_builtin(profile));
             let task = Task::ROLES[labels[started.len()]];
+            // A judge row that cannot run gives no verdict, with its reason,
+            // and no worker: nothing halts the review (D8).
+            if let Some(why) = self
+                .on_run(pane, run, |live| live.run.judge_refusal(task))
+                .flatten()
+            {
+                started.push((None, Some(why)));
+                continue;
+            }
             let id =
                 self.start_review_as(task, pane, run, (Role::Reader, worker), prompt.text, system);
             started.push(match id {

@@ -9,6 +9,7 @@ use super::ledger::{NO_HANDOFF, NONE, one_line as plain_line};
 use super::rdd::{Prompt, candidate, is_mark, one_line};
 use super::review::Tier;
 use super::steps::{Size, Step, Steps};
+use crate::core::ai::{memory::redact::redact, sanitize::clean};
 
 /// Staged text at or above this many bytes counts as a big change.
 pub const BIG_BYTES: u64 = 16 * 1024;
@@ -82,6 +83,8 @@ pub struct Norm {
     pub name: String,
     pub text: String,
     pub cut_from: Option<u64>,
+    /// Secrets masked in the text before it went anywhere.
+    pub redacted: usize,
 }
 
 /// What a judge rules against.
@@ -170,7 +173,10 @@ pub fn norm(name: &str, bytes: &[u8], total: u64) -> Option<Norm> {
         Err(cut) if cut.error_len().is_none() => &head[..cut.valid_up_to()],
         _ => head,
     };
-    let text: String = String::from_utf8_lossy(head)
+    // Redacted like any text sent to a worker, before anything else reads it.
+    let masked = redact(&clean(&String::from_utf8_lossy(head)));
+    let text: String = masked
+        .text
         .split_inclusive('\n')
         .filter(|line| !is_import(line))
         .collect();
@@ -178,6 +184,15 @@ pub fn norm(name: &str, bytes: &[u8], total: u64) -> Option<Norm> {
         name: name.to_owned(),
         text,
         cut_from: (total > head.len() as u64).then_some(total.max(bytes.len() as u64)),
+        redacted: masked.hits,
+    })
+}
+
+/// Said once per run for a norm file that had secrets masked.
+pub fn norms_redacted_line(norm: &Norm) -> Option<String> {
+    (norm.redacted > 0).then(|| {
+        let name = plain_line(&norm.name);
+        format!("judge: {name} had {} secret(s) redacted", norm.redacted)
     })
 }
 

@@ -104,6 +104,8 @@ struct Batch {
     spent: u32,
     /// Norm files written in the run's origin before it starts.
     norms: Vec<(&'static str, String)>,
+    /// Folders made in place of a norm file.
+    folders: Vec<&'static str>,
 }
 
 impl Batch {
@@ -117,6 +119,7 @@ impl Batch {
             diff: staged_text,
             spent: 0,
             norms: Vec::new(),
+            folders: Vec::new(),
         }
     }
 
@@ -130,6 +133,7 @@ impl Batch {
             diff: staged_text,
             spent: 0,
             norms: Vec::new(),
+            folders: Vec::new(),
         }
     }
 
@@ -137,6 +141,9 @@ impl Batch {
         let lab = lab_with(Script::By(by), |m, home| {
             for (name, text) in &self.norms {
                 std::fs::write(home.join(name), text).unwrap();
+            }
+            for name in &self.folders {
+                std::fs::create_dir(home.join(name)).unwrap();
             }
             RunManager {
                 scratch: |_| false,
@@ -609,23 +616,154 @@ async fn the_notices_are_evaluated_for_each_judge_model() {
     }
 }
 
-// Spec (Unavailable judge engine is visible, S3): a `judge-b` that cannot run
-// is a refused worker on its own row, so the failure alert offers that row's
-// picker; the run halts as for any refused worker and says which one.
+// Spec (Unavailable judge engine is visible; D8): a `judge-b` that cannot run
+// is judge 2 with no verdict and its reason; the review does not halt, judge
+// 1 keeps its ruling and a level-two review reads a disagreement.
 #[tokio::test]
-async fn an_unusable_judge_b_is_refused_on_its_own_row() {
+async fn an_unusable_judge_b_has_no_verdict_and_does_not_halt_the_review() {
     let mut batch = Batch::high(Answered::Judges, Some(true));
     let own = [(Task::JudgeB, "gemini", "pro")];
     batch.roster = judge_roster(&[BASE.as_slice(), own.as_slice()].concat());
     let (mut lab, run, _h) = batch.run(passes).await;
-    assert_eq!(spec_of(&lab, run, 3).0, Task::JudgeB);
-    let status = lab
-        .manager
-        .on_run(pane(), run, |live| live.run.status(WorkerId(3)));
-    assert_eq!(status, Some(Some(WorkerStatus::Refused)));
+    assert_eq!(judge_requests(&lab).len(), 1, "only judge 1 ran");
     let lines = said(&mut lab);
+    let has = |start: &str| lines.iter().any(|l| l.starts_with(start));
+    assert!(has("judge 1/2: pass"), "{lines:?}");
+    assert!(has("judge 2/2: no verdict \u{b7} refused ("), "{lines:?}");
+    assert!(has("judges disagree"), "{lines:?}");
     assert!(
-        lines.iter().any(|l| l.contains("worker 3 failed (setup)")),
+        !has("review of worker 1 is incomplete: the run halted"),
         "{lines:?}"
     );
+    let made = lab
+        .manager
+        .on_run(pane(), run, |live| live.run.status(WorkerId(3)));
+    assert_eq!(made, Some(None), "no worker was made for judge 2");
+}
+
+// A secret in a norm never reaches the judge, and the transcript counts it.
+#[tokio::test]
+async fn a_secret_in_a_norm_is_redacted_before_the_judge_and_said() {
+    let mut batch = Batch::one(Some(true));
+    batch.norms = vec![(
+        "AGENTS.md",
+        "rules\ntoken = ghp_abcdefgh12345678\n".to_owned(),
+    )];
+    let (mut lab, _run, _h) = batch.run(passes).await;
+    let requests = judge_requests(&lab);
+    let prompt = user_of(&requests[0]);
+    assert!(prompt.contains("norms from AGENTS.md"), "{prompt}");
+    assert!(!prompt.contains("ghp_abcdefgh12345678"), "{prompt}");
+    let lines = said(&mut lab);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "judge: AGENTS.md had 1 secret(s) redacted"),
+        "{lines:?}"
+    );
+}
+
+// Spec (Long norms are cut with a notice): the judge gets the first 8 KB and
+// the transcript says so once; the norms are kept for the run, so a second
+// review reads nothing and says nothing more.
+#[tokio::test]
+async fn long_norms_reach_the_judge_cut_with_one_line_across_two_reviews() {
+    let mut batch = Batch::one(Some(true));
+    batch.norms = vec![("AGENTS.md", "n".repeat(12 * 1024))];
+    let (mut lab, run, handle) = batch.run(passes).await;
+    let requests = judge_requests(&lab);
+    let prompt = user_of(&requests[0]);
+    assert!(
+        prompt.contains("norms from AGENTS.md (cut at 8 KB, file is 12 KB)"),
+        "the norms are in the prompt"
+    );
+    let changes = small_change();
+    let assessment = handle.assess(run, &changes);
+    let done = handle.review(run, WorkerId(1), changes, assessment, Answered::Judges);
+    assert!(
+        timeout(Duration::from_secs(10), done)
+            .await
+            .unwrap()
+            .is_ok()
+    );
+    let cut = "judge: norms cut at 8 KB \u{b7} AGENTS.md is 12 KB";
+    let lines = said(&mut lab);
+    assert_eq!(lines.iter().filter(|l| *l == cut).count(), 1, "{lines:?}");
+    assert_eq!(judge_requests(&lab).len(), 2, "both reviews judged");
+    let kept = lab
+        .manager
+        .on_run(pane(), run, |live| live.review.norms.clone());
+    assert!(kept.unwrap().is_some_and(|read| read.norms.len() == 1));
+}
+
+// S1a verify W3: an import-only CLAUDE.md is said, and the AGENTS.md reaches
+// the judge whole with no cut line.
+#[tokio::test]
+async fn an_import_only_norm_file_is_said_and_the_other_reaches_the_judge() {
+    let mut batch = Batch::one(Some(true));
+    batch.norms = vec![
+        ("AGENTS.md", "rules\n".to_owned()),
+        ("CLAUDE.md", "@AGENTS.md\n".to_owned()),
+    ];
+    let (mut lab, _run, _h) = batch.run(passes).await;
+    assert!(user_of(&judge_requests(&lab)[0]).contains("norms from AGENTS.md:\nrules"));
+    let lines = said(&mut lab);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "judge: CLAUDE.md has no norms of its own")
+    );
+    assert!(!lines.iter().any(|l| l.contains("norms cut")), "{lines:?}");
+}
+
+// Spec (Consent once per run): a declined run reads no norms.
+#[tokio::test]
+async fn a_declined_run_reads_no_norms() {
+    let mut batch = Batch::one(Some(false));
+    batch.norms = vec![("AGENTS.md", "n".repeat(12 * 1024))];
+    let (mut lab, run, _h) = batch.run(passes).await;
+    assert!(!said(&mut lab).iter().any(|l| l.contains("norms")));
+    let kept = lab
+        .manager
+        .on_run(pane(), run, |live| live.review.norms.is_none());
+    assert_eq!(kept, Some(true));
+}
+
+// A norm file that cannot be read says so; the other still reaches the judge.
+#[tokio::test]
+async fn an_unreadable_norm_file_shows_its_line() {
+    let mut batch = Batch::one(Some(true));
+    batch.folders = vec!["AGENTS.md"];
+    batch.norms = vec![("CLAUDE.md", "claude rules\n".to_owned())];
+    let (mut lab, _run, _h) = batch.run(passes).await;
+    let lines = said(&mut lab);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "judge: AGENTS.md is not a regular file and was not read"),
+        "{lines:?}"
+    );
+    assert!(user_of(&judge_requests(&lab)[0]).contains("norms from CLAUDE.md"));
+}
+
+// m2: the judges are independent only when both rows are ready and differ.
+#[tokio::test]
+async fn the_judges_are_independent_only_when_both_rows_are_ready_and_differ() {
+    let lab = lab(Script::Hang);
+    let ask = |extra: &[(Task, &str, &str)]| {
+        let (run, _h) = lab
+            .begin(lab.scope(judge_roster(&[BASE.as_slice(), extra].concat()), &[]))
+            .unwrap();
+        lab.manager
+            .on_run(pane(), run, |live| live.run.judges_independent())
+            .unwrap()
+    };
+    let a = (Task::JudgeA, "claude", "sonnet");
+    assert!(ask(&[a, (Task::JudgeB, "codex", "default")]));
+    assert!(!ask(&[a, (Task::JudgeB, "claude", "sonnet")]));
+    assert!(
+        !ask(&[a, (Task::JudgeB, "gemini", "pro")]),
+        "an unusable row"
+    );
+    assert!(!ask(&[]), "both fall back to review");
 }

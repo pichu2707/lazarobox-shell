@@ -311,8 +311,6 @@ pub struct Assignment {
 pub struct JudgeModels {
     pub a: Assignment,
     pub b: Assignment,
-    /// The judges run on different models (false: both on one).
-    pub independent: bool,
 }
 
 /// The default engram port, used when neither the file nor `ENGRAM_PORT`
@@ -868,7 +866,6 @@ impl AiConfig {
     /// The models of the two judges (acceptance-judges J10, J11). `a` is its
     /// own assignment, else `review`, else the run default (`general`). `b` is
     /// its own, else `review` when assigned and different from `a`, else `a`.
-    /// The judges are independent only when `b` differs from `a`.
     pub fn resolve_judges(&self) -> JudgeModels {
         let a = match self.get(Task::JudgeA) {
             own if own.engine.is_some() => own.clone(),
@@ -880,11 +877,7 @@ impl AiConfig {
             _ if review.engine.is_some() && *review != a => review.clone(),
             _ => a.clone(),
         };
-        JudgeModels {
-            independent: b != a,
-            a,
-            b,
-        }
+        JudgeModels { a, b }
     }
 
     /// The `Set all ODD + RDD roles` value: `(not set)` when no role is
@@ -3928,22 +3921,28 @@ mod tests {
         let review = (Task::Review, Some("codex"), Some("default"));
         let b = (Task::JudgeB, Some("gemini"), Some("pro"));
         let both = cfg(&[general, review, b]).resolve_judges();
-        assert_eq!((both.b, both.independent), (asg("gemini", "pro"), true));
+        assert_eq!(
+            (both.b.clone(), both.b != both.a),
+            (asg("gemini", "pro"), true)
+        );
         let by_review = cfg(&[general, review]).resolve_judges();
         assert_eq!(by_review.a, asg("codex", "default"));
         // Review is `a`, so b falls to `a` and they are not independent.
         assert_eq!(
-            (by_review.b, by_review.independent),
+            (by_review.b.clone(), by_review.b != by_review.a),
             (asg("codex", "default"), false)
         );
         let own_a = (Task::JudgeA, Some("gemini"), Some("pro"));
         let split = cfg(&[general, review, own_a]).resolve_judges();
         assert_eq!(
-            (split.b, split.independent),
+            (split.b.clone(), split.b != split.a),
             (asg("codex", "default"), true)
         );
         let one = cfg(&[general]).resolve_judges();
-        assert_eq!((one.b, one.independent), (asg("claude", "opus"), false));
+        assert_eq!(
+            (one.b.clone(), one.b != one.a),
+            (asg("claude", "opus"), false)
+        );
     }
 
     // Spec (ai-task-models, S3): an own judge-b equal to a is not independent.
@@ -3952,7 +3951,10 @@ mod tests {
         let a = (Task::JudgeA, Some("claude"), Some("opus"));
         let b = (Task::JudgeB, Some("claude"), Some("opus"));
         let set = cfg(&[a, b]).resolve_judges();
-        assert_eq!((set.b, set.independent), (asg("claude", "opus"), false));
+        assert_eq!(
+            (set.b.clone(), set.b != set.a),
+            (asg("claude", "opus"), false)
+        );
     }
 
     // The effective assignment of a judge task is its fallback chain, so the

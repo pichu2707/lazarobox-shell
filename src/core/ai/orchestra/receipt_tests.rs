@@ -531,6 +531,7 @@ mod judges {
             name: "AGENTS.md".to_owned(),
             text: "x".to_owned(),
             cut_from: Some(12 * 1024),
+            redacted: 0,
         });
         Standard {
             criteria,
