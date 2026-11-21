@@ -151,3 +151,36 @@ fn a_directory_is_not_a_norm() {
         ["judge: AGENTS.md is not a regular file and was not read"]
     );
 }
+
+// Review: through `read`, a secret that starts before byte 8192 is masked
+// whole (the read goes a little past the cut).
+#[test]
+fn a_secret_across_byte_8192_is_masked_through_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut text = "a".repeat(8192 - 5);
+    text.push_str(" ghp_abcdefgh12345678\n");
+    text.push_str(&"b".repeat(800));
+    write(dir.path(), "AGENTS.md", &text);
+    let read = read(dir.path());
+    assert!(!read.norms[0].text.contains("ghp_"));
+    assert_eq!(read.said.len(), 2, "{:?}", read.said);
+    assert!(
+        read.said[1].contains("1 secret(s) redacted"),
+        "{:?}",
+        read.said
+    );
+}
+
+// Review: a link is followed only to a `.md` file.
+#[test]
+fn a_symlink_to_a_file_that_is_not_markdown_is_not_read() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "notes.txt", "not a norm\n");
+    std::os::unix::fs::symlink("notes.txt", dir.path().join("AGENTS.md")).unwrap();
+    let read = read(dir.path());
+    assert!(read.norms.is_empty());
+    assert_eq!(
+        read.said,
+        ["judge: AGENTS.md links to a file that is not .md and was not read"]
+    );
+}

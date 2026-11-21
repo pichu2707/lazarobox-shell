@@ -171,7 +171,6 @@ pub fn standard(goal: &str, notes: &[String], specs: &[Spec], norms: Vec<Norm>) 
 /// file. `total` is the file's size, so a head read with `take` still says it
 /// was cut. `None` when nothing is left.
 pub fn norm(name: &str, bytes: &[u8], total: u64) -> Option<Norm> {
-    let kept = bytes.len().min(NORM_BYTES);
     // A window past the cut is masked first, so a secret that starts before
     // byte 8 KiB is never left half shown by the cut.
     let window = &bytes[..bytes.len().min(NORM_BYTES + NORM_SLACK)];
@@ -184,6 +183,8 @@ pub fn norm(name: &str, bytes: &[u8], total: u64) -> Option<Norm> {
     while !masked.text.is_char_boundary(end) {
         end -= 1;
     }
+    // Cut when the file was not read whole or the processed text did not fit.
+    let cut = total > bytes.len().min(NORM_BYTES + NORM_SLACK) as u64 || end < masked.text.len();
     masked.text.truncate(end);
     let text: String = masked
         .text
@@ -193,7 +194,7 @@ pub fn norm(name: &str, bytes: &[u8], total: u64) -> Option<Norm> {
     (!text.trim().is_empty()).then(|| Norm {
         name: name.to_owned(),
         text,
-        cut_from: (total > kept as u64).then_some(total.max(bytes.len() as u64)),
+        cut_from: cut.then_some(total.max(bytes.len() as u64)),
         redacted: masked.hits,
     })
 }

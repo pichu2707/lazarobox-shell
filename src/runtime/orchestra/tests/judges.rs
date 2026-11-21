@@ -794,3 +794,40 @@ async fn the_consent_lists_each_model_once_and_names_an_unavailable_row() {
         "{split}"
     );
 }
+
+// Review: one judge is independent by itself, even when both rows fall back
+// to the same Review model: no line, and the receipt says independent.
+#[tokio::test]
+async fn one_judge_on_the_fallback_model_is_never_not_independent() {
+    let (mut lab, run, _h) = Batch::one(Some(true)).run(passes).await;
+    let lines = said(&mut lab);
+    assert!(
+        !lines.iter().any(|l| l.contains("not independent")),
+        "{lines:?}"
+    );
+    let kept = lab.manager.reviews(pane(), run);
+    assert!(kept[0].review.judging().is_some_and(|j| j.independent));
+}
+
+// Review: two identical unusable rows are not "the same model".
+#[tokio::test]
+async fn two_identical_unusable_rows_do_not_say_not_independent() {
+    let mut batch = Batch::high(Answered::Judges, Some(true));
+    let own = [
+        (Task::JudgeA, "gemini", "pro"),
+        (Task::JudgeB, "gemini", "pro"),
+    ];
+    batch.roster = judge_roster(&[BASE.as_slice(), own.as_slice()].concat());
+    let (mut lab, run, _h) = batch.run(passes).await;
+    let lines = said(&mut lab);
+    assert!(
+        !lines.iter().any(|l| l.contains("not independent")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.starts_with("judge 2/2: no verdict")),
+        "{lines:?}"
+    );
+    let kept = lab.manager.reviews(pane(), run);
+    assert!(kept[0].review.judging().is_some_and(|j| j.independent));
+}

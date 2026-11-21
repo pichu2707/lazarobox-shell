@@ -1107,3 +1107,22 @@ fn a_secret_across_the_cut_does_not_leak_its_first_characters() {
     assert!(got.text.len() <= NORM_BYTES);
     assert_eq!(got.cut_from, Some(bytes.len() as u64));
 }
+
+// Review: `cut_from` follows the processed text. Invalid bytes grow to U+FFFD
+// and the text is cut; a file that masking shrinks under 8 KiB is whole.
+#[test]
+fn the_cut_follows_the_processed_text() {
+    let grown = norm("AGENTS.md", &vec![0xFF; 8000], 8000).unwrap();
+    assert!(grown.text.len() <= NORM_BYTES);
+    assert_eq!(grown.cut_from, Some(8000));
+    let line = b"token = ghp_abcdefgh12345678\n";
+    let shrunk: Vec<u8> = line
+        .iter()
+        .copied()
+        .cycle()
+        .take(line.len() * 286)
+        .collect();
+    assert!(shrunk.len() > NORM_BYTES);
+    let got = norm("AGENTS.md", &shrunk, shrunk.len() as u64).unwrap();
+    assert_eq!(got.cut_from, None, "{} bytes of text", got.text.len());
+}

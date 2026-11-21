@@ -64,6 +64,17 @@ fn head(origin: &Path, name: &str) -> Result<Option<Head>, String> {
     }
     // It exists, so a failure here is a link to nothing or a loop.
     let real = path.canonicalize().map_err(|_| unread())?;
+    // A link is followed only to a Markdown file.
+    let link = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_symlink());
+    if link
+        && real
+            .extension()
+            .is_none_or(|ext| !ext.eq_ignore_ascii_case("md"))
+    {
+        return Err(format!(
+            "judge: {name} links to a file that is not .md and was not read"
+        ));
+    }
     let inside = origin
         .canonicalize()
         .is_ok_and(|root| real.starts_with(root));
