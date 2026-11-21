@@ -526,6 +526,39 @@ fn a_cut_diff_stays_a_gap_in_the_judge_prompt() {
     assert_ne!(GAP_CUT, "");
 }
 
+// S1a verify W3 (c): the norms ride in the lead, so a big diff gets only what
+// they leave, and what is cut is a gap, never silent.
+#[test]
+fn long_norms_leave_the_diff_less_room_and_the_cut_is_a_gap() {
+    let big = StagedDiff {
+        files: vec![StagedText {
+            path: "big.txt".to_owned(),
+            base: None,
+            text: "x".repeat(60 * 1024),
+        }],
+        ..StagedDiff::default()
+    };
+    let norm = |name| norm(name, &vec![b'n'; NORM_BYTES], NORM_BYTES as u64).unwrap();
+    let with = standard("g", &[], &[], vec![norm("AGENTS.md"), norm("CLAUDE.md")]);
+    let without = standard("g", &[], &[], Vec::new());
+    let changes = [change("big.txt", 60 * 1024)];
+    let (a, b) = (
+        judge_prompt(NONCE, &with, &changes, &big),
+        judge_prompt(NONCE, &without, &changes, &big),
+    );
+    assert!(
+        a.cut_bytes > b.cut_bytes,
+        "{} <= {}",
+        a.cut_bytes,
+        b.cut_bytes
+    );
+    assert!(
+        a.gaps.iter().any(|g| g.starts_with("diff cut")),
+        "{:?}",
+        a.gaps
+    );
+}
+
 // Design D4: the system prompt of a judge.
 #[test]
 fn the_judge_prompt_text_holds_the_rules_and_the_exact_grammar() {
@@ -1000,5 +1033,22 @@ fn a_ruling_enters_the_step_trail_as_counts_and_fixed_words() {
             "no verdict",
             no_verdict().verdict.unwrap_err().word().to_owned()
         )
+    );
+}
+
+// Spec (Long norms are cut with a notice; S1a verify W3): the cut line names
+// the file and its size; a file that was not cut says nothing.
+#[test]
+fn a_cut_norm_has_its_line_and_a_whole_one_none() {
+    let long = norm("AGENTS.md", &vec![b'a'; 9000], 12 * 1024).unwrap();
+    assert_eq!(
+        norms_cut_line(&long).as_deref(),
+        Some("judge: norms cut at 8 KB \u{b7} AGENTS.md is 12 KB")
+    );
+    let short = norm("AGENTS.md", b"rules\n", 6).unwrap();
+    assert_eq!(norms_cut_line(&short), None);
+    assert_eq!(
+        norms_empty_line("CLAUDE.md"),
+        "judge: CLAUDE.md has no norms of its own"
     );
 }

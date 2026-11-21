@@ -4,7 +4,7 @@
 use super::ai_tests::{
     assigned, detection, engine, machine, menu, press, selected_label, value_of,
 };
-use super::picker_tests::{cursor_label, key, open, pick, send, status, title};
+use super::picker_tests::{cursor_label, key, open, pick, send, title};
 use super::*;
 use crate::core::ai::Status;
 

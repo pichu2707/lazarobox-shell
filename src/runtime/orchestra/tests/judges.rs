@@ -102,6 +102,8 @@ struct Batch {
     diff: fn() -> StagedDiff,
     /// Corrections the worker already spent.
     spent: u32,
+    /// Norm files written in the run's origin before it starts.
+    norms: Vec<(&'static str, String)>,
 }
 
 impl Batch {
@@ -114,6 +116,7 @@ impl Batch {
             roster: codex_both(),
             diff: staged_text,
             spent: 0,
+            norms: Vec::new(),
         }
     }
 
@@ -126,15 +129,21 @@ impl Batch {
             roster: codex_both(),
             diff: staged_text,
             spent: 0,
+            norms: Vec::new(),
         }
     }
 
     async fn run(self, by: fn(&ChatRequest) -> Option<&'static str>) -> (Lab, RunId, OrchHandle) {
-        let lab = lab_with(Script::By(by), |m, home| RunManager {
-            scratch: |_| false,
-            restage: self.restage,
-            diff: Some(self.diff),
-            ..tooled(m, home)
+        let lab = lab_with(Script::By(by), |m, home| {
+            for (name, text) in &self.norms {
+                std::fs::write(home.join(name), text).unwrap();
+            }
+            RunManager {
+                scratch: |_| false,
+                restage: self.restage,
+                diff: Some(self.diff),
+                ..tooled(m, home)
+            }
         });
         let (run, handle) = lab.begin(lab.scope(self.roster, &[])).unwrap();
         handle.call(spawn(Task::Code, "write a")).await;
@@ -513,4 +522,110 @@ async fn the_last_correction_round_says_the_rounds_are_exhausted_when_it_fails()
         .collect();
     assert_eq!(said_it.len(), 1, "{lines:?}");
     assert!(said_it[0].contains("open: C1"), "{said_it:?}");
+}
+
+/// A roster with the `assigned` rows over claude, codex and a local ollama.
+fn judge_roster(assigned: &[(Task, &str, &str)]) -> Roster {
+    let engines = vec![
+        found("claude", &[]),
+        found("codex", &[]),
+        found("ollama", &["llama3:8b"]),
+    ];
+    roster(assigned, engines, JAIL)
+}
+
+const BASE: [(Task, &str, &str); 3] = [
+    (Task::Orchestrate, "claude", "opus"),
+    (Task::Code, "codex", "default"),
+    (Task::Review, "codex", "default"),
+];
+
+/// (task, engine, model) of worker `n` of the run.
+fn spec_of(lab: &Lab, run: RunId, n: u32) -> (Task, String, Option<String>) {
+    let found = lab.manager.on_run(pane(), run, |live| {
+        let spec = live.run.spec(WorkerId(n)).unwrap();
+        (spec.task, spec.engine.clone(), spec.model.clone())
+    });
+    found.unwrap()
+}
+
+// Spec (Which model judges, S3): judge 1 runs on `judge-a`, judge 2 on
+// `judge-b`; on different models nothing is said about independence.
+#[tokio::test]
+async fn the_two_judges_run_on_their_own_rows() {
+    let mut batch = Batch::high(Answered::Judges, Some(true));
+    let own = [
+        (Task::JudgeA, "claude", "sonnet"),
+        (Task::JudgeB, "codex", "default"),
+    ];
+    batch.roster = judge_roster(&[BASE.as_slice(), own.as_slice()].concat());
+    let (mut lab, run, _h) = batch.run(passes).await;
+    let (a, b) = (spec_of(&lab, run, 2), spec_of(&lab, run, 3));
+    assert_eq!(a, (Task::JudgeA, "claude".into(), Some("sonnet".into())));
+    assert_eq!(b, (Task::JudgeB, "codex".into(), Some("default".into())));
+    let lines = said(&mut lab);
+    assert!(
+        !lines.iter().any(|l| l.contains("not independent")),
+        "{lines:?}"
+    );
+}
+
+// Spec (Which model judges, S3): an own `judge-b` equal to `judge-a` is not
+// independent either.
+#[tokio::test]
+async fn two_judge_rows_on_one_model_say_they_are_not_independent() {
+    let mut batch = Batch::high(Answered::Judges, Some(true));
+    let own = [
+        (Task::JudgeA, "claude", "opus"),
+        (Task::JudgeB, "claude", "opus"),
+    ];
+    batch.roster = judge_roster(&[BASE.as_slice(), own.as_slice()].concat());
+    let (mut lab, _run, _h) = batch.run(passes).await;
+    let want = "judge: judges are not independent \u{b7} both on claude \u{203a} opus";
+    let lines = said(&mut lab);
+    assert!(lines.iter().any(|l| l == want), "{lines:?}");
+}
+
+// Spec (Reviewer notices cover the judges): each judge's own model is
+// checked: a local judge states its limits, the author's own model warns.
+#[tokio::test]
+async fn the_notices_are_evaluated_for_each_judge_model() {
+    let mut batch = Batch::high(Answered::Judges, Some(true));
+    let own = [
+        (Task::JudgeA, "ollama", "llama3:8b"),
+        (Task::JudgeB, "codex", "default"),
+    ];
+    batch.roster = judge_roster(&[BASE.as_slice(), own.as_slice()].concat());
+    let (mut lab, _run, _h) = batch.run(passes).await;
+    let lines = said(&mut lab);
+    for want in [
+        "judge of worker 1: the judge is a local model (ollama>llama3:8b); local models are unreliable as judges",
+        "judge of worker 1: author and judge are the same model (codex>default)",
+    ] {
+        assert!(
+            lines.iter().any(|l| l.starts_with(want)),
+            "{want}: {lines:?}"
+        );
+    }
+}
+
+// Spec (Unavailable judge engine is visible, S3): a `judge-b` that cannot run
+// is a refused worker on its own row, so the failure alert offers that row's
+// picker; the run halts as for any refused worker and says which one.
+#[tokio::test]
+async fn an_unusable_judge_b_is_refused_on_its_own_row() {
+    let mut batch = Batch::high(Answered::Judges, Some(true));
+    let own = [(Task::JudgeB, "gemini", "pro")];
+    batch.roster = judge_roster(&[BASE.as_slice(), own.as_slice()].concat());
+    let (mut lab, run, _h) = batch.run(passes).await;
+    assert_eq!(spec_of(&lab, run, 3).0, Task::JudgeB);
+    let status = lab
+        .manager
+        .on_run(pane(), run, |live| live.run.status(WorkerId(3)));
+    assert_eq!(status, Some(Some(WorkerStatus::Refused)));
+    let lines = said(&mut lab);
+    assert!(
+        lines.iter().any(|l| l.contains("worker 3 failed (setup)")),
+        "{lines:?}"
+    );
 }

@@ -102,6 +102,7 @@ use crate::core::{
 
 pub use crate::core::ai::orchestra::event::{Continuation, OrchestraEvent, TraceItem, WorkerRow};
 
+mod norms;
 mod review;
 
 pub use review::Reviewed;

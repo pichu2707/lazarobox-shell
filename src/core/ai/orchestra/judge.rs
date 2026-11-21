@@ -181,6 +181,24 @@ pub fn norm(name: &str, bytes: &[u8], total: u64) -> Option<Norm> {
     })
 }
 
+/// Said once per run for a norm file that was cut (acceptance-judges J7):
+/// `None` when the whole file fits.
+pub fn norms_cut_line(norm: &Norm) -> Option<String> {
+    let total = norm.cut_from?;
+    Some(format!(
+        "judge: norms cut at {} KB \u{b7} {} is {} KB",
+        NORM_BYTES / 1024,
+        plain_line(&norm.name),
+        total.div_ceil(1024)
+    ))
+}
+
+/// Said once per run for a norm file that is there but holds nothing of its
+/// own (empty, or only an import of the other file).
+pub fn norms_empty_line(name: &str) -> String {
+    format!("judge: {} has no norms of its own", plain_line(name))
+}
+
 /// A line that is only `@AGENTS.md` or `@CLAUDE.md`.
 fn is_import(line: &str) -> bool {
     let file = line.trim().strip_prefix('@');
