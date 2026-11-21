@@ -130,7 +130,7 @@ const SETTINGS_ORDER: [&str; 10] = [
     "Feedback",
 ];
 
-const MODELS_ORDER: [&str; 9] = [
+const MODELS_ORDER: [&str; 12] = [
     "Set all tasks",
     "general",
     "code",
@@ -139,6 +139,9 @@ const MODELS_ORDER: [&str; 9] = [
     "summarize",
     "orchestrate",
     "simple",
+    "Set all ODD + RDD roles",
+    "judge-a",
+    "judge-b",
     "Hugging Face",
 ];
 
@@ -160,11 +163,16 @@ const CHAT_ORDER: [&str; 3] = ["Profile", "Context", "Memory"];
 // Spec: Descriptor integrity, Sections and items are data.
 #[test]
 fn the_ai_descriptors_are_well_formed() {
-    assert_eq!(MODELS_SECTION.title, "Models");
-    let labels: Vec<_> = MODELS_SECTION.items.iter().map(|i| i.label).collect();
+    assert_eq!(MODELS_SECTIONS[0].title, "Models");
+    assert_eq!(MODELS_SECTIONS[1].title, "ODD + RDD roles");
+    let labels: Vec<_> = MODELS_SECTIONS
+        .iter()
+        .flat_map(|s| s.items.iter())
+        .map(|i| i.label)
+        .collect();
     assert_eq!(labels, MODELS_ORDER);
     let mut paths: Vec<&str> = Vec::new();
-    for (item, task) in MODELS_SECTION.items[1..8].iter().zip(Task::ALL) {
+    for (item, task) in MODELS_SECTIONS[0].items[1..8].iter().zip(Task::ALL) {
         match item.kind {
             ItemKind::Assign(Some(t)) => {
                 assert_eq!(t, task);
@@ -175,7 +183,7 @@ fn the_ai_descriptors_are_well_formed() {
         }
     }
     assert!(
-        matches!(MODELS_SECTION.items[0].kind, ItemKind::Assign(None)),
+        matches!(MODELS_SECTIONS[0].items[0].kind, ItemKind::Assign(None)),
         "Set all tasks has no task and so no key path"
     );
     let mut unique = paths.clone();
@@ -316,7 +324,10 @@ fn ai_rows(menu: &MenuState) -> Vec<(&'static str, String)> {
             &mut Config::default(),
         );
         assert_eq!(menu.active_tab(), active);
-        all.extend(menu.rows(&Config::default()).iter().map(|row| match row {
+        let rows = menu.rows(&Config::default());
+        // A section title is a row of the tab, never an item.
+        let items = rows.iter().filter(|row| !matches!(row, Row::Title(_)));
+        all.extend(items.map(|row| match row {
             Row::Item {
                 label,
                 value,
@@ -353,6 +364,9 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
             "summarize=(default)",
             "orchestrate=(default) · not recommended",
             "simple=(default)",
+            "Set all ODD + RDD roles=(not set)",
+            "judge-a=(default)",
+            "judge-b=(default)",
             "Hugging Face=not connected",
             "Tools=on",
             "Search=off",

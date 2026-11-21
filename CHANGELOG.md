@@ -10,6 +10,10 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **`judge-a` and `judge-b` rows for the acceptance judges.** The Models tab has a new section, **ODD + RDD roles**, with `Set all ODD + RDD roles`, `judge-a` and `judge-b`; they are saved as `[ai.tasks.judge-a]` and `[ai.tasks.judge-b]`, read `(default)` when unassigned and are never touched by `Set all tasks`. Judge 1 uses `judge-a`, else the Review row, else `general`; judge 2 uses `judge-b`, else the Review row when it differs from judge 1's, else judge 1's model (`judge: judges are not independent · both on <engine › model>`). The reviewer notices are now said for each judge's own model, and a local judge is said to be unreliable as one. The judges also receive the first 8 KB of `AGENTS.md` and `CLAUDE.md` of the run's folder, read once per run (`judge: norms cut at 8 KB · AGENTS.md is 12 KB` when cut, `judge: CLAUDE.md has no norms of its own` for an empty or import-only file). An earlier build reports the two tables as unknown keys and ignores them. Secrets in the norms are redacted before any judge sees them, and long norms leave less room for the diff, which says so when it is cut.
+
 ## [1.33.0] - 2026-11-20
 
 ### Added

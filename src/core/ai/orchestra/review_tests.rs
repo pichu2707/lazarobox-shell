@@ -383,3 +383,25 @@ fn a_local_reviewer_states_its_limits_and_a_cloud_one_says_where_the_diff_goes()
     );
     assert!(got.is_empty(), "{got:?}");
 }
+
+// Spec (acceptance-judges, Reviewer notices cover the judges): the same
+// three notices, worded for a judge, evaluated for the judge's own model.
+#[test]
+fn a_judge_gets_the_reviewer_notices_worded_for_a_judge() {
+    use super::review::judge_notices;
+    let opus = ("claude", Some("opus"));
+    assert_eq!(
+        judge_notices(WorkerId(2), opus, opus),
+        ["judge of worker 2: author and judge are the same model (claude>opus)"]
+    );
+    let local = ("ollama", Some("llama3:8b"));
+    let got = judge_notices(WorkerId(3), opus, local);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].starts_with("judge of worker 3: "), "{got:?}");
+    assert!(got[0].contains("unreliable as judges"), "{got:?}");
+    assert_eq!(
+        judge_notices(WorkerId(4), local, opus),
+        ["judge of worker 4: the staged diff goes to claude>opus"]
+    );
+    assert!(judge_notices(WorkerId(4), opus, ("claude", Some("sonnet"))).is_empty());
+}

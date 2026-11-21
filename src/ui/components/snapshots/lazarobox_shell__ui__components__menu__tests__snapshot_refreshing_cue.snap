@@ -12,11 +12,11 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │ summarize                                        (default) │
 │ orchestrate                    (default) · not recommended │
 │ simple                                           (default) │
+│ ODD + RDD roles                                            │
+│ Set all ODD + RDD roles                          (not set) │
+│ judge-a                                          (default) │
+│ judge-b                                          (default) │
 │ Hugging Face                                 not connected │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │ refreshing… · s save · Esc cancel                          │
 └────────────────────────────────────────────────────────────┘

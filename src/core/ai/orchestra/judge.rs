@@ -9,6 +9,7 @@ use super::ledger::{NO_HANDOFF, NONE, one_line as plain_line};
 use super::rdd::{Prompt, candidate, is_mark, one_line};
 use super::review::Tier;
 use super::steps::{Size, Step, Steps};
+use crate::core::ai::{memory::redact::redact, sanitize::clean};
 
 /// Staged text at or above this many bytes counts as a big change.
 pub const BIG_BYTES: u64 = 16 * 1024;
@@ -69,6 +70,9 @@ pub const MAX_CRITERIA: usize = 12;
 /// The most of each norm file a judge reads.
 pub const NORM_BYTES: usize = 8 * 1024;
 
+/// The bytes read past [`NORM_BYTES`] so a secret on the cut is masked whole.
+pub const NORM_SLACK: usize = 256;
+
 /// One thing the change is ruled against, with a stable id (`C1`, `C2`...).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Criterion {
@@ -82,6 +86,8 @@ pub struct Norm {
     pub name: String,
     pub text: String,
     pub cut_from: Option<u64>,
+    /// Secrets masked in the text before it went anywhere.
+    pub redacted: usize,
 }
 
 /// What a judge rules against.
@@ -165,20 +171,58 @@ pub fn standard(goal: &str, notes: &[String], specs: &[Spec], norms: Vec<Norm>) 
 /// file. `total` is the file's size, so a head read with `take` still says it
 /// was cut. `None` when nothing is left.
 pub fn norm(name: &str, bytes: &[u8], total: u64) -> Option<Norm> {
-    let head = &bytes[..bytes.len().min(NORM_BYTES)];
-    let head = match std::str::from_utf8(head) {
-        Err(cut) if cut.error_len().is_none() => &head[..cut.valid_up_to()],
-        _ => head,
+    // A window past the cut is masked first, so a secret that starts before
+    // byte 8 KiB is never left half shown by the cut.
+    let window = &bytes[..bytes.len().min(NORM_BYTES + NORM_SLACK)];
+    let window = match std::str::from_utf8(window) {
+        Err(cut) if cut.error_len().is_none() => &window[..cut.valid_up_to()],
+        _ => window,
     };
-    let text: String = String::from_utf8_lossy(head)
+    let mut masked = redact(&clean(&String::from_utf8_lossy(window)));
+    let mut end = masked.text.len().min(NORM_BYTES);
+    while !masked.text.is_char_boundary(end) {
+        end -= 1;
+    }
+    // Cut when the file was not read whole or the processed text did not fit.
+    let cut = total > bytes.len().min(NORM_BYTES + NORM_SLACK) as u64 || end < masked.text.len();
+    masked.text.truncate(end);
+    let text: String = masked
+        .text
         .split_inclusive('\n')
         .filter(|line| !is_import(line))
         .collect();
     (!text.trim().is_empty()).then(|| Norm {
         name: name.to_owned(),
         text,
-        cut_from: (total > head.len() as u64).then_some(total.max(bytes.len() as u64)),
+        cut_from: cut.then_some(total.max(bytes.len() as u64)),
+        redacted: masked.hits,
     })
+}
+
+/// Said once per run for a norm file that had secrets masked.
+pub fn norms_redacted_line(norm: &Norm) -> Option<String> {
+    (norm.redacted > 0).then(|| {
+        let name = plain_line(&norm.name);
+        format!("judge: {name} had {} secret(s) redacted", norm.redacted)
+    })
+}
+
+/// Said once per run for a norm file that was cut (acceptance-judges J7):
+/// `None` when the whole file fits.
+pub fn norms_cut_line(norm: &Norm) -> Option<String> {
+    let total = norm.cut_from?;
+    Some(format!(
+        "judge: norms cut at {} KB \u{b7} {} is {} KB",
+        NORM_BYTES / 1024,
+        plain_line(&norm.name),
+        total.div_ceil(1024)
+    ))
+}
+
+/// Said once per run for a norm file that is there but holds nothing of its
+/// own (empty, or only an import of the other file).
+pub fn norms_empty_line(name: &str) -> String {
+    format!("judge: {} has no norms of its own", plain_line(name))
 }
 
 /// A line that is only `@AGENTS.md` or `@CLAUDE.md`.

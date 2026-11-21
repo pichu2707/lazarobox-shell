@@ -262,7 +262,8 @@ fn the_view_rows_have_unique_key_paths_and_ranks_apart_from_the_tabs() {
     );
     let others: Vec<u8> = SECTIONS
         .iter()
-        .chain([&MODELS_SECTION, &TOOLS_SECTION, &CHAT_SECTION])
+        .chain(MODELS_SECTIONS.iter())
+        .chain([&TOOLS_SECTION, &CHAT_SECTION])
         .flat_map(|s| s.items.iter())
         .filter_map(|item| match &item.kind {
             ItemKind::Draft(c) => Some(c.rank),

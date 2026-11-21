@@ -339,6 +339,19 @@ pub type Side<'a> = (&'a str, Option<&'a str>);
 /// are.
 pub fn notices(worker: WorkerId, author: Side, reviewer: Side) -> Vec<String> {
     let of = format!("review of worker {}", worker.0);
+    let limits = "it can miss what a larger model would catch, so read the diff yourself";
+    said(&of, "reviewer", limits, author, reviewer)
+}
+
+/// The same notices for an acceptance judge, evaluated for its own engine and
+/// model: a local judge is said to be unreliable as one.
+pub fn judge_notices(worker: WorkerId, author: Side, judge: Side) -> Vec<String> {
+    let of = format!("judge of worker {}", worker.0);
+    let limits = "local models are unreliable as judges, so read the diff yourself";
+    said(&of, "judge", limits, author, judge)
+}
+
+fn said(of: &str, who: &str, limits: &str, author: Side, reviewer: Side) -> Vec<String> {
     let named = |(engine, model): Side| format!("{engine}>{}", model.unwrap_or("default"));
     let same = author.0 == reviewer.0
         && match (author.1, reviewer.1) {
@@ -348,13 +361,13 @@ pub fn notices(worker: WorkerId, author: Side, reviewer: Side) -> Vec<String> {
     let mut said = Vec::new();
     if same {
         said.push(format!(
-            "{of}: author and reviewer are the same model ({})",
+            "{of}: author and {who} are the same model ({})",
             named(reviewer)
         ));
     }
     if cheap(reviewer.0, reviewer.1) {
         said.push(format!(
-            "{of}: the reviewer is a local model ({}); it can miss what a larger model would catch, so read the diff yourself",
+            "{of}: the {who} is a local model ({}); {limits}",
             named(reviewer)
         ));
     } else if cheap(author.0, author.1) || author.0 != reviewer.0 {

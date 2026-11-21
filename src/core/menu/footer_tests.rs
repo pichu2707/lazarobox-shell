@@ -42,6 +42,9 @@ fn every_task_row_shows_the_task_hint() {
         "summarize",
         "orchestrate",
         "simple",
+        "Set all ODD + RDD roles",
+        "judge-a",
+        "judge-b",
     ] {
         assert_eq!(selected_label(&m), label);
         assert_eq!(hint(&m), TASK, "{label}");
