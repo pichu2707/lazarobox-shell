@@ -157,6 +157,8 @@ pub enum Confirm {
     /// Waiting for `y` to close the focused pane, whose command a chat waits
     /// for (a run in flight, or one the user ran from a typed line).
     ClosePaneWaited,
+    /// Waiting for `y` to close the active tab, with such a pane in it.
+    CloseTabWaited,
 }
 
 impl InputMode {
@@ -171,6 +173,9 @@ impl InputMode {
             Self::Confirm(Confirm::Quit) => "Quit? (y/n)",
             Self::Confirm(Confirm::ClosePane) => "Close pane? (y/n)",
             Self::Confirm(Confirm::CloseTab) => "Close tab? (y/n)",
+            Self::Confirm(Confirm::CloseTabWaited) => {
+                "Close tab? a command the chat waits for is running (y/n)"
+            }
             Self::Confirm(Confirm::ClosePaneWaited) => {
                 "Close pane? a command the chat waits for is running (y/n)"
             }
@@ -1661,6 +1666,14 @@ impl App {
         self.input
     }
 
+    /// Whether a chat waits on a command in any of the panes `ids` (a run in
+    /// flight, or one the user ran from a typed line).
+    fn waits_on_command(&self, ids: &[PaneId]) -> bool {
+        ids.iter()
+            .filter_map(|id| self.panes.get(id).and_then(PaneState::pty))
+            .any(|pty| pty.run.is_some())
+    }
+
     /// The statusline label when it says more than [`InputMode::label`]: the
     /// quit prompt naming what still runs in the panes, in at most `room`
     /// columns. Three jobs at most, each shortened to [`JOB_NAME_MAX`]
@@ -1672,6 +1685,14 @@ impl App {
             .map(String::as_str)
             .chain(self.serving_others.then_some(SHARED_SERVER))
             .collect();
+        let all: Vec<PaneId> = self.panes.keys().copied().collect();
+        if self.input == InputMode::Confirm(Confirm::Quit)
+            && running.is_empty()
+            && self.waits_on_command(&all)
+        {
+            let label = "Quit? a command the chat waits for is running (y/n)";
+            return (text_width(label) <= room).then(|| label.to_owned());
+        }
         if self.input != InputMode::Confirm(Confirm::Quit) || running.is_empty() {
             return None;
         }
@@ -3036,15 +3057,20 @@ impl App {
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(self.enter_copy()),
             Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
             Step::Run(PrefixAction::ClosePane) if self.tabs.len() > 1 || self.tab_panes() > 1 => {
-                let waited = self.focused_pty().is_some_and(|pty| pty.run.is_some());
-                InputMode::Confirm(if waited {
+                let focus = [self.tab().focus];
+                InputMode::Confirm(if self.waits_on_command(&focus) {
                     Confirm::ClosePaneWaited
                 } else {
                     Confirm::ClosePane
                 })
             }
             Step::Run(PrefixAction::CloseTab) if self.tabs.len() > 1 => {
-                InputMode::Confirm(Confirm::CloseTab)
+                let leaves = self.tab().tree.leaves();
+                InputMode::Confirm(if self.waits_on_command(&leaves) {
+                    Confirm::CloseTabWaited
+                } else {
+                    Confirm::CloseTab
+                })
             }
             // Closing the last pane of the only tab quits; so does closing the only tab.
             Step::Run(PrefixAction::ClosePane | PrefixAction::CloseTab) => {
@@ -3694,7 +3720,7 @@ impl App {
         }
         match confirm {
             Confirm::Quit => self.quit_effects(),
-            Confirm::CloseTab => self.close_tab(),
+            Confirm::CloseTab | Confirm::CloseTabWaited => self.close_tab(),
             Confirm::ClosePane | Confirm::ClosePaneWaited => {
                 let id = self.tab().focus;
                 let stop = self.stop_effect(id);

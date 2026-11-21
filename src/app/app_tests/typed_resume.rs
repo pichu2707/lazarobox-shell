@@ -427,3 +427,52 @@ fn a_pane_nobody_waits_on_keeps_the_plain_close_prompt() {
     close_prompt(&mut a);
     assert_eq!(a.input(), InputMode::Confirm(Confirm::ClosePane));
 }
+
+// Owner: a tab with such a pane, and the quit prompt, warn too.
+fn two_tabs_waiting() -> App {
+    let mut a = typed_live();
+    in_shell(&mut a, enter());
+    // A second tab, built by hand: the fixture's pane ids are not the allocator's.
+    let other = PaneId::for_test(9);
+    a.tabs.push(Tab {
+        tree: Node::Leaf(other),
+        focus: other,
+        zoom: false,
+        last_shell: None,
+    });
+    a.tab_mut().focus = SHELL;
+    a
+}
+
+#[test]
+fn closing_a_tab_with_a_waited_pane_asks_and_y_tells_the_chat() {
+    let mut a = two_tabs_waiting();
+    press(&mut a, "tc");
+    assert_eq!(a.input(), InputMode::Confirm(Confirm::CloseTabWaited));
+    assert_eq!(
+        a.input().label(),
+        "Close tab? a command the chat waits for is running (y/n)"
+    );
+    let effects = a.update(key('y'));
+    assert!(effects.contains(&Effect::ClosePane(SHELL)), "{effects:?}");
+}
+
+#[test]
+fn declining_the_tab_close_changes_nothing() {
+    let mut a = two_tabs_waiting();
+    press(&mut a, "tc");
+    assert!(a.update(key('n')).is_empty());
+    assert!(slot(&a).is_some());
+    assert_eq!((a.tabs.len(), a.input()), (2, InputMode::Terminal));
+}
+
+#[test]
+fn the_quit_prompt_says_a_command_the_chat_waits_for_is_running() {
+    let mut a = typed_live();
+    in_shell(&mut a, enter());
+    a.input = InputMode::Confirm(Confirm::Quit);
+    assert_eq!(
+        a.status_label(80).as_deref(),
+        Some("Quit? a command the chat waits for is running (y/n)")
+    );
+}
