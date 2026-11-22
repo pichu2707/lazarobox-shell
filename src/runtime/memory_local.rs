@@ -560,7 +560,7 @@ mod tests {
         assert_eq!(
             root,
             Some(Root {
-                store: rig.repo.clone(),
+                store: rig.repo.canonicalize().unwrap(),
                 area: "frontend".into()
             })
         );
@@ -804,7 +804,7 @@ mod tests {
         assert_eq!(
             root,
             Some(Root {
-                store: rig.repo.clone(),
+                store: rig.repo.canonicalize().unwrap(),
                 area: "a".into()
             })
         );
