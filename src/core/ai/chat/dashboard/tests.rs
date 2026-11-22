@@ -346,3 +346,12 @@ fn the_height_is_the_selector_plus_the_card_rows_of_the_tier() {
     let empty = build(Vec::new(), Range::Week);
     assert_eq!(empty.height(100), 3);
 }
+
+#[test]
+fn a_capped_delta_keeps_every_digit_it_shows() {
+    assert_eq!(Delta::Up(999).capped(), "▲ 999%");
+    assert_eq!(Delta::Up(1000).capped(), "▲ 999%+");
+    assert_eq!(Delta::Up(12_000).capped(), "▲ 999%+");
+    assert_eq!(Delta::Down(100).capped(), "▼ 100%");
+    assert_eq!(Delta::NotAvailable.capped(), "n/a");
+}

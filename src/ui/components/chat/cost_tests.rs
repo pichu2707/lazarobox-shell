@@ -328,17 +328,17 @@ fn dashboard(width: u16, height: u16) -> String {
 
 #[test]
 fn snapshot_the_dashboard_in_a_wide_pane() {
-    insta::assert_snapshot!(dashboard(100, 10));
+    insta::assert_snapshot!(dashboard(100, 15));
 }
 
 #[test]
 fn snapshot_the_dashboard_in_a_medium_pane() {
-    insta::assert_snapshot!(dashboard(72, 15));
+    insta::assert_snapshot!(dashboard(72, 20));
 }
 
 #[test]
 fn snapshot_the_dashboard_in_a_narrow_pane() {
-    insta::assert_snapshot!(dashboard(50, 24));
+    insta::assert_snapshot!(dashboard(50, 32));
 }
 
 #[test]
@@ -356,12 +356,12 @@ fn share_a_line(shown: &str, labels: [&str; 2]) -> bool {
 
 #[test]
 fn the_tiers_draw_cards_in_a_row_a_grid_and_a_column() {
-    let wide = dashboard(100, 10);
+    let wide = dashboard(100, 15);
     assert!(share_a_line(&wide, ["Input", "Agent time"]), "{wide}");
-    let medium = dashboard(72, 15);
+    let medium = dashboard(72, 20);
     assert!(share_a_line(&medium, ["Input", "Output"]), "{medium}");
     assert!(!share_a_line(&medium, ["Input", "Tasks"]), "{medium}");
-    let narrow = dashboard(50, 24);
+    let narrow = dashboard(50, 32);
     assert!(!share_a_line(&narrow, ["Input", "Output"]), "{narrow}");
     assert!(narrow.contains("Agent time"), "{narrow}");
 }
@@ -405,7 +405,7 @@ fn a_range_key_in_the_text_tier_shows_the_note_on_the_keys_line() {
 
 #[test]
 fn the_keys_line_lists_the_range_keys() {
-    let shown = dashboard(100, 10);
+    let shown = dashboard(100, 15);
     assert!(
         shown.ends_with("Esc close · 1-4 range · ↑↓ scroll"),
         "{shown}"
@@ -417,7 +417,7 @@ fn the_dashboard_scrolls_over_its_height() {
     let mut chat = chat_with(CostView::with_data(usage(), lines()));
     // A column of cards is 21 rows: a 10-row pane hides the lower cards.
     assert!(!text(&draw(&chat, 50, 10)).contains("Agent time"));
-    for _ in 0..30 {
+    for _ in 0..13 {
         chat.cost_mut()
             .unwrap()
             .on_key(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
@@ -438,4 +438,143 @@ fn every_pane_size_draws_the_dashboard_without_panicking() {
                 .on_key(&KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE));
         }
     }
+}
+
+/// The week 11x the one before: every delta is four digits (`▲ 1000%`).
+fn surge(times: u64) -> UsageData {
+    let row = |days_ago, n: u64| UsageRow {
+        days_ago,
+        engine: "claude".into(),
+        turns: 1,
+        records: 1,
+        input: Some(1_000 * n),
+        output: Some(100 * n),
+        chat_output: Some(100 * n),
+        chat_outputs: 1,
+        wall_ms: Some(60_000 * n),
+        wall_timed: 1,
+        ..UsageRow::default()
+    };
+    UsageData {
+        rows: vec![row(0, times), row(8, 1)],
+        tasks: vec![
+            (0, "c1".into()),
+            (0, "c2".into()),
+            (0, "c3".into()),
+            (8, "c4".into()),
+        ],
+    }
+}
+
+fn surge_at(width: u16, times: u64) -> String {
+    let chat = chat_with(CostView::with_data(surge(times), Vec::new()));
+    text(&draw(&chat, width, 40))
+}
+
+/// Every arrow is followed by its whole number and a `%`.
+fn deltas_are_whole(shown: &str) -> bool {
+    shown.match_indices("▲ ").all(|(at, arrow)| {
+        let rest = &shown[at + arrow.len()..];
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        digits > 0 && rest[digits..].starts_with('%')
+    })
+}
+
+#[test]
+fn a_four_digit_delta_is_never_clipped_into_another_number() {
+    for width in [80, 79, 60, 59, 40] {
+        let shown = surge_at(width, 11);
+        assert!(shown.contains("▲ 1000%"), "{width}: {shown}");
+        assert!(deltas_are_whole(&shown), "{width}: {shown}");
+    }
+    // Under 40 columns there are no cards, so no delta at all.
+    assert!(!surge_at(39, 11).contains('▲'));
+}
+
+#[test]
+fn a_delta_that_does_not_fit_is_capped_not_cut() {
+    // At 80 columns the Agent time card has no room for five digits.
+    let tight = surge_at(80, 121);
+    assert!(tight.contains("▲ 999%+"), "{tight}");
+    for width in [80, 79, 60, 59, 40] {
+        let shown = surge_at(width, 121);
+        assert!(
+            deltas_are_whole(&shown.replace("%+", "%")),
+            "{width}: {shown}"
+        );
+    }
+}
+
+#[test]
+fn the_keys_line_advertises_the_range_only_where_it_works() {
+    let narrow = dashboard(39, 12);
+    assert!(narrow.ends_with("Esc close · ↑↓ scroll"), "{narrow}");
+    assert!(!narrow.contains("1-4"), "{narrow}");
+    assert!(dashboard(40, 12).ends_with("1-4 range · ↑↓ scroll"));
+}
+
+#[test]
+fn the_wide_tiers_keep_the_text_report_lines_under_the_cards() {
+    for (width, height) in [(100, 15), (72, 20), (50, 32)] {
+        let shown = dashboard(width, height);
+        assert!(shown.contains("this chat: 6 tokens"), "{width}: {shown}");
+        assert!(shown.contains("llama3:8b"), "{width}: {shown}");
+        // The header is drawn once.
+        assert_eq!(shown.matches("AI usage (alpha)").count(), 1, "{shown}");
+    }
+}
+
+#[test]
+fn the_empty_state_does_not_repeat_the_report_under_it() {
+    let chat = chat_with(CostView::with_data(UsageData::default(), lines()));
+    assert!(!text(&draw(&chat, 100, 20)).contains("this chat"));
+}
+
+fn press(chat: &mut ChatState, code: KeyCode) {
+    chat.cost_mut()
+        .unwrap()
+        .on_key(&KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+#[test]
+fn a_range_switch_that_shortens_the_sheet_pulls_the_scroll_back() {
+    // Only the month has rows: its sheet is tall, the empty week is short.
+    let mut data = usage();
+    data.rows.retain(|r| r.days_ago > 7);
+    let mut chat = chat_with(CostView::with_data(data, lines()));
+    press(&mut chat, KeyCode::Char('2'));
+    draw(&chat, 50, 10);
+    for _ in 0..40 {
+        press(&mut chat, KeyCode::Down);
+    }
+    assert!(!text(&draw(&chat, 50, 10)).contains("[30d]"));
+    press(&mut chat, KeyCode::Char('1'));
+    let shown = text(&draw(&chat, 50, 10));
+    assert!(shown.contains("[7d] 30d 90d All"), "{shown}");
+    assert!(shown.contains("no usage recorded yet"), "{shown}");
+}
+
+#[test]
+fn a_resize_that_shortens_the_sheet_pulls_the_scroll_back() {
+    let mut chat = chat_with(CostView::with_data(usage(), lines()));
+    draw(&chat, 50, 10);
+    for _ in 0..60 {
+        press(&mut chat, KeyCode::Down);
+    }
+    assert!(!text(&draw(&chat, 50, 10)).contains("[7d]"));
+    let shown = text(&draw(&chat, 100, 30));
+    assert!(shown.contains("[7d] 30d 90d All"), "{shown}");
+}
+
+#[test]
+fn snapshot_a_card_with_an_approximate_time_and_millions() {
+    let mut data = usage();
+    data.rows[0].input = Some(1_234_567);
+    // Two of the three turns of the day have no wall time: the sum is a
+    // lower bound, marked with `~`.
+    data.rows[0].wall_timed = 1;
+    let chat = chat_with(CostView::with_data(data, Vec::new()));
+    let shown = text(&draw(&chat, 100, 9));
+    assert!(shown.contains("1.2M") && shown.contains('~'), "{shown}");
+    insta::assert_snapshot!(shown);
 }

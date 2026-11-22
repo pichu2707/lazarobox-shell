@@ -1,0 +1,13 @@
+---
+source: src/ui/components/chat/cost_tests.rs
+expression: shown
+---
+
+[7d] 30d 90d All
+
+ Input        ▲ 411559%   Output          ▲ 233%   Tasks              n/a   Agent time         n/a
+ 1.2M                     300                      3                        ~3m
+ cache 63%                avg 50/turn              6 turns                  6 agent turns
+       █                      ▄ █                      █ ▄                      █ ▄
+
+Esc close · 1-4 range · ↑↓ scroll

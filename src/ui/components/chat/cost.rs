@@ -44,7 +44,8 @@ impl ChatView<'_> {
         view.set_width(area.width);
         match view.dashboard().filter(|_| area.width >= TEXT_BELOW) {
             Some(model) => {
-                let sheet = layout::draw(model, area.width, theme);
+                let report = view.body_rows(usize::from(area.width));
+                let sheet = layout::draw(model, area.width, &report, theme);
                 view.set_layout(window, usize::from(sheet.area.height));
                 for n in 0..window.min(usize::from(sheet.area.height)) {
                     let (from, y) = (n + view.scroll(), 1 + u16::try_from(n).unwrap_or(0));
@@ -69,11 +70,8 @@ impl ChatView<'_> {
                 }
             }
         }
-        let hint = if view.dashboard().is_some() {
-            DATA_HINT
-        } else {
-            HINT
-        };
+        let ranges = view.dashboard().is_some() && area.width >= TEXT_BELOW;
+        let hint = if ranges { DATA_HINT } else { HINT };
         let (keys, style) = match view.note() {
             Some(note) => (note, base.fg(theme.warning_orange)),
             None => (hint, base.fg(theme.text_muted)),

@@ -1,6 +1,6 @@
 ---
 source: src/ui/components/chat/cost_tests.rs
-expression: "dashboard(50, 24)"
+expression: "dashboard(50, 32)"
 ---
 AI usage (alpha)
 [7d] 30d 90d All
@@ -24,5 +24,13 @@ AI usage (alpha)
  3m
  6 agent turns
      █ ▄
+
+today: 6 tokens · 2 turns
+last 7 days: 126 tokens · 3 turns
+by engine and model (last 7 days):
+  ollama › llama3:8b: in 100 · out 20
+  claude › sonnet: in 2 · out 4 · $0.0049
+list-price equivalent
+this chat: 6 tokens · 2 turns
 
 Esc close · 1-4 range · ↑↓ scroll

@@ -4,7 +4,7 @@
 use super::chat_history::*;
 use super::*;
 use crate::core::ai::chat::{
-    cost_view::READING_LINE,
+    cost_view::{NO_DATA, READING_LINE},
     dashboard::UsageData,
     engine::StreamEvent,
     store::{StoreCmd, StoreReply},
@@ -214,19 +214,20 @@ fn a_range_key_rebuilds_the_dashboard_and_asks_the_store_nothing() {
             .map(|d| d.range)
     };
     assert_eq!(range(&a), Some(Range::Week));
-    // A draw has measured a wide pane. The key reaches neither the composer
-    // nor the store.
-    chat_of(&a).cost().unwrap().set_width(100);
+    // The key reaches neither the composer nor the store.
     let effects = a.update(key('2'));
     assert!(effects.is_empty(), "{effects:?}");
     assert_eq!(composer_text(&a), "");
     assert_eq!(range(&a), Some(Range::Month));
-    // An unavailable store leaves no model: the range keys are inert.
+    // Reading, or an unavailable store, leaves no model: the key says so.
     a.update(plain(KeyCode::Esc));
     ask(&mut a, "/cost");
+    a.update(key('2'));
+    assert_eq!(chat_of(&a).cost().and_then(|v| v.note()), Some(NO_DATA));
     a.update(answer(None));
     a.update(key('2'));
     assert_eq!(range(&a), None);
+    assert_eq!(chat_of(&a).cost().and_then(|v| v.note()), Some(NO_DATA));
 }
 
 #[test]

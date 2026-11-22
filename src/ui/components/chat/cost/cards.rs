@@ -32,17 +32,20 @@ pub(super) fn render(
     // One column of padding on each side of the text.
     let inner = w.saturating_sub(2);
     buf.set_stringn(x + 1, y, kpi.label, inner, muted);
-    let delta = kpi.delta.text();
-    let at = w
-        .saturating_sub(delta.chars().count() + 1)
-        .max(kpi.label.len() + 2);
-    buf.set_stringn(
-        x + u16::try_from(at).unwrap_or(0),
-        y,
-        &delta,
-        w.saturating_sub(at + 1),
-        muted,
-    );
+    // The delta sits at the right edge. When it does not fit beside the label
+    // the right padding goes first, then the number is capped; it is never cut.
+    let room = |pad: usize| w.saturating_sub(kpi.label.len() + 2 + pad);
+    let fits = [
+        (kpi.delta.text(), 1),
+        (kpi.delta.text(), 0),
+        (kpi.delta.capped(), 0),
+    ]
+    .into_iter()
+    .find(|(text, pad)| text.chars().count() <= room(*pad));
+    if let Some((text, pad)) = fits {
+        let at = w - pad - text.chars().count();
+        buf.set_stringn(x + u16::try_from(at).unwrap_or(0), y, &text, w - at, muted);
+    }
     buf.set_stringn(
         x + 1,
         y + 1,

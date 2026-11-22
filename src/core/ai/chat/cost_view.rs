@@ -19,6 +19,10 @@ pub const CLOSE_FIRST: &str = "Esc closes this view; Ctrl+C then cancels the ans
 /// What a range key says when the pane is too narrow for the dashboard.
 pub const WIDEN: &str = "widen the pane to change the range";
 
+/// What a range key says when there is no usage to change the range of
+/// (still reading, or the store is unavailable).
+pub const NO_DATA: &str = "no usage data to change the range of";
+
 /// Rows a page key scrolls.
 const PAGE: usize = 10;
 
@@ -137,9 +141,11 @@ impl CostView {
     /// new read. In the text tier there is nothing to change, so it says so.
     fn pick(&mut self, to: impl FnOnce(Range) -> Range) {
         let Body::Data(data, model) = &mut self.body else {
+            self.note = Some(NO_DATA);
             return;
         };
-        if self.width.get() < TEXT_BELOW {
+        // A width of 0 is one no draw has measured yet: not a narrow pane.
+        if (1..TEXT_BELOW).contains(&self.width.get()) {
             self.note = Some(WIDEN);
         } else {
             **model = Dashboard::build(data, to(model.range));

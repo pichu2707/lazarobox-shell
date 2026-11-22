@@ -158,11 +158,24 @@ fn a_range_key_in_the_text_tier_says_to_widen_the_pane() {
 }
 
 #[test]
-fn a_text_view_has_no_model_and_the_range_keys_do_nothing() {
-    let mut view = CostView::with(lines(2));
-    view.set_width(100);
-    assert!(!view.on_key(&key(KeyCode::Char('2'))));
-    assert_eq!(view.dashboard(), None);
+fn a_range_key_with_no_model_says_there_is_no_usage_data() {
+    // Reading, or the store was unavailable: there is nothing to change.
+    for mut view in [CostView::reading(), CostView::with(lines(2))] {
+        view.set_width(100);
+        assert!(!view.on_key(&key(KeyCode::Char('2'))));
+        assert_eq!(view.note(), Some(NO_DATA));
+        assert_eq!(view.dashboard(), None);
+        view.on_key(&key(KeyCode::Down));
+        assert_eq!(view.note(), None);
+    }
+}
+
+#[test]
+fn a_width_not_measured_yet_is_not_the_text_tier() {
+    let mut view = CostView::with_data(data(), lines(2));
+    view.on_key(&key(KeyCode::Char('2')));
+    assert_eq!(view.note(), None);
+    assert_eq!(range(&view), Range::Month);
 }
 
 #[test]
