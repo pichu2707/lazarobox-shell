@@ -5,8 +5,10 @@
 //! `runtime/memory_local.rs`.
 
 pub mod area;
+pub mod gitignore;
 pub mod ledger;
 pub mod note;
+pub mod port;
 
 /// The store folder at the repository root.
 pub const STORE_DIR: &str = ".lzr";
