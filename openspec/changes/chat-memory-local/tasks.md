@@ -169,3 +169,8 @@ Task rule for C12: the existing engram-down notice path stays as is; the mirror 
 - Done in S1a3: `.git/info/exclude` is found through a `.git` file (submodule, linked checkout) and its `commondir`; `.lzr/*`, `**/.lzr`, `.lzr/**` and `.lzr/memory/notes/` count as ignoring the folder.
 - Left: `read_regular` opens without `O_NOFOLLOW`. Adding it there would refuse a symlinked `AGENTS.md` or rules file that users keep on purpose; it needs a decision on which callers must refuse links (the `.gitignore` reads already do).
 - Left: Windows. `bounded_read.rs` and `gitignore.rs` use `std::os::unix` and `libc` unconditionally, like the rest of the runtime; a `cfg` fallback belongs to a crate-wide Windows pass, not to this edit.
+
+### Follow-ups from #843 review (for S1a4)
+
+- Cap the number of note files read per load (design: 5,000 notes rank within a time bound) and show a visible line when the cap is hit. It needs a new field on `LocalReply::Loaded`, which did not fit the S1a3 budget.
+- Done in S1a3 after review: private files 0600 and folders 0700 (a wider existing folder is tightened), flock on `<data>/memory.lock` around the ledger and machine-id, panic and full-channel failures reach the pane, a regenerated machine id is said, linked `.lzr`/`memory`/`notes` folders and linked note files are refused, `gitdir:`/`commondir` are trusted only inside a real `.git`.

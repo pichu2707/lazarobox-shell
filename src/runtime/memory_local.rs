@@ -4,8 +4,13 @@
 //! events.
 
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, DirBuilder, OpenOptions},
     io::{self, ErrorKind, Read, Write},
+    os::unix::{
+        fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+        io::AsRawFd,
+    },
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -60,10 +65,20 @@ impl LocalMemory {
             .as_ref()
             .err()
             .map_or("the memory thread stopped", String::as_str);
-        let _ = self.replies.try_send(LocalReply::Failed {
+        let reply = LocalReply::Failed {
             pane: cmd.pane(),
             failure: Failure::Unavailable(reason.to_owned()),
-        });
+        };
+        // A full queue must not swallow the failure: wait for room off the
+        // caller's thread. A closed queue means the app is gone.
+        if let Err(tokio::sync::mpsc::error::TrySendError::Full(reply)) =
+            self.replies.try_send(reply)
+        {
+            let replies = self.replies.clone();
+            std::thread::spawn(move || {
+                let _ = replies.blocking_send(reply);
+            });
+        }
     }
 }
 
@@ -95,18 +110,31 @@ fn spawn_with(
     let (tx, rx) = mpsc::channel();
     let answers = replies.clone();
     let run = Box::new(move || {
-        for cmd in rx {
-            if replies
-                .blocking_send(handle(data.as_deref(), home.as_deref(), cmd))
-                .is_err()
-            {
-                break;
-            }
-        }
+        serve(rx, replies, |cmd| {
+            handle(data.as_deref(), home.as_deref(), cmd)
+        });
     });
     LocalMemory {
         queue: start(run).map(|()| tx).map_err(|e| e.to_string()),
         replies: answers,
+    }
+}
+
+/// The thread's loop: one reply per command.
+fn serve(
+    rx: mpsc::Receiver<LocalCmd>,
+    replies: tokio::sync::mpsc::Sender<LocalReply>,
+    mut run: impl FnMut(LocalCmd) -> LocalReply,
+) {
+    for cmd in rx {
+        let pane = cmd.pane();
+        let reply = catch_unwind(AssertUnwindSafe(|| run(cmd))).unwrap_or(LocalReply::Failed {
+            pane,
+            failure: Failure::Unavailable("an internal error stopped this command".to_owned()),
+        });
+        if replies.blocking_send(reply).is_err() {
+            break;
+        }
     }
 }
 
@@ -115,11 +143,12 @@ pub fn handle(data: Option<&Path>, home: Option<&Path>, cmd: LocalCmd) -> LocalR
     match cmd {
         LocalCmd::Load { pane, epoch, cwd } => load(data, home, pane, epoch, &cwd),
         LocalCmd::Save { pane, root, note } => match save(data, &root, note) {
-            Ok((id, cut, gitignore)) => LocalReply::Saved {
+            Ok((id, cut, gitignore, notice)) => LocalReply::Saved {
                 pane,
                 id,
                 cut,
                 gitignore,
+                notice,
             },
             Err(failure) => LocalReply::Failed { pane, failure },
         },
@@ -154,8 +183,10 @@ fn load(
     match note_files(&store) {
         Ok(files) => {
             for file in files {
+                let plain = fs::symlink_metadata(&file).is_ok_and(|m| m.is_file());
                 match read_regular(&file, NOTE_CAP)
                     .ok()
+                    .filter(|_| plain)
                     .map(|b| LocalNote::parse(&b))
                 {
                     Some(Ok(note)) if ledger.is_local(&note) => notes.push(note),
@@ -183,6 +214,7 @@ fn load(
 /// The note files of a store, sorted by name. A store that does not exist yet
 /// has none.
 fn note_files(store: &Path) -> io::Result<Vec<PathBuf>> {
+    plain_store(store)?;
     let dir = match fs::read_dir(store.join(STORE_DIR).join(NOTES_DIR)) {
         Ok(dir) => dir,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
@@ -197,27 +229,43 @@ fn note_files(store: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// What a save made: the note id, whether the text was cut, the `.gitignore`
+/// outcome and a notice.
+type Saved = (String, bool, Option<GitignoreOutcome>, Option<String>);
+
+/// Refuses a store whose `.lzr`, `memory` or `notes` folder is a link: what
+/// is read or written through it would not be in the repository.
+fn plain_store(store: &Path) -> io::Result<()> {
+    let mut dir = store.to_owned();
+    for part in [STORE_DIR, "memory", "notes"] {
+        dir.push(part);
+        if fs::symlink_metadata(&dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err(io::Error::other(format!("{part} is a link; refused")));
+        }
+    }
+    Ok(())
+}
+
 /// Writes one note: folder, machine id, ledger claim, then the note itself.
 /// The ledger goes first, so a note on disk is never left unclaimed. Returns
 /// the id, whether the text was cut and, when this save created `.lzr/`, the
 /// `.gitignore` outcome.
-fn save(
-    data: Option<&Path>,
-    root: &Root,
-    new: NewNote,
-) -> Result<(String, bool, Option<GitignoreOutcome>), Failure> {
+fn save(data: Option<&Path>, root: &Root, new: NewNote) -> Result<Saved, Failure> {
     let data = data.ok_or_else(|| Failure::Io("private data folder unavailable".to_owned()))?;
+    private_dir(data).map_err(|e| failure(&e, data))?;
+    private_dir(&data.join("memory")).map_err(|e| failure(&e, data))?;
+    let _lock = lock(&data.join("memory.lock")).map_err(|e| failure(&e, data))?;
     let ledger_file = ledger_path(data, &root.store);
     let existing = read_ledger(&ledger_file).map_err(|_| {
         Failure::Io("the private ledger is damaged or newer; it was left as it is".to_owned())
     })?;
+    plain_store(&root.store).map_err(|e| Failure::Io(e.to_string()))?;
     let lzr = root.store.join(STORE_DIR);
     let created = !lzr.exists();
     let notes = lzr.join(NOTES_DIR);
     fs::create_dir_all(&notes)
         .map_err(|e| failure(&e, if created { &root.store } else { &lzr }))?;
-    fs::create_dir_all(data.join("memory")).map_err(|e| failure(&e, data))?;
-    let machine = machine_id(data).map_err(|e| failure(&e, data))?;
+    let (machine, notice) = machine_id(data).map_err(|e| failure(&e, data))?;
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -228,10 +276,20 @@ fn save(
     let mut mine = Ledger::default();
     mine.record(&note);
     let merged = mine.merged(existing);
-    write_atomic(&ledger_file, merged.to_json().as_bytes()).map_err(|e| failure(&e, data))?;
-    write_atomic(&notes.join(format!("{id}.json")), note.to_json().as_bytes())
-        .map_err(|e| failure(&e, &lzr))?;
-    Ok((id, cut, created.then(|| gitignore::ensure(&root.store))))
+    write_atomic(&ledger_file, merged.to_json().as_bytes(), 0o600)
+        .map_err(|e| failure(&e, data))?;
+    write_atomic(
+        &notes.join(format!("{id}.json")),
+        note.to_json().as_bytes(),
+        0o644,
+    )
+    .map_err(|e| failure(&e, &lzr))?;
+    Ok((
+        id,
+        cut,
+        created.then(|| gitignore::ensure(&root.store)),
+        notice,
+    ))
 }
 
 /// A write error as a typed failure: a permission or read-only error names
@@ -264,16 +322,21 @@ fn read_ledger(path: &Path) -> Result<Ledger, LedgerError> {
     }
 }
 
-/// This machine's id, made on the first save.
-fn machine_id(data: &Path) -> io::Result<String> {
+/// This machine's id, made on the first save. An id that exists but cannot
+/// be used is made again, and the notice says so.
+fn machine_id(data: &Path) -> io::Result<(String, Option<String>)> {
     let file = data.join("machine-id");
-    let known = read_regular(&file, 64)
-        .ok()
-        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
-        .filter(|id| id.starts_with("m-") && id.len() == 18);
-    if let Some(id) = known {
-        return Ok(id);
-    }
+    let damaged = match read_regular(&file, 64) {
+        Ok(bytes) => {
+            let id = String::from_utf8_lossy(&bytes).trim().to_owned();
+            if id.starts_with("m-") && id.len() == 18 {
+                return Ok((id, None));
+            }
+            true
+        }
+        Err(ReadError::Missing) => false,
+        Err(_) => true,
+    };
     let mut entropy = [0u8; 16];
     let random = fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut entropy));
     let seed = match random {
@@ -286,13 +349,59 @@ fn machine_id(data: &Path) -> io::Result<String> {
         }
     };
     let id = ledger::machine_id(&seed);
-    write_atomic(&file, format!("{id}\n").as_bytes())?;
-    Ok(id)
+    let line = format!("{id}\n");
+    if damaged {
+        write_atomic(&file, line.as_bytes(), 0o600)?;
+        let notice = "memory: the machine id could not be read and was made again".to_owned();
+        return Ok((id, Some(notice)));
+    }
+    let created = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&file)
+        .and_then(|mut f| f.write_all(line.as_bytes()));
+    match created {
+        Ok(()) => Ok((id, None)),
+        // Another process made it first: use theirs.
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => machine_id(data),
+        Err(e) => Err(e),
+    }
+}
+
+/// Creates `dir` for the owner only; a folder that already exists with wider
+/// permissions is tightened, because it holds the private ledger.
+fn private_dir(dir: &Path) -> io::Result<()> {
+    DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    if fs::metadata(dir)?.permissions().mode() & 0o077 != 0 {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// An exclusive lock on `path`, held until the returned file is dropped, so
+/// two lazarobox instances never interleave a ledger read-merge-write.
+fn lock(path: &Path) -> io::Result<fs::File> {
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)?;
+    loop {
+        // SAFETY: the descriptor is open for as long as `file` lives.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(file);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
 }
 
 /// Writes `bytes` to `path` without ever leaving it half written: a temp file
 /// in the same folder, synced, then renamed over it.
-fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     let name = path
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -301,6 +410,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let written = OpenOptions::new()
         .write(true)
         .create_new(true)
+        .mode(mode)
         .open(&tmp)
         .and_then(|mut file| {
             file.write_all(bytes)?;
@@ -837,5 +947,177 @@ mod tests {
             matches!(reply, Ok(Some(LocalReply::Loaded { .. }))),
             "{reply:?}"
         );
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn the_private_files_and_folders_are_owner_only() {
+        let rig = Rig::new();
+        fs::set_permissions(&rig.data, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(rig.data.join("memory")).unwrap();
+        fs::set_permissions(rig.data.join("memory"), fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(matches!(rig.save("one"), LocalReply::Saved { .. }));
+        assert_eq!(mode(&rig.data), 0o700, "a wider data folder is tightened");
+        assert_eq!(mode(&rig.data.join("memory")), 0o700);
+        assert_eq!(mode(&rig.data.join("machine-id")), 0o600);
+        assert_eq!(mode(&rig.ledger_file()), 0o600);
+    }
+
+    #[test]
+    fn new_private_folders_are_owner_only_whatever_the_umask() {
+        let rig = Rig::new();
+        fs::remove_dir_all(&rig.data).unwrap();
+        // SAFETY: umask has no preconditions; the old value is put back.
+        let old = unsafe { libc::umask(0o022) };
+        let saved = rig.save("one");
+        unsafe { libc::umask(old) };
+        assert!(matches!(saved, LocalReply::Saved { .. }), "{saved:?}");
+        assert_eq!(mode(&rig.data.join("memory")), 0o700);
+        assert_eq!(mode(&rig.data.join("machine-id")), 0o600);
+    }
+
+    #[test]
+    fn concurrent_saves_keep_every_claim_and_one_machine_id() {
+        let rig = std::sync::Arc::new(Rig::new());
+        let handles: Vec<_> = (0..8)
+            .map(|n| {
+                let rig = rig.clone();
+                std::thread::spawn(move || rig.save(&format!("note number {n}")))
+            })
+            .collect();
+        for handle in handles {
+            assert!(matches!(handle.join().unwrap(), LocalReply::Saved { .. }));
+        }
+        assert_eq!(rig.counts(), (8, 0, 0, 0), "no claim was lost");
+        let machine = fs::read_to_string(rig.data.join("machine-id")).unwrap();
+        for entry in fs::read_dir(rig.notes_dir()).unwrap() {
+            let text = fs::read_to_string(entry.unwrap().path()).unwrap();
+            assert!(
+                text.contains(machine.trim()),
+                "one machine id in every note"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreadable_machine_id_is_made_again_and_said() {
+        let rig = Rig::new();
+        fs::write(rig.data.join("machine-id"), "garbage").unwrap();
+        let LocalReply::Saved { notice, .. } = rig.save("one") else {
+            panic!("not saved");
+        };
+        let notice = notice.expect("the new machine id is said");
+        assert!(notice.contains("machine id"), "{notice}");
+        let again = fs::read_to_string(rig.data.join("machine-id")).unwrap();
+        assert!(again.starts_with("m-"), "{again}");
+        let LocalReply::Saved { notice, .. } = rig.save("two") else {
+            panic!("not saved");
+        };
+        assert_eq!(notice, None, "said once");
+    }
+
+    #[test]
+    fn a_linked_store_folder_is_refused_before_anything_is_written() {
+        let rig = Rig::new();
+        let outside = rig._tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, rig.repo.join(".lzr")).unwrap();
+        let LocalReply::Failed { failure, .. } = rig.save("one") else {
+            panic!("saved through a link");
+        };
+        assert!(matches!(failure, Failure::Io(why) if why.contains("link")));
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        let LocalReply::Loaded {
+            notes, unreadable, ..
+        } = rig.load(&rig.repo)
+        else {
+            panic!("not loaded");
+        };
+        assert_eq!(
+            (notes.len(), unreadable),
+            (0, 1),
+            "a linked folder is not read"
+        );
+    }
+
+    #[test]
+    fn a_linked_note_file_is_not_read() {
+        let rig = Rig::new();
+        assert!(matches!(rig.save("one"), LocalReply::Saved { .. }));
+        let file = fs::read_dir(rig.notes_dir())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let real = rig._tmp.path().join("real.json");
+        fs::rename(&file, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &file).unwrap();
+        assert_eq!(rig.counts(), (0, 0, 1, 0));
+    }
+
+    #[test]
+    fn a_command_that_panics_gets_a_failure_and_the_thread_goes_on() {
+        let (tx, rx) = mpsc::channel();
+        let (replies, mut out) = tokio::sync::mpsc::channel(4);
+        let load = || LocalCmd::Load {
+            pane: PANE,
+            epoch: 0,
+            cwd: "/x".into(),
+        };
+        tx.send(load()).unwrap();
+        tx.send(load()).unwrap();
+        drop(tx);
+        let mut first = true;
+        serve(rx, replies, |cmd| {
+            if std::mem::take(&mut first) {
+                panic!("boom");
+            }
+            LocalReply::Failed {
+                pane: cmd.pane(),
+                failure: Failure::Io("second".into()),
+            }
+        });
+        let Some(LocalReply::Failed { failure, .. }) = out.blocking_recv() else {
+            panic!("no reply for the command that panicked");
+        };
+        assert!(matches!(failure, Failure::Unavailable(_)), "{failure:?}");
+        assert!(matches!(
+            out.blocking_recv(),
+            Some(LocalReply::Failed {
+                failure: Failure::Io(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_failure_is_not_dropped_when_the_reply_channel_is_full() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let filler = LocalReply::Failed {
+            pane: PANE,
+            failure: Failure::Io("filler".into()),
+        };
+        tx.try_send(filler).unwrap();
+        let memory = spawn_with(None, None, tx, |_| {
+            Err(io::Error::new(ErrorKind::WouldBlock, "no threads left"))
+        });
+        memory.send(LocalCmd::Load {
+            pane: PANE,
+            epoch: 0,
+            cwd: "/x".into(),
+        });
+        let _ = rx.blocking_recv();
+        let late = rx.blocking_recv();
+        assert!(matches!(
+            late,
+            Some(LocalReply::Failed {
+                failure: Failure::Unavailable(_),
+                ..
+            })
+        ));
     }
 }

@@ -72,6 +72,8 @@ pub enum LocalReply {
         cut: bool,
         /// Set only when this save created `.lzr/`.
         gitignore: Option<GitignoreOutcome>,
+        /// Something the save did on its own that the user should know.
+        notice: Option<String>,
     },
     Failed {
         pane: PaneId,
@@ -139,10 +141,16 @@ impl LocalReply {
             .filter(|(count, _)| *count > 0)
             .map(|(_, line)| line)
             .collect(),
-            Self::Saved { cut, gitignore, .. } => cut
+            Self::Saved {
+                cut,
+                gitignore,
+                notice,
+                ..
+            } => cut
                 .then(|| CUT_LINE.to_owned())
                 .into_iter()
                 .chain(gitignore.iter().filter_map(GitignoreOutcome::line))
+                .chain(notice.clone())
                 .collect(),
             Self::Failed {
                 failure: Failure::ReadOnly(path),
@@ -260,6 +268,7 @@ mod tests {
             id: "n-1".into(),
             cut: true,
             gitignore: Some(GitignoreOutcome::Added),
+            notice: None,
         };
         assert_eq!(
             saved.lines(),
