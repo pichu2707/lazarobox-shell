@@ -10,9 +10,11 @@ use super::{
     Range, UsageData,
 };
 
-/// The most days a sparkline covers: the store keeps 90 days of usage, so no
-/// row is older and `All` never needs more.
-const SPARK_DAYS: u32 = 90;
+/// A safety bound on the days a sparkline covers. `All` is sized from the
+/// oldest row, not from the 90-day retention: that works on seconds while
+/// `days_ago` is a local date (and DST moves it), so a row can sit at day 90
+/// or 91 and the cards still count it.
+const SPARK_DAYS: u32 = 400;
 
 /// The change against the previous equal period.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

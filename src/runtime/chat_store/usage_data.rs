@@ -54,7 +54,7 @@ pub(super) fn usage_data(
            FROM turn_usage WHERE conversation_id IS NOT NULL
          UNION
          SELECT {DAY_SQL}, 'r' || substr(worker, 1, instr(worker, '.') - 1)
-           FROM turn_usage WHERE role = 'worker' AND instr(worker, '.') > 0
+           FROM turn_usage WHERE role = 'worker' AND instr(worker, '.') > 1
          ORDER BY day, key",
     ))?;
     let tasks = stmt

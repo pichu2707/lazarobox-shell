@@ -286,6 +286,8 @@ fn sums_saturate_instead_of_wrapping() {
             r.input = Some(u64::MAX);
             r.turns = u64::MAX;
             r.workers = u64::MAX;
+            r.chat_outputs = u64::MAX;
+            r.chat_output = Some(10);
             r.wall_timed = u64::MAX;
             r.wall_ms = Some(1);
         })
@@ -294,9 +296,23 @@ fn sums_saturate_instead_of_wrapping() {
     assert_eq!(d.kpis[0].value, "18446744.1T");
     assert_eq!(d.kpis[2].sub, "18,446,744,073,709,551,615 turns");
     assert_eq!(d.kpis[3].sub, "18,446,744,073,709,551,615 agent turns");
+    // The average divides by a saturated count without overflowing.
+    assert_eq!(d.kpis[1].sub, "avg 0/turn");
     // Saturated counts still agree, so the time is not marked approximate.
     assert_eq!(d.kpis[3].value, "0s");
     // A previous period that dwarfs the current one stays a valid percentage.
     let d = build(vec![input(0, u64::MAX), input(7, 1)], Range::Week);
     assert_eq!(d.kpis[0].delta, Delta::Up(u64::MAX));
+}
+
+#[test]
+fn the_all_sparkline_covers_every_day_the_cards_count() {
+    // Retention works on seconds and `days_ago` on local dates, so a row can
+    // sit at day 90 or 91: the sparkline must still hold it.
+    let d = build(vec![input(0, 3), input(90, 5), input(91, 7)], Range::All);
+    assert_eq!(d.kpis[0].value, "15");
+    assert_eq!(d.kpis[0].spark.len(), 92);
+    assert_eq!(d.kpis[0].spark.iter().sum::<u64>(), 15);
+    assert_eq!(d.kpis[0].spark[0], 7);
+    assert_eq!(d.kpis[0].spark[91], 3);
 }

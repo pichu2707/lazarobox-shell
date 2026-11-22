@@ -130,11 +130,12 @@ fn rows_carry_the_chat_output_and_the_wall_time_of_chat_and_worker_records() {
     put(&conn, worker(AT, "1.a", Some(2_000)));
     put(&conn, worker(AT, "1.b", Some(500)));
     put(&conn, worker(AT, "1.c", None));
-    // A compaction run has no wall time and is not agent time.
+    // A compaction run is not agent time, even with a wall time.
     put(
         &conn,
         Rec {
             role: "compaction",
+            wall_ms: Some(9_000),
             ..chat(AT, Some(1), 7)
         },
     );
@@ -195,4 +196,29 @@ fn rows_and_tasks_agree_on_the_day_across_local_midnight() {
     assert_eq!(days, [0, 1], "one row per local day");
     assert_eq!(keys(&data, 1), ["c1"]);
     assert_eq!(keys(&data, 0), ["c2"]);
+}
+
+#[test]
+fn a_worker_name_without_a_run_makes_no_task() {
+    let conn = store();
+    put(&conn, worker(AT, ".a", Some(1)));
+    put(&conn, worker(AT, "nodot", Some(1)));
+    let data = usage_data(&conn, None, AT).unwrap();
+    assert!(data.tasks.is_empty(), "{:?}", data.tasks);
+}
+
+// The test above runs in whatever zone the machine has, and under UTC a UTC
+// day and a local day are the same: it cannot tell two day formulas apart.
+// So the shared fragment is pinned structurally: only `DAY_SQL` computes it.
+#[test]
+fn both_queries_take_the_day_from_the_shared_fragment() {
+    let worker = include_str!("../worker.rs");
+    let data = include_str!("../usage_data.rs");
+    assert!(
+        !worker.contains("julianday("),
+        "worker.rs has its own day SQL"
+    );
+    assert!(worker.contains("{DAY_SQL}"));
+    assert_eq!(data.matches("{DAY_SQL}").count(), 2);
+    assert_eq!(data.matches("julianday(").count(), 2, "only the const");
 }

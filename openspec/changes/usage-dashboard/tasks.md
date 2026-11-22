@@ -81,7 +81,7 @@ Count = added non-test `.rs` lines, minus blank lines and comments. Tests, fixtu
 - [x] 1b.3 RED: `usage_data.rs` tests on a fixture DB: rows with `SUM`/`COUNT(wall_ms)`, distinct task keys (`c<id>`, `r<run>`), missing column -> NULLs. Result: usage_data/tests.rs, 4 tests on an in-memory store; seen failing at runtime, then green.
 - [x] 1b.4 GREEN: create `src/runtime/chat_store/usage_data.rs` (rows + tasks, read-only); `StoreReply::UsageReport{data: Option<Box<UsageData>>}` in `store.rs`; dispatch in `worker.rs`. Result: chat_store/usage_data.rs (usage_data, wall_sql); usage_report adds chat output and worker wall columns; StoreReply::UsageReport{data}; worker dispatch.
 - [x] 1b.5 GREEN: `app/cost.rs` and `app/history.rs` consume the new reply and still build the existing text report; /cost output unchanged. Result: app/cost.rs and history.rs read `data.rows`; /cost text unchanged, all existing tests untouched.
-- [x] 1b.6 Close: protocol checks. No snapshot changes expected; if one changes, stop and review it. Result: cargo test ok (11913 passed), clippy -D warnings ok, fmt --check ok; no snapshot changed; production lines under 400 (see PR). No CHANGELOG entry: nothing user-visible changes.
+- [x] 1b.6 Close: protocol checks. No snapshot changes expected; if one changes, stop and review it. Result: cargo test ok (11925 passed), clippy -D warnings ok, fmt --check ok; no snapshot changed; 311 production lines. No CHANGELOG entry: nothing user-visible changes.
 
 ## S1c: renderer, range selector, tiers (~160)
 
