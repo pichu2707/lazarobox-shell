@@ -75,12 +75,12 @@ When lazarobox creates `.lzr/`, it MUST append the entry `.lzr/` to the root `.g
 - THEN the entry is not added again and no line is shown
 
 ### Requirement: No git repo and read-only repo [S1]
-Outside a git repo, lazarobox MUST NOT create `.lzr/` and MUST show the visible line `memory needs a git project`; whether notes fall back to the private chat store is a design choice, but nothing is written inside the chat folder. In a repo where `.lzr/` cannot be created or written, lazarobox MUST write nothing, show the visible line `memory not saved: <path> is read-only`, and the chat MUST continue normally. Neither case may fail, block or delay a reply.
+Outside a git repo, lazarobox MUST NOT create `.lzr/` and MUST show the visible line `memory: no git repository here; nothing is remembered for this folder`; whether notes fall back to the private chat store is a design choice, but nothing is written inside the chat folder. In a repo where `.lzr/` cannot be created or written, lazarobox MUST write nothing, show the visible line `memory not saved: <path> is read-only`, and the chat MUST continue normally. Neither case may fail, block or delay a reply.
 
 #### Scenario: No git repo
 - GIVEN a chat in a folder that is not inside a git repo
 - WHEN the chat opens and a summary would be saved
-- THEN no `.lzr/` is created, `memory needs a git project` is shown once, and the chat works
+- THEN no `.lzr/` is created, `memory: no git repository here; nothing is remembered for this folder` is shown once, and the chat works
 
 #### Scenario: Read-only repo
 - GIVEN a repo whose root is not writable

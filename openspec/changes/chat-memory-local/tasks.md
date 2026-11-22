@@ -163,3 +163,10 @@ Task rule for C12: the existing engram-down notice path stays as is; the mirror 
 
 - [ ] 6.1 After the last slice merges: close #431 with a link to the merged PRs; comment on #366 that only the Drive sync remains.
 - [ ] 6.2 Remove all `../lazarobox-shell-<slice>` worktrees (`scripts/clean-builds.sh`).
+
+### Follow-ups from #836 review (for S1a3)
+
+- `read_regular` opens without `O_NOFOLLOW`; consider adding it for the rules files.
+- In a linked worktree, `.git` is a file: `.git/info/exclude` must be found through the common git dir.
+- Windows: the `.gitignore` edit uses unix-only flags; add a `cfg` fallback.
+- Add `.lzr/*` and similar partial-pattern cases to the gitignore decision tests.

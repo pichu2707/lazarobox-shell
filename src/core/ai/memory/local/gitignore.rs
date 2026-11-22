@@ -12,7 +12,7 @@ use std::{
 use ignore::{Match, gitignore::GitignoreBuilder};
 
 use super::STORE_DIR;
-use crate::runtime::bounded_read::read_regular;
+use crate::runtime::bounded_read::{ReadError, read_regular};
 
 /// The most bytes read from a rules file.
 const RULES_CAP: u64 = 1024 * 1024;
@@ -45,6 +45,31 @@ impl GitignoreOutcome {
     }
 }
 
+/// The words for a read that failed.
+fn reason(error: ReadError) -> String {
+    match error {
+        ReadError::TooLarge => "larger than 1 MiB",
+        ReadError::NotRegular => "not a regular file",
+        ReadError::Missing | ReadError::Unreadable => "cannot be read",
+    }
+    .to_owned()
+}
+
+/// Appends `entry` to the file at `path`. The open never follows a link and
+/// never waits: a FIFO put there after the check fails with `ENXIO`.
+fn append(path: &Path, entry: &str) -> Result<(), String> {
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .and_then(|mut f| f.write_all(entry.as_bytes()))
+        .map_err(|e| match e.raw_os_error() {
+            Some(libc::ENXIO | libc::ELOOP) => "not a regular file".to_owned(),
+            _ => e.to_string(),
+        })
+}
+
 /// The bytes of the regular file at `path`; `None` when it does not exist.
 /// A link, a FIFO or any other kind of file is refused, and so is one over
 /// [`RULES_CAP`].
@@ -52,9 +77,7 @@ fn read_rules(path: &Path) -> Result<Option<Vec<u8>>, String> {
     match fs::symlink_metadata(path) {
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.to_string()),
-        Ok(meta) if meta.is_file() => read_regular(path, RULES_CAP)
-            .map(Some)
-            .map_err(|e| format!("cannot read it ({e:?})")),
+        Ok(meta) if meta.is_file() => read_regular(path, RULES_CAP).map(Some).map_err(reason),
         Ok(_) => Err("not a regular file".to_owned()),
     }
 }
@@ -90,14 +113,9 @@ pub fn ensure(root: &Path) -> GitignoreOutcome {
         .as_ref()
         .is_some_and(|b| !b.is_empty() && !b.ends_with(b"\n"));
     let entry = format!("{}{STORE_DIR}/{eol}", if unterminated { eol } else { "" });
-    let written = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&file)
-        .and_then(|mut f| f.write_all(entry.as_bytes()));
+    let written = append(&file, &entry);
     match (written, current) {
-        (Err(e), _) => GitignoreOutcome::Failed(e.to_string()),
+        (Err(reason), _) => GitignoreOutcome::Failed(reason),
         (Ok(()), None) => GitignoreOutcome::Created,
         (Ok(()), Some(_)) => GitignoreOutcome::Added,
     }
@@ -265,11 +283,37 @@ mod tests {
     fn a_huge_gitignore_is_refused_instead_of_read_whole() {
         let dir = repo();
         fs::write(dir.path().join(".gitignore"), vec![b'#'; 2 * 1024 * 1024]).unwrap();
-        assert!(matches!(ensure(dir.path()), GitignoreOutcome::Failed(_)));
+        let outcome = ensure(dir.path());
+        assert_eq!(
+            outcome,
+            GitignoreOutcome::Failed("larger than 1 MiB".into())
+        );
+        assert_eq!(
+            outcome.line().as_deref(),
+            Some("could not update .gitignore: larger than 1 MiB; .lzr/ may be committed")
+        );
         assert_eq!(
             fs::metadata(dir.path().join(".gitignore")).unwrap().len(),
             2 * 1024 * 1024
         );
+    }
+
+    #[test]
+    fn a_fifo_swapped_in_after_the_check_fails_the_open_instead_of_blocking() {
+        let dir = repo();
+        let file = dir.path().join(".gitignore");
+        let path = std::ffi::CString::new(file.to_str().unwrap()).unwrap();
+        // SAFETY: `path` is a valid NUL-terminated string for the call.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        assert_eq!(append(&file, ".lzr/\n"), Err("not a regular file".into()));
+    }
+
+    #[test]
+    fn a_read_failure_names_its_reason_in_words() {
+        assert_eq!(reason(ReadError::TooLarge), "larger than 1 MiB");
+        assert_eq!(reason(ReadError::NotRegular), "not a regular file");
+        assert_eq!(reason(ReadError::Unreadable), "cannot be read");
+        assert_eq!(reason(ReadError::Missing), "cannot be read");
     }
 
     // Spec (project-memory-store, Gitignore handling): the lines.
