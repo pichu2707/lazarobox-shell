@@ -316,3 +316,33 @@ fn the_all_sparkline_covers_every_day_the_cards_count() {
     assert_eq!(d.kpis[0].spark[0], 7);
     assert_eq!(d.kpis[0].spark[91], 3);
 }
+
+#[test]
+fn the_tier_follows_the_width_boundaries() {
+    let tiers = [80, 79, 60, 59, 40, 39, 0].map(Tier::of);
+    use Tier::*;
+    assert_eq!(tiers, [Row, Grid, Grid, Column, Column, Text, Text]);
+    assert_eq!(Tier::of(u16::MAX), Row);
+}
+
+#[test]
+fn the_ranges_cycle_both_ways_and_have_a_label() {
+    assert_eq!(Range::ALL.map(Range::label), ["7d", "30d", "90d", "All"]);
+    assert_eq!(Range::Week.next(), Range::Month);
+    assert_eq!(Range::All.next(), Range::Week);
+    assert_eq!(Range::Week.prev(), Range::All);
+    assert_eq!(Range::Quarter.prev(), Range::Month);
+}
+
+#[test]
+fn the_height_is_the_selector_plus_the_card_rows_of_the_tier() {
+    let full = build(vec![input(0, 1)], Range::Week);
+    // Selector and gap, then 4-row cards: one row, 2x2 with a gap, a column.
+    assert_eq!(full.height(100), 2 + 4);
+    assert_eq!(full.height(70), 2 + 9);
+    assert_eq!(full.height(50), 2 + 19);
+    assert_eq!(full.height(39), 0);
+    // The empty state is the selector, a gap and one line.
+    let empty = build(Vec::new(), Range::Week);
+    assert_eq!(empty.height(100), 3);
+}

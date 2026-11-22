@@ -1,6 +1,10 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
+use crate::core::ai::chat::{
+    dashboard::{Dashboard, Range, UsageData},
+    usage_view::UsageRow,
+};
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -91,4 +95,83 @@ fn this_chat_rows_are_flagged_for_highlight() {
         view.body_rows(40),
         vec![("this chat: no data".to_owned(), true)]
     );
+}
+
+fn data() -> UsageData {
+    let row = |days_ago, input| UsageRow {
+        days_ago,
+        engine: "claude".into(),
+        input: Some(input),
+        ..UsageRow::default()
+    };
+    UsageData {
+        rows: vec![row(0, 10), row(20, 500)],
+        tasks: Vec::new(),
+    }
+}
+
+fn range(view: &CostView) -> Range {
+    view.dashboard().expect("data").range
+}
+
+#[test]
+fn the_range_keys_rebuild_the_model_in_place_and_ask_nothing() {
+    let mut view = CostView::with_data(data(), lines(2));
+    view.set_width(100);
+    assert_eq!(range(&view), Range::Week);
+    for (code, want) in [
+        (KeyCode::Char('2'), Range::Month),
+        (KeyCode::Char('4'), Range::All),
+        (KeyCode::Char('1'), Range::Week),
+        (KeyCode::Char('3'), Range::Quarter),
+        (KeyCode::Right, Range::All),
+        (KeyCode::Char('l'), Range::Week),
+        (KeyCode::Left, Range::All),
+        (KeyCode::Char('h'), Range::Quarter),
+    ] {
+        // The key does not close the view and nothing else answers it.
+        assert!(!view.on_key(&key(code)), "{code:?}");
+        assert_eq!(range(&view), want, "{code:?}");
+        assert_eq!(view.note(), None, "{code:?}");
+    }
+    // The model is the one built from the data the view already holds.
+    assert_eq!(
+        view.dashboard(),
+        Some(&Dashboard::build(&data(), Range::Quarter))
+    );
+}
+
+#[test]
+fn a_range_key_in_the_text_tier_says_to_widen_the_pane() {
+    let mut view = CostView::with_data(data(), lines(2));
+    view.set_width(39);
+    view.on_key(&key(KeyCode::Char('2')));
+    assert_eq!(view.note(), Some(WIDEN));
+    assert_eq!(range(&view), Range::Week);
+    // Any other key clears the note; the exact boundary is already wide.
+    view.on_key(&key(KeyCode::Down));
+    assert_eq!(view.note(), None);
+    view.set_width(40);
+    view.on_key(&key(KeyCode::Char('2')));
+    assert_eq!(view.note(), None);
+    assert_eq!(range(&view), Range::Month);
+}
+
+#[test]
+fn a_text_view_has_no_model_and_the_range_keys_do_nothing() {
+    let mut view = CostView::with(lines(2));
+    view.set_width(100);
+    assert!(!view.on_key(&key(KeyCode::Char('2'))));
+    assert_eq!(view.dashboard(), None);
+}
+
+#[test]
+fn new_data_replaces_the_text_and_keeps_the_range() {
+    let mut view = CostView::reading();
+    view.set_data(data(), lines(3));
+    view.set_width(100);
+    view.on_key(&key(KeyCode::Char('2')));
+    view.set_data(data(), lines(4));
+    assert_eq!(range(&view), Range::Month);
+    assert_eq!(view.lines().len(), 4);
 }

@@ -18,6 +18,37 @@ pub enum Range {
 }
 
 impl Range {
+    pub const ALL: [Range; 4] = [Self::Week, Self::Month, Self::Quarter, Self::All];
+
+    /// The selector text: `7d`, `30d`, `90d`, `All`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Week => "7d",
+            Self::Month => "30d",
+            Self::Quarter => "90d",
+            Self::All => "All",
+        }
+    }
+
+    /// The next range, wrapping from `All` to the week.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Week => Self::Month,
+            Self::Month => Self::Quarter,
+            Self::Quarter => Self::All,
+            Self::All => Self::Week,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Week => Self::All,
+            Self::Month => Self::Week,
+            Self::Quarter => Self::Month,
+            Self::All => Self::Quarter,
+        }
+    }
+
     /// The local days it covers, today included; `None` is every stored day.
     pub fn days(self) -> Option<u32> {
         match self {
@@ -25,6 +56,36 @@ impl Range {
             Self::Month => Some(30),
             Self::Quarter => Some(90),
             Self::All => None,
+        }
+    }
+}
+
+/// Under this many columns the old text report is shown.
+pub const TEXT_BELOW: u16 = 40;
+
+/// Rows of one card: label and delta, value, sub-line, sparkline.
+pub const CARD_ROWS: u16 = 4;
+
+/// How the cards are laid out for a width.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tier {
+    /// Four cards in a row.
+    Row,
+    /// A 2x2 grid.
+    Grid,
+    /// One column.
+    Column,
+    /// The text report.
+    Text,
+}
+
+impl Tier {
+    pub fn of(width: u16) -> Self {
+        match width {
+            80.. => Self::Row,
+            60..80 => Self::Grid,
+            TEXT_BELOW..60 => Self::Column,
+            _ => Self::Text,
         }
     }
 }
@@ -55,6 +116,18 @@ impl Dashboard {
             empty: kpi::is_empty(data, range),
             kpis: kpi::kpis(data, range),
         }
+    }
+
+    /// Rows the dashboard takes at `width`: the selector, a gap and the body.
+    pub fn height(&self, width: u16) -> u16 {
+        let cards = match Tier::of(width) {
+            Tier::Text => return 0,
+            _ if self.empty => 1,
+            Tier::Row => CARD_ROWS,
+            Tier::Grid => 2 * CARD_ROWS + 1,
+            Tier::Column => 4 * CARD_ROWS + 3,
+        };
+        2 + cards
     }
 }
 
