@@ -219,18 +219,13 @@ Three optional thresholds MUST exist: per turn (total tokens, `turn_tokens`), pe
 - Per turn: when a finished turn's total tokens are known and exceed `turn_tokens`, the pane shows the system line `turn used <N> tokens (limit <L>)`. A turn whose total is `None` never triggers it. A worker turn never triggers it (see Worker usage); worker records do count toward the per-day notes.
 - Per day, tokens: after a record is stored, when the sum of the total tokens of the day's records (records with `None` total are skipped) reaches `day_tokens`, the pane shows `today's usage reached <N> tokens (limit <L>)`.
 - Per day, dollars: when the sum of `cost_usd` of the day's records of engines in `per-token` mode reaches `day_usd`, the pane shows `today's spend reached $<N> (limit $<L>)`. Records of `subscription` engines and local engines never count toward it.
+The limit notes MUST write token counts (`<N>` and `<L>`) as exact whole numbers grouped with `,` as thousands separator (never compact, never rounded), so the user sees the exact crossing; dollar figures are formatted as before. (Previously: counts were plain integers without separators.)
 The notes are evaluated on every store answer that carries the day's figures, so the first status read of the day MAY show a per-day note at startup when the day is already over the limit (in the pane that read it). The key of a per-day note includes the limit, so raising the limit the same day arms it again. The two per-day notes MUST appear once per threshold per local day per app run (crossing again later the same day does not repeat them); the per-turn note appears on every turn that exceeds it. Notes are system lines: not stored, not sent to any engine.
-
-The limit notes MUST write their figures as exact whole numbers grouped with `,` as thousands separator (never compact, never rounded), so the user sees the exact crossing:
-- per turn: `turn used <N> tokens (limit <L>)`;
-- per day, tokens: `today's usage reached <N> tokens (limit <L>)`;
-- per day, dollars: `today's spend reached $<N> (limit $<L>)` (dollar formatting unchanged).
-(Previously: counts were plain integers without separators.)
 
 #### Scenario: Per-turn note [auto]
 - GIVEN `turn_tokens` 1000 and a turn with 900 in and 300 out
 - WHEN the turn ends
-- THEN the pane shows `turn used 1200 tokens (limit 1000)` and the next send is accepted
+- THEN the pane shows `turn used 1,200 tokens (limit 1,000)` and the next send is accepted
 
 #### Scenario: Under the limit [auto]
 - GIVEN `turn_tokens` 1000 and a turn of 400 in and 100 out
@@ -245,7 +240,7 @@ The limit notes MUST write their figures as exact whole numbers grouped with `,`
 #### Scenario: Daily tokens once [auto]
 - GIVEN `day_tokens` 5000, stored records of today totalling 4800 and a new turn of 400
 - WHEN the turn is stored, and again after another turn the same day
-- THEN `today's usage reached 5200 tokens (limit 5000)` appears once, not twice
+- THEN `today's usage reached 5,200 tokens (limit 5,000)` appears once, not twice
 
 #### Scenario: Daily dollars count per-token engines only [auto]
 - GIVEN `day_usd` 1.00, claude in `subscription` with $5 recorded today and codex records with no dollars
@@ -276,11 +271,6 @@ The limit notes MUST write their figures as exact whole numbers grouped with `,`
 - GIVEN `turn_tokens` 100000 and a turn with 100000 in and 23456 out
 - WHEN the turn ends
 - THEN the pane shows `turn used 123,456 tokens (limit 100,000)`
-
-#### Scenario: Small figures unchanged [auto]
-- GIVEN `turn_tokens` 1000 and a turn with 900 in and 300 out
-- WHEN the turn ends
-- THEN the pane shows `turn used 1,200 tokens (limit 1,000)`
 
 #### Scenario: Daily tokens grouped [auto]
 - GIVEN `day_tokens` 5000 and stored records of today totalling 5200
@@ -375,7 +365,7 @@ The limit notes MUST write their figures as exact whole numbers grouped with `,`
 When an orchestrator run is live, the usage that each worker turn reports MUST be recorded like a chat turn's, as one record per worker turn (the requests of the turn summed as in Summing per turn), with the role `worker`, the worker's engine and model, the worker id with its run id, and the conversation of the pane when it is saved. A worker whose engine reports nothing writes no record (no data, no row). Counts the engine did not report stay `None`, are stored as NULL and are never estimated or filled from other workers. A worker turn that ended without a final answer (failed, cancelled, timed out or cut) or whose usage the engine marked partial MUST be recorded as `partial`; a worker usage gap is stored as a partial record, never dropped and never completed. A record that lacks its input or output count is stored with NULL there and is read as partial by `/cost`, as for any record. Billing and list-price rules apply by the worker's engine, exactly as for a chat turn (a local engine never shows dollars). Worker usage that arrives when its pane is no longer a chat MUST still be stored (unlinked) when the history is on; if that write fails there is no pane to tell, a known limit. Per-worker and per-run breakdowns are out of scope: records are only identifiable in the store.
 Worker records are subject to every rule of the chat records: a failed write is surfaced as `Usage not saved: <reason>` under the once-per-run rule; a deleted conversation keeps its worker records (link dropped); the 90-day retention applies. Worker records count in `today` and `last 7 days`, in the charts and per-engine bars, in the status-bar segment and in the day thresholds (spend included under the `per-token` rule). A worker turn MUST NEVER trigger the per-turn threshold note, which belongs to the chat turn. On the coordinator's orchestrated turn the usage line under its answer MUST read `usage (coordinator): ...` (see chat-pane), so it is not read as the run total.
 
-Worker records now also store `started_at` and `wall_ms` (see TurnUsage model), which feed the dashboard's Agent time card and Agents table. A worker without a determinable start keeps NULL in both. The scenario `Charts include workers` is replaced by `Dashboard includes workers`.
+Worker records now also store `started_at` and `wall_ms` (see TurnUsage model), which feed the dashboard's Agent time card and Agents table. A worker without a determinable start keeps NULL in both. 
 
 #### Scenario: Worker turn is stored [auto]
 - GIVEN a worker (engine ollama, model `m`) that reported 120 in and 30 out
