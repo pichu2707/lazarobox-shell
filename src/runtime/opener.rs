@@ -226,8 +226,10 @@ mod tests {
     /// A fake opener named `name` that exits with `code`.
     fn exiting(dir: &Path, name: &str, code: i32) -> Opener {
         let program = dir.join(name);
-        fs::write(&program, format!("#!/bin/sh\nexit {code}\n")).unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(
+            &program,
+            format!("#!/bin/sh\nexit {code}\n"),
+        );
         Opener {
             program,
             launch: LAUNCH,
@@ -251,8 +253,7 @@ mod tests {
     fn a_failure_after_the_launch_is_not_reported() {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("xdg-open");
-        fs::write(&program, "#!/bin/sh\nsleep 0.5\nexit 1\n").unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(&program, "#!/bin/sh\nsleep 0.5\nexit 1\n");
         let opener = Opener {
             program,
             launch: Duration::from_millis(200),

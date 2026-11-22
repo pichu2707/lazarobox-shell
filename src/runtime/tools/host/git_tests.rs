@@ -91,8 +91,7 @@ fn bare_world(jail: JailSupport) -> World {
     });
     let base = w.home.parent().unwrap().to_path_buf();
     let helper = base.join("helper");
-    std::fs::write(&helper, STAND_IN).unwrap();
-    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&helper, STAND_IN);
     let (home, run) = (w.home.clone(), base.join("run"));
     let host = Arc::get_mut(&mut w.host).unwrap();
     host.exec.helper = Some(helper);
@@ -442,8 +441,7 @@ fn a_git_outside_the_system_places_is_not_picked() {
     let dir = w.home.parent().unwrap().join("userbin");
     std::fs::create_dir_all(&dir).unwrap();
     let fake = dir.join("git");
-    std::fs::write(&fake, "#!/bin/sh\n").unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&fake, "#!/bin/sh\n");
     assert_eq!(find_git(dir.as_os_str()), None);
     if system_git() {
         let both =
@@ -823,8 +821,10 @@ async fn a_failing_pre_commit_hook_stops_the_commit_and_its_output_is_data() {
     let Some(w) = staged_world() else { return };
     let hook = w.proj.join(".git/hooks/pre-commit");
     std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
-    std::fs::write(&hook, "#!/bin/sh\necho 'hook says no'\nexit 1\n").unwrap();
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(
+        &hook,
+        "#!/bin/sh\necho 'hook says no'\nexit 1\n",
+    );
     let asks = Asks::new(Decision::Sent);
     let out = turn(&w, Locality::Local, asks, write_set())
         .call(commit("feat: two"))
@@ -842,8 +842,7 @@ async fn a_hooks_path_set_by_the_repo_config_is_not_run() {
     let evil = w.proj.join("evil");
     std::fs::create_dir_all(&evil).unwrap();
     let hook = evil.join("pre-commit");
-    std::fs::write(&hook, "#!/bin/sh\ntouch \"$PWD/ran-evil\"\n").unwrap();
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&hook, "#!/bin/sh\ntouch \"$PWD/ran-evil\"\n");
     sh(&w.proj, &["config", "core.hooksPath", "evil"]);
     let asks = Asks::new(Decision::Sent);
     let out = turn(&w, Locality::Local, asks.clone(), write_set())
@@ -1024,8 +1023,7 @@ async fn an_add_path_with_a_quote_is_refused_before_the_prompt() {
 fn hook(w: &World, name: &str, script: &str) {
     let hook = w.proj.join(".git/hooks").join(name);
     std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
-    std::fs::write(&hook, format!("#!/bin/sh\n{script}\n")).unwrap();
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&hook, format!("#!/bin/sh\n{script}\n"));
 }
 
 // User decision 2026-10-28: a commit that is not what was reviewed is

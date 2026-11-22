@@ -4,7 +4,6 @@
 
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -318,8 +317,7 @@ fn repo() -> Option<Repo> {
     let dir = tempfile::tempdir_in(&home).ok()?;
     let base = std::fs::canonicalize(dir.path()).ok()?;
     let helper = base.join("helper");
-    std::fs::write(&helper, HELPER).unwrap();
-    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&helper, HELPER);
     let root = base.join("proj");
     std::fs::create_dir(&root).unwrap();
     let ctx = Ctx {
@@ -421,8 +419,10 @@ async fn a_planted_fsmonitor_and_external_diff_never_run() {
     let Some(repo) = repo() else { return skipped() };
     let marker = repo.base.join("marker");
     let script = repo.base.join("plant.sh");
-    std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(
+        &script,
+        format!("#!/bin/sh\ntouch {}\n", marker.display()),
+    );
     sh(
         &repo.root,
         &["config", "core.fsmonitor", script.to_str().unwrap()],
@@ -567,8 +567,7 @@ async fn a_git_file_that_is_a_link_or_too_big_is_refused_without_reading_it() {
 fn hook(dir: &Path, name: &str, body: &str) {
     std::fs::create_dir_all(dir).unwrap();
     let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&path, format!("#!/bin/sh\n{body}\n"));
 }
 
 async fn add_and_commit(ctx: &Ctx, opened: &super::Repo) -> (Ran, Ran) {
@@ -634,8 +633,7 @@ async fn a_hook_that_writes_in_the_common_dir_of_a_linked_worktree_is_reported()
 fn script_ctx(body: &str, timeout: Duration) -> (tempfile::TempDir, Ctx) {
     let dir = tempfile::tempdir().unwrap();
     let git = dir.path().join("git");
-    std::fs::write(&git, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&git, format!("#!/bin/sh\n{body}\n"));
     let ctx = Ctx {
         helper: dir.path().join("helper"),
         git,

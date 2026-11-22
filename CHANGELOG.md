@@ -14,6 +14,10 @@ baseline.
 
 - **A chat reads the local project memory when it opens.** A dedicated thread reads `.lzr/memory/notes/` at the git root and keeps only the notes this machine wrote and nobody changed. Notes from others (a clone or a pull) or edited outside lazarobox are ignored and counted: `memory: N notes from others ignored (not created on this machine)`. Unreadable, truncated, oversized or merge-conflicted files are skipped and counted without touching them (`memory: skipped N unreadable notes in .lzr/`), and notes made by a newer lazarobox are skipped too. A damaged or newer private ledger is reported, trusts no note and is never written over. A folder outside git, or the home folder itself, says `memory: no git repository here; nothing is remembered for this folder`. If the memory thread cannot start, the chat says so. The writing side exists but nothing calls it yet: it will create `.lzr/`, add it to `.gitignore` and write the note atomically, with a line for each outcome. At most 5000 notes are read per load: `memory: only the first 5000 notes in .lzr/ were read; N more were left out`. A save notice, a write failure and a memory thread that stopped each show a line in the chat as well. `[ai.memory] local = false` sends nothing to the thread.
 
+### Fixed
+
+- **Copying no longer fails when the clipboard tool is busy for a moment (#844).** Starting the tool is tried up to five times, 20 ms apart, when the system answers `Text file busy` (the file is open for writing, as during an upgrade of the tool). Any other error is reported at once, as before.
+
 ## [1.38.0] - 2026-11-22
 
 ### Added

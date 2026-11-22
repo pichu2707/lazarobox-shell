@@ -1761,7 +1761,7 @@ async fn the_binary_the_user_confirmed_is_the_one_that_runs() {
 // ---- 7.4 end to end: the worker with real fake `engram` scripts ----
 
 mod with_processes {
-    use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+    use std::{fs, path::PathBuf};
 
     use super::*;
     use crate::runtime::engram::serve::Server;
@@ -1780,8 +1780,7 @@ mod with_processes {
         let text = format!(
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'engram 3.4.0'; exit 0; fi\n{body}\n"
         );
-        fs::write(&script, text).unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(&script, text);
         // The child gets this `PATH`: the system tools the fake uses too.
         let path = format!("{}:/usr/bin:/bin", bin.display());
         let server = Server::new(path.into(), dir.path().join("state"));

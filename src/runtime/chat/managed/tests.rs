@@ -52,8 +52,7 @@ impl Lab {
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{body}\n",
             self.record().display()
         );
-        fs::write(&path, text).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(&path, text);
     }
 
     fn managed(&self, body: &str, probe: Probe, wait: Duration) -> Managed {

@@ -304,8 +304,7 @@ exit 1
     /// probe (whose spawn must stay fail-closed) ever sees it.
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        fs::write(&path, body).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(&path, body);
         for _ in 0..500 {
             match std::process::Command::new(&path).spawn() {
                 Ok(mut child) => {
