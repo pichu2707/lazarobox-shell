@@ -42,7 +42,7 @@ The menu MUST open only from TERMINAL through the prefix: `Ctrl+Space` then `m`,
 - THEN the task list shows on the Settings tab, the picker is closed and the draft equals the current values
 
 ### Requirement: Sections and items are data
-Sections, items and tabs MUST come from static descriptor tables; adding a section, a tab or a setting MUST NOT require changing the popup drawing or navigation code. Each setting item MUST declare its label and its `config.toml` key path where one exists, and either an ordered list of allowed values (static item) or a task kind (assignment item, whose value is an `engine › model` chosen in the picker). Each row MUST belong to exactly one tab, as in the Tab map: `Settings` (`Statusline position` `statusline.position`: top, bottom; `Tab bar position` `tabbar.position`: top, bottom; `Mouse` `mouse`: on, off, written as the booleans `true` and `false`; `Notify`: auto, desktop, bell, off; `Sound`: off, on; `llama-server idle` `ai.servers.llamacpp.idle_minutes`: 5 min, 15 min, 30 min, never, written as a TOML integer, never = 0; `Updates`: the running version, or the newer one when known; `Feedback`: `bug report or idea`, no key path), `Models` (`Set all tasks` aggregate over the five tasks, no single key path; `general` `ai`; `code` `ai.tasks.code`; `chat` `ai.tasks.chat`; `review` `ai.tasks.review`; `summarize` `ai.tasks.summarize`; `orchestrate` its task table; `Hugging Face`, no key path), `Tools` (`Tools` `ai.tools.enabled`: off, on; `Search`, `Write`, `Exec`, `Git`, `Git write`, `Issue draft` (on by default): off, on, each with its own `ai.tools.<key>`; `Approval` `ai.tools.approval`: ask, auto, run; `Orchestrator` `ai.orchestrator.enabled`: off, on), `Connectors` (no rows) and `Chat` (`Profile` `ai.profile`: analyst, programmer; `Context` `ai.context`: off, on; `Memory` `ai.memory.enabled`: off, on). `Notify`, `Sound` and `llama-server idle` edit the AI draft, so they MUST NOT be shown (and MUST NOT be selectable) when the AI section is not attached; then `Settings` holds `Statusline position`, `Tab bar position`, `Mouse`, `Updates` and `Feedback`, and no other tab exists. Moving a row between tabs MUST NOT change its key path, its values or the config edit it produces.
+Sections, items and tabs MUST come from static descriptor tables; adding a section, a tab or a setting MUST NOT require changing the popup drawing or navigation code. Each setting item MUST declare its label and its `config.toml` key path where one exists, and either an ordered list of allowed values (static item) or a task kind (assignment item, whose value is an `engine › model` chosen in the picker). Each row MUST belong to exactly one tab, as in the Tab map: `Settings` (`Statusline position` `statusline.position`: top, bottom; `Tab bar position` `tabbar.position`: top, bottom; `Mouse` `mouse`: on, off, written as the booleans `true` and `false`; `Notify`: auto, desktop, bell, off; `Sound`: off, on; `llama-server idle` `ai.servers.llamacpp.idle_minutes`: 5 min, 15 min, 30 min, never, written as a TOML integer, never = 0; `Updates`: the running version, or the newer one when known; `Feedback`: `bug report or idea`, no key path), `Models` (`Set all tasks` aggregate over the five tasks, no single key path; `general` `ai`; `code` `ai.tasks.code`; `chat` `ai.tasks.chat`; `review` `ai.tasks.review`; `summarize` `ai.tasks.summarize`; `orchestrate` its task table; `Hugging Face`, no key path), `Tools` (`Tools` `ai.tools.enabled`: off, on; `Search`, `Write`, `Exec`, `Git`, `Git write`, `Issue draft` (on by default): off, on, each with its own `ai.tools.<key>`; `Approval` `ai.tools.approval`: ask, auto, run; `Orchestrator` `ai.orchestrator.enabled`: off, on), `Connectors` (`Connectors`, no key path; see Connectors row) and `Chat` (`Profile` `ai.profile`: analyst, programmer; `Context` `ai.context`: off, on; `Memory` `ai.memory.enabled`: off, on). `Notify`, `Sound` and `llama-server idle` edit the AI draft, so they MUST NOT be shown (and MUST NOT be selectable) when the AI section is not attached; then `Settings` holds `Statusline position`, `Tab bar position`, `Mouse`, `Updates` and `Feedback`, and no other tab exists. Moving a row between tabs MUST NOT change its key path, its values or the config edit it produces.
 
 #### Scenario: Descriptor integrity [auto]
 - GIVEN the descriptor tables
@@ -52,12 +52,12 @@ Sections, items and tabs MUST come from static descriptor tables; adding a secti
 #### Scenario: Settings rows [auto, TestBackend + insta]
 - GIVEN the menu just opened with the AI section attached and `mouse` at its default
 - WHEN rendered on a normal terminal
-- THEN, with no `Settings` title row (the bar names the tab), the Settings tab shows `Statusline position`, `Tab bar position`, `Mouse` (`on`, not muted), `Notify`, `Sound`, `llama-server idle` (`15 min`), `Usage (alpha)`, `Updates` and `Feedback`, each with its current value, and no Models, Tools or Chat row is drawn
+- THEN, with no `Settings` title row (the bar names the tab), the Settings tab shows `Statusline position`, `Tab bar position`, `Mouse` (`on`, not muted), `Notify`, `Sound`, `llama-server idle` (`15 min`), `Usage (alpha)`, `Updates` and `Feedback`, each with its current value, and no Models, Tools, Connectors or Chat row is drawn
 
 #### Scenario: Every row is on its tab [auto, TestBackend + insta]
 - GIVEN the AI section attached
-- WHEN each of Models, Tools and Chat is rendered
-- THEN Models reads `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `orchestrate`, `simple`, `Hugging Face`; Tools reads `Tools`, `Search`, `Write`, `Exec`, `Git`, `Git write`, `Issue draft`, `Approval`, `Orchestrator`; Chat reads `Profile`, `Context`, `Memory`; and no `Notify`, `Sound`, `Updates` or `Feedback` row exists on them
+- WHEN each of Models, Tools, Connectors and Chat is rendered
+- THEN Models reads `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `orchestrate`, `Hugging Face`; Tools reads `Tools`, `Search`, `Write`, `Exec`, `Git`, `Git write`, `Issue draft`, `Approval`, `Orchestrator`; Connectors reads `Connectors`; Chat reads `Profile`, `Context`, `Memory`; and no `Notify`, `Sound`, `Updates` or `Feedback` row exists on them
 
 #### Scenario: No AI keeps one tab [auto]
 - GIVEN the menu without the AI section
@@ -757,17 +757,17 @@ The `Mouse` row shows `on` when the draft `mouse` is true and `off` when false, 
 - THEN `Notify` and `Sound` appear on the Settings tab and not on Models, Tools or Chat
 
 ### Requirement: Menu tabs
-The popup MUST group its rows into menu tabs. The tabs MUST come from a static table (label, the rows it shows, whether it needs the AI section, whether it is hidden while it has no rows); adding a tab MUST NOT require changing navigation or drawing code. The table order is `Settings`, `Models`, `Tools`, `Connectors`, `Chat`. Without the AI section only `Settings` exists. With it, `Models`, `Tools` and `Chat` exist and `Connectors` is visible only while it has at least one row; it has none today, so it MUST NOT be drawn, MUST NOT be reached by Tab or Shift+Tab, and MUST appear, in its table position between `Tools` and `Chat`, as soon as a row is declared for it (MCP, agent-tools 4a). `Tab` MUST activate the next visible tab; `Tab` with SHIFT and `BackTab` (with or without SHIFT) MUST activate the previous one. Wrap is across the visible tabs (Settings, Models, Tools, Chat, Settings while Connectors is hidden). Ctrl+Tab and Alt+Tab MUST stay swallowed. With one visible tab, Tab and Shift+Tab change nothing and show the footer notice `No other tabs` (cleared by the next key press, like the jump-key notice). A held key repeats like `j`/`k`: Repeat events switch tabs like Press. The cursor MUST be remembered per tab, keyed by the tab and not by its place among the visible ones: leaving a tab and coming back MUST restore the row that was selected there, and a tab becoming visible MUST NOT move the memory of another. Each tab with at least one row starts on its first row. Switching tabs, by Tab or by a jump key, MUST NOT change any draft value and MUST NOT emit `ResizePty`, `WritePty` or a detection run.
+The popup MUST group its rows into menu tabs. The tabs MUST come from a static table (label, the rows it shows, whether it needs the AI section, whether it is hidden while it has no rows); adding a tab MUST NOT require changing navigation or drawing code. The table order is `Settings`, `Models`, `Tools`, `Connectors`, `Chat`. Without the AI section only `Settings` exists. With it, `Models`, `Tools` and `Chat` exist and `Connectors` is visible only while it has at least one row. It holds the `Connectors` row (see Connectors row), so with the AI section it MUST be drawn in its table position between `Tools` and `Chat` and MUST be reached by Tab and Shift+Tab; a tab table whose `Connectors` tab has no row (a test table) MUST NOT draw it and MUST NOT reach it by Tab or Shift+Tab. `Tab` MUST activate the next visible tab; `Tab` with SHIFT and `BackTab` (with or without SHIFT) MUST activate the previous one. Wrap is across the visible tabs (Settings, Models, Tools, Connectors, Chat, Settings; Settings, Models, Tools, Chat, Settings while Connectors is hidden). Ctrl+Tab and Alt+Tab MUST stay swallowed. With one visible tab, Tab and Shift+Tab change nothing and show the footer notice `No other tabs` (cleared by the next key press, like the jump-key notice). A held key repeats like `j`/`k`: Repeat events switch tabs like Press. The cursor MUST be remembered per tab, keyed by the tab and not by its place among the visible ones: leaving a tab and coming back MUST restore the row that was selected there, and a tab becoming visible MUST NOT move the memory of another. Each tab with at least one row starts on its first row. Switching tabs, by Tab or by a jump key, MUST NOT change any draft value and MUST NOT emit `ResizePty`, `WritePty` or a detection run.
 
 #### Scenario: Tab cycles forward with wrap [auto]
 - GIVEN the AI section attached and the active tab `Settings`
-- WHEN Tab is pressed four times
-- THEN the active tab is `Models`, `Tools`, `Chat`, then `Settings` (Connectors is skipped)
+- WHEN Tab is pressed five times
+- THEN the active tab is `Models`, `Tools`, `Connectors`, `Chat`, then `Settings`
 
 #### Scenario: Shift+Tab, both encodings [auto]
 - GIVEN the active tab `Settings`
 - WHEN `BackTab` is pressed, in a separate run `BackTab` with SHIFT, and in another `Tab` with SHIFT
-- THEN in all runs the active tab is `Chat`; and pressing the same key again gives `Tools`
+- THEN in all runs the active tab is `Chat`; and pressing the same key again gives `Connectors`
 
 #### Scenario: Cursor is remembered per tab [auto]
 - GIVEN the `Mouse` row selected on `Settings`, then Tab to `Models`, `j` pressed twice (on `code`), then `3` to Tools and `j` once (on `Search`)
@@ -785,17 +785,17 @@ The popup MUST group its rows into menu tabs. The tabs MUST come from a static t
 - THEN the draft is unchanged and no ResizePty, WritePty, Refresh or Save is emitted
 
 #### Scenario: Connectors is hidden without rows [auto]
-- GIVEN the tab table and the AI section attached, and no row declared for Connectors
-- WHEN the tabs are listed
-- THEN they are exactly `Settings`, `Models`, `Tools`, `Chat`, in that order
+- GIVEN a test table whose Connectors tab has no row, and the AI section attached
+- WHEN the tabs are listed, and Tab is pressed four times from `Settings`
+- THEN they are exactly `Settings`, `Models`, `Tools`, `Chat`, in that order, and the active tab is `Models`, `Tools`, `Chat`, then `Settings` (Connectors is skipped)
 
 #### Scenario: Connectors appears with its first row [auto]
-- GIVEN a test table whose Connectors tab has one row, and the AI section attached
+- GIVEN the tab table (its Connectors tab holds the `Connectors` row), and the AI section attached
 - WHEN the tabs are listed, and Tab is pressed from `Tools`, then again
 - THEN they are `Settings`, `Models`, `Tools`, `Connectors`, `Chat`, and the active tab is `Connectors`, then `Chat`
 
 #### Scenario: A tab appearing keeps the cursors [auto]
-- GIVEN `Chat` with `Memory` selected and Connectors hidden
+- GIVEN `Chat` with `Memory` selected and Connectors hidden (a test table whose Connectors tab has no row)
 - WHEN a row is declared for Connectors and the menu is rebuilt with the same memory, then `5` is pressed
 - THEN `Chat` is active with `Memory` still selected
 
@@ -1636,12 +1636,12 @@ At the top level, an unmodified `1` to `5` MUST jump to a tab by its FIXED posit
 - THEN the active tab is Settings, Models, Tools, Connectors, Chat
 
 #### Scenario: Digits keep their positions [auto]
-- GIVEN the AI section attached and Connectors hidden
+- GIVEN the AI section attached and Connectors hidden (a test table whose Connectors tab has no row)
 - WHEN `5` is pressed
 - THEN the active tab is `Chat`, not `Tools` or a fourth tab
 
 #### Scenario: Hidden Connectors shows a notice [auto, TestBackend + insta]
-- GIVEN Connectors hidden and the active tab `Models` with `code` selected
+- GIVEN Connectors hidden (a test table whose Connectors tab has no row) and the active tab `Models` with `code` selected
 - WHEN `4` is pressed
 - THEN the active tab is still `Models` with `code` selected, the footer shows a notice about the missing connectors instead of the hint, and the next key press clears it
 
@@ -1656,14 +1656,14 @@ At the top level, an unmodified `1` to `5` MUST jump to a tab by its FIXED posit
 - THEN the first changes nothing and shows `Already on Models`, and the second activates `Settings`
 
 #### Scenario: The notice does not block [auto]
-- GIVEN the notice from `4` is showing and a draft is changed
+- GIVEN Connectors hidden (a test table whose Connectors tab has no row), the notice from `4` showing and a draft changed
 - WHEN `s` is pressed, and in another run Esc
 - THEN the first requests a save and the second reverts and closes
 
 #### Scenario: Jump keys in Kitty [manual, Kitty]
 - GIVEN the menu in Kitty with the AI section
 - WHEN Tab, Shift+Tab and `1` to `5` are pressed
-- THEN the tabs switch as specified, `4` shows the notice, and nvim receives no keys
+- THEN the tabs switch as specified, `4` activates `Connectors`, and nvim receives no keys
 
 ### Requirement: Usage row and view
 The Settings tab MUST hold a static row `Usage (alpha)` after `llama-server idle` and before `Updates` (see Usage row belongs to Settings), found by its own `ItemKind`, never by position. Its value reads a summary of the draft: `line on · bar on` (the two toggles as `on`/`off`). `Enter`, `Space`, `h`, `l`, Left or Right open the Usage view (a closed row never ignores a key), a sub-level of Settings; the row adds one line to Settings, so the fixed popup is 17 rows high and its minimum is 24 columns by 16 rows (see Popup height is fixed), and the view reuses the popup. The view lists, in this order, static rows found by their own kinds:
@@ -1944,3 +1944,63 @@ The Search Console client row of the `f` screen MUST show which client the held 
 - WHEN the row is shown
 - THEN the held value is shown and kept until Enter and the replace prompt
 
+### Requirement: Connectors row
+The `Connectors` menu tab MUST hold one static row, `Connectors` (no key path), as its only row (see Menu tabs). Its value is the number of catalog entries that are declared and enabled in `config.toml` (`<N> declared`), or `none` when there are none (see mcp-connect, Entry list). Enter on the row opens the Connectors area (see mcp-connect); Esc there comes back to the row. The row is not a draft value: it writes no config edit, `s` saves only the other rows' drafts, and the row's value never changes on Esc of the menu. [S6a2] A secret-field save of the area is not part of the menu draft either: it is written when the user confirms it in the field (mcp-secrets, Menu save), `s` neither writes nor repeats it, Esc of the menu does not revert it, and the unsaved-changes hint does not count it. While a secret field is open, every key goes to the field (no tab switch, jump key or `s`), and Esc closes the field first. The area's screens MUST be drawn inside the popup body, whose height is computed (`view_body()`, at least 13 rows today; never hard-code a count), and MUST NOT change the popup height (see Popup height is fixed); a screen longer than the body scrolls (assumption).
+
+#### Scenario: The Connectors tab [auto, TestBackend + insta]
+- GIVEN the AI section attached and no declared catalog server
+- WHEN `4` is pressed and the tab is rendered
+- THEN the bar reads ` Settings │ Models │ Tools │ Connectors │ Chat `, and the tab shows one row, `Connectors`, with the value `none`
+
+#### Scenario: Count of declared entries [auto]
+- GIVEN declared `clarity` and `ga4`, an unrelated declared server `fs`, and `gsc` declared with `enabled = false`
+- WHEN the row is built
+- THEN its value is `2 declared`
+
+#### Scenario: Opens the area [auto]
+- GIVEN the `Connectors` row selected
+- WHEN Enter is pressed, then Esc
+- THEN the Connectors area opens, and Esc returns to the row with the menu draft unchanged
+
+#### Scenario: No config edit [auto]
+- GIVEN a file with `[[ai.mcp.servers]]` entries and a changed position draft
+- WHEN the Connectors area is visited and `s` is pressed
+- THEN only the position changes and every `ai.mcp.*` byte is identical
+
+#### Scenario: A secret save is not a draft [auto]
+- GIVEN the area with `CLARITY_API_TOKEN` saved through its field, and no other change
+- WHEN the area and the menu are closed with Esc
+- THEN the menu reports no unsaved change, no config edit is emitted, and the saved value stays in `secrets.toml`
+
+#### Scenario: Keys go to the open field [auto]
+- GIVEN a secret field open on the `clarity` entry
+- WHEN `4`, Tab, `s` and `q` are pressed
+- THEN they are typed into the field as text (shown as `•`), no tab changes and no save is requested
+
+#### Scenario: The popup keeps its size [auto, TestBackend + insta]
+- GIVEN a normal terminal
+- WHEN the Settings tab, the Connectors tab, the area's entry list, the `google` entry screen, its field list with a field open, and its link waiting screen are rendered
+- THEN the popup has the same height in all six
+
+### Requirement: Connector approval level [S9]
+Owner decision 2026-11-14 (C13). The Connectors area MUST show, per declared catalog entry, the approval level of that server (`ask`, `reads` or `all`) and let the user change it (see mcp-connect, Entry list and Approval level of an entry); this is the menu's only way to write the `approval` key of `[[ai.mcp.servers]]`. A level change is not a menu draft: it is written when the user confirms it on its own confirm line, `s` neither writes nor repeats it, Esc of the menu does not revert it, and the unsaved-changes hint does not count it. While the confirm line is open, every key goes to it (no tab switch, jump key or `s`): only an unmodified lowercase `y` confirms, and every other key cancels. A `s` save with a pending, unconfirmed proposal MUST leave `config.toml` without any `approval` change. The write goes through the area's writer, not through the menu's save, so the save's rule that `ai.mcp.*` is never touched (config-persistence) holds unchanged, and the draft and its dirty state never include a level. The menu MUST say, after a confirmed change, that it takes effect after a restart (`restart lazarobox to use it in chats`).
+
+#### Scenario: A level change is not a draft [auto]
+- GIVEN the area with `ga4` changed from `ask` to `reads` and confirmed, and no other change
+- WHEN the area and the menu are closed with Esc
+- THEN the menu reports no unsaved change, no config edit is emitted by the menu save, and `config.toml` keeps `approval = "reads"` for `ga4` (choosing `ask` later removes the key)
+
+#### Scenario: Save does not repeat or write a level [auto]
+- GIVEN a level proposal open on `gsc` but not confirmed, and a changed statusline position
+- WHEN `s` is pressed
+- THEN the key goes to the confirm line and cancels it, nothing is saved, and in a second run with the proposal closed `s` saves only the position and every `ai.mcp.*` byte is identical
+
+#### Scenario: Keys go to the open confirm line [auto]
+- GIVEN a level confirm line open on `ga4`
+- WHEN `4`, Tab, `s` and `q` are pressed
+- THEN none changes the tab or saves, each cancels the proposal, and `config.toml` is byte-identical
+
+#### Scenario: The popup keeps its size with a level shown [auto, TestBackend + insta]
+- GIVEN a normal terminal
+- WHEN the entry list with a relaxed level and the `ga4` entry screen with its level confirm line are rendered
+- THEN the popup has the same height as the Settings tab
