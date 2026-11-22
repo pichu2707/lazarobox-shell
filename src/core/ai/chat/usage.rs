@@ -44,6 +44,9 @@ pub struct TurnUsage {
     pub cost_micros: Option<u64>,
     pub cost_source: Option<CostSource>,
     pub duration_ms: Option<u64>,
+    /// Wall time of the turn or run, from send to end. Measured by
+    /// lazarobox, not reported by the engine: the one field that is not.
+    pub wall_ms: Option<u64>,
     /// Time a local engine spent processing the prompt: low means the prompt
     /// cache was hit. Never set by a cloud engine.
     pub prefill_ms: Option<u64>,
@@ -81,6 +84,7 @@ impl TurnUsage {
         self.reasoning = add(self.reasoning, other.reasoning);
         self.cost_micros = add(self.cost_micros, other.cost_micros);
         self.duration_ms = add(self.duration_ms, other.duration_ms);
+        self.wall_ms = self.wall_ms.max(other.wall_ms);
         // A sum over some of the requests would pair with the whole turn's
         // prompt tokens: it stays unknown unless every request gave one.
         self.prefill_ms = self

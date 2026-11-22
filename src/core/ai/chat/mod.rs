@@ -2180,6 +2180,12 @@ impl ChatState {
         {
             usage.partial = true;
         }
+        let wall = self.started.map(|at| {
+            u64::try_from(now.saturating_duration_since(at).as_millis()).unwrap_or(u64::MAX)
+        });
+        if let Some(usage) = self.turn_usage.as_mut() {
+            usage.wall_ms = wall;
+        }
         if let Some(usage) = self.turn_usage.clone() {
             self.session_usage
                 .add(&self.request_engine, usage_view::Run::Chat, &usage);

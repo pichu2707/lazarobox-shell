@@ -6759,3 +6759,35 @@ async fn the_handoff_ack_flags_extra_fields_and_a_directory_is_named_in_the_over
         ack.text
     );
 }
+
+// Usage dashboard: a worker turn's row carries the wall time since its
+// `Held` was born; a retry is a new `Held` with its own clock.
+#[tokio::test(start_paused = true)]
+async fn held_stamps_wall_time_from_its_own_birth() {
+    let (events, mut app) = mpsc::unbounded_channel();
+    let key = WorkerKey {
+        run: RunId(7),
+        worker: WorkerId(2),
+    };
+    let trace = Tracer::new(events, pane(), key);
+    let used = || TurnUsage {
+        input: Some(5),
+        output: Some(1),
+        ..TurnUsage::default()
+    };
+    let mut first = Held::new(&trace, "claude", None);
+    first.add(used());
+    tokio::time::advance(Duration::from_millis(3_000)).await;
+    first.send(false);
+    let mut retry = Held::new(&trace, "claude", None);
+    retry.add(used());
+    tokio::time::advance(Duration::from_millis(400)).await;
+    retry.send(false);
+    let mut walls = Vec::new();
+    while let Ok((_, event)) = app.try_recv() {
+        if let OrchestraEvent::Usage { usage, .. } = event {
+            walls.push(usage.wall_ms);
+        }
+    }
+    assert_eq!(walls, [Some(3_000), Some(400)]);
+}

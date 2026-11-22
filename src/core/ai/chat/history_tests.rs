@@ -632,6 +632,22 @@ mod usage_cmds {
     }
 
     #[test]
+    fn a_chat_turn_records_its_wall_time_from_send_to_end() {
+        let mut state = chat();
+        let base = std::time::Instant::now();
+        let turn = match state.send_at("q", &ready(), "sys", base) {
+            SendOutcome::Sent { turn, .. } => turn,
+            SendOutcome::Refused => panic!("send refused"),
+        };
+        state.apply_at(turn, usage(10, 2), base);
+        state.apply_at(turn, done(), base + std::time::Duration::from_millis(2_500));
+        let out = cmds(&mut state);
+        let rows = recorded(&out);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].3.wall_ms, Some(2_500));
+    }
+
+    #[test]
     fn a_turn_that_reported_usage_is_recorded_once_after_its_answer() {
         let (mut state, turn) = open_conversation("q");
         state.apply(turn, delta("a"));

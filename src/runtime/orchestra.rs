@@ -2440,6 +2440,8 @@ async fn drive(
 struct Held<'a> {
     trace: &'a Tracer,
     run: Option<SideRun>,
+    /// When the turn began: a retry is a new `Held`, so its own row.
+    born: tokio::time::Instant,
 }
 
 impl<'a> Held<'a> {
@@ -2447,6 +2449,7 @@ impl<'a> Held<'a> {
         Self {
             trace,
             run: Some(SideRun::new("worker", engine, model)),
+            born: tokio::time::Instant::now(),
         }
     }
 
@@ -2458,7 +2461,8 @@ impl<'a> Held<'a> {
 
     /// Sends the record, if the engine reported any: no data, no record.
     fn send(&mut self, cut: bool) {
-        if let Some(pending) = self.run.take().and_then(|run| run.end(cut)) {
+        if let Some(mut pending) = self.run.take().and_then(|run| run.end(cut)) {
+            pending.usage.wall_ms = u64::try_from(self.born.elapsed().as_millis()).ok();
             self.trace.usage(pending.engine, pending.usage);
         }
     }
