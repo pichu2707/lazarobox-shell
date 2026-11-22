@@ -45,6 +45,9 @@ pub(super) struct Typed {
     pub(super) turn: u64,
     pub(super) call: CallId,
     pub(super) command: String,
+    /// The pane's number when it was typed: the label the model was told, kept
+    /// whatever the layout or the active tab does later.
+    number: usize,
     /// The cursor when it was typed: the row the echo starts on.
     pub(super) anchor: Anchor,
     /// Whether the cursor was visible then (see `Settle::unanchored`).
@@ -73,6 +76,7 @@ impl App {
         if self.orchestrating(chat) {
             return;
         }
+        let number = self.pane_number(target).unwrap_or(0);
         let pty = self.panes.get_mut(&target).and_then(PaneState::pty_mut);
         let Some(pty) = pty.filter(|pty| pty.proc_cwd.is_some()) else {
             return;
@@ -83,6 +87,7 @@ impl App {
             turn,
             call,
             command: command.to_owned(),
+            number,
             anchor: Anchor {
                 line: line.unwrap_or(0),
                 col: pty.emu.live_cursor().map_or(0, |(_, col)| col),
@@ -95,7 +100,6 @@ impl App {
             edited: false,
             stale: false,
         });
-        let number = self.pane_number(target).unwrap_or(0);
         if let Some(chat) = self.panes.get_mut(&chat).and_then(PaneState::chat_mut) {
             chat.note_followed(number);
         }
@@ -116,7 +120,7 @@ impl App {
         } else if busy {
             NOT_FOLLOWED
         } else {
-            let number = self.pane_number(target).unwrap_or(0);
+            let number = typed.number;
             // The wait is measured from where the Enter finds the cursor; a
             // line that was reflowed since the typing is no longer comparable.
             if let Some(pty) = self.panes.get(&target).and_then(PaneState::pty) {
@@ -223,15 +227,16 @@ impl App {
         let availability = self.turn_availability(chat);
         let mut effects = Vec::new();
         if ready && availability != Availability::Checking && !numbers.is_empty() {
-            let shown: Vec<String> = numbers.iter().map(usize::to_string).collect();
-            let shown = shown.join(", ");
-            self.say_in_chat(chat, format!("going on with the output of pane {shown}"));
             self.resume_sending = true;
             effects = self.send_with(chat, &note, &availability, None);
             self.resume_sending = false;
         }
         if effects.is_empty() {
             self.say_not_sent(chat, numbers.into_iter());
+        } else {
+            let shown: Vec<String> = numbers.iter().map(usize::to_string).collect();
+            let shown = shown.join(", ");
+            self.say_in_chat(chat, format!("going on with the output of pane {shown}"));
         }
         effects
     }
@@ -241,14 +246,14 @@ impl App {
     /// is forgotten too (the message changed what the model knows).
     pub(super) fn stop_following(&mut self, chat: PaneId, typed: bool) {
         for id in self.panes.keys().copied().collect::<Vec<_>>() {
-            let number = self.pane_number(id).unwrap_or(0);
             let Some(pty) = self.panes.get_mut(&id).and_then(PaneState::pty_mut) else {
                 continue;
             };
             if let Some(t) = pty.typed.as_mut().filter(|t| typed && t.chat == chat) {
                 t.stale = true;
             }
-            if pty.run.take_if(|s| s.resume && s.chat == chat).is_some() {
+            if let Some(slot) = pty.run.take_if(|s| s.resume && s.chat == chat) {
+                let number = slot.number();
                 self.say_in_chat(
                     chat,
                     format!("stopped waiting for the command in pane {number}"),

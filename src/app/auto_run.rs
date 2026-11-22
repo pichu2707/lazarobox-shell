@@ -97,7 +97,7 @@ impl RunSlot {
     }
 
     /// The pane's number when the run was written (0 while it is checked).
-    fn number(&self) -> usize {
+    pub(super) fn number(&self) -> usize {
         let Stage::Running(run) = &self.stage else {
             return 0;
         };
@@ -483,7 +483,12 @@ impl App {
             End::FullScreen | End::UserTyped | End::PaneGone => None,
         };
         let report = RunReport {
-            number: number.unwrap_or(run.number),
+            // A command the user ran keeps the label it was typed under.
+            number: if resume {
+                run.number
+            } else {
+                number.unwrap_or(run.number)
+            },
             end,
             cwd: cwd_result(real_cwd, osc7),
             cd_target: run.cd_target,

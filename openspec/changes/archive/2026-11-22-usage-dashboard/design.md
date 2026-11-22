@@ -193,4 +193,4 @@ The `started_at` and `wall_ms` columns are nullable, added by `ensure_usage`, an
 ## Open Questions
 
 - [ ] Output card average: per record (chosen) or per chat turn (needs a chat-only output sum)?
-- [ ] Should S6 drop the `chart_lines` from the <40 text fallback, as proposed here?
+- [x] Should S6 drop the `chart_lines` from the <40 text fallback, as proposed here? Yes: dropped, implemented per spec R2 (usage-dashboard).

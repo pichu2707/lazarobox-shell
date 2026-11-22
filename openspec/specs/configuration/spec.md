@@ -438,7 +438,8 @@ The table `[ai.tools]` MAY hold `approval`, the string `"ask"`, `"auto"` or `"ru
 - THEN the mode is `ask` and the notice names `ai.tools.approval`
 
 ### Requirement: MCP server lists
-The file MAY hold an array of tables `[[ai.mcp.servers]]`, the global list of user MCP servers (see mcp-servers). Each entry has `name` (lowercase letters, digits and `-`, 1 to 24 characters, unique in its scope: the global list, or one project root; it is also the server part of a qualified tool name), `command` (non-empty string, run directly without a shell), `args` (array of strings, default empty), `env` (array of environment variable NAMES to pass from lazarobox's own environment, default empty, each an identifier of at most 64 bytes; values are never in the file) and `enabled` (boolean, default `true`). Per-project extras MUST be declared in this same user file, keyed by project root, in a shape pinned by design; no other file is ever read for servers. An invalid entry MUST be skipped as a whole and reported, the other entries kept: `ai.mcp.servers[N].name: expected a name of lowercase letters, digits and - (1 to 24 characters)`, `ai.mcp.servers[N].command: expected a non-empty string`, `ai.mcp.servers[N].args: expected an array of strings`, `ai.mcp.servers[N].env: expected an array of variable names`, `ai.mcp.servers[N].enabled: expected a boolean` (only `enabled` falls back alone), `ai.mcp.servers[N].name: duplicate name` (the later entry is skipped), `ai.mcp.servers: expected an array of tables` and `ai.mcp: expected a table`. Unknown keys inside an entry MUST be ignored, the entry kept, and each one is reported as `unknown key: ai.mcp.servers[N].<key>` (see Unknown keys in owned tables). There are no `Authorization`, token or secret keys in the schema. The list is read once at startup (no hot reload). It is edited by hand; the only other writer is Connect Google (config-menu, Connect Google), which, after the user's `y` on its plan, appends the catalog entries of `gsc` and `google` that are not declared at the end of the file, keeps the old file as `config.toml.bak`, and never changes or removes an entry.
+The file MAY hold an array of tables `[[ai.mcp.servers]]`, the global list of user MCP servers (see mcp-servers). Each entry has `name` (lowercase letters, digits and `-`, 1 to 24 characters, unique in its scope: the global list, or one project root; it is also the server part of a qualified tool name), `command` (non-empty string, run directly without a shell), `args` (array of strings, default empty), `env` (array of environment variable NAMES to pass from lazarobox's own environment, default empty, each an identifier of at most 64 bytes; values are never in the file), `enabled` (boolean, default `true`) and, [S9] `approval` (string, one of `ask`, `reads` or `all`, case-sensitive, default `ask`: the entry's approval level, see mcp-servers, Approval level per server). Per-project extras MUST be declared in this same user file, keyed by project root, in a shape pinned by design; no other file is ever read for servers. An invalid entry MUST be skipped as a whole and reported, the other entries kept: `ai.mcp.servers[N].name: expected a name of lowercase letters, digits and - (1 to 24 characters)`, `ai.mcp.servers[N].command: expected a non-empty string`, `ai.mcp.servers[N].args: expected an array of strings`, `ai.mcp.servers[N].env: expected an array of variable names`, `ai.mcp.servers[N].enabled: expected a boolean` (only `enabled` falls back alone), [S9] `ai.mcp.servers[N].approval: expected "ask", "reads" or "all"` (the entry is kept and only `approval` falls back, to `ask`; the notice is never omitted), `ai.mcp.servers[N].name: duplicate name` (the later entry is skipped), `ai.mcp.servers: expected an array of tables` and `ai.mcp: expected a table`. Unknown keys inside an entry MUST be ignored, the entry kept, and each one is reported as `unknown key: ai.mcp.servers[N].<key>` (see Unknown keys in owned tables); `approval` is a known key and MUST NOT be reported as unknown. There are no `Authorization`, token or secret keys in the schema. The list, levels included, is read once at startup (no hot reload). It is edited by hand; the only other writers are Connect Google (config-menu, Connect Google), which, after the user's `y` on its plan, appends the catalog entries of `gsc` and `google` that are not declared at the end of the file, keeps the old file as `config.toml.bak`, and never changes or removes an entry, and [S9] the Connectors area's approval-level change (mcp-connect, Approval level of an entry), which, after the user's confirmation, sets the `approval` key of one declared entry and changes nothing else.
+(Previously: entries had no `approval` key, so it would have been reported as unknown, and Connect Google was the only writer besides the user.)
 
 #### Scenario: Defaults [auto]
 - GIVEN a file with no `[ai.mcp]`
@@ -448,7 +449,7 @@ The file MAY hold an array of tables `[[ai.mcp.servers]]`, the global list of us
 #### Scenario: Entry parsed [auto]
 - GIVEN `[[ai.mcp.servers]]` with `name = "fs"`, `command = "mcp-fs"`, `args = ["--root", "/home/u/dev"]`, `env = ["GITHUB_TOKEN"]`
 - WHEN it is parsed
-- THEN one enabled server `fs` exists with those values and no notice is produced
+- THEN one enabled server `fs` exists with those values, level `ask`, and no notice is produced
 
 #### Scenario: Invalid entry skipped, others kept [auto]
 - GIVEN two entries where the first has `command = 5` and the second is valid
@@ -484,6 +485,26 @@ The file MAY hold an array of tables `[[ai.mcp.servers]]`, the global list of us
 - GIVEN a repository file that declares a server and a project entry in the user file for another root
 - WHEN servers are resolved for a chat in the repository
 - THEN only entries from the user file for that root are active
+
+#### Scenario: approval missing means ask [S9, auto]
+- GIVEN an entry with no `approval` key
+- WHEN it is parsed
+- THEN its level is `ask` and no notice is produced
+
+#### Scenario: Each valid level parses [S9, auto]
+- GIVEN three entries with `approval = "ask"`, `"reads"` and `"all"`
+- WHEN they are parsed
+- THEN the levels are `ask`, `reads` and `all`, no notice is produced and `approval` is not reported as an unknown key
+
+#### Scenario: Invalid approval value gives a notice and asks [S9, auto]
+- GIVEN an entry `fs` with `approval = "always"`, in another file `approval = "Reads"`, `approval = true` and `approval = ""`
+- WHEN each is parsed
+- THEN each entry is kept, its level is `ask`, and the notice is `config: ai.mcp.servers[0].approval: expected "ask", "reads" or "all"`
+
+#### Scenario: A bad approval does not drop the entry or its siblings [S9, auto]
+- GIVEN two entries where the first has `approval = 3` and the second is valid at `approval = "all"`
+- WHEN the app starts
+- THEN both servers are active, the first at `ask` and the second at `all`, and the only problem is the first's `approval`
 
 ### Requirement: Family toggle keys
 The table `[ai.tools]` MAY hold seven booleans: `search`, `write`, `exec`, `git`, `git_write`, `github` (provisional names) and `issue_draft`. Each defaults to `false`, except `issue_draft`, which defaults to `true` (a draft reaches nothing without the user's `y` and Ctrl+S). `issue_draft` controls the family IssueDraft. They control the families Search, Write, Exec, Git read verbs, Git write verbs and the GitHub read tools (see agent-tools, Tool families). A family is active only when `[ai.tools] enabled` is also `true`. A wrong type falls back to that key's default for that key only and reports `ai.tools.<key>: expected a boolean`, after the `ai.tools.approval` problem in the notice order. A non-table `ai.tools` uses the defaults with the existing `ai.tools: expected a table` problem only. Unknown keys MUST be ignored and reported as `unknown key: ai.tools.<key>` (see Unknown keys in owned tables), so a build without `github` reads a file that has it and says so. A change takes effect at the next turn, never on a stream or approval already running. A chat grant (see github-tools) is never written to this table.
