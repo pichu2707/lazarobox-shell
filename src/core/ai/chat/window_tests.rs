@@ -196,7 +196,7 @@ fn a_message_that_cannot_fit_the_window_says_so_once() {
     let lines = over_window_lines(&state);
     assert_eq!(lines.len(), 1, "{:?}", state.entries());
     assert!(
-        lines[0].contains("over the 1000-token window"),
+        lines[0].contains("over the 1,000-token window"),
         "{}",
         lines[0]
     );

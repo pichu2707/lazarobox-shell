@@ -224,3 +224,11 @@ fn the_dashboard_height_grows_with_the_agents_block() {
     let with = Dashboard::build(&data, Range::Week, &Vec::new());
     assert_eq!(with.height(100), without.height(100) + 1);
 }
+
+#[test]
+fn back_to_back_workers_stored_from_wall_time_do_not_overlap() {
+    // A worker of 2.5 s that ends at 100 starts at 97 (floor), and one that
+    // starts as it ends at 100 reads one at a time.
+    let data = with_spans(vec![span(0, 97, 100), span(0, 100, 103)]);
+    assert_eq!(overlap(&data, Range::All), Some(1));
+}

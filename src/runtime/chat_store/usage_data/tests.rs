@@ -395,3 +395,41 @@ fn a_store_without_the_timing_columns_still_reads_the_agents() {
     assert_eq!(data.agents.len(), 1);
     assert_eq!((data.agents[0].wall_ms, data.agents[0].timed), (None, 0));
 }
+
+#[test]
+fn token_sums_past_i64_saturate_instead_of_failing_the_read() {
+    let conn = store();
+    for _ in 0..2 {
+        put(&conn, chat(AT, Some(1), i64::MAX));
+        put(&conn, worker(AT, "9.a", Some(1_000)));
+    }
+    conn.execute(
+        "UPDATE turn_usage SET input = ?1, cache_read = ?1, cost_micros = ?1",
+        [i64::MAX],
+    )
+    .unwrap();
+    let data = usage_data(&conn, Some(1), AT).unwrap();
+    let big = u64::MAX / 2;
+    let row = data.rows.iter().find(|r| r.in_chat).unwrap();
+    assert_eq!(row.output, Some(big));
+    assert_eq!(row.input, Some(big));
+    assert_eq!(row.cache_read, Some(big));
+    assert_eq!(row.cost_micros, Some(big));
+    assert_eq!(row.total, Some(big));
+    let agent = &data.agents[0];
+    assert_eq!(agent.input, Some(big));
+    assert!(data.hours.iter().all(|h| h.tokens == big));
+}
+
+#[test]
+fn a_column_with_no_value_stays_none_under_the_saturating_sum() {
+    let conn = store();
+    conn.execute(
+        "INSERT INTO turn_usage(ts, engine, model, role, output) VALUES (?1, 'claude', 'm', 'chat', 5)",
+        [AT],
+    )
+    .unwrap();
+    let data = usage_data(&conn, None, AT).unwrap();
+    assert_eq!(data.rows[0].input, None);
+    assert_eq!(data.rows[0].output, Some(5));
+}

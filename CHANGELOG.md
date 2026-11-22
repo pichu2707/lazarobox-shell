@@ -18,6 +18,10 @@ baseline.
 
 - **Local project memory: groundwork (first slice of #431).** The format is in place but nothing reads or writes notes yet, so you will not see a change. The `[ai.memory] local` key (default `true`) is accepted and documented, and `.lzr` is now a folder the chat's file tools never write. Under the hood: a note is one small JSON file under `.lzr/memory/notes/` with a closed list of kinds, an area, text cut at 1000 characters, control characters stripped and caps on what is read back; the store of a linked worktree is the main checkout's `.lzr/` only when the checkout and the main repository vouch for each other (a forged `.git` file gets its own store), HOME is never a project, and the notes this machine wrote are recorded in a private ledger in the data folder, never in the note.
 
+### Fixed
+
+- **`/cost` no longer fails on huge token totals, and `up to N at once` is no longer one too high.** The token and cost sums are now saturating: a total past what SQLite can add reads as a very large number instead of making the whole `/cost` read fail. A worker's start is now its end minus its wall time rounded down to the second (it was rounded up), so a worker that begins as another ends no longer counts as overlapping it; rows already stored keep their start. The context-window notices (`this message and the setup are about … tokens`, and the worker one) write their counts with commas.
+
 ## [1.37.0] - 2026-11-22
 
 ### Added
