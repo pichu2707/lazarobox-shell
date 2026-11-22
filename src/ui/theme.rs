@@ -1,6 +1,7 @@
 use ratatui::style::{Color, Style};
 
 use crate::app::{AppMode, InputMode};
+use crate::core::ai::chat::provider::Provider;
 
 #[derive(Debug, Clone)]
 pub struct LazaroboxTheme {
@@ -13,6 +14,9 @@ pub struct LazaroboxTheme {
     pub warning_orange: Color,
     pub error_red: Color,
     pub text_muted: Color,
+    /// A light grey for what has no accent of its own. It is not in
+    /// [`LazaroboxTheme::palette`], so the settings preview stays as it was.
+    pub neutral: Color,
 }
 
 impl Default for LazaroboxTheme {
@@ -27,6 +31,7 @@ impl Default for LazaroboxTheme {
             warning_orange: Color::from_u32(0x00FAB387),
             error_red: Color::from_u32(0x00F38BA8),
             text_muted: Color::from_u32(0x006C7086),
+            neutral: Color::from_u32(0x00CDD6F4),
         }
     }
 }
@@ -66,6 +71,18 @@ impl LazaroboxTheme {
         Style::default()
             .bg(self.input_accent(mode))
             .fg(self.bg_base)
+    }
+
+    /// The colour of a provider's glyph. The glyph and the label carry the
+    /// meaning; the colour only helps.
+    pub fn provider_color(&self, provider: Provider) -> Color {
+        match provider {
+            Provider::Anthropic => self.warning_orange,
+            Provider::Google => self.info_blue,
+            Provider::OpenAi => self.neutral,
+            Provider::Local => self.ai_purple,
+            Provider::Other => self.text_muted,
+        }
     }
 
     /// Lists every theme color as `(name, hex, color)`, for previews. The hex
@@ -255,5 +272,27 @@ mod tests {
             ..LazaroboxTheme::default()
         };
         assert_eq!(t.palette()[0].1, "#010203");
+    }
+    #[test]
+    fn neutral_is_outside_the_palette_and_the_palette_keeps_its_eight_entries() {
+        let t = LazaroboxTheme::default();
+        assert_eq!(t.neutral, Color::from_u32(0x00CDD6F4));
+        assert_eq!(t.palette().len(), 8);
+        assert!(
+            t.palette()
+                .iter()
+                .all(|(name, _, c)| *name != "neutral" && *c != t.neutral)
+        );
+    }
+
+    #[test]
+    fn each_provider_has_its_colour_and_the_local_glyph_is_purple() {
+        let t = LazaroboxTheme::default();
+        assert_eq!(t.provider_color(Provider::Anthropic), t.warning_orange);
+        assert_eq!(t.provider_color(Provider::Google), t.info_blue);
+        assert_eq!(t.provider_color(Provider::OpenAi), t.neutral);
+        assert_eq!(t.provider_color(Provider::Local), t.ai_purple);
+        assert_eq!(t.provider_color(Provider::Other), t.text_muted);
+        assert_eq!(Provider::Local.glyph(), '\u{2B21}');
     }
 }

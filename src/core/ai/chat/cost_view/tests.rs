@@ -117,7 +117,7 @@ fn range(view: &CostView) -> Range {
 
 #[test]
 fn the_range_keys_rebuild_the_model_in_place_and_ask_nothing() {
-    let mut view = CostView::with_data(data(), lines(2));
+    let mut view = CostView::with_data(data(), Vec::new(), lines(2));
     view.set_width(100);
     assert_eq!(range(&view), Range::Week);
     for (code, want) in [
@@ -138,13 +138,13 @@ fn the_range_keys_rebuild_the_model_in_place_and_ask_nothing() {
     // The model is the one built from the data the view already holds.
     assert_eq!(
         view.dashboard(),
-        Some(&Dashboard::build(&data(), Range::Quarter))
+        Some(&Dashboard::build(&data(), Range::Quarter, &Vec::new()))
     );
 }
 
 #[test]
 fn a_range_key_in_the_text_tier_says_to_widen_the_pane() {
-    let mut view = CostView::with_data(data(), lines(2));
+    let mut view = CostView::with_data(data(), Vec::new(), lines(2));
     view.set_width(39);
     view.on_key(&key(KeyCode::Char('2')));
     assert_eq!(view.note(), Some(WIDEN));
@@ -173,7 +173,7 @@ fn a_range_key_with_no_model_says_there_is_no_usage_data() {
 
 #[test]
 fn a_width_not_measured_yet_is_not_the_text_tier() {
-    let mut view = CostView::with_data(data(), lines(2));
+    let mut view = CostView::with_data(data(), Vec::new(), lines(2));
     view.on_key(&key(KeyCode::Char('2')));
     assert_eq!(view.note(), None);
     assert_eq!(range(&view), Range::Month);
@@ -182,10 +182,10 @@ fn a_width_not_measured_yet_is_not_the_text_tier() {
 #[test]
 fn new_data_replaces_the_text_and_keeps_the_range() {
     let mut view = CostView::reading();
-    view.set_data(data(), lines(3));
+    view.set_data(data(), Vec::new(), lines(3));
     view.set_width(100);
     view.on_key(&key(KeyCode::Char('2')));
-    view.set_data(data(), lines(4));
+    view.set_data(data(), Vec::new(), lines(4));
     assert_eq!(range(&view), Range::Month);
     assert_eq!(view.lines().len(), 4);
 }

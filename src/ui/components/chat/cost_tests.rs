@@ -11,6 +11,7 @@ use super::*;
 use crate::core::ai::chat::{
     cost_view::CostView,
     dashboard::{HourCell, Range, UsageData},
+    provider::Provider,
     usage_view::UsageRow,
 };
 
@@ -60,7 +61,7 @@ fn text(buf: &Buffer) -> String {
 
 #[test]
 fn snapshot_the_cost_overlay_with_data_under_40_columns() {
-    let chat = chat_with(CostView::with_data(usage(), lines()));
+    let chat = chat_with(CostView::with_data(usage(), Vec::new(), lines()));
     insta::assert_snapshot!(text(&draw(&chat, 36, 12)));
 }
 
@@ -85,6 +86,7 @@ fn snapshot_a_narrow_pane_wraps_and_keeps_the_label_and_partial() {
 fn snapshot_no_data_and_partial() {
     let chat = chat_with(CostView::with_data(
         UsageData::default(),
+        Vec::new(),
         [
             "AI usage (alpha)",
             "today: no data · 1 turns · partial",
@@ -195,7 +197,7 @@ fn with_charts() -> Vec<String> {
 
 #[test]
 fn snapshot_the_charts_under_the_text_lines() {
-    let chat = chat_with(CostView::with_data(usage(), with_charts()));
+    let chat = chat_with(CostView::with_data(usage(), Vec::new(), with_charts()));
     insta::assert_snapshot!(text(&draw(&chat, 36, 22)));
 }
 
@@ -303,6 +305,7 @@ fn usage() -> UsageData {
         records: 3,
         input: Some(input),
         output: Some(output),
+        total: Some(input + output),
         chat_output: Some(output),
         chat_outputs: 3,
         cache_hit: Some(63),
@@ -340,28 +343,32 @@ fn hour(days_ago: u32, weekday: u8, hour: u8, tokens: u64) -> HourCell {
 }
 
 fn dashboard(width: u16, height: u16) -> String {
-    let chat = chat_with(CostView::with_data(usage(), lines()));
+    let chat = chat_with(CostView::with_data(usage(), Vec::new(), lines()));
     text(&draw(&chat, width, height))
 }
 
 #[test]
 fn snapshot_the_dashboard_in_a_wide_pane() {
-    insta::assert_snapshot!(dashboard(100, 35));
+    insta::assert_snapshot!(dashboard(100, 43));
 }
 
 #[test]
 fn snapshot_the_dashboard_in_a_medium_pane() {
-    insta::assert_snapshot!(dashboard(72, 40));
+    insta::assert_snapshot!(dashboard(72, 48));
 }
 
 #[test]
 fn snapshot_the_dashboard_in_a_narrow_pane() {
-    insta::assert_snapshot!(dashboard(50, 50));
+    insta::assert_snapshot!(dashboard(50, 58));
 }
 
 #[test]
 fn snapshot_the_dashboard_with_no_usage() {
-    let chat = chat_with(CostView::with_data(UsageData::default(), lines()));
+    let chat = chat_with(CostView::with_data(
+        UsageData::default(),
+        Vec::new(),
+        lines(),
+    ));
     insta::assert_snapshot!(text(&draw(&chat, 100, 8)));
 }
 
@@ -395,7 +402,7 @@ fn under_40_columns_the_text_report_replaces_the_cards() {
 
 #[test]
 fn the_active_range_is_bracketed_so_colour_is_not_needed() {
-    let mut chat = chat_with(CostView::with_data(usage(), lines()));
+    let mut chat = chat_with(CostView::with_data(usage(), Vec::new(), lines()));
     assert!(text(&draw(&chat, 100, 10)).contains("[7d] 30d 90d All"));
     chat.cost_mut()
         .unwrap()
@@ -409,7 +416,7 @@ fn the_active_range_is_bracketed_so_colour_is_not_needed() {
 
 #[test]
 fn a_range_key_in_the_text_tier_shows_the_note_on_the_keys_line() {
-    let mut chat = chat_with(CostView::with_data(usage(), lines()));
+    let mut chat = chat_with(CostView::with_data(usage(), Vec::new(), lines()));
     draw(&chat, 36, 12);
     chat.cost_mut()
         .unwrap()
@@ -432,7 +439,7 @@ fn the_keys_line_lists_the_range_keys() {
 
 #[test]
 fn the_dashboard_scrolls_over_its_height() {
-    let mut chat = chat_with(CostView::with_data(usage(), lines()));
+    let mut chat = chat_with(CostView::with_data(usage(), Vec::new(), lines()));
     // A column of cards is 21 rows: a 10-row pane hides the lower cards.
     assert!(!text(&draw(&chat, 50, 10)).contains("Agent time"));
     for _ in 0..13 {
@@ -446,7 +453,7 @@ fn the_dashboard_scrolls_over_its_height() {
 #[test]
 fn every_pane_size_draws_the_dashboard_without_panicking() {
     for data in [usage(), UsageData::default()] {
-        let mut chat = chat_with(CostView::with_data(data, lines()));
+        let mut chat = chat_with(CostView::with_data(data, Vec::new(), lines()));
         for width in 0..=120 {
             for height in 0..=40 {
                 draw(&chat, width, height);
@@ -486,7 +493,7 @@ fn surge(times: u64) -> UsageData {
 }
 
 fn surge_at(width: u16, times: u64) -> String {
-    let chat = chat_with(CostView::with_data(surge(times), Vec::new()));
+    let chat = chat_with(CostView::with_data(surge(times), Vec::new(), Vec::new()));
     text(&draw(&chat, width, 40))
 }
 
@@ -534,7 +541,7 @@ fn the_keys_line_advertises_the_range_only_where_it_works() {
 
 #[test]
 fn the_wide_tiers_keep_the_text_report_lines_under_the_cards() {
-    for (width, height) in [(100, 35), (72, 40), (50, 50)] {
+    for (width, height) in [(100, 43), (72, 48), (50, 58)] {
         let shown = dashboard(width, height);
         assert!(shown.contains("this chat: 6 tokens"), "{width}: {shown}");
         assert!(shown.contains("llama3:8b"), "{width}: {shown}");
@@ -545,7 +552,11 @@ fn the_wide_tiers_keep_the_text_report_lines_under_the_cards() {
 
 #[test]
 fn the_empty_state_does_not_repeat_the_report_under_it() {
-    let chat = chat_with(CostView::with_data(UsageData::default(), lines()));
+    let chat = chat_with(CostView::with_data(
+        UsageData::default(),
+        Vec::new(),
+        lines(),
+    ));
     assert!(!text(&draw(&chat, 100, 20)).contains("this chat"));
 }
 
@@ -560,7 +571,7 @@ fn a_range_switch_that_shortens_the_sheet_pulls_the_scroll_back() {
     // Only the month has rows: its sheet is tall, the empty week is short.
     let mut data = usage();
     data.rows.retain(|r| r.days_ago > 7);
-    let mut chat = chat_with(CostView::with_data(data, lines()));
+    let mut chat = chat_with(CostView::with_data(data, Vec::new(), lines()));
     press(&mut chat, KeyCode::Char('2'));
     draw(&chat, 50, 10);
     for _ in 0..40 {
@@ -575,13 +586,13 @@ fn a_range_switch_that_shortens_the_sheet_pulls_the_scroll_back() {
 
 #[test]
 fn a_resize_that_shortens_the_sheet_pulls_the_scroll_back() {
-    let mut chat = chat_with(CostView::with_data(usage(), lines()));
+    let mut chat = chat_with(CostView::with_data(usage(), Vec::new(), lines()));
     draw(&chat, 50, 10);
     for _ in 0..60 {
         press(&mut chat, KeyCode::Down);
     }
     assert!(!text(&draw(&chat, 50, 10)).contains("[7d]"));
-    let shown = text(&draw(&chat, 100, 40));
+    let shown = text(&draw(&chat, 100, 48));
     assert!(shown.contains("[7d] 30d 90d All"), "{shown}");
 }
 
@@ -592,7 +603,7 @@ fn snapshot_a_card_with_an_approximate_time_and_millions() {
     // Two of the three turns of the day have no wall time: the sum is a
     // lower bound, marked with `~`.
     data.rows[0].wall_timed = 1;
-    let chat = chat_with(CostView::with_data(data, Vec::new()));
+    let chat = chat_with(CostView::with_data(data, Vec::new(), Vec::new()));
     let shown = text(&draw(&chat, 100, 9));
     assert!(shown.contains("1.2M") && shown.contains('~'), "{shown}");
     insta::assert_snapshot!(shown);
@@ -665,7 +676,7 @@ fn a_long_range_states_the_bucket_size_in_the_legend() {
         tasks: Vec::new(),
         ..UsageData::default()
     };
-    let mut chat = chat_with(CostView::with_data(data, lines()));
+    let mut chat = chat_with(CostView::with_data(data, Vec::new(), lines()));
     chat.cost_mut()
         .unwrap()
         .on_key(&KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
@@ -690,13 +701,17 @@ fn a_known_zero_day_is_marked_and_an_empty_range_has_no_chart() {
         tasks: Vec::new(),
         ..UsageData::default()
     };
-    let chat = chat_with(CostView::with_data(data, lines()));
+    let chat = chat_with(CostView::with_data(data, Vec::new(), lines()));
     let shown = text(&draw(&chat, 100, 40));
     // Today is the last of seven slots of eight columns, in the row above the axis.
     let rows = chart_in(&shown);
     assert_eq!(cell(&rows, 3, 51), '·', "{shown}");
     assert_eq!(cell(&rows, 3, 43), ' ', "{shown}");
-    let empty = chat_with(CostView::with_data(UsageData::default(), lines()));
+    let empty = chat_with(CostView::with_data(
+        UsageData::default(),
+        Vec::new(),
+        lines(),
+    ));
     assert!(!text(&draw(&empty, 100, 40)).contains("in above"));
 }
 
@@ -731,7 +746,7 @@ fn snapshot_the_chart_buckets_90_days_at_the_smallest_dashboard_width() {
         tasks: Vec::new(),
         ..UsageData::default()
     };
-    let mut chat = chat_with(CostView::with_data(data, Vec::new()));
+    let mut chat = chat_with(CostView::with_data(data, Vec::new(), Vec::new()));
     press(&mut chat, KeyCode::Char('3'));
     let shown = text(&draw(&chat, 40, 70));
     let rows: Vec<&str> = shown.lines().collect();
@@ -764,7 +779,7 @@ fn days_from_today(count: u32, set: impl Fn(&mut UsageRow)) -> UsageData {
 #[test]
 fn a_day_with_only_its_input_known_and_zero_is_marked() {
     let data = days_from_today(1, |r| r.input = Some(0));
-    let chat = chat_with(CostView::with_data(data, lines()));
+    let chat = chat_with(CostView::with_data(data, Vec::new(), lines()));
     let rows = chart_in(&text(&draw(&chat, 100, 40)));
     assert_eq!(cell(&rows, 3, 51), '·', "{rows:?}");
 }
@@ -772,7 +787,7 @@ fn a_day_with_only_its_input_known_and_zero_is_marked() {
 #[test]
 fn a_partial_oldest_bar_is_said_under_the_chart() {
     let data = days_from_today(100, |r| r.input = Some(5));
-    let mut chat = chat_with(CostView::with_data(data, lines()));
+    let mut chat = chat_with(CostView::with_data(data, Vec::new(), lines()));
     press(&mut chat, KeyCode::Char('4'));
     let rows = chart_in(&text(&draw(&chat, 40, 60)));
     assert!(rows[0].contains("1 bar = 3 days"), "{rows:?}");
@@ -786,7 +801,7 @@ fn a_partial_oldest_bar_is_said_under_the_chart() {
 fn a_series_cut_at_400_days_says_so_under_the_chart() {
     let mut data = days_from_today(2, |r| r.input = Some(5));
     data.rows[1].days_ago = 450;
-    let mut chat = chat_with(CostView::with_data(data, lines()));
+    let mut chat = chat_with(CostView::with_data(data, Vec::new(), lines()));
     press(&mut chat, KeyCode::Char('4'));
     for width in [40, 59, 60, 100] {
         let rows = chart_in(&text(&draw(&chat, width, 60)));
@@ -823,7 +838,7 @@ fn one_hour() -> UsageData {
 }
 
 fn heat_of(data: UsageData, width: u16) -> Vec<String> {
-    let chat = chat_with(CostView::with_data(data, lines()));
+    let chat = chat_with(CostView::with_data(data, Vec::new(), lines()));
     heat_in(&text(&draw(&chat, width, 80)))
 }
 
@@ -921,7 +936,11 @@ fn a_range_with_usage_and_no_hours_says_so_instead_of_an_empty_grid() {
         "{rows:?}"
     );
     // An empty range has no dashboard blocks at all.
-    let chat = chat_with(CostView::with_data(UsageData::default(), lines()));
+    let chat = chat_with(CostView::with_data(
+        UsageData::default(),
+        Vec::new(),
+        lines(),
+    ));
     assert!(!text(&draw(&chat, 100, 40)).contains("Tue"));
 }
 
@@ -936,7 +955,7 @@ fn a_known_zero_hour_is_marked_and_never_blank() {
 #[test]
 fn a_short_pane_shows_every_weekday_while_it_scrolls() {
     for height in [4, 6, 10] {
-        let mut chat = chat_with(CostView::with_data(usage(), lines()));
+        let mut chat = chat_with(CostView::with_data(usage(), Vec::new(), lines()));
         let mut seen = std::collections::BTreeSet::new();
         for _ in 0..120 {
             let shown = text(&draw(&chat, 100, height));
@@ -962,4 +981,229 @@ fn narrow_cells_are_shaded_against_the_busiest_bucket_not_the_busiest_hour() {
     assert_eq!(all.matches('█').count(), 3, "{rows:?}");
     assert!(rows[3].contains('█'), "{rows:?}");
     assert!(!rows[4].contains('█') && rows[4].contains('▒'), "{rows:?}");
+}
+
+/// One row of a pair: `tokens` is the whole total, split 4 to 1.
+fn pair(engine: &str, model: Option<&str>, days_ago: u32, tokens: u64) -> UsageRow {
+    UsageRow {
+        days_ago,
+        engine: engine.into(),
+        model: model.map(str::to_owned),
+        turns: 2,
+        records: 2,
+        input: Some(tokens * 4 / 5),
+        output: Some(tokens / 5),
+        total: Some(tokens),
+        ..UsageRow::default()
+    }
+}
+
+fn billed() -> Vec<(String, crate::core::ai::chat::usage_view::Billing)> {
+    use crate::core::ai::chat::usage_view::Billing;
+    vec![
+        ("claude".into(), Billing::Subscription),
+        ("codex".into(), Billing::PerToken),
+    ]
+}
+
+/// Every provider once; claude is the biggest and has a dollar figure.
+fn models_usage() -> UsageData {
+    let mut claude = pair("claude", Some("sonnet"), 0, 3_000);
+    claude.cost_micros = Some(500_000);
+    claude.costed = 2;
+    let mut codex = pair("codex", Some("gpt-5"), 1, 1_200);
+    codex.cost_micros = Some(4_900);
+    codex.costed = 2;
+    UsageData {
+        rows: vec![
+            claude,
+            pair("ollama", Some("llama3:8b"), 0, 5_000),
+            codex,
+            pair("gemini", None, 2, 900),
+            pair("foo", Some("mixed"), 3, 400),
+        ],
+        ..UsageData::default()
+    }
+}
+
+fn models_view(data: UsageData) -> ChatState {
+    chat_with(CostView::with_data(data, billed(), Vec::new()))
+}
+
+/// The rows from the Models title to the last one with text.
+fn models_block(chat: &ChatState, width: u16) -> String {
+    let shown = text(&draw(chat, width, 90));
+    let rows: Vec<&str> = shown.lines().collect();
+    let from = rows
+        .iter()
+        .position(|r| r.starts_with("Models"))
+        .expect("Models title");
+    let to = rows.iter().rposition(|r| !r.is_empty()).unwrap_or(from);
+    // The last row is the keys line.
+    rows[from..to].join("\n")
+}
+
+#[test]
+fn snapshot_the_models_and_the_provider_bar_at_100_columns() {
+    insta::assert_snapshot!(models_block(&models_view(models_usage()), 100));
+}
+
+#[test]
+fn snapshot_the_models_and_the_provider_bar_at_72_columns() {
+    insta::assert_snapshot!(models_block(&models_view(models_usage()), 72));
+}
+
+#[test]
+fn snapshot_the_models_and_the_provider_bar_at_50_columns() {
+    insta::assert_snapshot!(models_block(&models_view(models_usage()), 50));
+}
+
+/// The first cell whose symbol is `glyph`: its foreground.
+fn glyph_fg(buf: &Buffer, glyph: char) -> Option<ratatui::style::Color> {
+    let area = buf.area;
+    (0..area.height)
+        .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+        .map(|at| &buf[at])
+        .find(|c| c.symbol() == glyph.to_string())
+        .map(|c| c.fg)
+}
+
+#[test]
+fn a_provider_glyph_is_drawn_in_its_colour_with_the_label_beside_it() {
+    let chat = models_view(models_usage());
+    let buf = draw(&chat, 100, 90);
+    let t = theme();
+    for (p, color) in [
+        (Provider::Local, t.ai_purple),
+        (Provider::OpenAi, t.neutral),
+        (Provider::Anthropic, t.warning_orange),
+        (Provider::Google, t.info_blue),
+        (Provider::Other, t.text_muted),
+    ] {
+        assert_eq!(glyph_fg(&buf, p.glyph()), Some(color), "{p:?}");
+    }
+    let shown = text(&buf);
+    for p in Provider::ALL {
+        let row = shown
+            .lines()
+            .find(|l| l.starts_with(p.glyph()))
+            .unwrap_or_else(|| panic!("{p:?} row\n{shown}"));
+        assert!(row.contains(p.label()), "{row}");
+    }
+}
+
+#[test]
+fn the_bar_fills_the_width_and_every_segment_has_a_glyph_and_a_label() {
+    let chat = models_view(models_usage());
+    for width in [40u16, 59, 60, 79, 80, 100] {
+        let shown = text(&draw(&chat, width, 90));
+        let bar = shown
+            .lines()
+            .find(|l| {
+                l.chars()
+                    .all(|c| Provider::ALL.iter().any(|p| p.glyph() == c))
+                    && !l.is_empty()
+            })
+            .unwrap_or_else(|| panic!("no bar at {width}\n{shown}"));
+        assert_eq!(bar.chars().count(), usize::from(width), "{bar}");
+        for p in Provider::ALL {
+            assert!(bar.contains(p.glyph()), "{width} {p:?} {bar}");
+            assert!(
+                shown.contains(&format!("{} {} ", p.glyph(), p.label())),
+                "{shown}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_tiers_add_the_dollars_at_60_and_the_turns_at_80() {
+    let chat = models_view(models_usage());
+    let head = |w| {
+        let block = models_block(&chat, w);
+        block.lines().nth(1).unwrap().to_owned()
+    };
+    for (width, turns, usd) in [
+        (40, false, false),
+        (59, false, false),
+        (60, false, true),
+        (79, false, true),
+        (80, true, true),
+    ] {
+        let h = head(width);
+        assert_eq!(
+            (h.contains("turns"), h.contains('$')),
+            (turns, usd),
+            "{width}: {h}"
+        );
+        assert!(h.starts_with("provider"), "{h}");
+    }
+}
+
+#[test]
+fn the_models_follow_the_range_keys() {
+    let mut data = models_usage();
+    data.rows.push(pair("ollama", Some("old-model"), 20, 100));
+    let mut chat = models_view(data);
+    assert!(!models_block(&chat, 100).contains("old-model"));
+    press(&mut chat, KeyCode::Char('2'));
+    assert!(models_block(&chat, 100).contains("old-model"));
+    press(&mut chat, KeyCode::Char('1'));
+    assert!(!models_block(&chat, 100).contains("old-model"));
+}
+
+#[test]
+fn many_models_show_a_count_and_the_table_never_pushes_the_bar_away() {
+    let rows = (0..12)
+        .map(|n| pair("ollama", Some(&format!("m{n:02}")), 0, 100 + n))
+        .collect();
+    let chat = models_view(UsageData {
+        rows,
+        ..UsageData::default()
+    });
+    let block = models_block(&chat, 100);
+    assert!(block.contains("+4 more models"), "{block}");
+    assert!(block.contains("Local 100%"), "{block}");
+}
+
+#[test]
+fn zero_tokens_say_so_instead_of_drawing_a_bar() {
+    let mut row = pair("ollama", Some("a"), 0, 0);
+    row.total = None;
+    let chat = models_view(UsageData {
+        rows: vec![row],
+        ..UsageData::default()
+    });
+    let block = models_block(&chat, 100);
+    assert!(
+        block.contains("no tokens reported in this range"),
+        "{block}"
+    );
+    assert!(!block.contains("⬡⬡"), "{block}");
+}
+
+#[test]
+fn an_empty_range_has_no_models_block() {
+    let chat = models_view(UsageData::default());
+    assert!(!text(&draw(&chat, 100, 30)).contains("Models"));
+}
+
+#[test]
+fn long_and_wide_model_names_never_break_the_layout_or_panic() {
+    let long = "m".repeat(70);
+    let rows = vec![
+        pair("claude", Some(&long), 0, 9_999_999),
+        pair("ollama", Some("模型名称模型名称模型名称模型名称"), 0, 10),
+    ];
+    let mut chat = models_view(UsageData {
+        rows,
+        ..UsageData::default()
+    });
+    for width in 0..=120 {
+        for height in [0, 5, 20, 90] {
+            draw(&chat, width, height);
+        }
+        press(&mut chat, KeyCode::Char('4'));
+    }
+    assert!(models_block(&chat, 45).contains('…'));
 }

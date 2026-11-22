@@ -1,6 +1,6 @@
 ---
 source: src/ui/components/chat/cost_tests.rs
-expression: "dashboard(50, 50)"
+expression: "dashboard(50, 58)"
 ---
 AI usage (alpha)
 [7d] 30d 90d All
@@ -43,6 +43,14 @@ Thu          ▓▓▓
 Fri
 Sat                      ░░░
 Sun
+
+Models · by total tokens
+provider    model                           in out
+✻ Anthropic sonnet                        1.1k 300
+
+Providers · share of tokens
+✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻
+✻ Anthropic 100%
 
 today: 6 tokens · 2 turns
 last 7 days: 126 tokens · 3 turns

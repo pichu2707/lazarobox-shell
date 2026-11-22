@@ -10,6 +10,10 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **`/cost` shows a Models table and a provider bar.** Under the heatmap, a row for each engine and model of the range, from the most tokens to the least (at most 8, then `+N more models`), starts with the glyph and name of its provider (`✻ Anthropic`, `✦ Google`, `❂ OpenAI`, `⬡ Local`, `⬦ Other`) and shows the model, `in` and `out` in short numbers. A figure no record gave is `n/a` and one with records missing starts with `~`; a NULL model reads `unknown`. From 60 columns a `$` column shows the dollars of the billed CLI engines under the billing mode of the settings (the `list-price equivalent` label in full from 80 columns, which also add the turns, and a `*` with a note from 60 to 79); local engines never show dollars. Under the table a bar as wide as the pane has a segment of repeated glyphs for each provider, sized by the largest remainder so the segments fill the width and a provider with tokens keeps at least one cell, and a legend with each provider and its percent. A range with no tokens says `no tokens reported in this range`. The OpenAI glyph uses a new neutral theme colour that is not in the settings palette. Display only.
+
 ## [1.36.0] - 2026-11-22
 
 ### Added

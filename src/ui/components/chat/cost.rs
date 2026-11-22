@@ -15,6 +15,7 @@ mod cards;
 mod daily;
 mod heat;
 mod layout;
+mod tables;
 
 /// The keys line of the text report.
 const HINT: &str = "Esc close · ↑↓ scroll";
