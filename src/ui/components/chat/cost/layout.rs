@@ -7,8 +7,8 @@ use ratatui::{
     style::{Modifier, Style},
 };
 
-use super::cards;
-use crate::core::ai::chat::dashboard::{CARD_ROWS, Dashboard, Range, Tier};
+use super::{cards, daily};
+use crate::core::ai::chat::dashboard::{CARD_ROWS, CHART_ROWS, Dashboard, Range, Tier};
 use crate::ui::theme::LazaroboxTheme;
 
 /// Shown instead of the cards when the range has no usage.
@@ -73,6 +73,9 @@ pub(super) fn draw(
             theme,
         );
     }
+    // The chart is the last block of the dashboard: a gap, then the legend.
+    let top = cards.saturating_sub(CHART_ROWS).saturating_add(1);
+    daily::render(&model.daily, top, width, &mut buf, theme);
     for (n, (row, mine)) in (0u16..).zip(report) {
         let style = if *mine {
             base.fg(theme.primary_cyan)

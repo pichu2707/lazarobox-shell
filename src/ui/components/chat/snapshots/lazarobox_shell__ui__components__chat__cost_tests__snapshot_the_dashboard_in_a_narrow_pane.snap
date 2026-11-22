@@ -1,6 +1,6 @@
 ---
 source: src/ui/components/chat/cost_tests.rs
-expression: "dashboard(50, 32)"
+expression: "dashboard(50, 40)"
 ---
 AI usage (alpha)
 [7d] 30d 90d All
@@ -24,6 +24,14 @@ AI usage (alpha)
  3m
  6 agent turns
      █ ▄
+
+in above · out below · 1 bar = 1 day
+                  ██
+            ▇▇    ██
+            ██    ██
+            ▀▀    ██
+
+
 
 today: 6 tokens · 2 turns
 last 7 days: 126 tokens · 3 turns
