@@ -546,3 +546,75 @@ fn home_is_never_a_memory_root() {
     let app = real(&repo(&home, "app", "ref: refs/heads/main\n"));
     assert_eq!(memory_root(&app, Some(&home)), Some((app.clone(), app)));
 }
+
+// The attacker controls the whole layout: a `.git` file, a fake git folder,
+// a `commondir` that names the victim's `.git` and a backlink that names this
+// checkout. Only a git folder that sits inside the victim's own
+// `.git/worktrees/` passes, and nobody can create one there from outside.
+#[test]
+fn a_layout_the_attacker_builds_entirely_does_not_reach_the_victim() {
+    let tmp = tempfile::tempdir().unwrap();
+    let top = real(tmp.path());
+    let victim = real(&repo(&top, "victim", "ref: refs/heads/main\n"));
+    let evil = top.join("evil");
+    fs::create_dir_all(evil.join("fake")).unwrap();
+    fs::write(evil.join(".git"), "gitdir: fake\n").unwrap();
+    let common = victim.join(".git");
+    fs::write(
+        evil.join("fake/commondir"),
+        format!("{}\n", common.display()),
+    )
+    .unwrap();
+    fs::write(
+        evil.join("fake/gitdir"),
+        format!("{}\n", evil.join(".git").display()),
+    )
+    .unwrap();
+    assert_eq!(memory_root(&evil, None), Some((evil.clone(), evil)));
+}
+
+// A `commondir` that names a `.git` FILE is not a main repository.
+#[test]
+fn a_commondir_that_is_a_file_named_dot_git_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let top = real(tmp.path());
+    let file_home = top.join("holder");
+    fs::create_dir_all(&file_home).unwrap();
+    fs::write(file_home.join(".git"), "gitdir: x\n").unwrap();
+    let wt = linked(&top, &top.join("unused"), "wt", None);
+    let gitdir = top.join("unused/worktrees/wt");
+    fs::write(
+        gitdir.join("commondir"),
+        format!("{}\n", file_home.join(".git").display()),
+    )
+    .unwrap();
+    assert_eq!(memory_root(&wt, None), Some((wt.clone(), wt)));
+}
+
+// A linked worktree checked out at HOME is still HOME, whatever main repo it
+// belongs to.
+#[test]
+fn a_linked_worktree_at_home_is_never_a_memory_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let top = real(tmp.path());
+    let main = real(&repo(&top, "mainrepo", "ref: refs/heads/main\n"));
+    let wt = linked(&top, &main.join(".git"), "wt", None);
+    assert!(memory_root(&wt, None).is_some());
+    assert_eq!(memory_root(&wt.join("a"), Some(&wt)), None);
+}
+
+// When HOME cannot be resolved the guard compares the names as they are.
+#[test]
+fn the_home_comparison_falls_back_to_the_names_when_a_path_cannot_be_resolved() {
+    assert!(same_dir(
+        Path::new("/no/such/home"),
+        Path::new("/no/such/home")
+    ));
+    assert!(!same_dir(
+        Path::new("/no/such/home"),
+        Path::new("/no/such/other")
+    ));
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = real(tmp.path());
+    assert!(same_dir(&dir.join("."), &dir));
+}

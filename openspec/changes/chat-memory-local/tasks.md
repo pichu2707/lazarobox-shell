@@ -89,7 +89,7 @@ Task rule for C12: the existing engram-down notice path stays as is; the mirror 
 - [ ] 1a.7 (config default and read done in S1a; the `local = false` sends nothing test is in S1a2) RED `config.rs` test: `[ai.memory] local` defaults true; `local = false` reads and writes nothing in `.lzr/`; engram `enabled`/`acknowledged` unchanged.
 - [ ] 1a.8 (S1a: `mod`, `note`, `area`, `ledger` done; `gitignore` and `port` in S1a2) GREEN `local/{mod,note,area,gitignore,port,ledger}.rs`: schema, `LocalCmd`/`LocalReply` carrying typed outcomes (saved, skipped, foreign count, unreadable count, gitignore result, read-only, no-git).
 - [x] 1a.9 GREEN `workspace::memory_root(cwd)`, `config.rs` local switch, `paths.rs` deny entries.
-- [ ] (S1a2) 1a.10 GREEN runtime thread `memory_local.rs` + routing `Effect::LocalMemory` / `AppEvent::LocalMemory` in `app.rs`/`runtime.rs`; notes load once at project entry.
+- [ ] (S1a2) 1a.10 GREEN runtime thread `memory_local.rs` + routing `Effect::LocalMemory` / `AppEvent::LocalMemory` in `app.rs`/`runtime.rs`; notes load once at project entry. Ledger rules (S1a3): a ledger file that is not valid UTF-8 maps to `Damaged`, and a `Damaged` or `Newer` ledger is reported, trusts no note and is never rewritten (a save is refused with a visible line).
 - [ ] 1a.11 REFACTOR; CHANGELOG `[Unreleased]` entry. Run exit gate. Split by slice: S1a (store core), S1a2 (gitignore, port), S1a3 (thread), S1a4 (app routing, CHANGELOG for the load at chat open); each runs the exit gate on its own PR.
 
 ## S1b: Screen, PII, save pipeline (base: main after S1a)

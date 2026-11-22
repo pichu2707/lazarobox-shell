@@ -82,22 +82,32 @@ pub fn memory_root(cwd: &Path, home: Option<&Path>) -> Option<(PathBuf, PathBuf)
     let work = find_repo(cwd)?.root;
     let store = linked_main(&work).unwrap_or_else(|| work.clone());
     let store = store.canonicalize().ok()?;
-    let home = home.and_then(|home| home.canonicalize().ok());
-    let at_home =
-        home.is_some_and(|home| home == store || Some(&home) == work.canonicalize().ok().as_ref());
+    let at_home = home.is_some_and(|home| same_dir(home, &store) || same_dir(home, &work));
     (!at_home).then_some((store, work))
 }
 
-/// The main checkout of the linked worktree `work`, only when the claim holds
-/// from both ends: its `.git` file names a git folder that has a `commondir`
-/// leading to a real `.git` folder, and that folder's `gitdir` backlink names
-/// this checkout. A forged `.git` file fails the backlink and gets no shared
-/// store.
+/// Whether two directories are the same one: by real path, or by name when
+/// either cannot be resolved (a missing HOME must not switch a guard off).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// The main checkout of the linked worktree `work`, when its `.git` file names
+/// a git folder that sits directly inside `<common>/worktrees/`, where
+/// `common` is that folder's `commondir`, a real directory named `.git`, and
+/// the folder's `gitdir` backlink names this checkout.
+///
+/// What this guarantees: the claim is vouched for from inside the main
+/// repository's own `.git/worktrees/`, where only someone who can already
+/// write into that `.git` can create an entry. A layout built entirely in
+/// the checkout (a `.git` file, a fake git folder with a `commondir` and a
+/// backlink) is not under `<common>/worktrees/` and gets no shared store. It
+/// does not stop someone who can write into the main repository's `.git`.
 fn linked_main(work: &Path) -> Option<PathBuf> {
     let dot_git = work.join(".git");
-    if !fs::symlink_metadata(&dot_git).ok()?.is_file() {
-        return None;
-    }
     let text = read_regular(&dot_git, GIT_FILE_CAP).ok()?;
     let gitdir = work.join(gitdir_of(&String::from_utf8_lossy(&text))?);
     let gitdir = gitdir.canonicalize().ok()?;
@@ -109,7 +119,8 @@ fn linked_main(work: &Path) -> Option<PathBuf> {
     let backlink = gitdir.join(line("gitdir")?).canonicalize().ok()?;
     let genuine = backlink == dot_git.canonicalize().ok()?
         && common.file_name().is_some_and(|name| name == ".git")
-        && common.is_dir();
+        && common.is_dir()
+        && Some(gitdir.parent()?.to_owned()) == common.join("worktrees").canonicalize().ok();
     genuine.then(|| common.parent().map(Path::to_owned))?
 }
 

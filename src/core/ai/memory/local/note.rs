@@ -79,7 +79,7 @@ impl NewNote {
         let cut = text.chars().count() > TEXT_CAP;
         Ok(NewNote {
             kind,
-            area: strip_controls(area, false),
+            area: strip_controls(area, false).chars().take(AREA_CAP).collect(),
             text: text.chars().take(TEXT_CAP).collect(),
             origin,
             topic: None,
@@ -104,11 +104,13 @@ impl Origin {
     }
 }
 
-/// `text` without control characters (ESC, NUL, DEL...). Line breaks and tabs
-/// stay when `multiline`; nothing else that could move a cursor does.
+/// `text` without control characters (ESC, NUL, DEL...) and without the
+/// characters that reorder or hide text (bidi controls, zero-width marks, line
+/// and paragraph separators). Line breaks and tabs stay when `multiline`.
 fn strip_controls(text: &str, multiline: bool) -> String {
+    let hidden = |c: char| matches!(c, '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
     text.chars()
-        .filter(|c| !c.is_control() || (multiline && matches!(c, '\n' | '\t')))
+        .filter(|c| !hidden(*c) && (!c.is_control() || (multiline && matches!(c, '\n' | '\t'))))
         .collect()
 }
 
@@ -180,10 +182,13 @@ impl LocalNote {
         };
         let area =
             string(take("area")).map_or_else(|| ".".to_owned(), |a| strip_controls(&a, false));
+        let clean = |items: Vec<String>| -> Vec<String> {
+            items.iter().map(|i| strip_controls(i, false)).collect()
+        };
         let (refs, topic, flags) = (
-            strings(take("refs")),
-            string(take("topic")),
-            strings(take("flags")),
+            clean(strings(take("refs"))),
+            string(take("topic")).map(|t| strip_controls(&t, false)),
+            clean(strings(take("flags"))),
         );
         let fits = within(&text, READ_TEXT_CAP)
             && within(&area, AREA_CAP)
@@ -205,7 +210,7 @@ impl LocalNote {
             topic,
             created: number(take("created")),
             updated: number(take("updated")),
-            machine: string(take("machine")).unwrap_or_default(),
+            machine: strip_controls(&string(take("machine")).unwrap_or_default(), false),
             pinned: take("pinned").and_then(|v| v.as_bool()).unwrap_or(false),
             flags,
             extra: std::mem::take(&mut o),
@@ -324,6 +329,42 @@ mod tests {
         }
         let at_the_cap = with("text", long(READ_TEXT_CAP));
         assert!(LocalNote::parse(at_the_cap.as_bytes()).is_ok());
+    }
+
+    // Spec: a note the chat writes must be one it can read back.
+    #[test]
+    fn a_deep_area_is_capped_on_write_so_the_note_reads_back() {
+        let deep = vec!["folder"; 60].join("/");
+        let new = NewNote::new("config", &deep, "t", Origin::User).unwrap();
+        assert!(new.area.chars().count() <= 200);
+        let note = LocalNote::from_new(new, "n-a".into(), "m-1".into(), 1);
+        assert!(LocalNote::parse(note.to_json().as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn bidi_and_zero_width_characters_are_stripped_from_every_text_field() {
+        let bad = "\u{202A}\u{202E}\u{2066}\u{2069}\u{200B}\u{200F}\u{2028}\u{2029}\u{FEFF}\u{1b}";
+        let json = serde_json::json!({
+            "v": 1, "id": "n-a", "kind": "config",
+            "text": format!("a{bad}b"), "area": format!("c{bad}d"),
+            "topic": format!("e{bad}f"), "refs": [format!("g{bad}h")],
+            "flags": [format!("i{bad}j")], "machine": format!("m{bad}n"),
+        });
+        let n = LocalNote::parse(json.to_string().as_bytes()).unwrap();
+        assert_eq!(n.text, "ab");
+        assert_eq!(n.area, "cd");
+        assert_eq!(n.topic.as_deref(), Some("ef"));
+        assert_eq!(n.refs, ["gh"]);
+        assert_eq!(n.flags, ["ij"]);
+        assert_eq!(n.machine, "mn");
+        let new = NewNote::new(
+            "config",
+            &format!("a{bad}b"),
+            &format!("c{bad}d"),
+            Origin::User,
+        )
+        .unwrap();
+        assert_eq!((new.area.as_str(), new.text.as_str()), ("ab", "cd"));
     }
 
     #[test]
