@@ -85,13 +85,14 @@ Count = added non-test `.rs` lines, minus blank lines and comments. Tests, fixtu
 
 ## S1c: renderer, range selector, tiers (~160)
 
-- [ ] 1c.1 RED: tests: tier boundaries (80, 79, 60, 59, 40, 39); keys `1`-`4`, left/right/`h`/`l` rebuild the model with no store command (C1); text-tier key sets the note (C7); active range bracketed without colour.
-- [ ] 1c.2 RED: insta `TestBackend` snapshots at 100/72/50/36 columns plus empty state; no-panic loop for widths 0..=120 x heights 0..=40.
-- [ ] 1c.3 GREEN: create `src/ui/components/chat/cost/{layout,cards}.rs` (offscreen `Buffer` of `Dashboard::height(width)` rows, scroll window, 4-row cards, `Sparkline`, delta line, `alpha` title).
-- [ ] 1c.4 GREEN: `cost_view.rs` (`Body` enum, `with_data`, range keys, last draw width), `ui/components/chat/cost.rs` wiring; hint `Esc close · 1-4 range · ↑↓ scroll`.
-- [ ] 1c.5 Review each of the 8 existing /cost snapshots on its own. Those at 40 columns or more change to the dashboard; tests about text wrapping move to 36 columns. List which changed in the PR.
-- [ ] 1c.6 CHANGELOG `[Unreleased]`. READMEs are untouched until S6.
-- [ ] 1c.7 Close: protocol checks.
+- [x] 1c.1 RED: tests: tier boundaries (80, 79, 60, 59, 40, 39); keys `1`-`4`, left/right/`h`/`l` rebuild the model with no store command (C1); text-tier key sets the note (C7); active range bracketed without colour. Result: dashboard/tests.rs (tier boundaries, range cycle, height) and cost_view/tests.rs (keys 1-4, arrows, h/l rebuild with no command; text tier note; text view inert); app test asserts no effects. Seen failing at runtime (todo! stubs, missing key handling).
+- [x] 1c.2 RED: insta `TestBackend` snapshots at 100/72/50/36 columns plus empty state; no-panic loop for widths 0..=120 x heights 0..=40. Result: cost_tests.rs: insta snapshots at 100/72/50 plus empty and 36 (text); bracket test; scroll test; no-panic loop over widths 0..=120 x heights 0..=40 with data and empty. Red before the renderer.
+- [x] 1c.3 GREEN: create `src/ui/components/chat/cost/{layout,cards}.rs` (offscreen `Buffer` of `Dashboard::height(width)` rows, scroll window, 4-row cards, `Sparkline`, delta line, `alpha` title). Result: cost/{layout,cards}.rs; the model has `Tier`, `CARD_ROWS`, `TEXT_BELOW` and `Dashboard::height(&self, width)` (a method: the empty state is shorter). `alpha` title stays the existing header row.
+- [x] 1c.4 GREEN: `cost_view.rs` (`Body` enum, `with_data`, range keys, last draw width), `ui/components/chat/cost.rs` wiring; hint `Esc close · 1-4 range · ↑↓ scroll`. Result: cost_view.rs `Body` enum, `with_data`, `set_data`, `dashboard`, `set_width`, `WIDEN`, range keys; cost.rs wiring; app/cost.rs builds the model on data arrival. Hint `Esc close · 1-4 range · ↑↓ scroll` once data arrived.
+- [x] 1c.5 Review each of the 8 existing /cost snapshots on its own. Those at 40 columns or more change to the dashboard; tests about text wrapping move to 36 columns. List which changed in the PR. Result: 3 snapshots changed (the data-bearing ones moved to 36 columns), 5 unchanged; listed in the PR.
+- [x] 1c.6 CHANGELOG `[Unreleased]`. READMEs are untouched until S6. Result: CHANGELOG `[Unreleased]` entry; READMEs (both languages, same position) updated in this slice on the orchestrator's instruction because the change is user-visible. S6 still owns the rest of the README rewrite.
+- [x] 1c.8 Review fixes (#829): deltas never clipped (padding, then cap `▲ 999%+`); range keys with no model say `no usage data to change the range of`; width 0 = unknown; keys line advertises `1-4` only from 40 columns; scroll-clamp and `~`/`M` tests. In the wide tiers (>=40) the text-report lines (today, last 7 days, per engine/model, this chat) are drawn under the cards so no information is lost until S4 (Models) and S5 (Agents) replace them. **S6 removes these lines** together with `chart_lines`. Result: done.
+- [x] 1c.7 Close: protocol checks. Result: cargo test, clippy -D warnings, fmt --check ok; see PR.
 
 ## S2: tokens by day (~200)
 

@@ -38,6 +38,17 @@ impl Delta {
     }
 }
 
+impl Delta {
+    /// The text for a card too narrow for [`Delta::text`]: a change of more
+    /// than 999% reads `▲ 999%+`, never a number with its digits cut off.
+    pub fn capped(self) -> String {
+        match self {
+            Self::Up(n) if n > 999 => "▲ 999%+".to_owned(),
+            other => other.text(),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Kpi {
     pub label: &'static str,

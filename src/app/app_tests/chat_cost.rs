@@ -4,7 +4,7 @@
 use super::chat_history::*;
 use super::*;
 use crate::core::ai::chat::{
-    cost_view::READING_LINE,
+    cost_view::{NO_DATA, READING_LINE},
     dashboard::UsageData,
     engine::StreamEvent,
     store::{StoreCmd, StoreReply},
@@ -199,6 +199,35 @@ fn the_report_names_the_conversation_once_it_exists() {
     a.update(created(chat_id(), 7));
     let effects = ask(&mut a, "/cost");
     assert_eq!(reports(&effects), vec![Some(7)]);
+}
+
+#[test]
+fn a_range_key_rebuilds_the_dashboard_and_asks_the_store_nothing() {
+    use crate::core::ai::chat::dashboard::Range;
+    let mut a = conversation();
+    ask(&mut a, "/cost");
+    a.update(answer(Some(vec![today_row()])));
+    let range = |a: &App| {
+        chat_of(a)
+            .cost()
+            .and_then(|v| v.dashboard())
+            .map(|d| d.range)
+    };
+    assert_eq!(range(&a), Some(Range::Week));
+    // The key reaches neither the composer nor the store.
+    let effects = a.update(key('2'));
+    assert!(effects.is_empty(), "{effects:?}");
+    assert_eq!(composer_text(&a), "");
+    assert_eq!(range(&a), Some(Range::Month));
+    // Reading, or an unavailable store, leaves no model: the key says so.
+    a.update(plain(KeyCode::Esc));
+    ask(&mut a, "/cost");
+    a.update(key('2'));
+    assert_eq!(chat_of(&a).cost().and_then(|v| v.note()), Some(NO_DATA));
+    a.update(answer(None));
+    a.update(key('2'));
+    assert_eq!(range(&a), None);
+    assert_eq!(chat_of(&a).cost().and_then(|v| v.note()), Some(NO_DATA));
 }
 
 #[test]
