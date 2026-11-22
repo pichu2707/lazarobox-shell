@@ -986,9 +986,21 @@ fn memory_for<L: engram::serve::Launcher>(
     launcher: impl FnOnce() -> L + 'static,
     replies: mpsc::Sender<crate::core::ai::memory::port::MemReply>,
 ) -> Memory {
+    memory_over(config, read_token, Loopback::new, launcher, replies)
+}
+
+/// `memory_for` over any transport: `transport` gets the port and the token,
+/// which is read only when the worker starts.
+fn memory_over<T: engram::Transport, L: engram::serve::Launcher>(
+    config: &crate::core::ai::config::MemoryConfig,
+    read_token: impl FnOnce() -> Option<String> + 'static,
+    transport: impl FnOnce(u16, Option<String>) -> T + 'static,
+    launcher: impl FnOnce() -> L + 'static,
+    replies: mpsc::Sender<crate::core::ai::memory::port::MemReply>,
+) -> Memory {
     let off_answers = replies.clone();
     Memory::for_config(config, move |port| {
-        engram::spawn_with(Loopback::new(port, read_token()), launcher(), port, replies)
+        engram::spawn_with(transport(port, read_token()), launcher(), port, replies)
     })
     .answering_when_off(off_answers)
 }
@@ -6615,12 +6627,23 @@ mod tests {
         }
 
         // Active: nothing is read before the first command, one read at start.
-        let refused = refused_port::RefusedPort::new();
-        let port = refused.port();
+        // Nothing listens on the port: the transport refuses at once. A real
+        // connect has time limits (200 ms to connect, 300 ms for `/health`)
+        // that a starved runner can miss, and a missed one is no refusal.
+        struct Refusing;
+        impl engram::Transport for Refusing {
+            async fn call(
+                &self,
+                _: &crate::core::ai::memory::route::Call,
+                _: loopback::Limits,
+            ) -> Result<loopback::Reply, loopback::CallError> {
+                Err(loopback::CallError::Connect)
+            }
+        }
         let config = MemoryConfig {
             enabled: true,
             acknowledged: true,
-            port,
+            port: 1,
             save_summaries: false,
             local: true,
         };
@@ -6628,12 +6651,13 @@ mod tests {
         let counted = Arc::clone(&reads);
         let (tx, mut rx) = mpsc::channel(8);
         let looks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut memory = memory_for(
+        let mut memory = memory_over(
             &config,
             move || {
                 counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 None
             },
+            |_, _| Refusing,
             {
                 let looks = Arc::clone(&looks);
                 move || LooksOnly(looks)
