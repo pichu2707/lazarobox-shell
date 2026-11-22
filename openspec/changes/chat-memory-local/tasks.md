@@ -6,10 +6,10 @@ Sources: proposal.md, design.md (engram #4103), specs/{project-memory-store,memo
 
 | Field | Value |
 |-------|-------|
-| Estimated production lines (total) | ~2,470 (non-test .rs, no blanks/comments) |
-| 400-line budget risk | High overall; per slice Low to Medium, S1a High (~390) |
+| Estimated production lines (total) | ~4,700 (non-test .rs, no blanks/comments, as rustfmt lays them out) |
+| 400-line budget risk | High overall; every slice below is planned under 400 |
 | Chained PRs recommended | Yes |
-| Suggested split | S1a > S1b > S1b2 > S1c > S2a > S2b > S3 > S4a > S4b > S5 |
+| Suggested split | S1a > S1a2 > S1b > S1b' > S1b2 > S1b2' > S1c > S1c' > S1c'' > S2a > S2a' > S2b > S3 > S4a > S4b > S5 > S5' |
 | Delivery strategy | auto-chain |
 | Chain strategy | stacked-to-main |
 
@@ -18,20 +18,29 @@ Chained PRs recommended: Yes
 Chain strategy: stacked-to-main
 400-line budget risk: High
 
+Re-slice after apply batch 1: S1a measured about 743 production lines against a ~390 forecast, because rustfmt lays code out about 1.9 times longer than the compact estimates. S1a was split into S1a (350, measured) and S1a2 (393, measured). The estimates of every remaining slice were multiplied by about 1.9 and the slices that would pass 400 were split again. Slices at 355-385 are tight: measure while applying and move the last work unit to a follow-up slice if one crosses 400.
+
 | Slice | Goal | Est. prod lines | Risk |
 |-------|------|-----------------|------|
-| S1a | Store, root, gitignore, ledger, runtime port, config, deny-list | ~390 | High |
-| S1b | Screen + PII + save pipeline + outcome lines | ~260 | Low |
-| S1b2 | Idle digest run, local-engine policy, /cost usage | ~200 | Low |
-| S1c | Ranker, nonce block, injection, `/memory why`, docs | ~360 | Medium |
-| S2a | `/memory` panel, pin, delete | ~210 | Low |
-| S2b | Cleanup, user note editor | ~190 | Low |
-| S3 | Trust prompt | ~200 | Low |
-| S4a | `memory_note` tool | ~200 | Low |
-| S4b | Conflict flow | ~200 | Low |
-| S5 | Engram mirror + candidates | ~260 | Medium |
+| S1a | Note schema, area, ledger, gitignore edit, `local` config switch, `.lzr` deny, `memory_root` (measured) | 350 | Low |
+| S1a2 | Port, runtime thread, app routing and load lines (measured) | 393 | Medium |
+| S1b | `pii.rs` and `screen.rs`: the never-store screen, pure | 250 | Low |
+| S1b' | Save pipeline in `app/project_memory.rs`, outcome lines, approved summary and compaction saves | 240 | Low |
+| S1b2 | `chat/digest.rs`: cadence, history input, upsert by topic, first-save line | 200 | Low |
+| S1b2' | Local-engine policy, `/cost` usage record, close-time bound | 180 | Medium |
+| S1c | `rank.rs` and the budget cut (pure) | 230 | Low |
+| S1c' | `local_block` with nonce, send-path injection, memory lines | 230 | Medium |
+| S1c'' | `/memory why`, orchestrator and engram coexistence, docs | 220 | Low |
+| S2a | `memory_view.rs` and the panel | 200 | Low |
+| S2a' | Pin and delete | 200 | Low |
+| S2b | Cleanup and user note editor | 360 | Medium |
+| S3 | Trust prompt | 380 | Medium |
+| S4a | `memory_note` tool | 380 | Medium |
+| S4b | Conflict flow | 380 | Medium |
+| S5 | Mirror plan (pure), gate, ledger `mirrored` | 250 | Medium |
+| S5' | Mirror executor, `lzr/` slug and route, candidates | 245 | Medium |
 
-Deviations from the slice list: S1b of the design (~390) is split into S1b and S1b2 because the owner's digest policy for local engines adds ~70 lines and would break 400. S2 and S4 are split because their design estimate is ~400 (over the 380 threshold). If S1a measures over 400 at apply, move `gitignore.rs` into an extra S1a2 PR before S1b.
+Deviations from the first slice list: S1b of the design was split into S1b and S1b2 for the owner's digest policy, S2 and S4 into a and b, and now every slice whose 1.9x estimate passes 400 is split again, as above.
 
 ## Owner decisions (2026-11-22)
 
@@ -69,17 +78,17 @@ Task rule for C12: the existing engram-down notice path stays as is; the mirror 
 
 ## S1a: Store and runtime port (base: main)
 
-- [ ] 1a.1 RED `src/core/ai/memory/local/note.rs` tests: JSON round trip; kind `learning` refused; text cut at 1000 with line `note cut to 1000 characters`; unknown fields ignored; missing area reads as `.`; unknown kind unreadable.
-- [ ] 1a.2 RED `local/area.rs` + `workspace.rs` tests: root and subfolder resolve to one store; linked worktree resolves to the main checkout's `.lzr/` with area relative to the work root; submodule has its own; Windows `C:\repo\frontend\src` gives `frontend/src`; reject prefix/root/`..`.
-- [ ] 1a.3 RED `local/gitignore.rs` tests, one per D4 outcome: already ignored, `!.lzr` respected, no file (create), append with newline, CRLF, write error (note still saved), `.lzr/` uncreatable; `.git/info/exclude` honored; other bytes untouched; touched only on creation.
-- [ ] 1a.4 RED `local/ledger.rs` tests: own `{id: hash}` makes a note local; unknown id, changed hash and hand-edited own note are foreign; read-merge-write union; machine id `m-<16hex>`, note id `n-<16hex>`.
-- [ ] 1a.5 RED `src/runtime/memory_local.rs` integration (tempfile repos): `.lzr/` absent after open, present after first save; 10 files with 2 invalid load 8 and leave the 2 byte-identical; `<<<<<<<` file and 5 MiB binary skipped and counted; read-only repo and read-only `.lzr/` write nothing but still read; no git repo writes nothing; atomic write leaves old notes intact.
-- [ ] 1a.6 RED `src/core/ai/tools/paths.rs` test: `.lzr` is in `WRITE_DENIED_DIRS`, and the ledger root `<data>/lazarobox/memory` is denied to tools.
-- [ ] 1a.7 RED `config.rs` test: `[ai.memory] local` defaults true; `local = false` reads and writes nothing in `.lzr/`; engram `enabled`/`acknowledged` unchanged.
-- [ ] 1a.8 GREEN `local/{mod,note,area,gitignore,port,ledger}.rs`: schema, `LocalCmd`/`LocalReply` carrying typed outcomes (saved, skipped, foreign count, unreadable count, gitignore result, read-only, no-git).
-- [ ] 1a.9 GREEN `workspace::memory_root(cwd)`, `config.rs` local switch, `paths.rs` deny entries.
-- [ ] 1a.10 GREEN runtime thread `memory_local.rs` + routing `Effect::LocalMemory` / `AppEvent::LocalMemory` in `app.rs`/`runtime.rs`; notes load once at project entry.
-- [ ] 1a.11 REFACTOR; CHANGELOG `[Unreleased]` entry. Run exit gate.
+- [x] 1a.1 RED `src/core/ai/memory/local/note.rs` tests: JSON round trip; kind `learning` refused; text cut at 1000 with line `note cut to 1000 characters`; unknown fields ignored; missing area reads as `.`; unknown kind unreadable.
+- [x] 1a.2 RED `local/area.rs` + `workspace.rs` tests: root and subfolder resolve to one store; linked worktree resolves to the main checkout's `.lzr/` with area relative to the work root; submodule has its own; Windows `C:\repo\frontend\src` gives `frontend/src`; reject prefix/root/`..`.
+- [x] 1a.3 RED `local/gitignore.rs` tests, one per D4 outcome: already ignored, `!.lzr` respected, no file (create), append with newline, CRLF, write error (note still saved), `.lzr/` uncreatable; `.git/info/exclude` honored; other bytes untouched; touched only on creation.
+- [x] 1a.4 RED `local/ledger.rs` tests: own `{id: hash}` makes a note local; unknown id, changed hash and hand-edited own note are foreign; read-merge-write union; machine id `m-<16hex>`, note id `n-<16hex>`.
+- [ ] (S1a2) 1a.5 RED `src/runtime/memory_local.rs` integration (tempfile repos): `.lzr/` absent after open, present after first save; 10 files with 2 invalid load 8 and leave the 2 byte-identical; `<<<<<<<` file and 5 MiB binary skipped and counted; read-only repo and read-only `.lzr/` write nothing but still read; no git repo writes nothing; atomic write leaves old notes intact.
+- [x] 1a.6 RED `src/core/ai/tools/paths.rs` test: `.lzr` is in `WRITE_DENIED_DIRS`, and the ledger root `<data>/lazarobox/memory` is denied to tools.
+- [ ] 1a.7 (config default and read done in S1a; the `local = false` sends nothing test is in S1a2) RED `config.rs` test: `[ai.memory] local` defaults true; `local = false` reads and writes nothing in `.lzr/`; engram `enabled`/`acknowledged` unchanged.
+- [ ] 1a.8 (S1a: `mod`, `note`, `area`, `gitignore`, `ledger` done; `port` in S1a2) GREEN `local/{mod,note,area,gitignore,port,ledger}.rs`: schema, `LocalCmd`/`LocalReply` carrying typed outcomes (saved, skipped, foreign count, unreadable count, gitignore result, read-only, no-git).
+- [x] 1a.9 GREEN `workspace::memory_root(cwd)`, `config.rs` local switch, `paths.rs` deny entries.
+- [ ] (S1a2) 1a.10 GREEN runtime thread `memory_local.rs` + routing `Effect::LocalMemory` / `AppEvent::LocalMemory` in `app.rs`/`runtime.rs`; notes load once at project entry.
+- [ ] 1a.11 REFACTOR; CHANGELOG `[Unreleased]` entry. Run exit gate. Split in two: S1a (CHANGELOG for the store core, exit gate run on this PR) and S1a2 (CHANGELOG for the load at chat open, exit gate run on its own PR).
 
 ## S1b: Screen, PII, save pipeline (base: main after S1a)
 
