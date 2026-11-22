@@ -79,6 +79,7 @@ fn report(end: End) -> RunReport {
         cwd: Some((LAUNCH.into(), CwdSource::Proc)),
         cd_target: None,
         output: None,
+        withheld: false,
     }
 }
 

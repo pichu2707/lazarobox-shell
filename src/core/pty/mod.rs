@@ -106,6 +106,13 @@ pub trait PtyHandle: Send {
     fn shell_in_foreground(&self) -> Option<bool> {
         None
     }
+    /// Whether the terminal's echo is off right now (the kernel's own sign
+    /// that a program is reading a password), read from the termios of the
+    /// PTY master. `None` when it cannot be told: an error, a target without
+    /// termios. The caller treats `None` as "echo on".
+    fn echo_off(&self) -> Option<bool> {
+        None
+    }
     /// The shell's real working directory, read from `/proc/<pid>/cwd` (the
     /// kernel resolves the link without touching the disk). `None` when it
     /// cannot be read: no pid, a platform without `/proc`, a process that is

@@ -6144,6 +6144,7 @@ mod tests {
             cwd: None,
             cd_target: None,
             output: None,
+            withheld: false,
         })
     }
 
@@ -6207,6 +6208,7 @@ mod tests {
             cwd: None,
             cd_target: None,
             output: Some("token ghp_abcdefghijklmnopqrstuvwxyz0123456789 done".to_owned()),
+            withheld: false,
         };
         let (_, feedback) = panes.apply(vec![Effect::ResumeNote {
             chat: id(9),

@@ -589,6 +589,7 @@ async fn a_report_answering_a_batch_denies_it_and_closes_the_batch() {
         cwd: None,
         cd_target: None,
         output: None,
+        withheld: false,
     };
     let (d, _rx) = w.turn(Arc::new(super::tests::Ran(report)));
     assert!(!d.call(write("a.txt", "hello")).await.is_error);

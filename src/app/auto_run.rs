@@ -479,7 +479,7 @@ impl App {
                 // A run that never timed out has its prompt on the cursor line.
                 let prompt_below = end != End::TimedOut;
                 (run.settle.anchor())
-                    .and_then(|anchor| capture(&mut pty.emu, anchor, &command, prompt_below))
+                    .and_then(|anchor| capture(&mut pty.emu, anchor, &command, prompt_below, &[]))
             }
             // `StillRunning` and `NoInput` only come from `Limits::Run` (S1c).
             End::StillRunning | End::NoInput | End::FullScreen | End::UserTyped | End::PaneGone => {
@@ -497,6 +497,8 @@ impl App {
             cwd: cwd_result(real_cwd, osc7),
             cd_target: run.cd_target,
             output,
+            // Wired with the typed-key records in S1c of chat-runs-commands.
+            withheld: false,
         };
         if resume {
             return self.end_follow(chat, command, report);
@@ -555,6 +557,7 @@ impl App {
                             cwd: None,
                             cd_target: None,
                             output: None,
+                            withheld: false,
                         }),
                     }],
                 }),

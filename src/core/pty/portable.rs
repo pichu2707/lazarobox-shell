@@ -119,6 +119,13 @@ impl PtyHandle for PortableHandle {
         Some(leader == shell)
     }
 
+    fn echo_off(&self) -> Option<bool> {
+        // tcgetattr on the master: the line discipline's flags are shared by
+        // both ends, and a program that reads a password clears ECHO.
+        let flags = self.master.get_termios()?.local_flags.bits();
+        Some(flags & libc::ECHO == 0)
+    }
+
     fn probe(&self) -> Probe {
         let pid = self.pid;
         let pgid = self.master.process_group_leader();
@@ -450,6 +457,23 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(pty.shell_in_foreground(), Some(false));
+    }
+
+    // Password safety (design D7): echo off is the kernel's own signal.
+    #[test]
+    fn echo_off_follows_the_terminal_flag_of_the_real_pty() {
+        let (mut pty, rx) = spawn("/bin/sh", size(24, 80));
+        // The echoed command never holds the result, so waiting for the
+        // result waits for the command to have run.
+        pty.write(b"stty echo; echo $((40+1))\n".to_vec());
+        wait_for(&rx, "41");
+        assert_eq!(pty.echo_off(), Some(false));
+        pty.write(b"stty -echo; echo $((40+2))\n".to_vec());
+        wait_for(&rx, "42");
+        assert_eq!(pty.echo_off(), Some(true));
+        pty.write(b"stty echo; echo $((40+3))\n".to_vec());
+        wait_for(&rx, "43");
+        assert_eq!(pty.echo_off(), Some(false));
     }
 
     // list_panes: the argv of the foreground program is read from /proc.
