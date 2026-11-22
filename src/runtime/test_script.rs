@@ -48,14 +48,29 @@ fn wait_until_unshared(path: &Path) {
     let Ok(file) = fs::File::open(path) else {
         return; // not readable (mode 0): nothing is going to run it
     };
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
+    wait_while_shared(path, || {
         // SAFETY: `fcntl` on an fd this function owns.
         let taken = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLEASE, libc::F_RDLCK) };
         if taken == 0 {
             // SAFETY: same fd; releases the lease just taken.
             unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLEASE, libc::F_UNLCK) };
-            return;
+            return Ok(());
+        }
+        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
+    });
+}
+
+/// Retries `lease` while it fails with EAGAIN (a writer is still there) or
+/// EINTR. Any other errno is permanent (EINVAL on a filesystem without
+/// leases, EACCES, EPERM...): waiting cannot help, so it returns at once.
+#[cfg(target_os = "linux")]
+fn wait_while_shared(path: &Path, mut lease: impl FnMut() -> Result<(), i32>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match lease() {
+            Ok(()) => return,
+            Err(errno) if errno == libc::EAGAIN || errno == libc::EINTR => {}
+            Err(_) => return,
         }
         assert!(
             Instant::now() < deadline,
@@ -109,6 +124,29 @@ mod tests {
             stop.store(true, Ordering::Relaxed);
         });
         failures
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_eagain_and_eintr_keep_the_wait_going() {
+        for errno in [libc::EINVAL, libc::EACCES, libc::EPERM, libc::ENOTSUP] {
+            let mut calls = 0;
+            wait_while_shared(Path::new("x"), || {
+                calls += 1;
+                Err(errno)
+            });
+            assert_eq!(calls, 1, "errno {errno} must not be retried");
+        }
+        let mut calls = 0;
+        wait_while_shared(Path::new("x"), || {
+            calls += 1;
+            match calls {
+                1 => Err(libc::EAGAIN),
+                2 => Err(libc::EINTR),
+                _ => Ok(()),
+            }
+        });
+        assert_eq!(calls, 3);
     }
 
     fn naive(path: &Path, text: &str) {

@@ -299,7 +299,6 @@ mod tests {
         assert!(!alive, "the child is still there");
     }
 
-    /// Reads `/proc`, so Linux only.
     /// A tool being written when the copy starts (ETXTBSY) is retried, not
     /// reported as a failure.
     #[cfg(target_os = "linux")]
@@ -309,7 +308,7 @@ mod tests {
         let program = script(dir.path(), "wl-copy", "cat > /dev/null");
         let writer = fs::OpenOptions::new().write(true).open(&program).unwrap();
         let release = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(60));
+            thread::sleep(Duration::from_millis(25));
             drop(writer);
         });
         let (clip, rx) = worker(program, CLIP_TIMEOUT);
@@ -318,6 +317,7 @@ mod tests {
         release.join().unwrap();
     }
 
+    /// Reads `/proc`, so Linux only.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_tool_gets_null_stdout_and_stderr() {
