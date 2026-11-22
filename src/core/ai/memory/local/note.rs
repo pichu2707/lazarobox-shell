@@ -108,7 +108,19 @@ impl Origin {
 /// characters that reorder or hide text (bidi controls, zero-width marks, line
 /// and paragraph separators). Line breaks and tabs stay when `multiline`.
 fn strip_controls(text: &str, multiline: bool) -> String {
-    let hidden = |c: char| matches!(c, '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
+    let hidden = |c: char| {
+        matches!(
+            c,
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
+        )
+    };
     text.chars()
         .filter(|c| !hidden(*c) && (!c.is_control() || (multiline && matches!(c, '\n' | '\t'))))
         .collect()
@@ -343,7 +355,7 @@ mod tests {
 
     #[test]
     fn bidi_and_zero_width_characters_are_stripped_from_every_text_field() {
-        let bad = "\u{202A}\u{202E}\u{2066}\u{2069}\u{200B}\u{200F}\u{2028}\u{2029}\u{FEFF}\u{1b}";
+        let bad = "\u{202A}\u{202E}\u{2066}\u{2069}\u{200B}\u{200F}\u{2028}\u{2029}\u{FEFF}\u{1b}\u{2060}\u{2064}\u{061C}\u{180E}\u{00AD}";
         let json = serde_json::json!({
             "v": 1, "id": "n-a", "kind": "config",
             "text": format!("a{bad}b"), "area": format!("c{bad}d"),
