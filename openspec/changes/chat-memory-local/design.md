@@ -43,16 +43,18 @@ Config key: `[ai.memory] local = true` is the default, and `false` restores toda
 
 Ledger writes are read-merge-write with a union of `own`, so a second instance never drops an entry. The ledger also holds `trust`, `trusted: {id: hash}` and `mirrored: {id: (hash, observation_id)}`.
 
-### D4 `.gitignore` outcomes (each shows one line)
+### D4 `.gitignore` outcomes (the lines are the spec's, word for word)
 
 | State | Action | Line |
 |---|---|---|
-| Already ignored | none | `memory: .lzr/ is already ignored by git` |
-| Whitelisted (`!.lzr`) | none, the user's choice is respected | `memory: .lzr/ is shared through git (.gitignore un-ignores it)` |
-| No `.gitignore` | create `.lzr/\n` | `memory: created .gitignore with .lzr/ (remove it to share memory)` |
-| Not ignored | append `.lzr/`. Add a `\n` first if the file does not end with one. Use `\r\n` if the file uses CRLF. Open in append mode and never rewrite other lines. | `memory: added .lzr/ to .gitignore (remove it to share memory)` |
-| Write error or read-only file | notes are still saved | `memory: could not add .lzr/ to .gitignore (<reason>); add it by hand to keep notes private` |
+| Already ignored (by `.gitignore` or `.git/info/exclude`, asked about the folder `.lzr` itself) | none | none |
+| Whitelisted (`!.lzr`) | none, the user's choice is respected | none |
+| No `.gitignore` | create `.lzr/\n` | `added .lzr/ to .gitignore (remove the entry to share memory through git)` |
+| Not ignored | append `.lzr/`. Add a `\n` first if the file does not end with one. Use `\r\n` if the file uses CRLF. Open in append mode with `O_NOFOLLOW` and never rewrite other lines. | the same line |
+| Not a regular file (link, FIFO), over 1 MiB, or a write error or read-only file | notes are still saved | `could not update .gitignore: <reason>; .lzr/ may be committed` |
 | `.lzr/` cannot be created | no save, and the chat continues | `memory: cannot write .lzr/ (<reason>); notes from this chat are not saved` |
+
+The files are read through `bounded_read::read_regular` after a `symlink_metadata` check, so a link or a FIFO is never followed or waited on.
 
 The check is idempotent because the edit runs only when the folder was just created and the matcher said "not ignored".
 

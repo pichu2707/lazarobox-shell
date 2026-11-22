@@ -1,17 +1,23 @@
 //! The `.gitignore` edit that keeps `.lzr/` out of git. It runs only when
-//! lazarobox has just created `.lzr/`, and only ever appends.
+//! lazarobox has just created `.lzr/`, and only ever appends. The files are
+//! read with a bound and are never followed through a link.
 
 use std::{
     fs::{self, OpenOptions},
     io::{ErrorKind, Write},
+    os::unix::fs::OpenOptionsExt,
     path::Path,
 };
 
 use ignore::{Match, gitignore::GitignoreBuilder};
 
-use super::{NOTES_DIR, STORE_DIR};
+use super::STORE_DIR;
+use crate::runtime::bounded_read::read_regular;
 
-/// What the edit did, one visible line each.
+/// The most bytes read from a rules file.
+const RULES_CAP: u64 = 1024 * 1024;
+
+/// What the edit did.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum GitignoreOutcome {
     AlreadyIgnored,
@@ -23,61 +29,71 @@ pub enum GitignoreOutcome {
 }
 
 impl GitignoreOutcome {
-    pub fn line(&self) -> String {
+    /// The visible line, if the outcome has one: an edit or a failure. An
+    /// ignored or shared folder, which the user chose, says nothing.
+    pub fn line(&self) -> Option<String> {
         match self {
-            Self::AlreadyIgnored => "memory: .lzr/ is already ignored by git".to_owned(),
-            Self::Shared => {
-                "memory: .lzr/ is shared through git (.gitignore un-ignores it)".to_owned()
-            }
-            Self::Created => {
-                "memory: created .gitignore with .lzr/ (remove it to share memory)".to_owned()
-            }
-            Self::Added => {
-                "memory: added .lzr/ to .gitignore (remove it to share memory)".to_owned()
-            }
-            Self::Failed(reason) => format!(
-                "memory: could not add .lzr/ to .gitignore ({reason}); add it by hand to keep notes private"
+            Self::AlreadyIgnored | Self::Shared => None,
+            Self::Created | Self::Added => Some(
+                "added .lzr/ to .gitignore (remove the entry to share memory through git)"
+                    .to_owned(),
             ),
+            Self::Failed(reason) => Some(format!(
+                "could not update .gitignore: {reason}; .lzr/ may be committed"
+            )),
         }
+    }
+}
+
+/// The bytes of the regular file at `path`; `None` when it does not exist.
+/// A link, a FIFO or any other kind of file is refused, and so is one over
+/// [`RULES_CAP`].
+fn read_rules(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+        Ok(meta) if meta.is_file() => read_regular(path, RULES_CAP)
+            .map(Some)
+            .map_err(|e| format!("cannot read it ({e:?})")),
+        Ok(_) => Err("not a regular file".to_owned()),
     }
 }
 
 /// Decides and applies the edit for the repository at `root`.
 pub fn ensure(root: &Path) -> GitignoreOutcome {
     let file = root.join(".gitignore");
-    let mut matcher = GitignoreBuilder::new(root);
+    let current = match read_rules(&file) {
+        Ok(current) => current,
+        Err(reason) => return GitignoreOutcome::Failed(reason),
+    };
     // A rules file that cannot be read adds no rule: the entry is then added.
-    let _ = matcher.add(&file);
-    let _ = matcher.add(root.join(".git/info/exclude"));
+    let exclude = read_rules(&root.join(".git/info/exclude")).ok().flatten();
+    let mut matcher = GitignoreBuilder::new(root);
+    for text in [&exclude, &current].into_iter().flatten() {
+        for line in String::from_utf8_lossy(text).lines() {
+            let _ = matcher.add_line(None, line);
+        }
+    }
+    // The folder itself is what is asked about, so `*.json` does not count.
     if let Ok(matcher) = matcher.build() {
-        let probe = Path::new(STORE_DIR).join(NOTES_DIR).join("n.json");
-        match matcher.matched_path_or_any_parents(probe, false) {
+        match matcher.matched_path_or_any_parents(STORE_DIR, true) {
             Match::Ignore(_) => return GitignoreOutcome::AlreadyIgnored,
             Match::Whitelist(_) => return GitignoreOutcome::Shared,
             Match::None => {}
         }
     }
-    let current = match fs::read(&file) {
-        Ok(bytes) => Some(bytes),
-        Err(e) if e.kind() == ErrorKind::NotFound => None,
-        Err(e) => return GitignoreOutcome::Failed(e.to_string()),
-    };
     let eol = match &current {
         Some(bytes) if bytes.windows(2).any(|w| w == b"\r\n") => "\r\n",
         _ => "\n",
     };
-    let lead = if current
+    let unterminated = current
         .as_ref()
-        .is_some_and(|b| !b.is_empty() && !b.ends_with(b"\n"))
-    {
-        eol
-    } else {
-        ""
-    };
-    let entry = format!("{lead}{STORE_DIR}/{eol}");
+        .is_some_and(|b| !b.is_empty() && !b.ends_with(b"\n"));
+    let entry = format!("{}{STORE_DIR}/{eol}", if unterminated { eol } else { "" });
     let written = OpenOptions::new()
         .create(true)
         .append(true)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(&file)
         .and_then(|mut f| f.write_all(entry.as_bytes()));
     match (written, current) {
@@ -93,6 +109,8 @@ mod tests {
 
     use super::*;
 
+    const ADDED: &str = "added .lzr/ to .gitignore (remove the entry to share memory through git)";
+
     fn repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join(".git/info")).unwrap();
@@ -101,6 +119,12 @@ mod tests {
 
     fn ignore_file(dir: &tempfile::TempDir) -> String {
         fs::read_to_string(dir.path().join(".gitignore")).unwrap()
+    }
+
+    /// Writes by permission do not bind root: those tests skip there.
+    fn is_root() -> bool {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        unsafe { libc::geteuid() == 0 }
     }
 
     #[test]
@@ -116,6 +140,14 @@ mod tests {
             );
             assert_eq!(ignore_file(&dir), text);
         }
+    }
+
+    #[test]
+    fn a_rule_for_json_files_does_not_count_as_ignoring_the_folder() {
+        let dir = repo();
+        fs::write(dir.path().join(".gitignore"), "*.json\n").unwrap();
+        assert_eq!(ensure(dir.path()), GitignoreOutcome::Added);
+        assert_eq!(ignore_file(&dir), "*.json\n.lzr/\n");
     }
 
     #[test]
@@ -175,6 +207,9 @@ mod tests {
 
     #[test]
     fn a_read_only_file_reports_the_failure() {
+        if is_root() {
+            return;
+        }
         let dir = repo();
         let file = dir.path().join(".gitignore");
         fs::write(&file, "target/\n").unwrap();
@@ -184,35 +219,70 @@ mod tests {
             matches!(outcome, GitignoreOutcome::Failed(_)),
             "{outcome:?}"
         );
-        assert!(
-            outcome
-                .line()
-                .starts_with("memory: could not add .lzr/ to .gitignore (")
-        );
+        let line = outcome.line().unwrap();
+        assert!(line.starts_with("could not update .gitignore: "), "{line}");
+        assert!(line.ends_with("; .lzr/ may be committed"), "{line}");
         assert_eq!(ignore_file(&dir), "target/\n");
     }
 
     #[test]
-    fn every_outcome_has_its_line() {
-        let lines: Vec<String> = [
-            GitignoreOutcome::AlreadyIgnored,
-            GitignoreOutcome::Shared,
-            GitignoreOutcome::Created,
-            GitignoreOutcome::Added,
-            GitignoreOutcome::Failed("disk full".into()),
-        ]
-        .iter()
-        .map(GitignoreOutcome::line)
-        .collect();
+    fn a_symlinked_gitignore_is_refused_and_its_target_untouched() {
+        let dir = repo();
+        let target = dir.path().join("elsewhere");
+        fs::write(&target, "keep\n").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".gitignore")).unwrap();
         assert_eq!(
-            lines,
-            [
-                "memory: .lzr/ is already ignored by git",
-                "memory: .lzr/ is shared through git (.gitignore un-ignores it)",
-                "memory: created .gitignore with .lzr/ (remove it to share memory)",
-                "memory: added .lzr/ to .gitignore (remove it to share memory)",
-                "memory: could not add .lzr/ to .gitignore (disk full); add it by hand to keep notes private",
-            ]
+            ensure(dir.path()),
+            GitignoreOutcome::Failed("not a regular file".into())
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep\n");
+        let dangling = repo();
+        std::os::unix::fs::symlink(
+            dangling.path().join("nowhere"),
+            dangling.path().join(".gitignore"),
+        )
+        .unwrap();
+        assert!(matches!(
+            ensure(dangling.path()),
+            GitignoreOutcome::Failed(_)
+        ));
+        assert!(!dangling.path().join("nowhere").exists());
+    }
+
+    #[test]
+    fn a_fifo_gitignore_is_refused_without_blocking() {
+        let dir = repo();
+        let path = std::ffi::CString::new(dir.path().join(".gitignore").to_str().unwrap()).unwrap();
+        // SAFETY: `path` is a valid NUL-terminated string for the call.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        assert_eq!(
+            ensure(dir.path()),
+            GitignoreOutcome::Failed("not a regular file".into())
+        );
+    }
+
+    #[test]
+    fn a_huge_gitignore_is_refused_instead_of_read_whole() {
+        let dir = repo();
+        fs::write(dir.path().join(".gitignore"), vec![b'#'; 2 * 1024 * 1024]).unwrap();
+        assert!(matches!(ensure(dir.path()), GitignoreOutcome::Failed(_)));
+        assert_eq!(
+            fs::metadata(dir.path().join(".gitignore")).unwrap().len(),
+            2 * 1024 * 1024
+        );
+    }
+
+    // Spec (project-memory-store, Gitignore handling): the lines.
+    #[test]
+    fn only_a_real_edit_or_a_failure_has_a_line() {
+        let line = |o: GitignoreOutcome| o.line();
+        assert_eq!(line(GitignoreOutcome::AlreadyIgnored), None);
+        assert_eq!(line(GitignoreOutcome::Shared), None);
+        assert_eq!(line(GitignoreOutcome::Created).as_deref(), Some(ADDED));
+        assert_eq!(line(GitignoreOutcome::Added).as_deref(), Some(ADDED));
+        assert_eq!(
+            line(GitignoreOutcome::Failed("disk full".into())).as_deref(),
+            Some("could not update .gitignore: disk full; .lzr/ may be committed")
         );
     }
 }
