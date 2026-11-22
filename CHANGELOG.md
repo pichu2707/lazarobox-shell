@@ -18,6 +18,10 @@ baseline.
 
 - **Local project memory: groundwork (first slice of #431).** The format is in place but nothing reads or writes notes yet, so you will not see a change. The `[ai.memory] local` key (default `true`) is accepted and documented, and `.lzr` is now a folder the chat's file tools never write. Under the hood: a note is one small JSON file under `.lzr/memory/notes/` with a closed list of kinds, an area, text cut at 1000 characters, control characters stripped and caps on what is read back; the store of a linked worktree is the main checkout's `.lzr/` only when the checkout and the main repository vouch for each other (a forged `.git` file gets its own store), HOME is never a project, and the notes this machine wrote are recorded in a private ledger in the data folder, never in the note.
 
+### Fixed
+
+- **Resuming after a command you ran keeps its pane label and no longer contradicts itself (#826).** The chat says `going on with the output of pane N` only after the note was really sent; a send that is refused now shows only the line that the output was not sent. The pane number in the waiting, stopped and finished lines is the one the model was told when it typed the command, so closing another pane or looking at another tab no longer renumbers it or turns it into `pane 0`.
+
 ## [1.37.0] - 2026-11-22
 
 ### Added
