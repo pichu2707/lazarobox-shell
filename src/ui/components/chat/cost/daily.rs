@@ -4,7 +4,9 @@
 
 use ratatui::{buffer::Buffer, style::Style};
 
-use crate::core::ai::chat::dashboard::{DOWN_ROWS, DayTokens, UP_ROWS, fit, legend, level, peak};
+use crate::core::ai::chat::dashboard::{
+    DOWN_ROWS, DayTokens, UP_ROWS, fit, legend, level, notes, peak,
+};
 use crate::ui::theme::LazaroboxTheme;
 
 /// Eighth blocks, one step to a full cell.
@@ -29,10 +31,11 @@ fn down_cell(steps: u64, row: u64) -> char {
     }
 }
 
-/// Draws the legend at `y` and the chart under it, `UP_ROWS + DOWN_ROWS`
-/// rows, in `width` columns.
+/// Draws the legend at `y`, the chart under it, `UP_ROWS + DOWN_ROWS` rows,
+/// and a row of notes (`last` is the days of a truncated series).
 pub(super) fn render(
     days: &[DayTokens],
+    last: Option<u32>,
     y: u16,
     width: u16,
     buf: &mut Buffer,
@@ -42,9 +45,13 @@ pub(super) fn render(
     let w = usize::from(width);
     let fitted = fit(days, w);
     buf.set_stringn(0, y, legend(fitted.size, w), w, base.fg(theme.text_muted));
+    if let Some(note) = notes(&fitted, last) {
+        let row = y + 1 + UP_ROWS + DOWN_ROWS;
+        buf.set_stringn(0, row, note, w, base.fg(theme.text_muted));
+    }
     let max = peak(&fitted.days);
-    // Each bucket takes a slot of up to 3 columns: a bar and a gap.
-    let slot = (w / fitted.days.len().max(1)).clamp(1, 3);
+    // Each bucket takes a slot of up to 8 columns: a bar and a gap.
+    let slot = slot(w, fitted.days.len());
     let bar = slot.saturating_sub(1).max(1);
     let axis = y + 1 + UP_ROWS;
     for (n, day) in fitted.days.iter().enumerate() {
@@ -91,4 +98,45 @@ fn put(buf: &mut Buffer, x: usize, y: u16, cell: char, bar: usize, style: Style)
     let text: String = std::iter::repeat_n(cell, bar).collect();
     let x = u16::try_from(x).unwrap_or(u16::MAX);
     buf.set_stringn(x, y, text, bar, style);
+}
+
+/// Columns of one bucket, bar and gap.
+fn slot(width: usize, buckets: usize) -> usize {
+    (width / buckets.max(1)).clamp(1, 8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_short_range_uses_the_width_up_to_eight_columns_a_bar() {
+        assert_eq!(slot(100, 7), 8);
+        assert_eq!(slot(100, 30), 3);
+        assert_eq!(slot(100, 50), 2);
+        assert_eq!(slot(100, 100), 1);
+        assert_eq!(slot(40, 90), 1);
+        assert_eq!(slot(100, 0), 8);
+        assert_eq!(slot(100, 12), 8);
+        assert_eq!(slot(100, 13), 7);
+    }
+
+    #[test]
+    fn the_output_bar_is_halves_down_from_the_axis() {
+        // 5 half steps: two full rows, then a half block, then nothing.
+        let rows: Vec<char> = (0..3).map(|r| down_cell(5, r)).collect();
+        assert_eq!(rows, ['█', '█', '▀']);
+        let rows: Vec<char> = (0..3).map(|r| down_cell(4, r)).collect();
+        assert_eq!(rows, ['█', '█', ' ']);
+        assert_eq!(down_cell(3, 1), '▀');
+        assert_eq!(down_cell(6, 2), '█');
+        assert_eq!(down_cell(0, 0), ' ');
+    }
+
+    #[test]
+    fn the_input_bar_is_eighths_up_from_the_axis() {
+        let rows: Vec<char> = (0..3).map(|r| up_cell(11, r)).collect();
+        assert_eq!(rows, ['█', '▃', ' ']);
+        assert_eq!(up_cell(24, 2), '█');
+    }
 }

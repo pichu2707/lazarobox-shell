@@ -4,8 +4,11 @@
 mod daily;
 mod kpi;
 
-pub use daily::{CHART_ROWS, DOWN_ROWS, DayTokens, Fit, UP_ROWS, daily, fit, legend, level, peak};
-pub use kpi::{Delta, Kpi, bucket};
+pub use daily::{
+    CHART_ROWS, DOWN_ROWS, DayTokens, Fit, UP_ROWS, daily, fit, last_days, legend, level, notes,
+    peak,
+};
+pub use kpi::{Delta, Kpi, bucket, groups};
 
 use super::usage_view::UsageRow;
 
@@ -111,6 +114,9 @@ pub struct Dashboard {
     pub kpis: [Kpi; 4],
     /// Tokens by local day, oldest first.
     pub daily: Vec<DayTokens>,
+    /// Set when the chart covers only the last N days of an `All` range that
+    /// reaches further back than the chart can show.
+    pub last_days: Option<u32>,
 }
 
 impl Dashboard {
@@ -120,6 +126,7 @@ impl Dashboard {
             empty: kpi::is_empty(data, range),
             kpis: kpi::kpis(data, range),
             daily: daily(data, range),
+            last_days: last_days(data, range),
         }
     }
 

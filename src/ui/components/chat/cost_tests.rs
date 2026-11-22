@@ -579,7 +579,7 @@ fn snapshot_a_card_with_an_approximate_time_and_millions() {
     insta::assert_snapshot!(shown);
 }
 
-/// The rows of the chart: the legend and the six rows under it.
+/// The rows of the chart: the legend, the six rows under it and the notes.
 fn chart(width: u16) -> Vec<String> {
     chart_in(&dashboard(width, 40))
 }
@@ -590,7 +590,7 @@ fn chart_in(shown: &str) -> Vec<String> {
         .iter()
         .position(|r| r.contains("in above"))
         .unwrap_or_else(|| panic!("no legend in\n{shown}"));
-    rows[at..=at + 6].iter().map(|r| (*r).to_owned()).collect()
+    rows[at..=at + 7].iter().map(|r| (*r).to_owned()).collect()
 }
 
 /// The glyph of the chart at `column`, `row` rows under the legend.
@@ -601,23 +601,24 @@ fn cell(chart: &[String], row: usize, column: usize) -> char {
 #[test]
 fn the_chart_draws_input_above_the_axis_and_output_below() {
     let rows = chart(100);
-    // Seven days, three columns each: today is the last, 2 days ago the 5th.
+    // Seven days, eight columns each (a bar of seven and a gap): today is the
+    // last, 2 days ago the 5th.
     // Today's input (700) is the peak: a full column of 3 rows.
     for row in 1..=3 {
-        assert_eq!(cell(&rows, row, 18), '█', "{rows:?}");
+        assert_eq!(cell(&rows, row, 51), '█', "{rows:?}");
     }
     // Its output (200 of 700) is 2 of 6 half-rows: one full cell, below.
-    assert_eq!(cell(&rows, 4, 18), '█', "{rows:?}");
-    assert_eq!(cell(&rows, 5, 18), ' ', "{rows:?}");
+    assert_eq!(cell(&rows, 4, 51), '█', "{rows:?}");
+    assert_eq!(cell(&rows, 5, 51), ' ', "{rows:?}");
     // Two days ago: input 410 of 700 is 15 of 24 steps: two rows and a part.
-    assert_eq!(cell(&rows, 3, 12), '█');
-    assert_eq!(cell(&rows, 2, 12), '▇');
-    assert_eq!(cell(&rows, 1, 12), ' ');
+    assert_eq!(cell(&rows, 3, 35), '█');
+    assert_eq!(cell(&rows, 2, 35), '▇');
+    assert_eq!(cell(&rows, 1, 35), ' ');
     // Its output (100) is 1 half-row: a half block, nearest the axis.
-    assert_eq!(cell(&rows, 4, 12), '▀');
+    assert_eq!(cell(&rows, 4, 35), '▀');
     // A day with no row is blank in every row, never a known zero.
     for row in 1..=6 {
-        assert_eq!(cell(&rows, row, 15), ' ', "{rows:?}");
+        assert_eq!(cell(&rows, row, 43), ' ', "{rows:?}");
     }
 }
 
@@ -670,10 +671,10 @@ fn a_known_zero_day_is_marked_and_an_empty_range_has_no_chart() {
     };
     let chat = chat_with(CostView::with_data(data, lines()));
     let shown = text(&draw(&chat, 100, 40));
-    // Today is the last of seven slots of three columns, in the row above the axis.
+    // Today is the last of seven slots of eight columns, in the row above the axis.
     let rows = chart_in(&shown);
-    assert_eq!(cell(&rows, 3, 18), '·', "{shown}");
-    assert_eq!(cell(&rows, 3, 15), ' ', "{shown}");
+    assert_eq!(cell(&rows, 3, 51), '·', "{shown}");
+    assert_eq!(cell(&rows, 3, 43), ' ', "{shown}");
     let empty = chat_with(CostView::with_data(UsageData::default(), lines()));
     assert!(!text(&draw(&empty, 100, 40)).contains("in above"));
 }
@@ -716,5 +717,56 @@ fn snapshot_the_chart_buckets_90_days_at_the_smallest_dashboard_width() {
         .iter()
         .position(|r| r.contains("in above") || r.contains("d/bar"));
     let at = at.unwrap_or_else(|| panic!("no legend in\n{shown}"));
-    insta::assert_snapshot!(rows[at..=at + 6].join("\n"));
+    insta::assert_snapshot!(rows[at..=at + 7].join("\n"));
+}
+
+fn days_from_today(count: u32, set: impl Fn(&mut UsageRow)) -> UsageData {
+    let rows = (0..count)
+        .map(|d| {
+            let mut r = UsageRow {
+                days_ago: d,
+                engine: "claude".into(),
+                ..UsageRow::default()
+            };
+            set(&mut r);
+            r
+        })
+        .collect();
+    UsageData {
+        rows,
+        tasks: Vec::new(),
+    }
+}
+
+#[test]
+fn a_day_with_only_its_input_known_and_zero_is_marked() {
+    let data = days_from_today(1, |r| r.input = Some(0));
+    let chat = chat_with(CostView::with_data(data, lines()));
+    let rows = chart_in(&text(&draw(&chat, 100, 40)));
+    assert_eq!(cell(&rows, 3, 51), '·', "{rows:?}");
+}
+
+#[test]
+fn a_partial_oldest_bar_is_said_under_the_chart() {
+    let data = days_from_today(100, |r| r.input = Some(5));
+    let mut chat = chat_with(CostView::with_data(data, lines()));
+    press(&mut chat, KeyCode::Char('4'));
+    let rows = chart_in(&text(&draw(&chat, 40, 60)));
+    assert!(rows[0].contains("1 bar = 3 days"), "{rows:?}");
+    assert!(rows[7].contains("oldest bar 1 day"), "{rows:?}");
+    // Nothing to say: the notes row is blank.
+    let whole = chart_in(&dashboard(100, 40));
+    assert_eq!(whole[7], "", "{whole:?}");
+}
+
+#[test]
+fn a_series_cut_at_400_days_says_so_under_the_chart() {
+    let mut data = days_from_today(2, |r| r.input = Some(5));
+    data.rows[1].days_ago = 450;
+    let mut chat = chat_with(CostView::with_data(data, lines()));
+    press(&mut chat, KeyCode::Char('4'));
+    for width in [40, 59, 60, 100] {
+        let rows = chart_in(&text(&draw(&chat, width, 60)));
+        assert!(rows[7].contains("last 400 days"), "{width}: {rows:?}");
+    }
 }

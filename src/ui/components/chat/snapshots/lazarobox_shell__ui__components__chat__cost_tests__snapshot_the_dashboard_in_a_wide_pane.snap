@@ -11,10 +11,11 @@ AI usage (alpha)
      ▄ █                      ▄ █                      █ ▄                      █ ▄
 
 Tokens by day · in above, out below · 1 bar = 1 day
-                  ██
-            ▇▇    ██
-            ██    ██
-            ▀▀    ██
+                                                ███████
+                                ▇▇▇▇▇▇▇         ███████
+                                ███████         ███████
+                                ▀▀▀▀▀▀▀         ███████
+
 
 
 
@@ -24,6 +25,5 @@ by engine and model (last 7 days):
   ollama › llama3:8b: in 100 · out 20
   claude › sonnet: in 2 · out 4 · $0.0049 list-price equivalent
 this chat: 6 tokens · 2 turns
-
 
 Esc close · 1-4 range · ↑↓ scroll

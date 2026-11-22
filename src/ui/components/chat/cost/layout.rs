@@ -75,7 +75,7 @@ pub(super) fn draw(
     }
     // The chart is the last block of the dashboard: a gap, then the legend.
     let top = cards.saturating_sub(CHART_ROWS).saturating_add(1);
-    daily::render(&model.daily, top, width, &mut buf, theme);
+    daily::render(&model.daily, model.last_days, top, width, &mut buf, theme);
     for (n, (row, mine)) in (0u16..).zip(report) {
         let style = if *mine {
             base.fg(theme.primary_cyan)

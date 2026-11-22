@@ -12,7 +12,7 @@ baseline.
 
 ### Added
 
-- **`/cost` shows tokens by day.** Under the cards, a chart has one bar per day: input grows up from the axis and output down from it, both on one scale. A day with no usage is blank, a day with records and no tokens shows `·` and a day with any tokens shows at least one cell. The legend names `in` and `out` and the size of a bar, so it reads with no colour; in `90d` and `All`, when the days do not fit the width, they are added into bars of several days and the legend says how many (`1 bar = 3 days`). The chart adds up to the cards of the same range.
+- **`/cost` shows tokens by day.** Under the cards, a chart has one bar per day: input grows up from the axis and output down from it, both on one scale. A day with no usage is blank, a day with records and no tokens shows `·` and a day with any tokens shows at least one cell. The legend names `in` and `out` and the size of a bar, so it reads with no colour; in `90d` and `All`, when the days do not fit the width, they are added into bars of several days and the legend says how many (`1 bar = 3 days`). Bars are counted back from today, and the cards sparklines group the same way; a note under the chart says when the oldest bar holds fewer days (`oldest bar 2 days`) or when `All` reaches past the 400 days the chart can show (`last 400 days`, while the cards still count every stored day). Otherwise the chart adds up to the cards of the same range.
 
 ## [1.35.0] - 2026-11-22
 

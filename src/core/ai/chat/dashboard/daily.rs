@@ -1,12 +1,16 @@
 //! Tokens by day: the model of the mirrored chart.
 
-use super::{super::usage_view::add, Range, UsageData, kpi::series_len};
+use super::{
+    super::usage_view::add,
+    Range, UsageData,
+    kpi::{SPARK_DAYS, groups, series_len},
+};
 
 /// Rows of the chart above its axis (input) and below it (output).
 pub const UP_ROWS: u16 = 3;
 pub const DOWN_ROWS: u16 = 3;
-/// A gap, the legend, and the two halves of the chart.
-pub const CHART_ROWS: u16 = 2 + UP_ROWS + DOWN_ROWS;
+/// A gap, the legend, the two halves of the chart and a row of notes.
+pub const CHART_ROWS: u16 = 3 + UP_ROWS + DOWN_ROWS;
 
 /// The tokens of one local day. A figure no record reported is `None`, so a
 /// day with no row is empty and never a known zero.
@@ -33,35 +37,36 @@ pub fn daily(data: &UsageData, range: Range) -> Vec<DayTokens> {
     days
 }
 
+/// The days a truncated series still shows, when it is truncated.
+pub fn last_days(data: &UsageData, range: Range) -> Option<u32> {
+    super::kpi::truncated(data, range).then_some(SPARK_DAYS)
+}
+
 /// Days summed into buckets so they fit a width.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Fit {
     pub days: Vec<DayTokens>,
     /// Days per bucket.
     pub size: usize,
+    /// Days in the oldest bucket: less than `size` when it is partial.
+    pub oldest: usize,
 }
 
-/// At most `cols` buckets of equal size, counted back from today so the
-/// newest bucket is whole. A bucket of unknown days stays unknown.
+/// At most `cols` buckets, grouped like the sparklines (see [`groups`]). A
+/// bucket of unknown days stays unknown.
 pub fn fit(days: &[DayTokens], cols: usize) -> Fit {
-    if cols == 0 {
-        return Fit {
-            days: Vec::new(),
-            size: 1,
-        };
-    }
-    let size = days.len().div_ceil(cols).max(1);
-    let mut fitted: Vec<DayTokens> = days
-        .rchunks(size)
-        .map(|c| {
-            c.iter().fold(DayTokens::default(), |a, d| DayTokens {
+    let (size, groups) = groups(days.len(), cols);
+    let oldest = groups.first().map_or(size, |g| g.len());
+    let days = groups
+        .into_iter()
+        .map(|g| {
+            days[g].iter().fold(DayTokens::default(), |a, d| DayTokens {
                 input: add(a.input, d.input),
                 output: add(a.output, d.output),
             })
         })
         .collect();
-    fitted.reverse();
-    Fit { days: fitted, size }
+    Fit { days, size, oldest }
 }
 
 /// Steps of a bar for `value` when `max` fills `steps`: never 0 for a
@@ -90,12 +95,24 @@ pub fn legend(size: usize, width: usize) -> String {
         1 => "1 bar = 1 day".to_owned(),
         n => format!("1 bar = {n} days"),
     };
+    // The last form fits from 40 columns, the narrowest dashboard.
+    let short = format!("in ↑ out ↓ · {size}d/bar");
     [
         format!("Tokens by day · in above, out below · {unit}"),
         format!("in above · out below · {unit}"),
-        format!("in ↑ out ↓ · {size}d/bar"),
     ]
     .into_iter()
     .find(|text| text.chars().count() <= width)
-    .unwrap_or_else(|| format!("in out {size}d"))
+    .unwrap_or(short)
+}
+
+/// What the chart leaves unsaid: a partial oldest bar, a series cut short.
+pub fn notes(fit: &Fit, last: Option<u32>) -> Option<String> {
+    let oldest = (fit.oldest < fit.size).then(|| match fit.oldest {
+        1 => "oldest bar 1 day".to_owned(),
+        n => format!("oldest bar {n} days"),
+    });
+    let last = last.map(|n| format!("last {n} days"));
+    let parts: Vec<String> = oldest.into_iter().chain(last).collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }

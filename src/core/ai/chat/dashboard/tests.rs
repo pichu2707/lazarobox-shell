@@ -229,7 +229,8 @@ fn bucket_sums_adjacent_days_to_fit_the_columns() {
     let v = [1, 2, 3, 4, 5];
     assert_eq!(bucket(&v, 5), v);
     assert_eq!(bucket(&v, 9), v);
-    assert_eq!(bucket(&v, 3), [3, 7, 5]);
+    // Counted back from today: the newest bucket is whole.
+    assert_eq!(bucket(&v, 3), [1, 5, 9]);
     assert_eq!(bucket(&v, 1), [15]);
     assert!(bucket(&v, 0).is_empty());
     assert!(bucket(&[], 4).is_empty());
@@ -485,5 +486,75 @@ fn the_legend_names_in_out_and_the_bucket_size_and_always_fits() {
             assert!(text.contains("in") && text.contains("out"), "{text}");
             assert!(text.contains(&size.to_string()), "{size} {width}: {text}");
         }
+    }
+}
+
+#[test]
+fn the_cards_and_the_chart_group_the_same_days() {
+    let values: Vec<u64> = (1..=10).collect();
+    let days: Vec<DayTokens> = values.iter().map(|v| day(*v, 0)).collect();
+    for cols in 1..=12 {
+        let chart: Vec<u64> = fit(&days, cols)
+            .days
+            .iter()
+            .map(|d| d.input.unwrap_or(0))
+            .collect();
+        assert_eq!(bucket(&values, cols), chart, "{cols}");
+    }
+    // Counted back from today: the newest bucket is whole.
+    assert_eq!(bucket(&values, 4), vec![1, 9, 18, 27]);
+}
+
+#[test]
+fn a_partial_oldest_bucket_is_reported() {
+    let days: Vec<DayTokens> = (1..=10).map(|n| day(n, 0)).collect();
+    let partial = fit(&days, 4);
+    assert_eq!((partial.size, partial.oldest), (3, 1));
+    let whole = fit(&days, 5);
+    assert_eq!((whole.size, whole.oldest), (2, 2));
+    assert_eq!(fit(&days, 20).oldest, 1);
+    let note = notes(&partial, None).unwrap();
+    assert!(note.contains("oldest bar 1 day"), "{note}");
+    assert!(notes(&whole, None).is_none());
+}
+
+#[test]
+fn a_series_cut_short_says_how_many_days_it_shows() {
+    let days = [day(1, 1); 4];
+    let note = notes(&fit(&days, 4), Some(400)).unwrap();
+    assert!(note.contains("last 400 days"), "{note}");
+    let both = notes(&fit(&[day(1, 1); 10], 4), Some(400)).unwrap();
+    assert!(both.contains("oldest bar 1 day") && both.contains("last 400 days"));
+    for cols in 40..=120 {
+        let big = fit(&[day(1, 1); 400], cols);
+        assert!(notes(&big, Some(400)).unwrap().chars().count() <= 40);
+    }
+}
+
+#[test]
+fn all_with_more_than_400_days_is_flagged_and_other_ranges_never_are() {
+    let old = vec![both(0, 1, 1), both(450, 2, 2)];
+    assert_eq!(build(old.clone(), Range::All).last_days, Some(400));
+    assert_eq!(build(old, Range::Quarter).last_days, None);
+    let edge = vec![both(0, 1, 1), both(399, 2, 2)];
+    assert_eq!(build(edge, Range::All).last_days, None);
+    assert_eq!(build(vec![both(0, 1, 1)], Range::All).last_days, None);
+}
+
+#[test]
+fn the_chart_adds_up_to_the_card_headline_when_it_shows_the_whole_range() {
+    use super::super::usage_fmt::compact;
+    let rows = vec![
+        both(0, 1_500, 20),
+        both(3, 700, 40),
+        both(40, 9_000, 7),
+        both(120, 5, 5),
+    ];
+    for range in Range::ALL {
+        let d = build(rows.clone(), range);
+        let input: u64 = d.daily.iter().filter_map(|x| x.input).sum();
+        let output: u64 = d.daily.iter().filter_map(|x| x.output).sum();
+        assert_eq!(compact(input), d.kpis[0].value, "{range:?}");
+        assert_eq!(compact(output), d.kpis[1].value, "{range:?}");
     }
 }

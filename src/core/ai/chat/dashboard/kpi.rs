@@ -14,7 +14,7 @@ use super::{
 /// oldest row, not from the 90-day retention: that works on seconds while
 /// `days_ago` is a local date (and DST moves it), so a row can sit at day 90
 /// or 91 and the cards still count it.
-const SPARK_DAYS: u32 = 400;
+pub(super) const SPARK_DAYS: u32 = 400;
 
 /// The change against the previous equal period.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -59,15 +59,28 @@ pub struct Kpi {
     pub spark: Vec<u64>,
 }
 
+/// How `len` days fit `cols` columns: the days per bucket and the buckets as
+/// index ranges, oldest first. They are counted back from today so the newest
+/// bucket is whole and only the oldest can be partial. The sparklines and the
+/// chart both group with this, so they always group the same days.
+pub fn groups(len: usize, cols: usize) -> (usize, Vec<std::ops::Range<usize>>) {
+    if cols == 0 {
+        return (1, Vec::new());
+    }
+    let size = len.div_ceil(cols).max(1);
+    let mut out: Vec<std::ops::Range<usize>> = (0..len.div_ceil(size))
+        .map(|n| len.saturating_sub((n + 1) * size)..len - n * size)
+        .collect();
+    out.reverse();
+    (size, out)
+}
+
 /// Sums adjacent values so at most `cols` remain: 90 days fit a narrow pane.
 pub fn bucket(values: &[u64], cols: usize) -> Vec<u64> {
-    if cols == 0 {
-        return Vec::new();
-    }
-    let size = values.len().div_ceil(cols).max(1);
-    values
-        .chunks(size)
-        .map(|c| c.iter().fold(0u64, |a, v| a.saturating_add(*v)))
+    groups(values.len(), cols)
+        .1
+        .into_iter()
+        .map(|g| values[g].iter().fold(0u64, |a, v| a.saturating_add(*v)))
         .collect()
 }
 
@@ -183,6 +196,12 @@ pub(super) fn series_len(data: &UsageData, range: Range) -> u32 {
         .or_else(|| data.rows.iter().map(|r| r.days_ago.saturating_add(1)).max())
         .unwrap_or(0)
         .min(SPARK_DAYS)
+}
+
+/// Whether `All` reaches further back than the series covers, so the chart
+/// and the sparklines show only the last days while the cards count them all.
+pub(super) fn truncated(data: &UsageData, range: Range) -> bool {
+    range == Range::All && data.rows.iter().any(|r| r.days_ago >= SPARK_DAYS)
 }
 
 pub(super) fn kpis(data: &UsageData, range: Range) -> [Kpi; 4] {
