@@ -84,12 +84,12 @@ Task rule for C12: the existing engram-down notice path stays as is; the mirror 
 - [x] 1a.2 RED `local/area.rs` + `workspace.rs` tests: root and subfolder resolve to one store; linked worktree resolves to the main checkout's `.lzr/` with area relative to the work root; submodule has its own; Windows `C:\repo\frontend\src` gives `frontend/src`; reject prefix/root/`..`.
 - [x] 1a.3 RED `local/gitignore.rs` tests, one per D4 outcome: already ignored, `!.lzr` respected, no file (create), append with newline, CRLF, write error (note still saved), `.lzr/` uncreatable; `.git/info/exclude` honored; other bytes untouched; touched only on creation.
 - [x] 1a.4 RED `local/ledger.rs` tests: own `{id: hash}` makes a note local; unknown id, changed hash and hand-edited own note are foreign; read-merge-write union; machine id `m-<16hex>`, note id `n-<16hex>`.
-- [ ] (S1a2) 1a.5 RED `src/runtime/memory_local.rs` integration (tempfile repos): `.lzr/` absent after open, present after first save; 10 files with 2 invalid load 8 and leave the 2 byte-identical; `<<<<<<<` file and 5 MiB binary skipped and counted; read-only repo and read-only `.lzr/` write nothing but still read; no git repo writes nothing; atomic write leaves old notes intact.
+- [x] 1a.5 RED `src/runtime/memory_local.rs` integration (tempfile repos): `.lzr/` absent after open, present after first save; 10 files with 2 invalid load 8 and leave the 2 byte-identical; `<<<<<<<` file and 5 MiB binary skipped and counted; read-only repo and read-only `.lzr/` write nothing but still read; no git repo writes nothing; atomic write leaves old notes intact.
 - [x] 1a.6 RED `src/core/ai/tools/paths.rs` test: `.lzr` is in `WRITE_DENIED_DIRS`, and the ledger root `<data>/lazarobox/memory` is denied to tools.
 - [ ] 1a.7 (config default and read done in S1a; the `local = false` sends nothing test is in S1a2) RED `config.rs` test: `[ai.memory] local` defaults true; `local = false` reads and writes nothing in `.lzr/`; engram `enabled`/`acknowledged` unchanged.
 - [x] 1a.8 GREEN `local/{mod,note,area,gitignore,port,ledger}.rs`: schema, `LocalCmd`/`LocalReply` carrying typed outcomes (saved, skipped, foreign count, unreadable count, gitignore result, read-only, no-git).
 - [x] 1a.9 GREEN `workspace::memory_root(cwd)`, `config.rs` local switch, `paths.rs` deny entries.
-- [ ] (S1a2) 1a.10 GREEN runtime thread `memory_local.rs` + routing `Effect::LocalMemory` / `AppEvent::LocalMemory` in `app.rs`/`runtime.rs`; notes load once at project entry. Ledger rules (S1a3): a ledger file that is not valid UTF-8 maps to `Damaged`, and a `Damaged` or `Newer` ledger is reported, trusts no note and is never rewritten (a save is refused with a visible line).
+- [x] (S1a2, S1a3) 1a.10 GREEN runtime thread `memory_local.rs` + routing `Effect::LocalMemory` / `AppEvent::LocalMemory` in `app.rs`/`runtime.rs`; notes load once at project entry. Ledger rules (S1a3): a ledger file that is not valid UTF-8 maps to `Damaged`, and a `Damaged` or `Newer` ledger is reported, trusts no note and is never rewritten (a save is refused with a visible line).
 - [ ] 1a.11 REFACTOR; CHANGELOG `[Unreleased]` entry. Run exit gate. Split by slice: S1a (store core), S1a2 (gitignore, port), S1a3 (thread), S1a4 (app routing, CHANGELOG for the load at chat open); each runs the exit gate on its own PR.
 
 ## S1b: Screen, PII, save pipeline (base: main after S1a)
@@ -164,9 +164,22 @@ Task rule for C12: the existing engram-down notice path stays as is; the mirror 
 - [ ] 6.1 After the last slice merges: close #431 with a link to the merged PRs; comment on #366 that only the Drive sync remains.
 - [ ] 6.2 Remove all `../lazarobox-shell-<slice>` worktrees (`scripts/clean-builds.sh`).
 
-### Follow-ups from #836 review (for S1a3)
+### Follow-ups from #836 review (S1a3 status)
 
-- `read_regular` opens without `O_NOFOLLOW`; consider adding it for the rules files.
-- In a linked worktree, `.git` is a file: `.git/info/exclude` must be found through the common git dir.
-- Windows: the `.gitignore` edit uses unix-only flags; add a `cfg` fallback.
-- Add `.lzr/*` and similar partial-pattern cases to the gitignore decision tests.
+- Done in S1a3: `.git/info/exclude` is found through a `.git` file (submodule, linked checkout) and its `commondir`; `.lzr/*`, `**/.lzr`, `.lzr/**` and `.lzr/memory/notes/` count as ignoring the folder.
+- Left: `read_regular` opens without `O_NOFOLLOW`. Adding it there would refuse a symlinked `AGENTS.md` or rules file that users keep on purpose; it needs a decision on which callers must refuse links (the `.gitignore` reads already do).
+- Left: Windows. `bounded_read.rs` and `gitignore.rs` use `std::os::unix` and `libc` unconditionally, like the rest of the runtime; a `cfg` fallback belongs to a crate-wide Windows pass, not to this edit.
+
+### Follow-ups from #843 review (for S1a4)
+
+- Cap the number of note files read per load (design: 5,000 notes rank within a time bound) and show a visible line when the cap is hit. It needs a new field on `LocalReply::Loaded`, which did not fit the S1a3 budget.
+- Done in S1a3 after review: private files 0600 and folders 0700 (a wider existing folder is tightened), flock on `<data>/memory.lock` around the ledger and machine-id, panic and full-channel failures reach the pane, a regenerated machine id is said, linked `.lzr`/`memory`/`notes` folders and linked note files are refused, `gitdir:`/`commondir` are trusted only inside a real `.git`.
+
+### S1a4 required and remaining minors (from the #843 reviews)
+
+- REQUIRED: S1a4 must consume `LocalReply::Saved.notice` and every thread failure reply, and show them as visible lines in the pane, with tests.
+- Minor: a `.tmp` file is leaked after a panic in the middle of a write.
+- Minor: the fallback reply threads for a full reply channel are unbounded.
+- Minor: `create_dir_all` after `plain_store` is a TOCTOU window (same-user threat).
+- Minor: `exclude_path` trusts a fabricated `.git/modules/x` and rejects nested submodules.
+- Minor: an existing `memory.lock` wider than 0600 is not tightened.

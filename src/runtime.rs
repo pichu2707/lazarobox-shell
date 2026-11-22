@@ -44,6 +44,7 @@ pub mod login_path;
 pub mod loopback;
 pub mod mcp;
 pub mod mcp_secrets;
+pub mod memory_local;
 pub mod model_delete;
 pub mod notify;
 pub mod ollama_lib;
