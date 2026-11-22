@@ -97,6 +97,8 @@ struct Ext {
     hidden: Vec<RangeInclusive<usize>>,
     /// The range the user is typing into now.
     open: Option<RangeInclusive<usize>>,
+    /// A range an Enter just closed: the next tick may still extend it.
+    closing: Option<RangeInclusive<usize>>,
 }
 
 /// The state of one run in flight.
@@ -200,11 +202,12 @@ impl Settle {
             self.ext.withheld = true;
             return;
         };
+        self.ext.hidden.extend(self.ext.closing.take());
         let range = self.ext.open.take().map_or(line..=line, |open| {
             (*open.start().min(&line))..=(*open.end().max(&line))
         });
         if key.enter || key.interrupt {
-            self.ext.hidden.push(range);
+            self.ext.closing = Some(range);
         } else {
             self.ext.open = Some(range);
         }
@@ -232,11 +235,13 @@ impl Settle {
             .hidden
             .iter()
             .cloned()
+            .chain(self.ext.closing.clone())
             .chain(self.ext.open.clone())
             .collect()
     }
 
     /// Whether the run is waiting for input now.
+    #[allow(dead_code)] // S1c
     pub fn waiting(&self) -> bool {
         self.ext.waiting.is_some()
     }
@@ -270,8 +275,13 @@ impl Settle {
         self.generation = probe.generation;
         self.foreground = probe.foreground;
         self.seen = probe.now;
-        if let (Some(open), Some(line)) = (self.ext.open.as_mut(), probe.cursor_line) {
-            *open = *open.start()..=*open.end().max(&line);
+        if let Some(line) = probe.cursor_line {
+            if let Some(open) = self.ext.open.as_mut() {
+                *open = *open.start()..=*open.end().max(&line);
+            }
+            if let Some(c) = self.ext.closing.take() {
+                self.ext.hidden.push(*c.start()..=*c.end().max(&line));
+            }
         }
         if let (false, Some(line)) = (self.anchored, probe.cursor_line) {
             self.anchor.line = line;
@@ -309,8 +319,10 @@ impl Settle {
     fn wait_or_cut(&mut self, probe: &Probe) -> Option<End> {
         let since = |from: Instant| probe.now.saturating_duration_since(from);
         let asks = probe.foreground == Some(false) && probe.echo_off == Some(true);
-        if self.ext.waiting.is_some() && !asks {
-            // Echo came back on or the program ended.
+        // An unknown foreground or echo (`None`) never ends a wait.
+        let over = probe.foreground == Some(true) || probe.echo_off == Some(false);
+        if self.ext.waiting.is_some() && over {
+            // Echo came back on or the shell is back.
             self.ext.waiting = None;
             self.base = self.base.max(probe.now);
         } else if self.ext.waiting.is_none() && asks && since(self.last) >= WAIT_QUIET {
@@ -784,6 +796,8 @@ mod tests {
             enter: true,
             ..KEY
         });
+        p.cursor_line = Some(9);
+        r.step(&p);
         p.cursor_line = Some(12);
         r.step(&p);
         assert_eq!(r.settle.hidden(), vec![7..=9], "output below stays visible");
@@ -841,5 +855,53 @@ mod tests {
         r.settle = Settle::run(r.settle.anchor.clone(), r.t0).limits(Limits::Continue);
         assert_eq!(r.step(&program(&r, 600_000, Some(false))), None);
         assert_eq!(r.step(&r.probe(600_500)), Some(End::Settled));
+    }
+
+    #[test]
+    fn a_wrapped_echo_after_the_enter_stays_hidden_until_the_next_tick() {
+        let mut r = model_run();
+        r.step(&program(&r, 100, Some(true)));
+        r.settle.user_key(Key {
+            line: Some(7),
+            enter: true,
+            ..KEY
+        });
+        let mut p = program(&r, 116, Some(true));
+        p.cursor_line = Some(8);
+        r.step(&p);
+        assert_eq!(r.settle.hidden(), vec![7..=8]);
+        p.cursor_line = Some(11);
+        r.step(&p);
+        assert_eq!(r.settle.hidden(), vec![7..=8], "closed at the first tick");
+    }
+
+    #[test]
+    fn an_unknown_probe_does_not_end_the_wait_or_show_it_twice() {
+        let mut r = model_run();
+        r.step(&program(&r, 1_000, Some(true)));
+        assert!(r.settle.take_waiting());
+        let mut p = program(&r, 100_000, Some(true));
+        p.foreground = None;
+        assert_eq!(r.step(&p), None);
+        assert!(r.settle.waiting(), "an unknown foreground keeps the wait");
+        let mut p = program(&r, 100_016, None);
+        p.foreground = Some(false);
+        assert_eq!(r.step(&p), None);
+        assert!(r.settle.waiting(), "an unknown echo keeps the wait");
+        r.step(&program(&r, 100_032, Some(true)));
+        assert!(!r.settle.take_waiting(), "the line is shown once");
+    }
+
+    #[test]
+    fn a_flapping_probe_does_not_restart_the_wait_cap() {
+        let mut r = model_run();
+        r.step(&program(&r, 1_000, Some(true)));
+        r.step(&program(&r, 200_000, None));
+        r.step(&program(&r, 200_016, Some(true)));
+        assert_eq!(r.step(&program(&r, 300_999, Some(true))), None);
+        assert_eq!(
+            r.step(&program(&r, 301_000, Some(true))),
+            Some(End::NoInput)
+        );
     }
 }

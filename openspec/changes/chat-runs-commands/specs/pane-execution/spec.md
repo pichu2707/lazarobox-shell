@@ -106,7 +106,7 @@ A run MUST be exactly one PTY write holding the command bytes followed by `\r`: 
 - THEN no byte is written (the answer is claimed before the write)
 
 ### Requirement: Settle and timeout
-After the write the call MUST stay pending until the run ends. The pane is probed on the existing 16 ms tick, only while a run is in flight. The run ends, checked in this order: (1) the pane enters the alternate screen (`full-screen`), or the user sends a key to the pane during the run while it is not waiting for input (`user typed`); (2) 30 s of running time have passed since the write (`still running`); (3) it settles, which requires ALL of: the pane's foreground process is its shell (an unknown foreground keeps waiting, never settles), at least 250 ms have passed since the later of the write and the last output, and progress was seen: the cursor is on a later line than at the write (the prompt line moved), OR the shell's real cwd differs from the cwd at the write, OR the line generation changed (the lines are then not comparable and the output is `not available`). While the run is waiting for input (see Waiting for input), the 30 s of running time MUST NOT advance and keys typed by the user MUST NOT end the run. The cut-off of 30 s is fixed and not configurable (owner decision 2026-11-22). A run cut at 30 s returns `still running` with the output so far (see Long-running commands), releases the executing mark and leaves the command running in the pane. A silent successful command (for example `mkdir -p x`) MUST settle about 250 ms after the prompt returns, not at the cut-off. No result MUST claim an exit status. Turn-level timers are paused while the call is pending, as for approvals.
+After the write the call MUST stay pending until the run ends. The pane is probed on the existing 16 ms tick, only while a run is in flight. The run ends, checked in this order: (1) the pane enters the alternate screen (`full-screen`), or the user sends a key to the pane while the shell, or an unknown foreground, owns it (`user typed`); a key sent to a program in the foreground, with echo on or off, does not end the run (design D8); (2) 30 s of running time have passed since the write, the end of the last waiting phase or the last Enter typed to the program, whichever is latest (`still running`); (3) it settles, which requires ALL of: the pane's foreground process is its shell (an unknown foreground keeps waiting, never settles), at least 250 ms have passed since the later of the write and the last output, and progress was seen: the cursor is on a later line than at the write (the prompt line moved), OR the shell's real cwd differs from the cwd at the write, OR the line generation changed (the lines are then not comparable and the output is `not available`). While the run is waiting for input (see Waiting for input), the 30 s of running time MUST NOT advance and keys typed to the program MUST NOT end the run. The cut-off of 30 s is fixed and not configurable (owner decision 2026-11-22). A run cut at 30 s returns `still running` with the output so far (see Long-running commands), releases the executing mark and leaves the command running in the pane. A silent successful command (for example `mkdir -p x`) MUST settle about 250 ms after the prompt returns, not at the cut-off. No result MUST claim an exit status. Turn-level timers are paused while the call is pending, as for approvals.
 (Previously: the cut-off was 10 s; any key typed by the user ended the run, including a password; no waiting state existed.)
 
 #### Scenario: Silent mkdir settles promptly [auto]
@@ -124,10 +124,20 @@ After the write the call MUST stay pending until the run ends. The pane is probe
 - WHEN 250 ms pass with the cursor on a later line
 - THEN the run does not settle and ends at the 30 s cut-off
 
-#### Scenario: User types during a plain run [auto]
-- GIVEN a run in flight that is not waiting for input
+#### Scenario: User types at the shell during a run [auto]
+- GIVEN a run in flight whose last probe saw the shell (or no foreground) in the foreground
 - WHEN the user sends a key to the pane
 - THEN the run ends (`the user typed in the pane`), no screen text is read and the executing mark clears
+
+#### Scenario: A key to a program does not end the run [auto]
+- GIVEN a run in flight whose last probe saw a program in the foreground, with echo on or off
+- WHEN the user sends a key to the pane
+- THEN the run does not end and the key is recorded for redaction
+
+#### Scenario: The cut-off restarts on an Enter typed to the program [auto]
+- GIVEN a run whose program holds the foreground, 20 s after the write
+- WHEN the user types Enter to the program
+- THEN the cut-off comes 30 s after that Enter (50 s after the write), and likewise 30 s after a waiting phase ends
 
 #### Scenario: Generation change settles without text [auto]
 - GIVEN a run in flight and a resize that bumps the line generation
@@ -180,22 +190,22 @@ A run MUST enter the state `WaitingForInput` when the pane's foreground process 
 - THEN the call ends, the executing mark clears and nothing more is written
 
 ### Requirement: Input is never captured
-Text the user types while a run is waiting for input MUST never be read, stored, logged or sent anywhere by lazarobox. When the capture is built for a run that was ever waiting for input, the screen text from the prompt line that started the wait up to the line where output resumed MUST be replaced by the single line `[input hidden]`, even when the terminal echoed the typed characters, and so MUST NOT appear in the tool result, the transcript, the stored conversation, the usage record, any log or any request to an engine. The same redaction MUST apply to a `still running` capture taken while the run is waiting for input. The password characters MUST not enter any lazarobox buffer, including keystroke or undo buffers of the pane.
+Text the user types to a program during a run MUST never be read, stored, logged or sent anywhere by lazarobox, whether the run was waiting for input or not. For each key sent to a non-shell foreground program, the screen rows the cursor sat on (and the rows a wrapped echo reaches before the next probe) MUST be hidden when the capture is built: each contiguous block becomes the single line `[input typed in the pane: hidden]`, even when the terminal echoed the typed characters, and so MUST NOT appear in the tool result, the transcript, the stored conversation, the usage record, any log or any request to an engine (design D10). An Enter, Ctrl+C or Ctrl+D closes the block, so output printed below stays visible. A key typed while the cursor was hidden withholds the whole output (`output not available: you typed in the pane`). The same redaction MUST apply to a `still running` capture. The password characters MUST not enter any lazarobox buffer, including keystroke or undo buffers of the pane.
 
 #### Scenario: Password absent from the model input [auto]
 - GIVEN a fake sudo prompt that echoes the typed marker `ZZ-PASS-ZZ` back on screen
 - WHEN the user types it and the run settles
-- THEN the tool result holds `[input hidden]` and the bytes of the model request, the stored conversation, the transcript and the log do not contain the marker
+- THEN the tool result holds `[input typed in the pane: hidden]` and the bytes of the model request, the stored conversation, the transcript and the log do not contain the marker
 
 #### Scenario: Output after the password is kept [auto]
 - GIVEN the same run whose command prints `Setting up jq` after the password
 - WHEN the capture is built
-- THEN `Setting up jq` is in the result and the prompt and echoed input lines are `[input hidden]`
+- THEN `Setting up jq` is in the result and the prompt and echoed input lines are `[input typed in the pane: hidden]`
 
-#### Scenario: Run that never waited is unchanged [auto]
-- GIVEN a run that never entered the waiting state
+#### Scenario: A run where the user typed nothing has no hidden rows [auto]
+- GIVEN a run in which the user sent no key to a program
 - WHEN the capture is built
-- THEN no `[input hidden]` line appears
+- THEN no `[input typed in the pane: hidden]` line appears
 
 ### Requirement: Long-running commands
 A run cut at the 30 s limit MUST return `still running` with the bounded capture so far (same bounds, redaction and wrapper as any capture), release the mark so the chat goes on, and leave the command running in the visible pane. The result text MUST say: `still running after 30 s; the command keeps running in pane N (Ctrl+C in the pane stops it); this is the output so far`. The transcript MUST also get the system line `pane N: <exact command> is still running after 30 s; the chat goes on with the output so far`. After the cut the pane is no longer marked executing for that run; a later `run_in_pane` call to a pane whose foreground is not its shell takes the prompt route and `y` types without Enter with `(not run: pane N is running a program)`. Nothing MUST stop the command except the user (Ctrl+C in the pane). When the command later ends (the shell is back as foreground), a continuation follow (like the typed-run follow of #819, with no timer, design D9) MUST resume the chat again, with no user message, with the final output (same bounds, redaction and wrapper) and the lead line `lazarobox: the command you approved in pane N finished.`; the continuation ends, with a visible system line, on Ctrl+C typed in the pane, on a new user message or on closing the pane (owner decision 2026-11-22).

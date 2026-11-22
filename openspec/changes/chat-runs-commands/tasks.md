@@ -74,6 +74,7 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 - [ ] 1c.2 RED lines: `pane N: waiting for your input in the pane; type it there (the chat does not see it)` once; cut-off and no-input lines (design wording); typing at the shell still ends `UserTyped`; cancel while waiting clears the mark.
 - [ ] 1c.3 GREEN `runtime.rs` probe field, `app/auto_run.rs` (`Settle::run`, `user_key`, lines, `end_run`), `app.rs`, `app/tool.rs`, `app/run.rs` (`note_typed` key and cursor line), `app/typed_run.rs` arms.
 - [ ] 1c.4 `[manual]` `sudo true` on the real binary: waiting line shows, password typed in the pane, chat resumes by itself, marker absent from stored chat.
+- [ ] 1c.3b Notes from the S1a review: `app/typed_run.rs` (~L165) must get real arms for `StillRunning` and `NoInput` instead of the `_ =>` full-screen fallback. `Settle::user_key` reads the foreground from the last tick (up to 16 ms stale): probe the foreground at key time if the wiring allows it.
 - [ ] 1c.5 Docs: README.md + README.es.md (waiting for input, password never sent, 30 s cut-off); CHANGELOG. Exit gate.
 
 ## S2a: `y` runs in both modes (base: main after S1c)
