@@ -117,6 +117,7 @@ impl App {
             effects.push(Effect::EndToolSession(id));
         }
         effects.extend(self.begin_memory(id));
+        effects.extend(self.begin_local_memory(id));
         effects.extend(self.probe_hint(id));
         self.dirty = true;
         effects

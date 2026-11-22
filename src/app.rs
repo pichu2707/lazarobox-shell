@@ -30,6 +30,7 @@ use crate::core::{
         jail::{JailOff, JailSupport},
         marks::ToolGlyph,
         memory::{
+            local::port::{LocalCmd, LocalReply},
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
@@ -73,6 +74,7 @@ mod history;
 mod hub;
 mod install;
 mod links;
+mod local_memory;
 mod model_delete;
 mod notes;
 mod offer;
@@ -244,6 +246,9 @@ pub enum AppEvent {
     },
     /// What the memory worker answered. It may arrive after its pane is gone.
     Memory(MemReply),
+    /// What the local memory thread answered (`.lzr/`). It may arrive after
+    /// its pane is gone.
+    LocalMemory(LocalReply),
     /// The store thread answered a command of a pane.
     Store(StoreReply),
     /// The background update check answered (or the cache was read): the
@@ -687,6 +692,9 @@ pub enum Effect {
     /// Ask the memory worker for something. Returns at once: the answer comes
     /// back as one `AppEvent::Memory`, or never when memory is not active.
     Memory(MemCmd),
+    /// Ask the local memory thread (the `.lzr/` store) for something. Returns
+    /// at once: the answer comes back as one `AppEvent::LocalMemory`.
+    LocalMemory(LocalCmd),
     /// A command for the store thread. It never waits for the database.
     Store(StoreCmd),
     /// Resolve the system prompt of a conversation just started in `pane`:
@@ -2365,6 +2373,7 @@ impl App {
             }
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
             AppEvent::Memory(reply) => self.on_memory_reply(&reply),
+            AppEvent::LocalMemory(reply) => self.on_local_reply(&reply),
             AppEvent::Store(reply) => {
                 let mut effects = self.on_history_reply(&reply);
                 effects.extend(self.on_store_reply(&reply));
@@ -9510,6 +9519,9 @@ mod app_tests {
 
     /// Memory in a chat view (engram-memory M6).
     mod chat_memory;
+
+    /// The local project memory in a chat view (chat-memory-local S1a).
+    mod local_memory;
 
     /// The window an Ollama turn is budgeted against (model-context-window).
     mod ollama_window;
