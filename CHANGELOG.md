@@ -22,6 +22,8 @@ baseline.
 
 - **Resuming after a command you ran keeps its pane label and no longer contradicts itself (#826).** The chat says `going on with the output of pane N` only after the note was really sent; a send that is refused now shows only the line that the output was not sent. The pane number in the waiting, stopped and finished lines is the one the model was told when it typed the command, so closing another pane or looking at another tab no longer renumbers it or turns it into `pane 0`.
 
+- **`/cost` no longer fails on huge token totals, and `up to N at once` is no longer one too high.** The token and cost sums are now saturating: a total past what SQLite can add reads as a very large number instead of making the whole `/cost` read fail. A worker's start is now its end minus its wall time rounded down to the second (it was rounded up), so a worker that begins as another ends no longer counts as overlapping it; rows already stored keep their start. The context-window notices (`this message and the setup are about … tokens`, and the worker one) write their counts with commas.
+
 ## [1.37.0] - 2026-11-22
 
 ### Added

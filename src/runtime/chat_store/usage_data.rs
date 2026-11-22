@@ -29,6 +29,37 @@ pub(super) fn wall_sql(conn: &Connection) -> rusqlite::Result<&'static str> {
     })
 }
 
+/// `sql` with every `SUM(x)` turned into a sum that cannot overflow. SQLite's
+/// `SUM` raises "integer overflow" past `i64`, which would fail the whole read;
+/// `TOTAL` adds as a float, and the cast to an integer saturates at `i64::MAX`.
+/// Like `SUM`, a column with no value reads NULL, not 0.
+pub(super) fn saturating(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut rest = sql;
+    while let Some(at) = rest.match_indices("SUM(").map(|(i, _)| i).find(|&i| {
+        !rest[..i]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    }) {
+        let args = &rest[at + 4..];
+        let mut depth = 1;
+        let close = args.char_indices().find(|&(_, c)| {
+            depth += i32::from(c == '(') - i32::from(c == ')');
+            depth == 0
+        });
+        let Some((end, _)) = close else { break };
+        let e = &args[..end];
+        out.push_str(&rest[..at]);
+        out.push_str(&format!(
+            "CASE WHEN COUNT({e}) = 0 THEN NULL ELSE CAST(TOTAL({e}) AS INTEGER) END"
+        ));
+        rest = &args[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The rows of the report and the distinct task keys by day. A store without
 /// the table has no usage; nothing is created.
 pub(super) fn usage_data(
@@ -65,13 +96,13 @@ pub(super) fn usage_data(
         .collect::<Result<_, _>>()?;
     // The weekday is Monday first (`(w + 6) % 7`), the hour the local one of
     // the end time `ts`, and a record with no known token still makes its cell.
-    let mut stmt = conn.prepare(&format!(
+    let mut stmt = conn.prepare(&saturating(&format!(
         "SELECT {DAY_SQL} AS day,
                 (CAST(strftime('%w', ts, 'unixepoch', 'localtime') AS INTEGER) + 6) % 7,
                 CAST(strftime('%H', ts, 'unixepoch', 'localtime') AS INTEGER),
                 SUM(COALESCE(input, 0) + COALESCE(output, 0))
            FROM turn_usage GROUP BY 1, 2, 3 ORDER BY 1, 2, 3",
-    ))?;
+    )))?;
     let hours = stmt
         .query_map([at], |r| {
             let day: i64 = r.get(0)?;
@@ -86,11 +117,11 @@ pub(super) fn usage_data(
         .collect::<Result<_, _>>()?;
     let wall = wall_sql(conn)?;
     // The worker records of each engine, with their wall time.
-    let mut stmt = conn.prepare(&format!(
+    let mut stmt = conn.prepare(&saturating(&format!(
         "SELECT {DAY_SQL} AS day, engine, COUNT(*), SUM(input), SUM(output),
                 MAX(partial OR input IS NULL OR output IS NULL), {wall}
            FROM turn_usage WHERE role = 'worker' GROUP BY 1, 2 ORDER BY 1, 2",
-    ))?;
+    )))?;
     let count = |v: Option<i64>| v.and_then(|n| u64::try_from(n).ok());
     let agents = stmt
         .query_map([at], |r| {

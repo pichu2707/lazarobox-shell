@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 
 use super::{
     StoreError, ensure_usage, open, runs,
-    usage_data::{DAY_SQL, usage_data, wall_sql},
+    usage_data::{DAY_SQL, saturating, usage_data, wall_sql},
 };
 use crate::core::{
     ai::{
@@ -583,11 +583,12 @@ fn record_usage(
 ) -> Result<(DayRead, Option<String>), String> {
     let at = now();
     ensure_usage(conn).map_err(|err| usage_reason(&err).to_owned())?;
-    // The run began `wall_ms` before `ts`, rounded up to the second: the same
-    // store lag as `ts`. No wall time, no start.
+    // The run began `wall_ms` before `ts`, rounded down to the second. Down,
+    // not up: a start that comes early would make a run that began as another
+    // ended look like an overlap with it. No wall time, no start.
     let started = usage
         .wall_ms
-        .and_then(|ms| i64::try_from(ms.div_ceil(1_000)).ok())
+        .and_then(|ms| i64::try_from(ms / 1_000).ok())
         .map(|secs| at.saturating_sub(secs));
     // A run that used several models names none of them: it is stored as
     // `mixed`, so `/cost` can tell it from a model nobody reported (NULL).
@@ -681,16 +682,18 @@ fn day_figures(conn: &Connection, at: i64) -> DayRead {
     }
     let today: Option<i64> = conn
         .query_row(
-            &format!("SELECT SUM(input + output) FROM turn_usage WHERE {SAME_DAY}"),
+            &saturating(&format!(
+                "SELECT SUM(input + output) FROM turn_usage WHERE {SAME_DAY}"
+            )),
             [at],
             |r| r.get(0),
         )
         .map_err(read)?;
     let cost = conn
-        .prepare(&format!(
+        .prepare(&saturating(&format!(
             "SELECT engine, SUM(cost_micros) FROM turn_usage
              WHERE cost_micros IS NOT NULL AND {SAME_DAY} GROUP BY engine ORDER BY engine"
-        ))
+        )))
         .and_then(|mut q| {
             q.query_map([at], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
                 .collect::<Result<Vec<_>, _>>()
@@ -747,7 +750,7 @@ pub(super) fn usage_report(
     }
     let prefill = prefill_sql(conn)?;
     let wall = wall_sql(conn)?;
-    let mut stmt = conn.prepare(&format!(
+    let mut stmt = conn.prepare(&saturating(&format!(
         "SELECT {DAY_SQL} AS day,
                 engine, model, COALESCE(conversation_id = ?2, 0) AS mine,
                 COALESCE(SUM(role = 'chat'), 0), COUNT(*), COUNT(cost_micros),
@@ -773,7 +776,7 @@ pub(super) fn usage_report(
                 COUNT(CASE WHEN role = 'chat' THEN output END),
                 {wall}
          FROM turn_usage GROUP BY day, engine, model, mine ORDER BY day, engine, model",
-    ))?;
+    )))?;
     let count = |v: Option<i64>| v.and_then(|n| u64::try_from(n).ok());
     let rows = stmt.query_map(rusqlite::params![at, conversation], |r| {
         Ok(UsageRow {

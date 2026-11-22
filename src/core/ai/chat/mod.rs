@@ -83,6 +83,7 @@ use composer::Composer;
 use engine::{Availability, CallId, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools};
 use prompts::Resolved;
 use transcript::{LineCache, Scroll};
+use usage_fmt::grouped;
 
 /// A worker failure that halted the pane's run, until the user answers it
 /// (agent-orchestrator, Failure stops the run): the error as it came, only
@@ -132,6 +133,7 @@ pub const TRUNCATION_MARKER: &str = "earlier messages are not sent to the model"
 /// System line for a send whose setup and newest message alone pass a known
 /// context window: it goes whole, and the server may cut it.
 pub fn over_window(tokens: usize, window: usize) -> String {
+    let (tokens, window) = (grouped(tokens as u64), grouped(window as u64));
     format!(
         "this message and the setup are about {tokens} tokens, over the {window}-token window: the server may cut them"
     )
@@ -139,6 +141,7 @@ pub fn over_window(tokens: usize, window: usize) -> String {
 /// Trace line for a worker whose prompt and setup pass its Ollama window: the
 /// one message goes whole, and Ollama cuts it without saying so (#557).
 pub fn worker_over_window(tokens: usize, window: usize) -> String {
+    let (tokens, window) = (grouped(tokens as u64), grouped(window as u64));
     format!(
         "the worker prompt and setup are about {tokens} tokens, over the {window}-token window: the server may cut them"
     )

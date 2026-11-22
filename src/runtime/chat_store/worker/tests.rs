@@ -3692,7 +3692,7 @@ fn timing_rows(conn: &Connection) -> Vec<(i64, Option<i64>, Option<i64>)> {
 }
 
 #[test]
-fn a_record_stores_wall_time_and_a_start_rounded_up_to_the_second() {
+fn a_record_stores_wall_time_and_a_start_rounded_down_to_the_second() {
     let (_dir, _worker, mut conn) = fixture();
     let usage = |wall_ms| TurnUsage {
         input: Some(10),
@@ -3710,7 +3710,7 @@ fn a_record_stores_wall_time_and_a_start_rounded_up_to_the_second() {
     assert_eq!(
         got,
         [
-            (Some(3), Some(2_500)),
+            (Some(2), Some(2_500)),
             (Some(3), Some(3_000)),
             (Some(0), Some(0)),
             (None, None)
@@ -3740,4 +3740,26 @@ fn an_old_usage_table_gains_the_timing_columns_and_keeps_its_rows() {
     assert_eq!(input, 20);
     // Idempotent: a second run adds nothing and fails nowhere.
     ensure_usage(&mut conn).unwrap();
+}
+
+#[test]
+fn the_day_figures_survive_sums_past_i64() {
+    let (_dir, _worker, mut conn) = fixture();
+    let usage = TurnUsage {
+        input: Some(1),
+        output: Some(1),
+        cost_micros: Some(1),
+        ..TurnUsage::default()
+    };
+    for _ in 0..2 {
+        let _ = record_usage(&mut conn, None, ("claude", "chat", None), &usage).unwrap();
+    }
+    conn.execute(
+        "UPDATE turn_usage SET input = ?1, output = ?1, cost_micros = ?1",
+        [i64::MAX],
+    )
+    .unwrap();
+    let (today, cost) = day_figures(&conn, now()).unwrap().0;
+    assert_eq!(today, Some(i64::MAX as u64));
+    assert_eq!(cost, [("claude".to_owned(), i64::MAX as u64)]);
 }
