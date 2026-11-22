@@ -258,7 +258,9 @@ fn read_ledger(path: &Path) -> Result<Ledger, LedgerError> {
     match read_regular(path, LEDGER_CAP) {
         Err(ReadError::Missing) => Ok(Ledger::default()),
         Err(_) => Err(LedgerError::Damaged),
-        Ok(bytes) => Ledger::parse(&String::from_utf8_lossy(&bytes)),
+        Ok(bytes) => String::from_utf8(bytes)
+            .map_err(|_| LedgerError::Damaged)
+            .and_then(|text| Ledger::parse(&text)),
     }
 }
 
@@ -782,6 +784,22 @@ mod tests {
                 "no note written"
             );
         }
+    }
+
+    // Lossy decoding would turn bad bytes inside a string into a valid ledger.
+    #[test]
+    fn a_ledger_that_is_not_utf8_is_damaged() {
+        let rig = Rig::new();
+        rig.save("one");
+        let file = rig.ledger_file();
+        let bytes = b"{\"v\":1,\"own\":{\"n-1\":\"\xff\"}}".to_vec();
+        fs::write(&file, &bytes).unwrap();
+        let LocalReply::Loaded { ledger, .. } = rig.load(&rig.repo) else {
+            panic!();
+        };
+        assert_eq!(ledger, Some(LedgerError::Damaged));
+        assert!(matches!(rig.save("two"), LocalReply::Failed { .. }));
+        assert_eq!(fs::read(&file).unwrap(), bytes, "never rewritten");
     }
 
     #[tokio::test]
