@@ -486,12 +486,8 @@ While the mode is TERMINAL and the focused pane is scrolled back without COPY (a
 - THEN nothing panics
 
 ### Requirement: Usage segment
-While the focused pane is a chat pane and the `ai.usage.statusline` setting is on (default on), the right-hand segment MUST append ` · today: <T>` after the engine text and before the memory segment, where `<T>` is `<N> tok` (the sum of known total tokens of today's local-day usage records, all chats and engines, including deleted chats) or `no data` when no record of the day has a known total. When the sum includes dollars of engines in `per-token` mode (see `ai-usage`), ` · $<N>` is appended. Dollars of `subscription` engines are never shown in the segment. The figures refresh when a usage record is stored and when the local day changes; they are read off the UI thread, and until the first read the segment is absent (not `0`). With the setting off, or when the focused pane is a shell pane, nothing is appended. Width: when space is short, the segment MUST be dropped as a whole before the memory segment, before the engine text is shortened and before any part of the thinking indicator is dropped; it is never shown partially. The mode block keeps priority at every width and nothing panics.
-
-#### Scenario: Shown with tokens [auto, TestBackend + insta]
-- GIVEN a focused chat pane assigned `ollama` / `llama3:8b` and today's totals of 1234 tokens
-- WHEN rendered on a wide terminal
-- THEN the right side reads `ollama › llama3:8b · today: 1234 tok`
+While the focused pane is a chat pane and the `ai.usage.statusline` setting is on (default on), the right-hand segment MUST append ` · today: <T>` after the engine text and before the memory segment, where `<T>` is `<C> tok` with `<C>` the compact form of the sum of known total tokens of today's local-day usage records (`999`, `1.0k`, `123.5k`, `1.2M`, `11.6B`; `.` decimal point; see `usage-dashboard`, Number formatting), all chats and engines, including deleted chats, or `no data` when no record of the day has a known total. Everything else is unchanged: when the sum includes dollars of engines in `per-token` mode, ` · $<N>` is appended; dollars of `subscription` engines are never shown; the figures refresh when a usage record is stored and when the local day changes; until the first read the segment is absent (not `0`); with the setting off or a shell pane focused nothing is appended; width dropping order, mode-block priority and no-panic guarantees are unchanged.
+(Previously: `<N> tok` with a plain integer, for example `today: 1234 tok`.)
 
 #### Scenario: No data, not zero [auto]
 - GIVEN today has records but none with a known total, and another run with no records at all after the first read
@@ -506,7 +502,7 @@ While the focused pane is a chat pane and the `ai.usage.statusline` setting is o
 #### Scenario: Per-token dollars [auto]
 - GIVEN claude in `per-token` mode with $0.42 today and 5000 tokens
 - WHEN rendered
-- THEN the right side contains `today: 5000 tok · $0.42`
+- THEN the right side contains `today: 5.0k tok · $0.42`
 
 #### Scenario: Subscription dollars hidden [auto]
 - GIVEN claude in `subscription` mode with $0.42 today
@@ -516,7 +512,7 @@ While the focused pane is a chat pane and the `ai.usage.statusline` setting is o
 #### Scenario: Before the memory segment [auto, TestBackend + insta]
 - GIVEN memory ready and usage on
 - WHEN rendered on a wide terminal
-- THEN the right side reads `ollama › llama3:8b · today: 1234 tok · mem: ready`
+- THEN the right side reads `ollama › llama3:8b · today: 1.2k tok · mem: ready`
 
 #### Scenario: Off [auto]
 - GIVEN `ai.usage.statusline` off, or a shell pane focused
@@ -531,12 +527,32 @@ While the focused pane is a chat pane and the `ai.usage.statusline` setting is o
 #### Scenario: Workers count [auto]
 - GIVEN a displayed total of 1000 tokens
 - WHEN a worker record of 300 tokens is stored
-- THEN the next frame after the store answers shows 1300
+- THEN the next frame after the store answers shows `today: 1.3k tok`
 
 #### Scenario: Refresh after a turn [auto]
 - GIVEN a displayed total of 1000 tokens
 - WHEN a turn of 200 tokens is stored
-- THEN the next frame after the store answers shows 1200
+- THEN the next frame after the store answers shows `today: 1.2k tok`
+
+#### Scenario: Shown with compact tokens [auto, TestBackend + insta]
+- GIVEN a focused chat pane assigned `ollama` / `llama3:8b` and today's totals of 1234 tokens
+- WHEN rendered on a wide terminal
+- THEN the right side reads `ollama › llama3:8b · today: 1.2k tok`
+
+#### Scenario: Small total [auto]
+- GIVEN today's totals of 950 tokens
+- WHEN rendered
+- THEN the segment reads `today: 950 tok`
+
+#### Scenario: Large total [auto]
+- GIVEN today's totals of 1234567 tokens
+- WHEN rendered
+- THEN the segment reads `today: 1.2M tok`
+
+#### Scenario: Unchanged behaviours [auto]
+- GIVEN the scenarios `Before the first read`, `Off` and `Dropped first when narrow`
+- WHEN run against the new format
+- THEN they pass with only the number format changed
 
 ### Requirement: Reading and ageing the usage figures
 The figures MUST be read once through the store worker when the first chat pane is focused and the setting on, and again once the local day changes (the worker answers the next local midnight with them; the app has no timezone logic). A figure MUST never be shown at or after its midnight. One read is in flight at a time; a read with no answer after 30 seconds is given up on and may be asked again. A read that fails MUST keep the last valid figure, be retried no sooner than 60 seconds later, and be told once as the system line `Usage not read: <reason>`; the notice is told again after a later read succeeds and fails again. While no valid figure exists because a read failed, the segment reads `today: ?` (never `today: no data`, which means a read day without a known total). An answer whose midnight is not after the current time (a zone with no midnight that day) MUST NOT be re-read before 60 seconds. When the wall clock moves by more than one hour between two events, backwards or forwards, the figures MUST be read again. With no store thread, the read is answered at once with a read problem.

@@ -80,7 +80,7 @@ Depends on PR2 (and its final notice wording). No code.
 ## After the chain (not code)
 
 - [ ] 4.1 [owner] Run O5, O6, O7, O8 in order, then announce (O9 blog article is out of this change).
-- [ ] 4.2 `sdd-verify` then `sdd-archive` once PR3 merges. The change is archivable even before O8, but do not announce before it.
+- [x] 4.2 `sdd-verify` then `sdd-archive` once PR3 merges. The change is archivable even before O8, but do not announce before it.
 
 ## Dependency summary
 

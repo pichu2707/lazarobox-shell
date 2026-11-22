@@ -1,5 +1,7 @@
 # Tasks: MCP connectors
 
+Open live checks are tracked on #436: https://github.com/pichu2707/lazarobox-shell/issues/436#issuecomment-7083224927
+
 Order follows C8 (secrets and read-deny, then Clarity and GA4, then GSC, then Workspace). Each slice is one PR under about 400 production lines (tests and docs may exceed; the size is an advisory heuristic). Every RED/GREEN task writes the failing test first through the public interface, then the code. Every slice keeps `y` on every connector call (C11) and writes no byte of `ai.mcp.*` (C4).
 
 ## S1 Secrets file and read-deny (C6, C8) — 230–310 lines
