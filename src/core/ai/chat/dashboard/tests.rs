@@ -21,6 +21,7 @@ fn build(rows: Vec<UsageRow>, range: Range) -> Dashboard {
             ..UsageData::default()
         },
         range,
+        &Vec::new(),
     )
 }
 
@@ -45,7 +46,7 @@ fn tasks_count_conversations_and_runs_once_and_turns_count_chat_rows() {
         tasks: vec![(0, "c1".into()), (0, "c2".into()), (0, "r9".into())],
         ..UsageData::default()
     };
-    let d = Dashboard::build(&data, Range::Week);
+    let d = Dashboard::build(&data, Range::Week, &Vec::new());
     assert_eq!(d.kpis[2].label, "Tasks");
     assert_eq!(d.kpis[2].value, "3");
     assert_eq!(d.kpis[2].sub, "7 turns");
@@ -58,8 +59,14 @@ fn a_task_on_two_days_counts_once_and_one_outside_the_range_not_at_all() {
         tasks: vec![(0, "c1".into()), (3, "c1".into()), (8, "c2".into())],
         ..UsageData::default()
     };
-    assert_eq!(Dashboard::build(&data, Range::Week).kpis[2].value, "1");
-    assert_eq!(Dashboard::build(&data, Range::Month).kpis[2].value, "2");
+    assert_eq!(
+        Dashboard::build(&data, Range::Week, &Vec::new()).kpis[2].value,
+        "1"
+    );
+    assert_eq!(
+        Dashboard::build(&data, Range::Month, &Vec::new()).kpis[2].value,
+        "2"
+    );
 }
 
 #[test]
@@ -278,7 +285,7 @@ fn output_and_tasks_have_their_own_deltas() {
         tasks: vec![(0, "c1".into()), (1, "c2".into()), (9, "c3".into())],
         ..UsageData::default()
     };
-    let d = Dashboard::build(&data, Range::Week);
+    let d = Dashboard::build(&data, Range::Week, &Vec::new());
     assert_eq!(d.kpis[1].delta, Delta::Up(50));
     assert_eq!(d.kpis[2].delta, Delta::Up(100));
 }
@@ -342,7 +349,9 @@ fn the_ranges_cycle_both_ways_and_have_a_label() {
 fn the_height_is_the_selector_plus_the_card_rows_of_the_tier() {
     let full = build(vec![input(0, 1)], Range::Week);
     // Selector and gap, then 4-row cards: one row, 2x2 with a gap, a column.
-    let blocks = CHART_ROWS + HEAT_ROWS;
+    // The models take a gap, a title, the header, one row, a gap, a title, the
+    // bar and one legend line: an input-only record has tokens.
+    let blocks = CHART_ROWS + HEAT_ROWS + 8;
     assert_eq!(full.height(100), 2 + 4 + blocks);
     assert_eq!(full.height(70), 2 + 9 + blocks);
     assert_eq!(full.height(50), 2 + 19 + blocks);
@@ -580,6 +589,7 @@ fn heat_of(hours: Vec<HourCell>, range: Range) -> Dashboard {
             ..UsageData::default()
         },
         range,
+        &Vec::new(),
     )
 }
 
@@ -668,7 +678,7 @@ fn the_heat_uses_buckets_under_60_columns_only() {
 fn the_heat_adds_its_rows_to_the_height_of_the_dashboard() {
     let with = heat_of(vec![cell(0, 0, 0, 1)], Range::Week);
     let without = build(vec![], Range::Week);
-    assert_eq!(with.height(100), 2 + CARD_ROWS + CHART_ROWS + HEAT_ROWS);
+    assert_eq!(with.height(100), 2 + CARD_ROWS + CHART_ROWS + HEAT_ROWS + 8);
     assert_eq!(without.height(100), 2 + 1);
 }
 

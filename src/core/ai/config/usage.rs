@@ -98,6 +98,15 @@ impl UsageConfig {
         self.day_usd_micros = limit;
     }
 
+    /// Every billed engine with its mode: the ones whose dollars are shown.
+    pub fn billed(&self) -> Vec<(String, Billing)> {
+        BILLED
+            .iter()
+            .zip(self.billing)
+            .map(|(id, mode)| ((*id).to_owned(), mode))
+            .collect()
+    }
+
     /// The billing mode of `engine`: `None` for a local engine, which never
     /// shows dollars.
     pub fn billing(&self, engine: &str) -> Option<Billing> {

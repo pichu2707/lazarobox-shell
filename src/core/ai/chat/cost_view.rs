@@ -5,7 +5,7 @@ use std::cell::Cell;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::dashboard::{Dashboard, Range, TEXT_BELOW, UsageData};
+use super::dashboard::{Billed, Dashboard, Range, TEXT_BELOW, UsageData};
 use super::wrap::wrap_words;
 use crate::core::ai::chat::usage_view::HEADER;
 
@@ -33,7 +33,7 @@ enum Body {
     Text,
     /// The usage the store read and the model of the range shown, rebuilt on
     /// a range change with no new read.
-    Data(Box<UsageData>, Box<Dashboard>),
+    Data(Box<UsageData>, Billed, Box<Dashboard>),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -73,26 +73,27 @@ impl CostView {
     }
 
     /// The usage the store read: the dashboard, with `lines` (the text
-    /// report) for a pane too narrow for it.
-    pub fn with_data(data: UsageData, lines: Vec<String>) -> Self {
+    /// report) for a pane too narrow for it. `billed` says which engines
+    /// show dollars.
+    pub fn with_data(data: UsageData, billed: Billed, lines: Vec<String>) -> Self {
         let mut view = Self::with(Vec::new());
-        view.set_data(data, lines);
+        view.set_data(data, billed, lines);
         view
     }
 
     /// Replaces the text and the usage (the store answered), keeping the
     /// scroll and the range the user chose.
-    pub fn set_data(&mut self, data: UsageData, lines: Vec<String>) {
+    pub fn set_data(&mut self, data: UsageData, billed: Billed, lines: Vec<String>) {
         let range = self.dashboard().map_or_else(Range::default, |d| d.range);
         self.lines = lines;
-        let model = Dashboard::build(&data, range);
-        self.body = Body::Data(Box::new(data), Box::new(model));
+        let model = Dashboard::build(&data, range, &billed);
+        self.body = Body::Data(Box::new(data), billed, Box::new(model));
     }
 
     /// The model of the range shown, when the store answered with data.
     pub fn dashboard(&self) -> Option<&Dashboard> {
         match &self.body {
-            Body::Data(_, model) => Some(model),
+            Body::Data(_, _, model) => Some(model),
             Body::Text => None,
         }
     }
@@ -140,7 +141,7 @@ impl CostView {
     /// A range key: the model is rebuilt from the usage already read, with no
     /// new read. In the text tier there is nothing to change, so it says so.
     fn pick(&mut self, to: impl FnOnce(Range) -> Range) {
-        let Body::Data(data, model) = &mut self.body else {
+        let Body::Data(data, billed, model) = &mut self.body else {
             self.note = Some(NO_DATA);
             return;
         };
@@ -148,7 +149,7 @@ impl CostView {
         if (1..TEXT_BELOW).contains(&self.width.get()) {
             self.note = Some(WIDEN);
         } else {
-            **model = Dashboard::build(data, to(model.range));
+            **model = Dashboard::build(data, to(model.range), billed);
         }
     }
 

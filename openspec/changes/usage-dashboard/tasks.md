@@ -109,10 +109,10 @@ Count = added non-test `.rs` lines, minus blank lines and comments. Tests, fixtu
 
 ## S4: models table + provider bar (~300)
 
-- [ ] 4.1 RED: tests: order by total tokens (ollama first, no `$`; claude `$0.5000 list-price equivalent`); `unknown`/`mixed` labels; largest remainder 33.4/33.3/33.3 -> 34/33/33; each known provider gets at least one cell; single engine = 100%.
-- [ ] 4.2 RED: theme tests: `neutral` (0xCDD6F4) outside `palette()`; `palette_lists_eight_entries` unchanged; local glyph `⬡` uses `ai_purple`.
-- [ ] 4.3 GREEN: `dashboard/tables.rs`; `cost/tables.rs` (`Table`, glyph-repeated bar, legend, drops turns and `$` under 60 columns); `ui/theme.rs` (`neutral`, `provider_color`).
-- [ ] 4.4 RED/GREEN: snapshots at 100/72/50. Close: protocol checks. CHANGELOG `[Unreleased]`.
+- [x] 4.1 RED: tests: order by total tokens (ollama first, no `$`; claude `$0.5000 list-price equivalent`); `unknown`/`mixed` labels; largest remainder 33.4/33.3/33.3 -> 34/33/33; each known provider gets at least one cell; single engine = 100%.
+- [x] 4.2 RED: theme tests: `neutral` (0xCDD6F4) outside `palette()`; `palette_lists_eight_entries` unchanged; local glyph `⬡` uses `ai_purple`.
+- [x] 4.3 GREEN: `dashboard/tables.rs`; `cost/tables.rs` (`Table`, glyph-repeated bar, legend, drops turns and `$` under 60 columns); `ui/theme.rs` (`neutral`, `provider_color`). Result: `Dashboard.models`/`providers`, `Billed` parameter (`UsageConfig::billed`) kept in `CostView`, columns by width tier (60: `$` with `*` note, 80: turns and full label), `+N more models` over 8, `apportion` (largest remainder, at least one cell), legend packed by width.
+- [x] 4.4 RED/GREEN: snapshots at 100/72/50. Close: protocol checks. CHANGELOG `[Unreleased]`. Result: 3 new snapshots (100/72/50), wide/medium/narrow dashboard gain the block (pane heights 43/48/58); both READMEs updated.
 
 ## S5: agents table + peak (~240)
 

@@ -71,10 +71,12 @@ impl App {
                 self.ai.usage().billing(e)
             })
         };
+        // The engines that show dollars, as the settings bill them.
+        let billed = self.ai.usage().billed();
         let reply = data.map(|data| (data.clone(), report(data)));
         if let Some(view) = chat.cost_mut() {
             match reply {
-                Some((data, lines)) => view.set_data(data, lines),
+                Some((data, lines)) => view.set_data(data, billed, lines),
                 None => view.set_lines(vec![UNAVAILABLE_LINE.to_owned()]),
             }
             self.dirty = true;

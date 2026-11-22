@@ -243,7 +243,7 @@ fn tokens(total: Option<u64>) -> String {
 }
 
 /// A row has a record that was cut or lacks its input or output.
-fn incomplete(r: &UsageRow) -> bool {
+pub(super) fn incomplete(r: &UsageRow) -> bool {
     r.partial || r.input.is_none() || r.output.is_none()
 }
 
@@ -350,7 +350,7 @@ pub fn coordinator_line(line: String) -> String {
 }
 
 /// An engine or model id as one line of plain text.
-fn ident(raw: &str) -> String {
+pub(super) fn ident(raw: &str) -> String {
     clean(raw)
         .split(char::is_whitespace)
         .filter(|part| !part.is_empty())

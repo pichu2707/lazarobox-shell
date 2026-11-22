@@ -4,6 +4,7 @@
 mod daily;
 mod heat;
 mod kpi;
+mod tables;
 
 pub use daily::{
     CHART_ROWS, DOWN_ROWS, DayTokens, Fit, UP_ROWS, daily, fit, last_days, legend, level, notes,
@@ -14,6 +15,10 @@ pub use heat::{
     heat_rows, rows_peak, shade,
 };
 pub use kpi::{Delta, Kpi, bucket, groups};
+pub use tables::{
+    Billed, MODELS_MAX, ModelRow, NO_TOKENS, Share, Table, Usd, apportion, blocks_rows, cells,
+    models, segments, share_legend, shares, table,
+};
 
 use super::usage_view::UsageRow;
 
@@ -126,11 +131,18 @@ pub struct Dashboard {
     pub last_days: Option<u32>,
     /// Tokens by weekday (Monday first) and local hour.
     pub heat: Heat,
+    /// Engine and model pairs of the range, biggest first.
+    pub models: Vec<ModelRow>,
+    /// Each provider's part of the tokens.
+    pub providers: Vec<Share>,
 }
 
 impl Dashboard {
-    pub fn build(data: &UsageData, range: Range) -> Self {
+    pub fn build(data: &UsageData, range: Range, billed: &Billed) -> Self {
+        let models = models(data, range, billed);
         Self {
+            providers: shares(&models),
+            models,
             range,
             empty: kpi::is_empty(data, range),
             kpis: kpi::kpis(data, range),
@@ -141,7 +153,7 @@ impl Dashboard {
     }
 
     /// Rows the dashboard takes at `width`: the selector, a gap, the cards,
-    /// the chart and the heatmap.
+    /// the chart, the heatmap and the models.
     pub fn height(&self, width: u16) -> u16 {
         let cards = match Tier::of(width) {
             Tier::Text => return 0,
@@ -153,9 +165,14 @@ impl Dashboard {
         let blocks = if self.empty {
             0
         } else {
-            CHART_ROWS + HEAT_ROWS
+            CHART_ROWS + HEAT_ROWS + self.tables(width)
         };
         2 + cards + blocks
+    }
+
+    /// Rows of the Models table and the provider bar at `width`.
+    pub fn tables(&self, width: u16) -> u16 {
+        blocks_rows(&self.models, &self.providers, width)
     }
 }
 
