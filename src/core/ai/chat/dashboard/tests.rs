@@ -338,9 +338,9 @@ fn the_ranges_cycle_both_ways_and_have_a_label() {
 fn the_height_is_the_selector_plus_the_card_rows_of_the_tier() {
     let full = build(vec![input(0, 1)], Range::Week);
     // Selector and gap, then 4-row cards: one row, 2x2 with a gap, a column.
-    assert_eq!(full.height(100), 2 + 4);
-    assert_eq!(full.height(70), 2 + 9);
-    assert_eq!(full.height(50), 2 + 19);
+    assert_eq!(full.height(100), 2 + 4 + CHART_ROWS);
+    assert_eq!(full.height(70), 2 + 9 + CHART_ROWS);
+    assert_eq!(full.height(50), 2 + 19 + CHART_ROWS);
     assert_eq!(full.height(39), 0);
     // The empty state is the selector, a gap and one line.
     let empty = build(Vec::new(), Range::Week);
@@ -354,4 +354,136 @@ fn a_capped_delta_keeps_every_digit_it_shows() {
     assert_eq!(Delta::Up(12_000).capped(), "▲ 999%+");
     assert_eq!(Delta::Down(100).capped(), "▼ 100%");
     assert_eq!(Delta::NotAvailable.capped(), "n/a");
+}
+
+fn both(days_ago: u32, input: u64, output: u64) -> UsageRow {
+    row(days_ago, |r| {
+        r.input = Some(input);
+        r.output = Some(output);
+    })
+}
+
+fn day(input: u64, output: u64) -> DayTokens {
+    DayTokens {
+        input: Some(input),
+        output: Some(output),
+    }
+}
+
+#[test]
+fn the_chart_has_one_day_per_column_oldest_first() {
+    // Days 400/100 in and 100/200 out, and a third day with no row.
+    let d = build(vec![both(0, 100, 200), both(1, 400, 100)], Range::Week);
+    assert_eq!(d.daily.len(), 7);
+    assert_eq!(d.daily[6], day(100, 200));
+    assert_eq!(d.daily[5], day(400, 100));
+    assert_eq!(d.daily[4], DayTokens::default());
+}
+
+#[test]
+fn a_day_with_no_row_is_empty_and_a_zero_row_is_a_known_zero() {
+    let d = build(vec![both(0, 0, 0)], Range::Week);
+    assert_eq!(d.daily[6], day(0, 0));
+    assert_eq!(d.daily[5].input, None);
+    assert_eq!(d.daily[5].output, None);
+}
+
+#[test]
+fn rows_of_a_day_add_up_and_a_missing_figure_stays_missing() {
+    let d = build(
+        vec![both(0, 10, 5), row(0, |r| r.input = Some(7))],
+        Range::Week,
+    );
+    assert_eq!(d.daily[6], day(17, 5));
+    let only_in = build(vec![input(0, 3)], Range::Week);
+    assert_eq!(only_in.daily[6].output, None);
+}
+
+#[test]
+fn the_chart_totals_match_the_input_card_sparkline_for_every_range() {
+    let rows = vec![
+        both(0, 5, 1),
+        both(3, 7, 2),
+        both(40, 11, 3),
+        both(120, 13, 4),
+    ];
+    for range in Range::ALL {
+        let d = build(rows.clone(), range);
+        let chart: u64 = d.daily.iter().filter_map(|x| x.input).sum();
+        assert_eq!(chart, d.kpis[0].spark.iter().sum::<u64>(), "{range:?}");
+        let out: u64 = d.daily.iter().filter_map(|x| x.output).sum();
+        assert_eq!(out, d.kpis[1].spark.iter().sum::<u64>(), "{range:?}");
+    }
+}
+
+#[test]
+fn all_covers_up_to_the_oldest_row_and_an_empty_range_has_no_days() {
+    let d = build(vec![both(0, 1, 1), both(20, 1, 1)], Range::All);
+    assert_eq!(d.daily.len(), 21);
+    assert!(build(Vec::new(), Range::All).daily.is_empty());
+}
+
+#[test]
+fn a_tiny_day_keeps_one_step_next_to_a_huge_one() {
+    assert_eq!(level(1, 100_000, 24), 1);
+    assert_eq!(level(100_000, 100_000, 24), 24);
+    assert_eq!(level(0, 100_000, 24), 0);
+    assert_eq!(level(5, 0, 24), 0);
+    assert_eq!(level(u64::MAX, u64::MAX, 24), 24);
+}
+
+#[test]
+fn both_halves_share_one_scale() {
+    let days = [day(400, 100), day(100, 200), DayTokens::default()];
+    assert_eq!(peak(&days), 400);
+    assert_eq!(peak(&[]), 0);
+    assert!(level(400, 400, 24) > level(100, 400, 24));
+}
+
+#[test]
+fn days_fit_a_width_by_summing_buckets_from_today() {
+    let days: Vec<DayTokens> = (1..=90).map(|n| day(n, 1)).collect();
+    let whole = fit(&days, 100);
+    assert_eq!((whole.days.len(), whole.size), (90, 1));
+    let fitted = fit(&days, 45);
+    assert_eq!((fitted.days.len(), fitted.size), (45, 2));
+    let sum = |d: &[DayTokens]| d.iter().filter_map(|x| x.input).sum::<u64>();
+    assert_eq!(sum(&fitted.days), sum(&days));
+    let odd = fit(&days, 40);
+    assert_eq!(odd.size, 3);
+    assert_eq!(sum(&odd.days), sum(&days));
+    // The newest bucket is complete; the oldest takes the remainder.
+    assert_eq!(odd.days.last().unwrap().input, Some(88 + 89 + 90));
+}
+
+#[test]
+fn a_bucket_of_empty_days_stays_empty() {
+    let days = [DayTokens::default(), DayTokens::default(), day(1, 1)];
+    let fitted = fit(&days, 1);
+    assert_eq!(fitted.days, vec![day(1, 1)]);
+    let none = fit(&[DayTokens::default(); 4], 2);
+    assert_eq!(none.days, vec![DayTokens::default(); 2]);
+    assert_eq!(fit(&days, 0).days.len(), 0);
+}
+
+#[test]
+fn bucket_sums_saturate() {
+    let days = [day(u64::MAX, 1), day(5, 1)];
+    assert_eq!(fit(&days, 1).days[0].input, Some(u64::MAX));
+}
+
+#[test]
+fn the_legend_names_in_out_and_the_bucket_size_and_always_fits() {
+    let full = legend(1, 100);
+    assert!(full.contains("in") && full.contains("out"), "{full}");
+    assert!(full.contains("1 bar = 1 day"), "{full}");
+    assert!(legend(3, 100).contains("1 bar = 3 days"));
+    for size in [1, 2, 3, 4, 45, 400] {
+        for width in 40..120 {
+            let text = legend(size, width);
+            assert!(text.chars().count() <= width, "{size} {width}: {text}");
+            assert!(text.contains("in") && text.contains("out"), "{text}");
+            assert!(text.contains(&size.to_string()), "{size} {width}: {text}");
+        }
+    }
 }

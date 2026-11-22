@@ -176,13 +176,18 @@ pub(super) fn is_empty(data: &UsageData, range: Range) -> bool {
     data.rows.iter().all(|r| r.days_ago >= to)
 }
 
-pub(super) fn kpis(data: &UsageData, range: Range) -> [Kpi; 4] {
-    let now = totals(data, 0, range.days().unwrap_or(u32::MAX));
-    let len = range
+/// How many days the sparklines and the chart cover, today included.
+pub(super) fn series_len(data: &UsageData, range: Range) -> u32 {
+    range
         .days()
         .or_else(|| data.rows.iter().map(|r| r.days_ago.saturating_add(1)).max())
         .unwrap_or(0)
-        .min(SPARK_DAYS);
+        .min(SPARK_DAYS)
+}
+
+pub(super) fn kpis(data: &UsageData, range: Range) -> [Kpi; 4] {
+    let now = totals(data, 0, range.days().unwrap_or(u32::MAX));
+    let len = series_len(data, range);
     let days: Vec<Totals> = (0..len).map(|d| totals(data, d, d + 1)).collect();
     let card = |i: usize, label, value, sub| Kpi {
         label,
