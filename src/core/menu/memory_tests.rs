@@ -9,6 +9,7 @@ const ACKED: MemoryConfig = MemoryConfig {
     acknowledged: true,
     port: 7437,
     save_summaries: false,
+    local: true,
 };
 
 fn menu_with(memory: MemoryConfig) -> MenuState {
@@ -375,6 +376,7 @@ fn turning_off_an_enabled_memory_edits_only_enabled() {
         acknowledged: true,
         port: 8123,
         save_summaries: false,
+        local: true,
     };
     let mut menu = menu_with(on);
     assert!(menu.edits(&Config::default()).is_empty());
@@ -426,6 +428,7 @@ const HAND_EDITED: MemoryConfig = MemoryConfig {
     acknowledged: false,
     port: 7437,
     save_summaries: false,
+    local: true,
 };
 
 #[test]

@@ -4268,6 +4268,7 @@ mod tests {
             acknowledged: true,
             port: 9123,
             save_summaries: false,
+            local: true,
         };
         let (memory, starts, calls, mut rx) = recording_memory(config);
         let (panes, _rx, _rec) = fake_panes(None);
@@ -6326,6 +6327,7 @@ mod tests {
             acknowledged: true,
             port: 9123,
             save_summaries: false,
+            local: true,
         };
         let (tx, _rx) = mpsc::channel(8);
         let memory = Memory::for_config(&config, move |port| engram::spawn(Slow, port, tx));
@@ -6529,6 +6531,7 @@ mod tests {
             acknowledged: true,
             port,
             save_summaries: false,
+            local: true,
         };
         let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = Arc::clone(&reads);

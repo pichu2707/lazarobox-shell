@@ -1526,7 +1526,10 @@ enabled = true        # default false
 acknowledged = true   # privacy warning accepted
 port = 7437           # default ENGRAM_PORT if valid, otherwise 7437
 save_summaries = false  # default false; true saves the summary of long chats
+local = true          # default true; the project memory in .lzr/ (see below)
 ```
+
+`local` is separate from the engram switches above: it is the project memory kept in `.lzr/` at the git root, with no engram involved. In this version the key is only accepted and `.lzr` is a folder the chat's file tools never write; nothing reads or writes notes yet, so `local = true` changes nothing you can see. Later versions will use it, and `local = false` will then read and write nothing in `.lzr/`.
 
 **Privacy (read it before turning it on):**
 

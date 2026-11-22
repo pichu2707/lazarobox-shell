@@ -259,6 +259,7 @@ mod tests {
             acknowledged: true,
             port: PORT,
             save_summaries: false,
+            local: true,
         }
     }
 
