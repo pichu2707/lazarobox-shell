@@ -5,6 +5,7 @@
 //! `runtime/memory_local.rs`.
 
 pub mod area;
+pub mod gitignore;
 pub mod ledger;
 pub mod note;
 
