@@ -5,7 +5,8 @@
 use super::*;
 use crate::core::ai::chat::{
     cost_view::{CostView, NO_ARGUMENTS},
-    usage_view::{UNAVAILABLE_LINE, UsageRow, report_lines},
+    dashboard::UsageData,
+    usage_view::{UNAVAILABLE_LINE, report_lines},
 };
 
 impl App {
@@ -59,12 +60,14 @@ impl App {
 
     /// The store's answer to the report: the lines replace the reading line.
     /// An overlay closed in the meantime ignores it.
-    pub(super) fn on_usage_report(&mut self, id: PaneId, rows: Option<&[UsageRow]>) {
+    pub(super) fn on_usage_report(&mut self, id: PaneId, data: Option<&UsageData>) {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
-        let lines = match rows {
-            Some(rows) => report_lines(rows, chat.session_usage(), &|e| self.ai.usage().billing(e)),
+        let lines = match data {
+            Some(data) => report_lines(&data.rows, chat.session_usage(), &|e| {
+                self.ai.usage().billing(e)
+            }),
             None => vec![UNAVAILABLE_LINE.to_owned()],
         };
         if let Some(view) = chat.cost_mut() {

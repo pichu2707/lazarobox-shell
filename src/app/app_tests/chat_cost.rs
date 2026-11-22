@@ -5,6 +5,7 @@ use super::chat_history::*;
 use super::*;
 use crate::core::ai::chat::{
     cost_view::READING_LINE,
+    dashboard::UsageData,
     engine::StreamEvent,
     store::{StoreCmd, StoreReply},
     usage::TurnUsage,
@@ -43,7 +44,12 @@ fn view_lines(a: &App) -> Vec<String> {
 fn answer(rows: Option<Vec<UsageRow>>) -> AppEvent {
     AppEvent::Store(StoreReply::UsageReport {
         pane: chat_id(),
-        rows,
+        data: rows.map(|rows| {
+            Box::new(UsageData {
+                rows,
+                ..UsageData::default()
+            })
+        }),
     })
 }
 
@@ -71,6 +77,7 @@ fn today_row() -> UsageRow {
         workers: 0,
         worker_total: None,
         worker_partial: false,
+        ..UsageRow::default()
     }
 }
 

@@ -54,8 +54,8 @@ The dashboard MUST show four KPI cards for the range:
 1. **Input**: the input tokens (compact) with the cache share as sub-line (cache read / (input + cache read), as a whole percent, omitted when no cache data);
 2. **Output**: the output tokens (compact) with the average per turn as sub-line;
 3. **Tasks**: `grouped` count of tasks with sub-line `<grouped turns> turns`;
-4. **Agent time**: the summed `wall_ms` of orchestrator worker rows as a duration, with sub-line `up to <N> at once` (peak overlap of worker rows in the range).
-A **task** is a distinct non-null `conversation_id` among the range's rows, or a distinct orchestrator run (run id) within the range, whichever applies to the row; a conversation and a run are counted once each. The sub-line of the Tasks card is the turns (`role = 'chat'` rows). Rows of deleted chats keep their tokens in every figure but have a NULL link, so the task count undercounts them; this is a known caveat and not an error. Each of cards 1-3 and the sparkline MUST show a delta against the previous equal period for `7d` and `30d`, as a signed percentage (`+12%`, `-8%`, `0%`); for `90d` and `All` the delta MUST read exactly `n/a`. A delta whose previous period has no data (or, for Agent time, no wall data) MUST read `n/a`, never `+inf%` or `0%`. Each card shows a sparkline of its metric by day.
+4. **Agent time**: the summed `wall_ms` of chat and orchestrator worker rows as a duration (agent time: parallel agents add up, and a chat turn counts from send to end), with sub-line `up to <N> at once` (peak overlap of worker rows in the range).
+A **task** is a distinct non-null `conversation_id` among the range's rows, or a distinct orchestrator run (run id) within the range; a conversation and a run are counted once each, and a run launched from a chat is a task of its own (a chat with 2 runs is 3 tasks). The sub-line of the Tasks card is the turns (`role = 'chat'` rows). Rows of deleted chats keep their tokens in every figure but have a NULL link, so the task count undercounts them; this is a known caveat and not an error. Each of cards 1-3 and the sparkline MUST show a delta against the previous equal period for `7d` and `30d`, as a signed percentage (`+12%`, `-8%`, `0%`); for `90d` and `All` the delta MUST read exactly `n/a`. A delta whose previous period has no data (or, for Agent time, no wall data) MUST read `n/a`, never `+inf%` or `0%`. Each card shows a sparkline of its metric by day.
 
 #### Scenario: Four cards at 7 days [auto, TestBackend + insta]
 - GIVEN data of two conversations (1,110 tokens-in total reads `1.1k`) and one orchestrator run in the last 7 days
@@ -63,7 +63,7 @@ A **task** is a distinct non-null `conversation_id` among the range's rows, or a
 - THEN four cards show input, output, tasks and agent time, and the Tasks card reads `3` with sub-line `<turns> turns`
 
 #### Scenario: Task counting [auto]
-- GIVEN 5 chat rows of conversation A, 2 chat rows of conversation B and 3 worker rows of one run, all in range
+- GIVEN 5 chat rows of conversation A, 2 chat rows of conversation B and 3 worker rows of one run (linked or not to a conversation), all in range
 - WHEN the tasks are counted
 - THEN tasks is 3 and turns is 7
 
@@ -88,14 +88,14 @@ A **task** is a distinct non-null `conversation_id` among the range's rows, or a
 - THEN the delta reads `n/a`
 
 #### Scenario: Agent time with old rows [auto]
-- GIVEN worker rows with `wall_ms` NULL (stored before the column existed) only
+- GIVEN chat and worker rows with `wall_ms` NULL (stored before the column existed) only
 - WHEN the dashboard is built
 - THEN the Agent time card reads `n/a`, never `0s`
 
 #### Scenario: Agent time approximate [auto]
-- GIVEN some worker rows with `wall_ms` and some without
+- GIVEN some chat or worker rows with `wall_ms` and some without
 - WHEN the dashboard is built
-- THEN Agent time sums the known values and is marked approximate (leading `~`), and `up to N at once` counts only rows with `started_at` and `wall_ms`
+- THEN Agent time sums the known values and is marked approximate (leading `~`), and its delta reads `n/a` unless both periods are complete, and `up to N at once` counts only rows with `started_at` and `wall_ms`
 
 ### Requirement: Tokens by day
 The dashboard MUST show a tokens-by-day chart for the range: one column per local day, input drawn above the axis and output below it, scaled to the largest day. A day with no row is empty (never drawn as a known zero); a known non-zero day has at least one cell. The chart MUST use the same data as the cards and MUST render with no colour (shape and a legend `in` / `out` carry the meaning). For `90d` and `All`, days MAY be bucketed to fit the width; the bucket size MUST be stated in the legend.

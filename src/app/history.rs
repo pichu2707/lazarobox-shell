@@ -398,8 +398,8 @@ impl App {
                 self.on_usage_reply(*pane, problem.as_deref());
                 Vec::new()
             }
-            StoreReply::UsageReport { pane, rows } => {
-                self.on_usage_report(*pane, rows.as_deref());
+            StoreReply::UsageReport { pane, data } => {
+                self.on_usage_report(*pane, data.as_deref());
                 Vec::new()
             }
             StoreReply::RecentFolders { pane, folders } => {

@@ -16,6 +16,7 @@ pub mod compact;
 pub mod composer;
 pub mod copy;
 pub mod cost_view;
+pub mod dashboard;
 pub mod engine;
 pub mod folder;
 pub mod folder_picker;
