@@ -174,3 +174,12 @@ Task rule for C12: the existing engram-down notice path stays as is; the mirror 
 
 - Cap the number of note files read per load (design: 5,000 notes rank within a time bound) and show a visible line when the cap is hit. It needs a new field on `LocalReply::Loaded`, which did not fit the S1a3 budget.
 - Done in S1a3 after review: private files 0600 and folders 0700 (a wider existing folder is tightened), flock on `<data>/memory.lock` around the ledger and machine-id, panic and full-channel failures reach the pane, a regenerated machine id is said, linked `.lzr`/`memory`/`notes` folders and linked note files are refused, `gitdir:`/`commondir` are trusted only inside a real `.git`.
+
+### S1a4 required and remaining minors (from the #843 reviews)
+
+- REQUIRED: S1a4 must consume `LocalReply::Saved.notice` and every thread failure reply, and show them as visible lines in the pane, with tests.
+- Minor: a `.tmp` file is leaked after a panic in the middle of a write.
+- Minor: the fallback reply threads for a full reply channel are unbounded.
+- Minor: `create_dir_all` after `plain_store` is a TOCTOU window (same-user threat).
+- Minor: `exclude_path` trusts a fabricated `.git/modules/x` and rejects nested submodules.
+- Minor: an existing `memory.lock` wider than 0600 is not tightened.

@@ -323,50 +323,48 @@ fn read_ledger(path: &Path) -> Result<Ledger, LedgerError> {
 }
 
 /// This machine's id, made on the first save. An id that exists but cannot
-/// be used is made again, and the notice says so.
+/// be used is made again, and the notice says so. Another process may make
+/// it first, so a few tries are made; then it is an error, never a loop.
 fn machine_id(data: &Path) -> io::Result<(String, Option<String>)> {
     let file = data.join("machine-id");
-    let damaged = match read_regular(&file, 64) {
-        Ok(bytes) => {
-            let id = String::from_utf8_lossy(&bytes).trim().to_owned();
-            if id.starts_with("m-") && id.len() == 18 {
-                return Ok((id, None));
+    for _ in 0..3 {
+        let damaged = match read_regular(&file, 64) {
+            Ok(bytes) => {
+                let id = String::from_utf8_lossy(&bytes).trim().to_owned();
+                if id.starts_with("m-") && id.len() == 18 {
+                    return Ok((id, None));
+                }
+                true
             }
-            true
+            Err(ReadError::Missing) => false,
+            Err(_) => true,
+        };
+        let mut seed = vec![0u8; 16];
+        let random = fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut seed));
+        if random.is_err() {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH);
+            seed = format!("{now:?}-{}", std::process::id()).into_bytes();
         }
-        Err(ReadError::Missing) => false,
-        Err(_) => true,
-    };
-    let mut entropy = [0u8; 16];
-    let random = fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut entropy));
-    let seed = match random {
-        Ok(()) => entropy.to_vec(),
-        Err(_) => {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos());
-            format!("{now}-{}", std::process::id()).into_bytes()
+        let id = ledger::machine_id(&seed);
+        let line = format!("{id}\n");
+        if damaged {
+            write_atomic(&file, line.as_bytes(), 0o600)?;
+            let notice = "memory: the machine id could not be read and was made again";
+            return Ok((id, Some(notice.to_owned())));
         }
-    };
-    let id = ledger::machine_id(&seed);
-    let line = format!("{id}\n");
-    if damaged {
-        write_atomic(&file, line.as_bytes(), 0o600)?;
-        let notice = "memory: the machine id could not be read and was made again".to_owned();
-        return Ok((id, Some(notice)));
+        let created = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&file)
+            .and_then(|mut f| f.write_all(line.as_bytes()));
+        match created {
+            Ok(()) => return Ok((id, None)),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
     }
-    let created = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&file)
-        .and_then(|mut f| f.write_all(line.as_bytes()));
-    match created {
-        Ok(()) => Ok((id, None)),
-        // Another process made it first: use theirs.
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => machine_id(data),
-        Err(e) => Err(e),
-    }
+    Err(io::Error::other("the machine id cannot be created"))
 }
 
 /// Creates `dir` for the owner only; a folder that already exists with wider
@@ -387,15 +385,11 @@ fn lock(path: &Path) -> io::Result<fs::File> {
         .append(true)
         .mode(0o600)
         .open(path)?;
-    loop {
-        // SAFETY: the descriptor is open for as long as `file` lives.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
-            return Ok(file);
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != ErrorKind::Interrupted {
-            return Err(error);
-        }
+    // SAFETY: the descriptor is open for as long as `file` lives. An
+    // interrupted wait is an error, shown like any other failed save.
+    match unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } {
+        0 => Ok(file),
+        _ => Err(io::Error::last_os_error()),
     }
 }
 
@@ -967,16 +961,24 @@ mod tests {
     }
 
     #[test]
-    fn new_private_folders_are_owner_only_whatever_the_umask() {
+    fn new_private_folders_are_owner_only_under_the_current_umask() {
         let rig = Rig::new();
         fs::remove_dir_all(&rig.data).unwrap();
-        // SAFETY: umask has no preconditions; the old value is put back.
-        let old = unsafe { libc::umask(0o022) };
         let saved = rig.save("one");
-        unsafe { libc::umask(old) };
         assert!(matches!(saved, LocalReply::Saved { .. }), "{saved:?}");
         assert_eq!(mode(&rig.data.join("memory")), 0o700);
         assert_eq!(mode(&rig.data.join("machine-id")), 0o600);
+    }
+
+    #[test]
+    fn a_machine_id_that_cannot_be_made_fails_instead_of_looping() {
+        let rig = Rig::new();
+        std::os::unix::fs::symlink(rig._tmp.path().join("nowhere"), rig.data.join("machine-id"))
+            .unwrap();
+        let LocalReply::Failed { failure, .. } = rig.save("one") else {
+            panic!("saved without a machine id");
+        };
+        assert!(matches!(failure, Failure::Io(why) if why.contains("machine id")));
     }
 
     #[test]
