@@ -6,6 +6,16 @@ use crate::core::ai::memory::kind::MemKind;
 
 /// The most characters a note text keeps; the rest is cut.
 pub const TEXT_CAP: usize = 1000;
+/// The most characters a note read from disk may hold: the largest text any
+/// origin writes (a summary).
+pub const READ_TEXT_CAP: usize = 1500;
+/// The most characters of an area or a topic, of one ref, and of one flag; and
+/// how many refs and flags a note may carry, when read from disk.
+const AREA_CAP: usize = 200;
+const REF_CAP: usize = 300;
+const MAX_REFS: usize = 20;
+const FLAG_CAP: usize = 32;
+const MAX_FLAGS: usize = 8;
 /// The visible line for a cut text.
 pub const CUT_LINE: &str = "note cut to 1000 characters";
 /// The schema version this build reads and writes.
@@ -65,10 +75,11 @@ impl NewNote {
             let shown: String = kind.chars().filter(|c| !c.is_control()).take(24).collect();
             return Err(format!("note not saved: unknown kind {shown}"));
         };
+        let text = strip_controls(text, true);
         let cut = text.chars().count() > TEXT_CAP;
         Ok(NewNote {
             kind,
-            area: area.to_owned(),
+            area: strip_controls(area, false),
             text: text.chars().take(TEXT_CAP).collect(),
             origin,
             topic: None,
@@ -91,6 +102,19 @@ impl Origin {
             .into_iter()
             .find(|o| o.as_str() == text)
     }
+}
+
+/// `text` without control characters (ESC, NUL, DEL...). Line breaks and tabs
+/// stay when `multiline`; nothing else that could move a cursor does.
+fn strip_controls(text: &str, multiline: bool) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || (multiline && matches!(c, '\n' | '\t')))
+        .collect()
+}
+
+/// Whether `text` fits in `cap` characters.
+fn within(text: &str, cap: usize) -> bool {
+    text.chars().count() <= cap
 }
 
 /// A note id is a file name later: plain characters only.
@@ -144,7 +168,9 @@ impl LocalNote {
         let id = string(take("id")).filter(|id| plain_id(id));
         let kind = string(take("kind")).and_then(|k| MemKind::parse(&k));
         let origin = match string(take("origin")) {
-            None => Some(Origin::User),
+            // The least privileged origin: a hand-written file never ranks as
+            // the user's.
+            None => Some(Origin::Model),
             Some(name) => Origin::parse(&name),
         };
         let (Some(id), Some(kind), Some(origin), Some(text)) =
@@ -152,19 +178,36 @@ impl LocalNote {
         else {
             return Err(Unreadable::Invalid);
         };
+        let area =
+            string(take("area")).map_or_else(|| ".".to_owned(), |a| strip_controls(&a, false));
+        let (refs, topic, flags) = (
+            strings(take("refs")),
+            string(take("topic")),
+            strings(take("flags")),
+        );
+        let fits = within(&text, READ_TEXT_CAP)
+            && within(&area, AREA_CAP)
+            && topic.as_deref().is_none_or(|t| within(t, AREA_CAP))
+            && refs.len() <= MAX_REFS
+            && refs.iter().all(|r| within(r, REF_CAP))
+            && flags.len() <= MAX_FLAGS
+            && flags.iter().all(|f| within(f, FLAG_CAP));
+        if !fits {
+            return Err(Unreadable::Invalid);
+        }
         Ok(LocalNote {
             id,
             kind,
             origin,
-            text,
-            area: string(take("area")).unwrap_or_else(|| ".".to_owned()),
-            refs: strings(take("refs")),
-            topic: string(take("topic")),
+            text: strip_controls(&text, true),
+            area,
+            refs,
+            topic,
             created: number(take("created")),
             updated: number(take("updated")),
             machine: string(take("machine")).unwrap_or_default(),
             pinned: take("pinned").and_then(|v| v.as_bool()).unwrap_or(false),
-            flags: strings(take("flags")),
+            flags,
             extra: std::mem::take(&mut o),
         })
     }
@@ -238,6 +281,59 @@ mod tests {
     fn a_missing_area_reads_as_the_repo_root() {
         let json = r#"{"v":1,"id":"n-a","kind":"config","text":"t"}"#;
         assert_eq!(LocalNote::parse(json.as_bytes()).unwrap().area, ".");
+    }
+
+    #[test]
+    fn a_missing_origin_is_the_least_privileged_one() {
+        let json = r#"{"v":1,"id":"n-a","kind":"config","text":"t"}"#;
+        assert_eq!(
+            LocalNote::parse(json.as_bytes()).unwrap().origin,
+            Origin::Model
+        );
+    }
+
+    #[test]
+    fn a_file_over_the_caps_is_unreadable() {
+        let with = |field: &str, value: String| {
+            let mut o = serde_json::json!({"v":1,"id":"n-a","kind":"config","text":"t"});
+            o[field] = serde_json::from_str(&value).unwrap();
+            o.to_string()
+        };
+        let long = |n: usize| serde_json::to_string(&"x".repeat(n)).unwrap();
+        for (field, value) in [
+            ("text", long(READ_TEXT_CAP + 1)),
+            ("area", long(201)),
+            ("topic", long(201)),
+            ("refs", serde_json::to_string(&vec!["a"; 21]).unwrap()),
+            (
+                "refs",
+                serde_json::to_string(&vec!["x".repeat(301)]).unwrap(),
+            ),
+            ("flags", serde_json::to_string(&vec!["f"; 9]).unwrap()),
+            (
+                "flags",
+                serde_json::to_string(&vec!["f".repeat(33)]).unwrap(),
+            ),
+        ] {
+            let json = with(field, value);
+            assert_eq!(
+                LocalNote::parse(json.as_bytes()),
+                Err(Unreadable::Invalid),
+                "{field}"
+            );
+        }
+        let at_the_cap = with("text", long(READ_TEXT_CAP));
+        assert!(LocalNote::parse(at_the_cap.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn control_characters_are_stripped_from_area_and_text() {
+        let json = "{\"v\":1,\"id\":\"n-a\",\"kind\":\"config\",\"area\":\"a\\u001b[31mb\\u0007\",\"text\":\"x\\u001b[2Jy\\nz\\tw\\u0000\"}";
+        let n = LocalNote::parse(json.as_bytes()).unwrap();
+        assert_eq!(n.area, "a[31mb");
+        assert_eq!(n.text, "x[2Jy\nz\tw");
+        let new = NewNote::new("config", "a\u{1b}b", "t\u{1b}[0m\u{7f}", Origin::User).unwrap();
+        assert_eq!((new.area.as_str(), new.text.as_str()), ("ab", "t[0m"));
     }
 
     #[test]

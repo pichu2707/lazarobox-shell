@@ -5,38 +5,65 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use super::note::LocalNote;
 
-/// `{id: content hash}` of the notes this machine wrote.
+/// Why a ledger file cannot be used.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LedgerError {
+    /// Not a ledger: the file is broken or edited by hand.
+    Damaged,
+    /// Written by a newer lazarobox: it is not rewritten.
+    Newer,
+}
+
+/// `{id: content hash}` of the notes this machine wrote. Keys it does not know
+/// (a later slice's `trust`, say) are kept when the file is rewritten.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct Ledger {
     pub own: BTreeMap<String, String>,
+    extra: Map<String, Value>,
 }
 
+/// The schema version of the ledger file.
+const VERSION: u64 = 1;
+
 impl Ledger {
-    /// Reads a ledger file's text; anything unreadable is an empty ledger, so
-    /// every note counts as foreign (the safe side).
-    pub fn parse(text: &str) -> Ledger {
-        let own = match serde_json::from_str::<Value>(text) {
-            Ok(Value::Object(mut root)) => match root.remove("own") {
-                Some(Value::Object(own)) => own,
-                _ => return Ledger::default(),
-            },
-            _ => return Ledger::default(),
+    /// Reads a ledger file's text. A damaged or newer file is an error: the
+    /// caller must say so and must not write over it, or every note this
+    /// machine made would turn foreign without a word.
+    pub fn parse(text: &str) -> Result<Ledger, LedgerError> {
+        let Ok(Value::Object(mut root)) = serde_json::from_str(text) else {
+            return Err(LedgerError::Damaged);
         };
-        let own = own
-            .into_iter()
-            .filter_map(|(id, hash)| Some((id, hash.as_str()?.to_owned())))
-            .collect();
-        Ledger { own }
+        match root.remove("v").and_then(|v| v.as_u64()) {
+            Some(VERSION) => {}
+            Some(v) if v > VERSION => return Err(LedgerError::Newer),
+            _ => return Err(LedgerError::Damaged),
+        }
+        let Some(Value::Object(own)) = root.remove("own") else {
+            return Err(LedgerError::Damaged);
+        };
+        let mut ledger = Ledger {
+            own: BTreeMap::new(),
+            extra: root,
+        };
+        for (id, hash) in own {
+            let Value::String(hash) = hash else {
+                return Err(LedgerError::Damaged);
+            };
+            ledger.own.insert(id, hash);
+        }
+        Ok(ledger)
     }
 
     pub fn to_json(&self) -> String {
-        let mut text =
-            serde_json::to_string_pretty(&json!({ "own": self.own })).unwrap_or_default();
+        let mut root = self.extra.clone();
+        root.insert("v".to_owned(), VERSION.into());
+        root.insert("own".to_owned(), json!(self.own));
+        let mut text = serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_default();
         text.push('\n');
         text
     }
@@ -129,20 +156,62 @@ mod tests {
     }
 
     #[test]
-    fn a_note_that_claims_this_machine_is_still_foreign() {
-        let mut other = note("x");
-        other.machine = "m-1".into();
-        assert!(!Ledger::default().is_local(&other));
+    fn a_note_that_claims_this_machine_or_another_notes_id_is_still_foreign() {
+        let mine = note("mine");
+        let mut ledger = Ledger::default();
+        ledger.record(&mine);
+        // Same machine field, an id the ledger never saw.
+        let claims_machine = note("forged");
+        assert_eq!(claims_machine.machine, mine.machine);
+        assert!(!ledger.is_local(&claims_machine));
+        // Mine's id and machine with other content: the hash does not match.
+        let json = mine.to_json().replace("mine", "forged");
+        assert!(!ledger.is_local(&LocalNote::parse(json.as_bytes()).unwrap()));
+    }
+
+    // The hash is part of the on-disk trust: a change to it would turn every
+    // existing note foreign, so it is pinned.
+    #[test]
+    fn the_content_hash_is_pinned_and_ignores_key_order_and_whitespace() {
+        let json = r#"{"v":1,"id":"n-0123456789abcdef","kind":"decision","text":"use Axum","area":"frontend","origin":"user","machine":"m-1","created":7,"updated":7}"#;
+        let note = LocalNote::parse(json.as_bytes()).unwrap();
+        assert_eq!(
+            content_hash(&note),
+            "029c2f41af13b19777ee2242abc23344113795965300b8f3c9fb3412d5cf35dc"
+        );
+        let shuffled = "{ \"updated\": 7,\n \"created\": 7, \"machine\": \"m-1\", \"origin\": \"user\",\n\t\"area\": \"frontend\", \"text\": \"use Axum\", \"kind\": \"decision\", \"id\": \"n-0123456789abcdef\", \"v\": 1 }";
+        let other = LocalNote::parse(shuffled.as_bytes()).unwrap();
+        assert_eq!(content_hash(&other), content_hash(&note));
     }
 
     #[test]
-    fn the_ledger_round_trips_and_a_bad_file_is_empty() {
-        let mut ledger = Ledger::default();
+    fn the_ledger_round_trips_with_its_version_and_keeps_unknown_keys() {
+        let mut ledger = Ledger::parse(r#"{"v":1,"own":{},"trust":{"x":1}}"#).unwrap();
         ledger.record(&note("a"));
-        assert_eq!(Ledger::parse(&ledger.to_json()), ledger);
-        for bad in ["", "{", "[]", r#"{"own":3}"#] {
-            assert_eq!(Ledger::parse(bad), Ledger::default(), "{bad:?}");
+        let text = ledger.to_json();
+        assert!(
+            text.contains("\"v\": 1") && text.contains("\"trust\""),
+            "{text}"
+        );
+        assert_eq!(Ledger::parse(&text), Ok(ledger));
+    }
+
+    #[test]
+    fn a_damaged_or_newer_ledger_is_an_error_never_an_empty_one() {
+        for bad in [
+            "",
+            "{",
+            "[]",
+            r#"{"own":3}"#,
+            r#"{"v":1}"#,
+            r#"{"v":1,"own":{"n-1":3}}"#,
+        ] {
+            assert_eq!(Ledger::parse(bad), Err(LedgerError::Damaged), "{bad:?}");
         }
+        assert_eq!(
+            Ledger::parse(r#"{"v":2,"own":{}}"#),
+            Err(LedgerError::Newer)
+        );
     }
 
     #[test]
