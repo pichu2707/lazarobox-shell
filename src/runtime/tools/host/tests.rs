@@ -477,6 +477,7 @@ fn the_system_line_exists_for_cd_only() {
         cd_target: Some("/home/u/dev".into()),
         output: Some(String::new()),
         withheld: false,
+        limits: crate::core::ai::tools::settle::Limits::Follow,
     };
     let cd = ran(&run_cmd("cd dev"), &report);
     assert_eq!(cd.3.as_deref(), Some("pane 3: cd dev \u{2192} /home/u/dev"));
@@ -498,6 +499,7 @@ async fn a_ran_answer_to_a_call_that_is_not_a_command_is_denied() {
         cd_target: None,
         output: None,
         withheld: false,
+        limits: crate::core::ai::tools::settle::Limits::Follow,
     }));
     let out = host.dispatch(scope).call(read("note.txt")).await;
     assert!(
@@ -524,6 +526,7 @@ async fn a_ran_answer_becomes_the_wrapped_result_and_a_ran_row() {
         cd_target: None,
         output: Some("one\napi_key=sk-abcdefghijklmnopqrstuvwxyz".into()),
         withheld: false,
+        limits: crate::core::ai::tools::settle::Limits::Follow,
     }));
     let out = host.dispatch(scope).call(run_cmd("ls")).await;
     assert!(!out.is_error, "{out:?}");

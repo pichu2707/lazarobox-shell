@@ -611,6 +611,7 @@ mod tests {
             cd_target: None,
             output: Some(String::new()),
             withheld: false,
+            limits: crate::core::ai::tools::settle::Limits::Follow,
         })
     }
 

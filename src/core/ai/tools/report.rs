@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use super::{
     exec::{Verb, parse},
     label,
-    settle::End,
+    settle::{CUT_OFF, End, Limits, TIMEOUT},
 };
 use crate::core::ai::{memory::redact::redact, sanitize::clean};
 
@@ -36,6 +36,9 @@ pub struct RunReport {
     /// hidden, so no row of the screen may be told (design D10, fail closed).
     /// `output` is ignored when this is set.
     pub withheld: bool,
+    /// The end rules the run followed; they say after how long it ended as
+    /// `Unconfirmed`.
+    pub limits: Limits,
 }
 
 /// The real cwd when the system gives it, else the OSC 7 one, labelled.
@@ -151,6 +154,12 @@ pub fn words(command: &str, report: &RunReport, nonce: Option<&str>) -> Words {
             nonce.map(|nonce| (label::wrap(nonce, &text), lines))
         });
     let ran = format!("ran in pane {n}");
+    let cut = CUT_OFF.as_secs();
+    let limit = match report.limits {
+        Limits::Follow => TIMEOUT,
+        Limits::Run | Limits::Continue => CUT_OFF,
+    }
+    .as_secs();
     let lost_row = "ran \u{2014} output not available".to_owned();
     let (text, row) = match (report.end, body) {
         _ if withheld => {
@@ -205,13 +214,13 @@ pub fn words(command: &str, report: &RunReport, nonce: Option<&str>) -> Words {
         ),
         (End::Unconfirmed, Some((body, _))) => (
             format!(
-                "Ran in pane {n}; could not confirm it finished after 10 s. Output so far:\n{body}"
+                "Ran in pane {n}; could not confirm it finished after {limit} s. Output so far:\n{body}"
             ),
             format!("{ran} \u{2014} could not confirm it finished"),
         ),
         (End::Unconfirmed, None) => (
             format!(
-                "Ran in pane {n}; could not confirm it finished after 10 s; its output is not available."
+                "Ran in pane {n}; could not confirm it finished after {limit} s; its output is not available."
             ),
             lost_row,
         ),
@@ -229,15 +238,15 @@ pub fn words(command: &str, report: &RunReport, nonce: Option<&str>) -> Words {
         ),
         (End::StillRunning, Some((body, _))) => (
             format!(
-                "Ran in pane {n}; still running after 30 s. It keeps running in the pane; \
-                 the user can stop it there. Do not start it again. Output so far:\n{body}"
+                "Ran in pane {n}; still running after {cut} s; the command keeps running in pane {n} \
+                 (Ctrl+C in the pane stops it); this is the output so far:\n{body}"
             ),
             format!("{ran} \u{2014} still running"),
         ),
         (End::StillRunning, None) => (
             format!(
-                "Ran in pane {n}; still running after 30 s. It keeps running in the pane; \
-                 its output is not available. Do not start it again."
+                "Ran in pane {n}; still running after {cut} s; the command keeps running in pane {n} \
+                 (Ctrl+C in the pane stops it); its output is not available."
             ),
             lost_row,
         ),
@@ -301,6 +310,7 @@ mod tests {
             cd_target: None,
             output: output.map(str::to_owned),
             withheld: false,
+            limits: Limits::Follow,
         }
     }
 
@@ -599,13 +609,6 @@ mod tests {
     #[test]
     fn a_run_cut_off_at_thirty_seconds_gives_the_output_so_far() {
         let w = words_of(&report(End::StillRunning, Some("so far")));
-        assert!(
-            w.text
-                .starts_with("Ran in pane 2; still running after 30 s.")
-        );
-        assert!(w.text.contains("keeps running in the pane"), "{}", w.text);
-        assert!(w.text.contains("Do not start it again"), "{}", w.text);
-        assert!(w.text.contains("Output so far:\n"), "{}", w.text);
         assert!(w.text.contains("\nso far\n"), "{}", w.text);
         assert_eq!(w.row, "ran in pane 2 \u{2014} still running");
         assert_eq!(w.system, None);
@@ -615,7 +618,7 @@ mod tests {
     fn a_cut_off_run_with_nothing_read_says_the_output_is_not_available() {
         let w = words_of(&report(End::StillRunning, None));
         assert!(w.text.contains("still running after 30 s"), "{}", w.text);
-        assert!(w.text.contains("output is not available"), "{}", w.text);
+        assert!(w.text.contains("its output is not available"), "{}", w.text);
         assert_eq!(w.row, "ran \u{2014} output not available");
     }
 
@@ -679,6 +682,34 @@ mod tests {
             let mut r = report(end, None);
             r.withheld = true;
             assert_eq!(words_of(&r), plain, "{end:?}");
+        }
+    }
+
+    #[test]
+    fn the_cut_off_words_follow_the_spec() {
+        let w = words_of(&report(End::StillRunning, Some("so far")));
+        assert!(
+            w.text.starts_with(
+                "Ran in pane 2; still running after 30 s; the command keeps running in pane 2 \
+                 (Ctrl+C in the pane stops it); this is the output so far:\n"
+            ),
+            "{}",
+            w.text
+        );
+    }
+
+    #[test]
+    fn an_unconfirmed_run_names_the_limit_it_ran_under() {
+        for (limits, secs) in [
+            (Limits::Follow, TIMEOUT.as_secs()),
+            (Limits::Run, CUT_OFF.as_secs()),
+        ] {
+            let mut r = report(End::Unconfirmed, Some("x"));
+            r.limits = limits;
+            let said = format!("after {secs} s");
+            assert!(words_of(&r).text.contains(&said), "{limits:?}");
+            r.output = None;
+            assert!(words_of(&r).text.contains(&said), "{limits:?} lost");
         }
     }
 }

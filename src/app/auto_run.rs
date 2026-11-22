@@ -499,6 +499,7 @@ impl App {
             output,
             // Wired with the typed-key records in S1c of chat-runs-commands.
             withheld: false,
+            limits: run.settle.rules(),
         };
         if resume {
             return self.end_follow(chat, command, report);
@@ -558,6 +559,7 @@ impl App {
                             cd_target: None,
                             output: None,
                             withheld: false,
+                            limits: run.settle.rules(),
                         }),
                     }],
                 }),
