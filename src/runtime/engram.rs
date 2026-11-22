@@ -193,6 +193,7 @@ mod tests {
             acknowledged,
             port,
             save_summaries: false,
+            local: true,
         }
     }
 

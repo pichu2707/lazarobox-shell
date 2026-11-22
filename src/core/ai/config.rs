@@ -344,6 +344,10 @@ pub struct MemoryConfig {
     /// engram, one note per conversation. Off by default (opt-in); only
     /// meaningful while memory is [`active`](MemoryConfig::active).
     pub save_summaries: bool,
+    /// `local`: the project memory in `.lzr/` at the repository root. On by
+    /// default and independent of the engram opt-in; `false` reads and
+    /// writes nothing there.
+    pub local: bool,
 }
 
 impl Default for MemoryConfig {
@@ -353,6 +357,7 @@ impl Default for MemoryConfig {
             acknowledged: false,
             port: DEFAULT_ENGRAM_PORT,
             save_summaries: false,
+            local: true,
         }
     }
 }
@@ -1732,7 +1737,7 @@ pub fn note_unknown_ai_keys(table: &Table, problems: &mut Vec<String>) {
         }
     }
     if let Some(memory) = child(ai, "memory") {
-        let known = ["enabled", "acknowledged", "save_summaries", "port"];
+        let known = ["enabled", "acknowledged", "save_summaries", "port", "local"];
         note_unknown_keys(memory, "ai.memory", &known, problems);
     }
     if let Some(orchestrator) = child(ai, "orchestrator") {
@@ -1781,6 +1786,7 @@ fn read_memory(table: &Table, problems: &mut Vec<String>, port_env: Option<&str>
     flag("enabled", &mut memory.enabled);
     flag("acknowledged", &mut memory.acknowledged);
     flag("save_summaries", &mut memory.save_summaries);
+    flag("local", &mut memory.local);
     match section.get("port") {
         None => {}
         Some(Value::Integer(n)) if (1..=65535).contains(n) => memory.port = *n as u16,
@@ -2296,6 +2302,7 @@ mod tests {
             acknowledged,
             port,
             save_summaries: false,
+            local: true,
         }
     }
 
@@ -2781,6 +2788,27 @@ mod tests {
         let (memory, problems) = memory_of("[ai.memory]\nsave_summaries = true\n", None);
         assert!(memory.save_summaries);
         assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn local_memory_defaults_on_and_reads_a_boolean() {
+        for text in ["", "[ai.memory]\nenabled = true\n"] {
+            assert!(memory_of(text, None).0.local, "{text:?}");
+        }
+        let (memory, problems) = memory_of("[ai.memory]\nlocal = false\n", None);
+        assert!(!memory.local);
+        assert!(problems.is_empty(), "{problems:?}");
+        // The engram opt-in is a separate switch.
+        let both = "[ai.memory]\nlocal = false\nenabled = true\nacknowledged = true\n";
+        let (memory, _) = memory_of(both, None);
+        assert!(memory.active() && !memory.local);
+    }
+
+    #[test]
+    fn a_wrong_local_stays_on_with_its_problem() {
+        let (memory, problems) = memory_of("[ai.memory]\nlocal = \"no\"\n", None);
+        assert!(memory.local);
+        assert_eq!(problems, ["ai.memory.local: expected a boolean"]);
     }
 
     #[test]

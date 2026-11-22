@@ -72,6 +72,14 @@ pub fn project_tag(cwd: &Path) -> Option<String> {
     clean_tag(&name_of(&dir))
 }
 
+/// Where the local memory of a chat in `cwd` lives: `(store_root, work_root)`.
+/// The work root is the checkout the chat is in; the store root is the main
+/// repository for a linked worktree, so every worktree shares one `.lzr/`. A
+/// submodule is its own repository. `None` outside a repository.
+pub fn memory_root(cwd: &Path) -> Option<(PathBuf, PathBuf)> {
+    find_repo(cwd).map(|repo| (repo.project_dir, repo.root))
+}
+
 /// The git root of a chat's origin `cwd`: the directory that holds `.git`,
 /// found by the same walk as the workspace block. `None` outside a
 /// repository. User MCP servers declared for a project apply to this root only.

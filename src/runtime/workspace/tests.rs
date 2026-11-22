@@ -399,3 +399,43 @@ fn the_origin_root_is_the_repository_root_above_the_cwd() {
     fs::create_dir_all(&plain).unwrap();
     assert_eq!(origin_root(&plain), None);
 }
+
+// Spec (project-memory-store): memory is keyed by the repository root.
+#[test]
+fn memory_from_the_root_or_a_subfolder_resolves_to_one_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = repo(tmp.path(), "app", "ref: refs/heads/main\n");
+    let nested = dir.join("backend/api");
+    fs::create_dir_all(&nested).unwrap();
+    assert_eq!(memory_root(&dir), Some((dir.clone(), dir.clone())));
+    assert_eq!(memory_root(&nested), Some((dir.clone(), dir)));
+    let plain = tmp.path().join("plain");
+    fs::create_dir_all(&plain).unwrap();
+    assert_eq!(memory_root(&plain), None);
+}
+
+// Owner decision 2: a linked worktree shares the main checkout's `.lzr/`, and
+// the area is relative to the worktree it is in.
+#[test]
+fn a_linked_worktree_stores_in_the_main_checkout_with_its_own_work_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = repo(tmp.path(), "mainrepo", "ref: refs/heads/main\n");
+    let gitdir = main.join(".git/worktrees/wt");
+    fs::create_dir_all(&gitdir).unwrap();
+    let wt = tmp.path().join("wt");
+    fs::create_dir_all(wt.join("a")).unwrap();
+    fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    assert_eq!(memory_root(&wt.join("a")), Some((main, wt)));
+}
+
+#[test]
+fn a_submodule_keeps_its_own_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = repo(tmp.path(), "mainrepo", "ref: refs/heads/main\n");
+    let gitdir = main.join(".git/modules/sub");
+    fs::create_dir_all(&gitdir).unwrap();
+    let sub = main.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(sub.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    assert_eq!(memory_root(&sub), Some((sub.clone(), sub)));
+}
