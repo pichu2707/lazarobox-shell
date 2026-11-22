@@ -8,7 +8,11 @@ use ratatui::{
 };
 
 use super::*;
-use crate::core::ai::chat::cost_view::CostView;
+use crate::core::ai::chat::{
+    cost_view::CostView,
+    dashboard::{Range, UsageData},
+    usage_view::UsageRow,
+};
 
 fn theme() -> LazaroboxTheme {
     LazaroboxTheme::default()
@@ -55,9 +59,9 @@ fn text(buf: &Buffer) -> String {
 }
 
 #[test]
-fn snapshot_the_cost_overlay_with_data() {
-    let chat = chat_with(CostView::with(lines()));
-    insta::assert_snapshot!(text(&draw(&chat, 72, 10)));
+fn snapshot_the_cost_overlay_with_data_under_40_columns() {
+    let chat = chat_with(CostView::with_data(usage(), lines()));
+    insta::assert_snapshot!(text(&draw(&chat, 36, 12)));
 }
 
 #[test]
@@ -79,7 +83,8 @@ fn snapshot_a_narrow_pane_wraps_and_keeps_the_label_and_partial() {
 
 #[test]
 fn snapshot_no_data_and_partial() {
-    let chat = chat_with(CostView::with(
+    let chat = chat_with(CostView::with_data(
+        UsageData::default(),
         [
             "AI usage (alpha)",
             "today: no data · 1 turns · partial",
@@ -91,7 +96,7 @@ fn snapshot_no_data_and_partial() {
         .map(str::to_owned)
         .to_vec(),
     ));
-    insta::assert_snapshot!(text(&draw(&chat, 60, 9)));
+    insta::assert_snapshot!(text(&draw(&chat, 36, 9)));
 }
 
 #[test]
@@ -190,8 +195,8 @@ fn with_charts() -> Vec<String> {
 
 #[test]
 fn snapshot_the_charts_under_the_text_lines() {
-    let chat = chat_with(CostView::with(with_charts()));
-    insta::assert_snapshot!(text(&draw(&chat, 60, 16)));
+    let chat = chat_with(CostView::with_data(usage(), with_charts()));
+    insta::assert_snapshot!(text(&draw(&chat, 36, 22)));
 }
 
 #[test]
@@ -286,4 +291,151 @@ fn snapshot_a_narrow_pane_wraps_a_long_prefill_line_and_keeps_partial() {
     let shown = text(&draw(&chat, 30, 14));
     assert!(shown.contains("partial"), "{shown}");
     insta::assert_snapshot!(shown);
+}
+
+/// Two chats and a run in the week, one of the chats also the week before.
+fn usage() -> UsageData {
+    let row = |days_ago, input, output, wall| UsageRow {
+        days_ago,
+        engine: "claude".into(),
+        model: Some("sonnet".into()),
+        turns: 3,
+        records: 3,
+        input: Some(input),
+        output: Some(output),
+        chat_output: Some(output),
+        chat_outputs: 3,
+        cache_hit: Some(63),
+        cache_base: Some(100),
+        wall_ms: Some(wall),
+        wall_timed: 3,
+        ..UsageRow::default()
+    };
+    UsageData {
+        rows: vec![
+            row(0, 700, 200, 60_000),
+            row(2, 410, 100, 120_000),
+            row(9, 300, 90, 30_000),
+        ],
+        tasks: vec![(0, "c1".into()), (2, "c2".into()), (2, "r7".into())],
+    }
+}
+
+fn dashboard(width: u16, height: u16) -> String {
+    let chat = chat_with(CostView::with_data(usage(), lines()));
+    text(&draw(&chat, width, height))
+}
+
+#[test]
+fn snapshot_the_dashboard_in_a_wide_pane() {
+    insta::assert_snapshot!(dashboard(100, 10));
+}
+
+#[test]
+fn snapshot_the_dashboard_in_a_medium_pane() {
+    insta::assert_snapshot!(dashboard(72, 15));
+}
+
+#[test]
+fn snapshot_the_dashboard_in_a_narrow_pane() {
+    insta::assert_snapshot!(dashboard(50, 24));
+}
+
+#[test]
+fn snapshot_the_dashboard_with_no_usage() {
+    let chat = chat_with(CostView::with_data(UsageData::default(), lines()));
+    insta::assert_snapshot!(text(&draw(&chat, 100, 8)));
+}
+
+/// Whether some line of the sheet holds every label.
+fn share_a_line(shown: &str, labels: [&str; 2]) -> bool {
+    shown
+        .lines()
+        .any(|line| labels.iter().all(|label| line.contains(label)))
+}
+
+#[test]
+fn the_tiers_draw_cards_in_a_row_a_grid_and_a_column() {
+    let wide = dashboard(100, 10);
+    assert!(share_a_line(&wide, ["Input", "Agent time"]), "{wide}");
+    let medium = dashboard(72, 15);
+    assert!(share_a_line(&medium, ["Input", "Output"]), "{medium}");
+    assert!(!share_a_line(&medium, ["Input", "Tasks"]), "{medium}");
+    let narrow = dashboard(50, 24);
+    assert!(!share_a_line(&narrow, ["Input", "Output"]), "{narrow}");
+    assert!(narrow.contains("Agent time"), "{narrow}");
+}
+
+#[test]
+fn under_40_columns_the_text_report_replaces_the_cards() {
+    let shown = dashboard(39, 12);
+    assert!(shown.starts_with("AI usage (alpha)"), "{shown}");
+    assert!(!shown.contains("Input"), "{shown}");
+    assert!(shown.contains("today: 6 tokens"), "{shown}");
+    assert!(dashboard(40, 12).contains("Input"));
+}
+
+#[test]
+fn the_active_range_is_bracketed_so_colour_is_not_needed() {
+    let mut chat = chat_with(CostView::with_data(usage(), lines()));
+    assert!(text(&draw(&chat, 100, 10)).contains("[7d] 30d 90d All"));
+    chat.cost_mut()
+        .unwrap()
+        .on_key(&KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+    assert!(text(&draw(&chat, 100, 10)).contains("7d [30d] 90d All"));
+    assert_eq!(
+        chat.cost().unwrap().dashboard().unwrap().range,
+        Range::Month
+    );
+}
+
+#[test]
+fn a_range_key_in_the_text_tier_shows_the_note_on_the_keys_line() {
+    let mut chat = chat_with(CostView::with_data(usage(), lines()));
+    draw(&chat, 36, 12);
+    chat.cost_mut()
+        .unwrap()
+        .on_key(&KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
+    let shown = text(&draw(&chat, 36, 12));
+    assert!(
+        shown.ends_with("widen the pane to change the range"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn the_keys_line_lists_the_range_keys() {
+    let shown = dashboard(100, 10);
+    assert!(
+        shown.ends_with("Esc close · 1-4 range · ↑↓ scroll"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn the_dashboard_scrolls_over_its_height() {
+    let mut chat = chat_with(CostView::with_data(usage(), lines()));
+    // A column of cards is 21 rows: a 10-row pane hides the lower cards.
+    assert!(!text(&draw(&chat, 50, 10)).contains("Agent time"));
+    for _ in 0..30 {
+        chat.cost_mut()
+            .unwrap()
+            .on_key(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    assert!(text(&draw(&chat, 50, 10)).contains("Agent time"));
+}
+
+#[test]
+fn every_pane_size_draws_the_dashboard_without_panicking() {
+    for data in [usage(), UsageData::default()] {
+        let mut chat = chat_with(CostView::with_data(data, lines()));
+        for width in 0..=120 {
+            for height in 0..=40 {
+                draw(&chat, width, height);
+            }
+            chat.cost_mut()
+                .unwrap()
+                .on_key(&KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE));
+        }
+    }
 }

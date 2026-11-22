@@ -1,0 +1,12 @@
+---
+source: src/ui/components/chat/cost_tests.rs
+expression: "text(&draw(&chat, 100, 8))"
+---
+AI usage (alpha)
+[7d] 30d 90d All
+
+no usage recorded yet
+
+
+
+Esc close · 1-4 range · ↑↓ scroll

@@ -202,6 +202,34 @@ fn the_report_names_the_conversation_once_it_exists() {
 }
 
 #[test]
+fn a_range_key_rebuilds_the_dashboard_and_asks_the_store_nothing() {
+    use crate::core::ai::chat::dashboard::Range;
+    let mut a = conversation();
+    ask(&mut a, "/cost");
+    a.update(answer(Some(vec![today_row()])));
+    let range = |a: &App| {
+        chat_of(a)
+            .cost()
+            .and_then(|v| v.dashboard())
+            .map(|d| d.range)
+    };
+    assert_eq!(range(&a), Some(Range::Week));
+    // A draw has measured a wide pane. The key reaches neither the composer
+    // nor the store.
+    chat_of(&a).cost().unwrap().set_width(100);
+    let effects = a.update(key('2'));
+    assert!(effects.is_empty(), "{effects:?}");
+    assert_eq!(composer_text(&a), "");
+    assert_eq!(range(&a), Some(Range::Month));
+    // An unavailable store leaves no model: the range keys are inert.
+    a.update(plain(KeyCode::Esc));
+    ask(&mut a, "/cost");
+    a.update(answer(None));
+    a.update(key('2'));
+    assert_eq!(range(&a), None);
+}
+
+#[test]
 fn esc_closes_the_overlay_and_the_keys_never_reach_the_composer() {
     let mut a = conversation();
     ask(&mut a, "/cost");

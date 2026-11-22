@@ -64,14 +64,19 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
-        let lines = match data {
-            Some(data) => report_lines(&data.rows, chat.session_usage(), &|e| {
+        // The text report is built once, for a pane under 40 columns; the
+        // dashboard is built from the data, here and on a range change.
+        let report = |data: &UsageData| {
+            report_lines(&data.rows, chat.session_usage(), &|e| {
                 self.ai.usage().billing(e)
-            }),
-            None => vec![UNAVAILABLE_LINE.to_owned()],
+            })
         };
+        let reply = data.map(|data| (data.clone(), report(data)));
         if let Some(view) = chat.cost_mut() {
-            view.set_lines(lines);
+            match reply {
+                Some((data, lines)) => view.set_data(data, lines),
+                None => view.set_lines(vec![UNAVAILABLE_LINE.to_owned()]),
+            }
             self.dirty = true;
         }
     }

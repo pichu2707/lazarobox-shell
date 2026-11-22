@@ -1,0 +1,14 @@
+---
+source: src/ui/components/chat/cost_tests.rs
+expression: "dashboard(100, 10)"
+---
+AI usage (alpha)
+[7d] 30d 90d All
+
+ Input           ▲ 270%   Output          ▲ 233%   Tasks              n/a   Agent time      ▲ 500%
+ 1.1k                     300                      3                        3m
+ cache 63%                avg 50/turn              6 turns                  6 agent turns
+     ▄ █                      ▄ █                      █ ▄                      █ ▄
+
+
+Esc close · 1-4 range · ↑↓ scroll
