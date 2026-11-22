@@ -6791,3 +6791,36 @@ async fn held_stamps_wall_time_from_its_own_birth() {
     }
     assert_eq!(walls, [Some(3_000), Some(400)]);
 }
+
+// A worker turn dropped before its end (deadline, cancel) still sends its row,
+// partial, with the wall time it ran.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_or_cut_held_still_stamps_wall_time() {
+    let (events, mut app) = mpsc::unbounded_channel();
+    let key = WorkerKey {
+        run: RunId(7),
+        worker: WorkerId(2),
+    };
+    let trace = Tracer::new(events, pane(), key);
+    let used = || TurnUsage {
+        input: Some(5),
+        output: Some(1),
+        ..TurnUsage::default()
+    };
+    let mut cut = Held::new(&trace, "claude", None);
+    cut.add(used());
+    tokio::time::advance(Duration::from_millis(700)).await;
+    cut.send(true);
+    {
+        let mut dropped = Held::new(&trace, "claude", None);
+        dropped.add(used());
+        tokio::time::advance(Duration::from_millis(1_100)).await;
+    }
+    let mut rows = Vec::new();
+    while let Ok((_, event)) = app.try_recv() {
+        if let OrchestraEvent::Usage { usage, .. } = event {
+            rows.push((usage.wall_ms, usage.partial));
+        }
+    }
+    assert_eq!(rows, [(Some(700), true), (Some(1_100), true)]);
+}

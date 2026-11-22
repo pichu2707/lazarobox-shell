@@ -55,12 +55,19 @@ pub fn classify(engine: &str, model: Option<&str>) -> Provider {
         _ => {}
     }
     let model = model.unwrap_or_default();
-    let openai = ["gpt-", "o1", "o3", "o4", "codex"];
+    // `o1`, `o3` and `o4` name a model only whole or before a separator
+    // (`o3-mini`, `o1:latest`), never as the start of a longer word.
+    let reasoning = ["o1", "o3", "o4"].iter().any(|p| {
+        model
+            .strip_prefix(p)
+            .is_some_and(|rest| rest.chars().next().is_none_or(|c| !c.is_alphanumeric()))
+    });
+    let openai = ["gpt-", "codex"];
     if model.starts_with("claude") {
         Provider::Anthropic
     } else if model.starts_with("gemini") {
         Provider::Google
-    } else if openai.iter().any(|p| model.starts_with(p)) {
+    } else if reasoning || openai.iter().any(|p| model.starts_with(p)) {
         Provider::OpenAi
     } else {
         Provider::Other

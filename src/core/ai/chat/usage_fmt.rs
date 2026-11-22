@@ -55,9 +55,13 @@ pub fn duration(ms: u64) -> String {
     }
 }
 
-/// `n` of `d` as a whole percent, rounded half up. `None` when `d` is 0.
+/// `n` of `d` as a whole percent, rounded half up, saturating at `u64::MAX`.
+/// `None` when `d` is 0.
 pub fn pct(n: u64, d: u64) -> Option<u64> {
-    (d != 0).then(|| ((u128::from(n) * 100 + u128::from(d) / 2) / u128::from(d)) as u64)
+    (d != 0).then(|| {
+        let whole = (u128::from(n) * 100 + u128::from(d) / 2) / u128::from(d);
+        u64::try_from(whole).unwrap_or(u64::MAX)
+    })
 }
 
 #[cfg(test)]

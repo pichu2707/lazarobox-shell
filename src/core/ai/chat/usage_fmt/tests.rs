@@ -20,6 +20,17 @@ fn compact_pinned_values() {
 }
 
 #[test]
+fn compact_billion_and_unit_boundaries() {
+    assert_eq!(compact(1_000_000_000), "1.0B");
+    // The tenth rounds first: 999.95M is where M turns into B.
+    assert_eq!(compact(999_949_999), "999.9M");
+    assert_eq!(compact(999_950_000), "1.0B");
+    assert_eq!(compact(999_999_949), "1.0B");
+    assert_eq!(compact(999_949_999_999), "999.9B");
+    assert_eq!(compact(999_950_000_000), "1.0T");
+}
+
+#[test]
 fn tok_appends_the_unit() {
     assert_eq!(tok(950), "950 tok");
     assert_eq!(tok(1_234_567), "1.2M tok");
@@ -56,4 +67,10 @@ fn pct_rounds_half_up_and_guards_zero() {
     assert_eq!(pct(1, 3), Some(33));
     assert_eq!(pct(2, 3), Some(67));
     assert_eq!(pct(u64::MAX, u64::MAX), Some(100));
+}
+
+#[test]
+fn pct_saturates_when_n_is_far_larger_than_d() {
+    assert_eq!(pct(u64::MAX, 1), Some(u64::MAX));
+    assert_eq!(pct(200, 100), Some(200));
 }
