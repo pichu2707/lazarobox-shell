@@ -712,3 +712,117 @@ fn both_commands_settling_before_the_first_report_returns_send_one_note() {
         "{note}"
     );
 }
+
+// #826, 1: "going on" is said only after a send that really happened.
+#[test]
+fn a_refused_send_does_not_say_it_goes_on() {
+    let mut a = typed_live();
+    a.ai.orchestrator.enabled = true;
+    a.panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+        .set_orch(true);
+    assert!(!matches!(
+        a.turn_availability(id2()),
+        crate::core::ai::chat::engine::Availability::Checking
+    ));
+    let effects = resume(&mut a, 1);
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(says(&a, &format!("pane 1: {NOT_SENT}")));
+    assert!(!says(&a, "going on with the output of pane 1"));
+}
+
+// #826, 2: the pane label is the one the model was told, whatever happens
+// to the layout or the active tab meanwhile.
+#[test]
+fn stopping_the_wait_from_another_tab_names_the_pane() {
+    let mut a = typed_live();
+    in_shell(&mut a, enter());
+    let other = PaneId::for_test(9);
+    a.tabs.push(Tab {
+        tree: Node::Leaf(other),
+        focus: other,
+        zoom: false,
+        last_shell: None,
+    });
+    a.active = 1;
+    a.stop_following(id2(), false);
+    assert!(says(&a, "stopped waiting for the command in pane 1"));
+    assert!(!says(&a, "pane 0"));
+}
+
+#[test]
+fn a_lower_pane_closing_does_not_renumber_the_wait() {
+    let (mut a, second) = two_followed();
+    let before = a.pane_number(second).unwrap();
+    assert!(before > 1, "the shell comes before it");
+    // The pane before it closes: its position changes, its label must not.
+    a.tab_mut().tree.remove(SHELL);
+    assert_ne!(a.pane_number(second), Some(before));
+    a.stop_following(id2(), false);
+    assert!(says(
+        &a,
+        &format!("stopped waiting for the command in pane {before}")
+    ));
+}
+
+// #826, 4: a report still on its way (the `None` placeholder) when the chat
+// moves on is dropped, and its late Resume starts nothing.
+fn placeholder_waiting() -> App {
+    let (mut a, _) = two_followed();
+    settle_pane(&mut a, SHELL);
+    assert!(a.held_resumes.iter().any(|h| h.2.is_none()));
+    a
+}
+
+fn late_resume_is_ignored(a: &mut App) {
+    let lines = system_lines(a).len();
+    let effects = resume_event(a, 1, "LATE");
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(a.held_resumes.is_empty());
+    assert_eq!(system_lines(a).len(), lines, "a late report says nothing");
+    assert!(!says(a, "going on with the output of pane 1"));
+}
+
+#[test]
+fn a_new_message_before_the_report_returns_ignores_the_late_resume() {
+    let mut a = placeholder_waiting();
+    let availability = a.turn_availability(id2());
+    a.send_text(id2(), "something else", &availability);
+    assert!(says(&a, &format!("pane 1: {NOT_SENT}")));
+    late_resume_is_ignored(&mut a);
+}
+
+#[test]
+fn esc_before_the_report_returns_ignores_the_late_resume() {
+    let mut a = placeholder_waiting();
+    a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(says(&a, &format!("pane 1: {NOT_SENT}")));
+    late_resume_is_ignored(&mut a);
+}
+
+#[test]
+fn closing_the_chat_before_the_report_returns_ignores_the_late_resume() {
+    let mut a = placeholder_waiting();
+    a.drop_chat_slots(id2());
+    assert!(a.held_resumes.is_empty());
+    let effects = resume_event(&mut a, 1, "LATE");
+    assert!(effects.is_empty(), "{effects:?}");
+}
+
+// #826, 3: Esc with nothing followed or held cancels nothing and says nothing.
+#[test]
+fn esc_in_an_idle_chat_with_nothing_to_stop_says_nothing() {
+    let mut a = typed_live();
+    a.tab_mut().focus = id2();
+    let lines = system_lines(&a).len();
+    a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(system_lines(&a).len(), lines);
+}
