@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use super::{Msg, MsgStatus, engine::Role, tags::Tags, usage::TurnUsage, usage_view::UsageRow};
+use super::{Msg, MsgStatus, dashboard::UsageData, engine::Role, tags::Tags, usage::TurnUsage};
 use crate::core::{
     ai::{orchestra::record::RunRecord, sanitize::clean},
     layout::PaneId,
@@ -344,11 +344,11 @@ pub enum StoreReply {
         read_problem: Option<String>,
         problem: Option<String>,
     },
-    /// The answer to `UsageReport`. `rows` is `None` when the store could not
+    /// The answer to `UsageReport`. `data` is `None` when the store could not
     /// be read.
     UsageReport {
         pane: PaneId,
-        rows: Option<Vec<UsageRow>>,
+        data: Option<Box<UsageData>>,
     },
     /// The answer to `RecentFolders`: each folder once, newest first.
     RecentFolders {

@@ -72,12 +72,12 @@ Count = added non-test `.rs` lines, minus blank lines and comments. Tests, fixtu
 
 ## S1b: UsageData + Dashboard model (~230)
 
-- [ ] 1b.1 RED: `dashboard/` tests: `Range` default Week; task counting (A x5 + B x2 + 1 run x3 -> tasks 3, turns 7); deleted-chat rows add tokens but no task; cache share; R1 average (output / chat turns, not records); delta rules (7d `▲ 100%`, 90d/All `n/a`, previous 0 -> `n/a`); old worker rows -> `n/a`; mixed -> `~`; `bucket`.
-- [ ] 1b.2 GREEN: create `src/core/ai/chat/dashboard/{mod,kpi}.rs` (`Range`, `UsageData`, `UsageRow`, `Kpi`, `Delta`, `Dashboard::build`, `bucket`); register in `chat/mod.rs`.
-- [ ] 1b.3 RED: `usage_data.rs` tests on a fixture DB: rows with `SUM`/`COUNT(wall_ms)`, distinct task keys (`c<id>`, `r<run>`), missing column -> NULLs.
-- [ ] 1b.4 GREEN: create `src/runtime/chat_store/usage_data.rs` (rows + tasks, read-only); `StoreReply::UsageReport{data: Option<Box<UsageData>>}` in `store.rs`; dispatch in `worker.rs`.
-- [ ] 1b.5 GREEN: `app/cost.rs` and `app/history.rs` consume the new reply and still build the existing text report; /cost output unchanged.
-- [ ] 1b.6 Close: protocol checks. No snapshot changes expected; if one changes, stop and review it.
+- [x] 1b.1 RED: `dashboard/` tests: `Range` default Week; task counting (A x5 + B x2 + 1 run x3 -> tasks 3, turns 7); deleted-chat rows add tokens but no task; cache share; R1 average (output / chat turns, not records); delta rules (7d `▲ 100%`, 90d/All `n/a`, previous 0 -> `n/a`); old worker rows -> `n/a`; mixed -> `~`; `bucket`. Result: dashboard/tests.rs, 14 tests; seen failing at runtime (todo! stubs) then green.
+- [x] 1b.2 GREEN: create `src/core/ai/chat/dashboard/{mod,kpi}.rs` (`Range`, `UsageData`, `UsageRow`, `Kpi`, `Delta`, `Dashboard::build`, `bucket`); register in `chat/mod.rs`. Result: dashboard/{mod,kpi}.rs (Range, UsageData, Kpi, Delta, Dashboard::build, bucket); UsageRow gained chat_output, worker_wall_ms, worker_timed. Agent card sub-line is `<n> agent turns` until S5 adds `up to N at once`.
+- [x] 1b.3 RED: `usage_data.rs` tests on a fixture DB: rows with `SUM`/`COUNT(wall_ms)`, distinct task keys (`c<id>`, `r<run>`), missing column -> NULLs. Result: usage_data/tests.rs, 4 tests on an in-memory store; seen failing at runtime, then green.
+- [x] 1b.4 GREEN: create `src/runtime/chat_store/usage_data.rs` (rows + tasks, read-only); `StoreReply::UsageReport{data: Option<Box<UsageData>>}` in `store.rs`; dispatch in `worker.rs`. Result: chat_store/usage_data.rs (usage_data, wall_sql); usage_report adds chat output and worker wall columns; StoreReply::UsageReport{data}; worker dispatch.
+- [x] 1b.5 GREEN: `app/cost.rs` and `app/history.rs` consume the new reply and still build the existing text report; /cost output unchanged. Result: app/cost.rs and history.rs read `data.rows`; /cost text unchanged, all existing tests untouched.
+- [x] 1b.6 Close: protocol checks. No snapshot changes expected; if one changes, stop and review it. Result: cargo test ok (11913 passed), clippy -D warnings ok, fmt --check ok; no snapshot changed; 294 production lines. No CHANGELOG entry: nothing user-visible changes.
 
 ## S1c: renderer, range selector, tiers (~160)
 

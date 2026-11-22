@@ -175,6 +175,7 @@ fn with_charts() -> Vec<String> {
         workers: 0,
         worker_total: None,
         worker_partial: false,
+        ..UsageRow::default()
     };
     let rows = [
         day(3, "claude", Some(0)),

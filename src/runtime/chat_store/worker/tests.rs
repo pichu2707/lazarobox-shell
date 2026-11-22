@@ -2702,8 +2702,8 @@ fn report(conversation: Option<i64>) -> StoreCmd {
 fn rows_of(reply: Option<StoreReply>) -> Vec<UsageRow> {
     match reply {
         Some(StoreReply::UsageReport {
-            rows: Some(rows), ..
-        }) => rows,
+            data: Some(data), ..
+        }) => data.rows,
         other => panic!("expected a report, got {other:?}"),
     }
 }
@@ -2888,7 +2888,7 @@ fn a_report_that_cannot_be_read_says_unavailable() {
         worker.handle(report(None)),
         Some(StoreReply::UsageReport {
             pane: pane(),
-            rows: None
+            data: None
         })
     );
 }

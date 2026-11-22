@@ -13,6 +13,7 @@ use std::{
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
 pub mod runs;
+mod usage_data;
 pub mod worker;
 pub use runs::highest_run;
 pub use worker::{StoreHandle, spawn, spawn_at};

@@ -14,7 +14,10 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use tokio::sync::mpsc;
 
-use super::{StoreError, ensure_usage, open, runs};
+use super::{
+    StoreError, ensure_usage, open, runs,
+    usage_data::{usage_data, wall_sql},
+};
 use crate::core::{
     ai::{
         chat::{
@@ -290,11 +293,12 @@ impl Worker {
             }
             StoreCmd::UsageReport { pane, conversation } => {
                 let conversation = conversation.or_else(|| self.created.get(&pane).copied());
-                let rows = self
+                let data = self
                     .conn()
                     .ok()
-                    .and_then(|conn| usage_report(conn, conversation, now()).ok());
-                Some(StoreReply::UsageReport { pane, rows })
+                    .and_then(|conn| usage_data(conn, conversation, now()).ok())
+                    .map(Box::new);
+                Some(StoreReply::UsageReport { pane, data })
             }
             StoreCmd::RecentFolders { pane, limit } => Some(StoreReply::RecentFolders {
                 pane,
@@ -469,7 +473,7 @@ impl Worker {
                         pane,
                         folders: Vec::new(),
                     },
-                    Panicked::Report => StoreReply::UsageReport { pane, rows: None },
+                    Panicked::Report => StoreReply::UsageReport { pane, data: None },
                     // A fixed reason: panic text can quote anything.
                     // A fixed reason, and a read problem: the write notice is
                     // not spent on a read.
@@ -727,7 +731,7 @@ fn prefill_sql(conn: &Connection) -> rusqlite::Result<String> {
     ))
 }
 
-fn usage_report(
+pub(super) fn usage_report(
     conn: &Connection,
     conversation: Option<i64>,
     at: i64,
@@ -742,6 +746,7 @@ fn usage_report(
         return Ok(Vec::new());
     }
     let prefill = prefill_sql(conn)?;
+    let wall = wall_sql(conn)?;
     let mut stmt = conn.prepare(&format!(
         "SELECT MAX(0, CAST(julianday(date(?1, 'unixepoch', 'localtime'))
                       - julianday(date(ts, 'unixepoch', 'localtime')) AS INTEGER)) AS day,
@@ -764,7 +769,9 @@ fn usage_report(
                          THEN input + cache_read + COALESCE(cache_write, 0) END),
                 COUNT(*) - COUNT(CASE WHEN input IS NOT NULL AND cache_read IS NOT NULL
                           AND (engine <> 'claude' OR cache_write IS NOT NULL) THEN 1 END),
-                {prefill}
+                {prefill},
+                SUM(CASE WHEN role = 'chat' THEN output END),
+                {wall}
          FROM turn_usage GROUP BY day, engine, model, mine ORDER BY day, engine, model",
     ))?;
     let count = |v: Option<i64>| v.and_then(|n| u64::try_from(n).ok());
@@ -792,6 +799,9 @@ fn usage_report(
             prefill_ms: count(r.get(19)?),
             prefill_tokens: count(r.get(20)?),
             prefill_gap: count(Some(r.get(21)?)).unwrap_or(0),
+            chat_output: count(r.get(22)?),
+            worker_wall_ms: count(r.get(23)?),
+            worker_timed: count(Some(r.get(24)?)).unwrap_or(0),
         })
     })?;
     rows.collect()
@@ -1299,7 +1309,7 @@ impl StoreHandle {
             },
             StoreCmd::RecordUsage { pane, .. } => day_reply(pane, Err(String::new()), Some(reason)),
             StoreCmd::UsageToday { pane } => day_reply(pane, Err(reason), None),
-            StoreCmd::UsageReport { pane, .. } => StoreReply::UsageReport { pane, rows: None },
+            StoreCmd::UsageReport { pane, .. } => StoreReply::UsageReport { pane, data: None },
             StoreCmd::SaveRun { pane, .. } => StoreReply::RunsFailed { pane, saving: true },
             StoreCmd::RecoverRuns { pane } => StoreReply::RunsFailed {
                 pane,

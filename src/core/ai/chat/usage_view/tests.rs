@@ -30,6 +30,7 @@ fn row(days_ago: u32, engine: &str, model: &str) -> UsageRow {
         workers: 0,
         worker_total: None,
         worker_partial: false,
+        ..UsageRow::default()
     }
 }
 
