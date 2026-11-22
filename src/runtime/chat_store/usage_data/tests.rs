@@ -48,6 +48,13 @@ fn chat(ts: i64, conv: Option<i64>, output: i64) -> Rec<'static> {
     }
 }
 
+fn linked(ts: i64, conv: i64, name: &'static str) -> Rec<'static> {
+    Rec {
+        conv: Some(conv),
+        ..worker(ts, name, Some(1_000))
+    }
+}
+
 fn worker(ts: i64, name: &'static str, wall_ms: Option<i64>) -> Rec<'static> {
     Rec {
         ts,
@@ -93,24 +100,56 @@ fn tasks_are_distinct_conversations_and_runs_with_deleted_chats_left_out() {
 }
 
 #[test]
-fn rows_carry_the_chat_output_and_the_worker_wall_time() {
+fn a_run_launched_from_a_chat_is_a_task_of_its_own() {
     let conn = store();
-    put(&conn, chat(AT, Some(1), 100));
+    // Chat A x5 and chat B x2, plus 3 worker rows of one run linked to A.
+    for _ in 0..5 {
+        put(&conn, chat(AT, Some(1), 10));
+    }
+    for _ in 0..2 {
+        put(&conn, chat(AT, Some(2), 10));
+    }
+    for w in ["9.a", "9.b", "9.c"] {
+        put(&conn, linked(AT, 1, w));
+    }
+    let data = usage_data(&conn, None, AT).unwrap();
+    assert_eq!(keys(&data, 0), ["c1", "c2", "r9"]);
+}
+
+#[test]
+fn rows_carry_the_chat_output_and_the_wall_time_of_chat_and_worker_records() {
+    let conn = store();
+    put(
+        &conn,
+        Rec {
+            wall_ms: Some(4_000),
+            ..chat(AT, Some(1), 100)
+        },
+    );
     put(&conn, chat(AT, Some(1), 50));
     put(&conn, worker(AT, "1.a", Some(2_000)));
     put(&conn, worker(AT, "1.b", Some(500)));
     put(&conn, worker(AT, "1.c", None));
+    // A compaction run has no wall time and is not agent time.
+    put(
+        &conn,
+        Rec {
+            role: "compaction",
+            ..chat(AT, Some(1), 7)
+        },
+    );
     let data = usage_data(&conn, None, AT).unwrap();
     let [row] = data.rows.as_slice() else {
         panic!("one row, got {:?}", data.rows);
     };
-    // R1: the average divides this by the chat turns, which is what `turns` is.
+    // R1: the average divides this by the chat turns that have an output.
     assert_eq!(row.turns, 2);
     assert_eq!(row.chat_output, Some(150));
-    assert_eq!(row.output, Some(153));
+    assert_eq!(row.chat_outputs, 2);
+    assert_eq!(row.output, Some(160));
     assert_eq!(row.workers, 3);
-    assert_eq!(row.worker_wall_ms, Some(2_500));
-    assert_eq!(row.worker_timed, 2);
+    assert_eq!(row.wall_ms, Some(6_500));
+    assert_eq!(row.wall_timed, 3);
 }
 
 #[test]
@@ -127,7 +166,7 @@ fn an_old_file_without_the_timing_columns_reads_no_wall_time() {
     let [row] = data.rows.as_slice() else {
         panic!("one row");
     };
-    assert_eq!((row.worker_wall_ms, row.worker_timed), (None, 0));
+    assert_eq!((row.wall_ms, row.wall_timed), (None, 0));
     assert_eq!(row.workers, 1);
     assert_eq!(keys(&data, 0), ["c1", "r1"]);
 }
@@ -136,4 +175,24 @@ fn an_old_file_without_the_timing_columns_reads_no_wall_time() {
 fn a_store_without_usage_reads_nothing() {
     let conn = Connection::open_in_memory().unwrap();
     assert_eq!(usage_data(&conn, None, AT).unwrap(), UsageData::default());
+}
+
+#[test]
+fn rows_and_tasks_agree_on_the_day_across_local_midnight() {
+    let conn = store();
+    let local = |at: &str| -> i64 {
+        conn.query_row(
+            &format!("SELECT CAST(strftime('%s', '{at}', 'utc') AS INTEGER)"),
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    put(&conn, chat(local("2026-06-14 23:59:00"), Some(1), 10));
+    put(&conn, chat(local("2026-06-15 00:01:00"), Some(2), 10));
+    let data = usage_data(&conn, None, local("2026-06-15 12:00:00")).unwrap();
+    let days: Vec<u32> = data.rows.iter().map(|r| r.days_ago).collect();
+    assert_eq!(days, [0, 1], "one row per local day");
+    assert_eq!(keys(&data, 1), ["c1"]);
+    assert_eq!(keys(&data, 0), ["c2"]);
 }

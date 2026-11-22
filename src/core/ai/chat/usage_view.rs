@@ -139,10 +139,13 @@ pub struct UsageRow {
     pub worker_partial: bool,
     /// Sum of the output of the chat turns alone (the `/cost` average per turn).
     pub chat_output: Option<u64>,
-    /// Sum of the wall time of the worker records that have one, in ms.
-    pub worker_wall_ms: Option<u64>,
-    /// How many worker records have a wall time; the rest are older rows.
-    pub worker_timed: u64,
+    /// How many chat turns reported an output: the average's denominator.
+    pub chat_outputs: u64,
+    /// Sum of the wall time of the chat and worker records that have one, in
+    /// ms. Compaction and summary runs are not timed.
+    pub wall_ms: Option<u64>,
+    /// How many chat and worker records have a wall time; the rest are older.
+    pub wall_timed: u64,
 }
 
 /// `Some(a + b)` when either is known: a gap is skipped, not counted as 0.

@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 
 use super::{
     StoreError, ensure_usage, open, runs,
-    usage_data::{usage_data, wall_sql},
+    usage_data::{DAY_SQL, usage_data, wall_sql},
 };
 use crate::core::{
     ai::{
@@ -748,8 +748,7 @@ pub(super) fn usage_report(
     let prefill = prefill_sql(conn)?;
     let wall = wall_sql(conn)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT MAX(0, CAST(julianday(date(?1, 'unixepoch', 'localtime'))
-                      - julianday(date(ts, 'unixepoch', 'localtime')) AS INTEGER)) AS day,
+        "SELECT {DAY_SQL} AS day,
                 engine, model, COALESCE(conversation_id = ?2, 0) AS mine,
                 COALESCE(SUM(role = 'chat'), 0), COUNT(*), COUNT(cost_micros),
                 SUM(input), SUM(output), SUM(cache_read), SUM(cost_micros),
@@ -771,6 +770,7 @@ pub(super) fn usage_report(
                           AND (engine <> 'claude' OR cache_write IS NOT NULL) THEN 1 END),
                 {prefill},
                 SUM(CASE WHEN role = 'chat' THEN output END),
+                COUNT(CASE WHEN role = 'chat' THEN output END),
                 {wall}
          FROM turn_usage GROUP BY day, engine, model, mine ORDER BY day, engine, model",
     ))?;
@@ -800,8 +800,9 @@ pub(super) fn usage_report(
             prefill_tokens: count(r.get(20)?),
             prefill_gap: count(Some(r.get(21)?)).unwrap_or(0),
             chat_output: count(r.get(22)?),
-            worker_wall_ms: count(r.get(23)?),
-            worker_timed: count(Some(r.get(24)?)).unwrap_or(0),
+            chat_outputs: count(Some(r.get(23)?)).unwrap_or(0),
+            wall_ms: count(r.get(24)?),
+            wall_timed: count(Some(r.get(25)?)).unwrap_or(0),
         })
     })?;
     rows.collect()

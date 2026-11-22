@@ -6,8 +6,14 @@ use rusqlite::Connection;
 use super::worker::usage_report;
 use crate::core::ai::chat::dashboard::UsageData;
 
+/// The local days before `?1` (a unix time) of the row's `ts`. Rows and tasks
+/// share it, so a record falls on the same day in both.
+pub(super) const DAY_SQL: &str = "MAX(0, CAST(julianday(date(?1, 'unixepoch', 'localtime'))
+                      - julianday(date(ts, 'unixepoch', 'localtime')) AS INTEGER))";
+
 /// The aggregates over the timing columns of the report: the wall time of the
-/// worker records, and how many have one. A file whose `turn_usage` has no
+/// chat and worker records (compaction and summary runs are not timed), and
+/// how many have one. A file whose `turn_usage` has no
 /// `wall_ms` yet reads NULL and 0, so the rest of `/cost` still shows.
 pub(super) fn wall_sql(conn: &Connection) -> rusqlite::Result<&'static str> {
     let present: bool = conn.query_row(
@@ -16,8 +22,8 @@ pub(super) fn wall_sql(conn: &Connection) -> rusqlite::Result<&'static str> {
         |r| r.get(0),
     )?;
     Ok(if present {
-        "SUM(CASE WHEN role = 'worker' THEN wall_ms END),
-         COUNT(CASE WHEN role = 'worker' THEN wall_ms END)"
+        "SUM(CASE WHEN role IN ('chat', 'worker') THEN wall_ms END),
+         COUNT(CASE WHEN role IN ('chat', 'worker') THEN wall_ms END)"
     } else {
         "NULL, 0"
     })
@@ -39,18 +45,18 @@ pub(super) fn usage_data(
     if !present {
         return Ok(UsageData::default());
     }
-    // A task is a conversation (`c<id>`) or, for a worker without one, its
-    // orchestrator run (`r<run>`, the part of `<run>.<worker>` before the dot).
-    // A deleted chat has neither: its tokens count, no task does.
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT
-                MAX(0, CAST(julianday(date(?1, 'unixepoch', 'localtime'))
-                      - julianday(date(ts, 'unixepoch', 'localtime')) AS INTEGER)) AS day,
-                CASE WHEN conversation_id IS NOT NULL THEN 'c' || conversation_id
-                     WHEN role = 'worker' AND instr(worker, '.') > 0
-                     THEN 'r' || substr(worker, 1, instr(worker, '.') - 1) END AS key
-         FROM turn_usage WHERE key IS NOT NULL ORDER BY day, key",
-    )?;
+    // A task is a conversation (`c<id>`) or an orchestrator run (`r<run>`, the
+    // part of `<run>.<worker>` before the dot); a run launched from a chat is
+    // a task of its own, so a worker row yields its run whether or not it is
+    // linked. A deleted chat has neither: its tokens count, no task does.
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {DAY_SQL} AS day, 'c' || conversation_id AS key
+           FROM turn_usage WHERE conversation_id IS NOT NULL
+         UNION
+         SELECT {DAY_SQL}, 'r' || substr(worker, 1, instr(worker, '.') - 1)
+           FROM turn_usage WHERE role = 'worker' AND instr(worker, '.') > 0
+         ORDER BY day, key",
+    ))?;
     let tasks = stmt
         .query_map([at], |r| {
             let day: i64 = r.get(0)?;
