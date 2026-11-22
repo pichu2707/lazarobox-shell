@@ -4,13 +4,16 @@ expression: "models_block(&models_view(models_usage()), 72)"
 ---
 Models · by tokens
 provider    model                                       in  out $
-⬡ Local     llama3:8b                                 4.0k 1.0k
+⬡ ollama    llama3:8b                                 4.0k 1.0k
 ✻ Anthropic sonnet                                    2.4k  600 $0.5000*
 ❂ OpenAI    gpt-5                                      960  240 $0.0049
 ✦ Google    unknown                                    720  180 n/a
-⬦ Other     mixed                                      320   80
+⬦ foo       mixed                                      320   80
 * list-price equivalent
 
 Providers · share of tokens
 ⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡⬡✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻❂❂❂❂❂❂❂❂✦✦✦✦✦✦⬦⬦⬦
 ⬡ Local 48% · ✻ Anthropic 29% · ❂ OpenAI 11% · ✦ Google 8% · ⬦ Other 4%
+
+Agents · orchestrator workers
+no agent runs in this range

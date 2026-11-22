@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 use super::*;
-use crate::core::ai::chat::dashboard::HourCell;
+use crate::core::ai::chat::dashboard::{HourCell, Span};
 use crate::runtime::chat_store::ensure_usage;
 
 const AT: i64 = 1_800_000_000;
@@ -220,7 +220,7 @@ fn both_queries_take_the_day_from_the_shared_fragment() {
         "worker.rs has its own day SQL"
     );
     assert!(worker.contains("{DAY_SQL}"));
-    assert_eq!(data.matches("{DAY_SQL}").count(), 3);
+    assert_eq!(data.matches("{DAY_SQL}").count(), 5);
     assert_eq!(data.matches("julianday(").count(), 2, "only the const");
 }
 
@@ -320,4 +320,78 @@ fn hours_follow_the_local_zone_not_utc() {
         tokens: 100,
     };
     assert_eq!(data.hours, [want]);
+}
+
+fn started(conn: &Connection, secs: i64) {
+    conn.execute(
+        "UPDATE turn_usage SET started_at = ts - ?1 WHERE id = (SELECT MAX(id) FROM turn_usage)",
+        [secs],
+    )
+    .unwrap();
+}
+
+#[test]
+fn spans_are_the_worker_runs_with_a_start_and_leave_chat_turns_out() {
+    let conn = store();
+    put(&conn, worker(AT, "1.a", Some(10_000)));
+    started(&conn, 10);
+    put(&conn, worker(AT - DAY, "1.b", Some(5_000)));
+    started(&conn, 5);
+    // No start (an older record), a chat turn and a compaction run: none is a span.
+    put(&conn, worker(AT, "1.c", None));
+    put(&conn, chat(AT, Some(1), 1));
+    started(&conn, 3);
+    let data = usage_data(&conn, None, AT).unwrap();
+    assert_eq!(
+        data.spans,
+        [
+            Span {
+                days_ago: 1,
+                start: AT - DAY - 5,
+                end: AT - DAY
+            },
+            Span {
+                days_ago: 0,
+                start: AT - 10,
+                end: AT
+            },
+        ]
+    );
+}
+
+#[test]
+fn agent_days_sum_the_worker_rows_of_each_engine_with_their_wall_time() {
+    let conn = store();
+    put(&conn, worker(AT, "1.a", Some(2_000)));
+    put(&conn, worker(AT, "1.b", Some(500)));
+    put(&conn, worker(AT, "1.c", None));
+    put(&conn, chat(AT, Some(1), 7));
+    let data = usage_data(&conn, None, AT).unwrap();
+    let [day] = data.agents.as_slice() else {
+        panic!("{:?}", data.agents)
+    };
+    assert_eq!(
+        (day.days_ago, day.engine.as_str(), day.workers),
+        (0, "claude", 3)
+    );
+    assert_eq!((day.input, day.output), (Some(30), Some(3)));
+    assert_eq!((day.wall_ms, day.timed), (Some(2_500), 2));
+    assert!(!day.partial);
+}
+
+#[test]
+fn a_store_without_the_timing_columns_still_reads_the_agents() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE turn_usage(id INTEGER PRIMARY KEY, ts INTEGER, conversation_id INTEGER,
+             engine TEXT, model TEXT, role TEXT, worker TEXT, input INTEGER, output INTEGER,
+             cache_read INTEGER, cache_write INTEGER, cost_micros INTEGER, partial INTEGER);
+         INSERT INTO turn_usage(ts, engine, role, worker, input, output, partial)
+             VALUES (1800000000, 'claude', 'worker', '1.a', 5, 6, 0);",
+    )
+    .unwrap();
+    let data = usage_data(&conn, None, AT).unwrap();
+    assert!(data.spans.is_empty());
+    assert_eq!(data.agents.len(), 1);
+    assert_eq!((data.agents[0].wall_ms, data.agents[0].timed), (None, 0));
 }

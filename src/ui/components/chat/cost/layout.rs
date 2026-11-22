@@ -73,14 +73,16 @@ pub(super) fn draw(
             theme,
         );
     }
-    // The chart, the heatmap and the models are the last blocks: each a gap,
+    // The chart, the heatmap, the models and the agents are the last blocks: each a gap,
     // then its legend or title.
-    let models = model.tables(width);
-    let heat_gap = cards.saturating_sub(models + HEAT_ROWS);
+    let (models, agents) = (model.tables(width), model.agents_rows());
+    let heat_gap = cards.saturating_sub(agents + models + HEAT_ROWS);
     let top = heat_gap.saturating_sub(CHART_ROWS).saturating_add(1);
     daily::render(&model.daily, model.last_days, top, width, &mut buf, theme);
     heat::render(&model.heat, heat_gap + 1, width, &mut buf, theme);
     tables::render(model, heat_gap + HEAT_ROWS, width, &mut buf, theme);
+    let at = heat_gap + HEAT_ROWS + models;
+    tables::render_agents(model, at, width, &mut buf, theme);
     for (n, (row, mine)) in (0u16..).zip(report) {
         let style = if *mine {
             base.fg(theme.primary_cyan)

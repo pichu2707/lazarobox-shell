@@ -1,11 +1,13 @@
 //! The `/cost` dashboard model. Pure: it is built from the usage the store
 //! read, with no clock and no colour; the UI only lays it out.
 
+mod agents;
 mod daily;
 mod heat;
 mod kpi;
 mod tables;
 
+pub use agents::{AgentDay, AgentRow, NO_AGENTS, Span, agent_table, agents, agents_rows, overlap};
 pub use daily::{
     CHART_ROWS, DOWN_ROWS, DayTokens, Fit, UP_ROWS, daily, fit, last_days, legend, level, notes,
     peak,
@@ -115,6 +117,10 @@ pub struct UsageData {
     pub tasks: Vec<(u32, String)>,
     /// Tokens by local weekday and hour, placed by the end time of the record.
     pub hours: Vec<HourCell>,
+    /// Worker records of each engine by day.
+    pub agents: Vec<AgentDay>,
+    /// Worker runs with a known start, for the peak of runs at once.
+    pub spans: Vec<Span>,
 }
 
 /// The model of one range.
@@ -135,6 +141,8 @@ pub struct Dashboard {
     pub models: Vec<ModelRow>,
     /// Each provider's part of the tokens.
     pub providers: Vec<Share>,
+    /// Engines that ran workers in the range.
+    pub agents: Vec<AgentRow>,
 }
 
 impl Dashboard {
@@ -149,11 +157,12 @@ impl Dashboard {
             daily: daily(data, range),
             last_days: last_days(data, range),
             heat: heat(data, range),
+            agents: agents(data, range),
         }
     }
 
     /// Rows the dashboard takes at `width`: the selector, a gap, the cards,
-    /// the chart, the heatmap and the models.
+    /// the chart, the heatmap, the models and the agents.
     pub fn height(&self, width: u16) -> u16 {
         let cards = match Tier::of(width) {
             Tier::Text => return 0,
@@ -165,9 +174,14 @@ impl Dashboard {
         let blocks = if self.empty {
             0
         } else {
-            CHART_ROWS + HEAT_ROWS + self.tables(width)
+            CHART_ROWS + HEAT_ROWS + self.tables(width) + self.agents_rows()
         };
         2 + cards + blocks
+    }
+
+    /// Rows of the Agents block.
+    pub fn agents_rows(&self) -> u16 {
+        agents_rows(&self.agents)
     }
 
     /// Rows of the Models table and the provider bar at `width`.

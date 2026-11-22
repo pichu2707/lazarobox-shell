@@ -116,9 +116,9 @@ Count = added non-test `.rs` lines, minus blank lines and comments. Tests, fixtu
 
 ## S5: agents table + peak (~240)
 
-- [ ] 5.1 RED: tests: sweep peak (ends before starts on ties; worker spans only, C6); Agents columns `input`/`output`/`time` with no `$`; old rows -> `n/a`; mixed -> `~`; no workers -> `no agent runs in this range`; Agent time card `up to N at once`.
-- [ ] 5.2 GREEN: spans query in `usage_data.rs`; `dashboard/agents.rs` (sweep, `AgentRow`); Agents table in `cost/tables.rs`.
-- [ ] 5.3 RED/GREEN: snapshots. Close: protocol checks. CHANGELOG `[Unreleased]`.
+- [x] 5.1 RED: tests: sweep peak (ends before starts on ties; worker spans only, C6); Agents columns `input`/`output`/`time` with no `$`; old rows -> `n/a`; mixed -> `~`; no workers -> `no agent runs in this range`; Agent time card `up to N at once`. Result: tests in `dashboard/agents/tests.rs`, `usage_data/tests.rs` and `tables/tests.rs`; the sweep is `overlap` (a zero-second run still takes one second).
+- [x] 5.2 GREEN: spans query in `usage_data.rs`; `dashboard/agents.rs` (sweep, `AgentRow`); Agents table in `cost/tables.rs`. Result: `UsageData.agents` (`AgentDay`, worker rows by day and engine) and `UsageData.spans` (`Span`, only when `started_at` exists), `dashboard/agents.rs` (`overlap`, `agents`, `agent_table`, `agents_rows`), `Dashboard.agents`, `ModelRow.engine` (a Local or Other row names its engine), Agent time card sub-line `up to N at once` (falls back to `<n> agent turns` with no spans), `render_agents` in `cost/tables.rs`; the block is last, a gap, a title and the table or `no agent runs in this range`.
+- [x] 5.3 RED/GREEN: snapshots. Close: protocol checks. CHANGELOG `[Unreleased]`. Result: wide/medium/narrow dashboard and the three Models snapshots change (reviewed: agents block, `up to 2 at once`, engine names); both READMEs updated.
 
 ## S6: formatter everywhere, drop charts, READMEs (~150)
 

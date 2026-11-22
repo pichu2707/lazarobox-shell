@@ -1,6 +1,6 @@
 ---
 source: src/ui/components/chat/cost_tests.rs
-expression: "dashboard(50, 58)"
+expression: "dashboard(50, 63)"
 ---
 AI usage (alpha)
 [7d] 30d 90d All
@@ -22,7 +22,7 @@ AI usage (alpha)
 
  Agent time                                ▲ 500%
  3m
- 6 agent turns
+ up to 2 at once
      █ ▄
 
 in above · out below · 1 bar = 1 day
@@ -51,6 +51,11 @@ provider    model                           in out
 Providers · share of tokens
 ✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻✻
 ✻ Anthropic 100%
+
+Agents · orchestrator workers
+engine   input output time
+✻ claude  1.2k    300   1m
+⬡ ollama   400     80  n/a
 
 today: 6 tokens · 2 turns
 last 7 days: 126 tokens · 3 turns
