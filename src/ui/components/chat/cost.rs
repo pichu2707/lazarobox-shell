@@ -47,8 +47,7 @@ impl ChatView<'_> {
         view.set_width(area.width);
         match view.dashboard().filter(|_| area.width >= TEXT_BELOW) {
             Some(model) => {
-                let report = view.body_rows(usize::from(area.width));
-                let sheet = layout::draw(model, area.width, &report, theme);
+                let sheet = layout::draw(model, area.width, theme);
                 view.set_layout(window, usize::from(sheet.area.height));
                 for n in 0..window.min(usize::from(sheet.area.height)) {
                     let (from, y) = (n + view.scroll(), 1 + u16::try_from(n).unwrap_or(0));

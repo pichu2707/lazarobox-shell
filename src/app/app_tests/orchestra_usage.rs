@@ -289,7 +289,7 @@ fn worker_dollars_never_count_toward_the_day_limit_under_subscription() {
 fn a_worker_record_moves_the_status_segment_from_1000_to_1300_tok() {
     let mut a = orch_with_usage("");
     a.update(day_reply(1_000, &[]));
-    assert_eq!(a.status_usage().as_deref(), Some("today: 1000 tok"));
+    assert_eq!(a.status_usage().as_deref(), Some("today: 1.0k tok"));
     let effects = a.update(event(worker_used(200, 100)));
     let rows = worker_rows(&effects);
     assert_eq!(rows.len(), 1, "{effects:?}");
@@ -297,5 +297,5 @@ fn a_worker_record_moves_the_status_segment_from_1000_to_1300_tok() {
     let added = usage.input.unwrap() + usage.output.unwrap();
     assert_eq!(added, 300);
     a.update(day_reply(1_000 + added, &[]));
-    assert_eq!(a.status_usage().as_deref(), Some("today: 1300 tok"));
+    assert_eq!(a.status_usage().as_deref(), Some("today: 1.3k tok"));
 }

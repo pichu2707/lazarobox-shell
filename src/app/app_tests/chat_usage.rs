@@ -199,9 +199,9 @@ fn the_segment_is_absent_before_the_first_read_and_then_shows_the_total() {
     let mut a = conversation();
     assert_eq!(a.status_usage(), None, "absent, not 0");
     a.update(recorded_with(Some(1234), &[]));
-    assert_eq!(a.status_usage().as_deref(), Some("today: 1234 tok"));
+    assert_eq!(a.status_usage().as_deref(), Some("today: 1.2k tok"));
     a.update(recorded_with(Some(1434), &[]));
-    assert_eq!(a.status_usage().as_deref(), Some("today: 1434 tok"));
+    assert_eq!(a.status_usage().as_deref(), Some("today: 1.4k tok"));
 }
 
 #[test]
@@ -232,11 +232,11 @@ fn only_per_token_engines_add_dollars_to_the_segment() {
         Some(5000),
         &[("claude", 420_000), ("codex", 900_000), ("ollama", 5)],
     ));
-    assert_eq!(a.status_usage().as_deref(), Some("today: 5000 tok · $0.42"));
+    assert_eq!(a.status_usage().as_deref(), Some("today: 5.0k tok · $0.42"));
     // Subscription engines only: tokens and no dollars.
     let mut a = conversation();
     a.update(recorded_with(Some(5000), &[("claude", 420_000)]));
-    assert_eq!(a.status_usage().as_deref(), Some("today: 5000 tok"));
+    assert_eq!(a.status_usage().as_deref(), Some("today: 5.0k tok"));
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn a_zero_dollar_sum_adds_no_figure() {
     press(&mut a, "c");
     a.update(prompt_for(chat_id()));
     a.update(recorded_with(Some(5000), &[("claude", 0)]));
-    assert_eq!(a.status_usage().as_deref(), Some("today: 5000 tok"));
+    assert_eq!(a.status_usage().as_deref(), Some("today: 5.0k tok"));
 }
 
 fn billing_config(text: &str) -> crate::core::ai::config::UsageConfig {
@@ -515,7 +515,7 @@ fn the_day_token_note_appears_once_per_day_and_re_arms_on_a_new_day() {
     a.update(recorded_with(Some(5_600), &[]));
     assert_eq!(
         limit_notes(&a),
-        ["today's usage reached 5200 tokens (limit 5000)"]
+        ["today's usage reached 5,200 tokens (limit 5,000)"]
     );
     a.update(recorded_until(NOON + 2 * DAY, Some(5_100), &[]));
     assert_eq!(limit_notes(&a).len(), 2, "a new day re-arms");
@@ -585,8 +585,8 @@ fn lowering_the_limit_below_the_total_re_arms_the_note() {
     assert_eq!(
         limit_notes(&a),
         [
-            "today's usage reached 5200 tokens (limit 5000)",
-            "today's usage reached 5200 tokens (limit 4000)",
+            "today's usage reached 5,200 tokens (limit 5,000)",
+            "today's usage reached 5,200 tokens (limit 4,000)",
         ]
     );
 }

@@ -23,20 +23,10 @@ fn selector(active: Range) -> String {
     items.join(" ")
 }
 
-/// The dashboard at `width` columns, with the rows of the text report under
-/// the cards until the tables and charts replace them (each row says whether
-/// it is about this chat).
-pub(super) fn draw(
-    model: &Dashboard,
-    width: u16,
-    report: &[(String, bool)],
-    theme: &LazaroboxTheme,
-) -> Buffer {
+/// The dashboard at `width` columns.
+pub(super) fn draw(model: &Dashboard, width: u16, theme: &LazaroboxTheme) -> Buffer {
     let cards = model.height(width);
-    let report = if model.empty { &[] } else { report };
-    let extra = report.len() + usize::from(!report.is_empty());
-    let height = cards.saturating_add(u16::try_from(extra).unwrap_or(u16::MAX));
-    let area = Rect::new(0, 0, width, height);
+    let area = Rect::new(0, 0, width, cards);
     let mut buf = Buffer::empty(area);
     let base = Style::default().bg(theme.bg_base);
     super::super::fill(&mut buf, area, base);
@@ -83,13 +73,5 @@ pub(super) fn draw(
     tables::render(model, heat_gap + HEAT_ROWS, width, &mut buf, theme);
     let at = heat_gap + HEAT_ROWS + models;
     tables::render_agents(model, at, width, &mut buf, theme);
-    for (n, (row, mine)) in (0u16..).zip(report) {
-        let style = if *mine {
-            base.fg(theme.primary_cyan)
-        } else {
-            base
-        };
-        buf.set_stringn(0, cards.saturating_add(1 + n), row, w, style);
-    }
     buf
 }

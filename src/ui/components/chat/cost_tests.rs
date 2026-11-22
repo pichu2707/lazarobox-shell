@@ -156,76 +156,14 @@ fn any_pane_size_draws_without_panicking() {
     }
 }
 
-/// The text lines plus the charts of real rows, built by the fold itself.
-fn with_charts() -> Vec<String> {
-    use crate::core::ai::chat::usage_view::{Session, UsageRow, report_lines};
-    let day = |days_ago, engine: &str, total: Option<u64>| UsageRow {
-        days_ago,
-        engine: engine.into(),
-        model: Some("m".into()),
-        in_chat: false,
-        turns: 1,
-        records: 1,
-        costed: 0,
-        input: total.map(|_| 1),
-        output: total.map(|_| 1),
-        cache_read: None,
-        cache_hit: None,
-        cache_base: None,
-        cache_gap: 0,
-        prefill_ms: None,
-        prefill_tokens: None,
-        prefill_gap: 0,
-        cost_micros: None,
-        total,
-        partial: false,
-        workers: 0,
-        worker_total: None,
-        worker_partial: false,
-        ..UsageRow::default()
-    };
-    let rows = [
-        day(3, "claude", Some(0)),
-        day(2, "claude", Some(100)),
-        day(1, "claude", Some(200)),
-        day(0, "claude", Some(400)),
-        day(0, "ollama", Some(100)),
-        day(0, "codex", None),
-    ];
-    report_lines(&rows, &Session::default(), &|_| None)
-}
-
 #[test]
-fn snapshot_the_charts_under_the_text_lines() {
-    let chat = chat_with(CostView::with_data(usage(), Vec::new(), with_charts()));
-    insta::assert_snapshot!(text(&draw(&chat, 36, 22)));
-}
-
-#[test]
-fn snapshot_the_charts_in_a_narrow_pane() {
-    let chat = chat_with(CostView::with(with_charts()));
-    insta::assert_snapshot!(text(&draw(&chat, 24, 30)));
-}
-
-#[test]
-fn charts_render_without_panic_at_any_width() {
+fn the_text_report_renders_without_panic_at_any_width() {
     for width in 0..=12 {
         for height in [0, 1, 2, 5] {
-            let chat = chat_with(CostView::with(with_charts()));
+            let chat = chat_with(CostView::with(lines()));
             draw(&chat, width, height);
         }
     }
-}
-
-#[test]
-fn the_chart_lines_are_not_taken_for_this_chat() {
-    let view = CostView::with(with_charts());
-    let rows = view.body_rows(60);
-    let charts = rows
-        .iter()
-        .position(|(row, _)| row.starts_with("per day"))
-        .expect("charts shown");
-    assert!(rows[charts..].iter().all(|(_, mine)| !mine));
 }
 
 #[test]
@@ -382,17 +320,17 @@ fn dashboard(width: u16, height: u16) -> String {
 
 #[test]
 fn snapshot_the_dashboard_in_a_wide_pane() {
-    insta::assert_snapshot!(dashboard(100, 48));
+    insta::assert_snapshot!(dashboard(100, 41));
 }
 
 #[test]
 fn snapshot_the_dashboard_in_a_medium_pane() {
-    insta::assert_snapshot!(dashboard(72, 53));
+    insta::assert_snapshot!(dashboard(72, 46));
 }
 
 #[test]
 fn snapshot_the_dashboard_in_a_narrow_pane() {
-    insta::assert_snapshot!(dashboard(50, 63));
+    insta::assert_snapshot!(dashboard(50, 55));
 }
 
 #[test]
@@ -573,12 +511,12 @@ fn the_keys_line_advertises_the_range_only_where_it_works() {
 }
 
 #[test]
-fn the_wide_tiers_keep_the_text_report_lines_under_the_cards() {
-    for (width, height) in [(100, 48), (72, 53), (50, 63)] {
+fn the_wide_tiers_do_not_repeat_the_text_report_under_the_cards() {
+    for (width, height) in [(100, 41), (72, 46), (50, 55)] {
         let shown = dashboard(width, height);
-        assert!(shown.contains("this chat: 6 tokens"), "{width}: {shown}");
-        assert!(shown.contains("llama3:8b"), "{width}: {shown}");
-        // The header is drawn once.
+        assert!(!shown.contains("this chat:"), "{width}: {shown}");
+        assert!(!shown.contains("last 7 days:"), "{width}: {shown}");
+        assert!(!shown.contains("by engine and model"), "{width}: {shown}");
         assert_eq!(shown.matches("AI usage (alpha)").count(), 1, "{shown}");
     }
 }
@@ -625,7 +563,7 @@ fn a_resize_that_shortens_the_sheet_pulls_the_scroll_back() {
         press(&mut chat, KeyCode::Down);
     }
     assert!(!text(&draw(&chat, 50, 10)).contains("[7d]"));
-    let shown = text(&draw(&chat, 100, 48));
+    let shown = text(&draw(&chat, 100, 41));
     assert!(shown.contains("[7d] 30d 90d All"), "{shown}");
 }
 

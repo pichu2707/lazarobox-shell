@@ -868,7 +868,7 @@ mod usage_line_tests {
             vec![reported(900, 300, None), StreamEvent::Done(Finish::Stop)],
         );
         let tail: Vec<_> = state.entries().iter().rev().take(2).collect();
-        assert!(matches!(tail[0], Entry::System(l) if l == "turn used 1200 tokens (limit 1000)"));
+        assert!(matches!(tail[0], Entry::System(l) if l == "turn used 1,200 tokens (limit 1,000)"));
         assert!(matches!(tail[1], Entry::Usage(_)));
         assert!(matches!(
             state.send("again", &ready(), SYSTEM),
