@@ -28,7 +28,7 @@ use crate::core::ai::{
         Locality,
         capture::capture,
         report::{cwd_result, system_line},
-        settle::{Anchor, End, Probe, Settle},
+        settle::{Anchor, End, Key, Probe, Settle},
     },
 };
 
@@ -114,7 +114,7 @@ impl RunSlot {
     /// The user wrote to the pane: the run is no longer the only thing in it.
     pub(super) fn user_key(&mut self) {
         if let Stage::Running(run) = &mut self.stage {
-            run.settle.user_key();
+            run.settle.user_key(Key::default());
         }
     }
 }
@@ -442,6 +442,7 @@ impl App {
             cursor_line: pty.emu.live_cursor_line(),
             generation: pty.emu.line_generation(),
             alt_screen: pty.emu.mouse_facts().alt_screen,
+            echo_off: None,
         };
         match run.settle.step(&probe) {
             Some(end) => self.end_run(target, end, cwd),
@@ -480,7 +481,10 @@ impl App {
                 (run.settle.anchor())
                     .and_then(|anchor| capture(&mut pty.emu, anchor, &command, prompt_below))
             }
-            End::FullScreen | End::UserTyped | End::PaneGone => None,
+            // `StillRunning` and `NoInput` only come from `Limits::Run` (S1c).
+            End::StillRunning | End::NoInput | End::FullScreen | End::UserTyped | End::PaneGone => {
+                None
+            }
         };
         let report = RunReport {
             // A command the user ran keeps the label it was typed under.

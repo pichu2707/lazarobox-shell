@@ -201,6 +201,11 @@ pub fn words(command: &str, report: &RunReport, nonce: Option<&str>) -> Words {
             format!("Ran in pane {n}; the user typed in the pane, so no output was read."),
             format!("{ran} \u{2014} the user typed"),
         ),
+        // Worded for real in S1b of chat-runs-commands; no run ends this way yet.
+        (End::StillRunning | End::NoInput, _) => (
+            format!("Ran in pane {n}; it did not finish, so no output was read."),
+            format!("{ran} \u{2014} still running"),
+        ),
         (End::PaneGone, _) => (
             format!("Ran in pane {n}; the pane closed, so no output was read."),
             format!("{ran} \u{2014} the pane closed"),
