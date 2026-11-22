@@ -404,14 +404,42 @@ fn the_origin_root_is_the_repository_root_above_the_cwd() {
 #[test]
 fn memory_from_the_root_or_a_subfolder_resolves_to_one_store() {
     let tmp = tempfile::tempdir().unwrap();
-    let dir = repo(tmp.path(), "app", "ref: refs/heads/main\n");
+    let dir = real(&repo(tmp.path(), "app", "ref: refs/heads/main\n"));
     let nested = dir.join("backend/api");
     fs::create_dir_all(&nested).unwrap();
-    assert_eq!(memory_root(&dir), Some((dir.clone(), dir.clone())));
-    assert_eq!(memory_root(&nested), Some((dir.clone(), dir)));
+    assert_eq!(memory_root(&dir, None), Some((dir.clone(), dir.clone())));
+    assert_eq!(memory_root(&nested, None), Some((dir.clone(), dir)));
     let plain = tmp.path().join("plain");
     fs::create_dir_all(&plain).unwrap();
-    assert_eq!(memory_root(&plain), None);
+    assert_eq!(memory_root(&plain, None), None);
+}
+
+fn real(path: &Path) -> std::path::PathBuf {
+    path.canonicalize().unwrap()
+}
+
+/// A linked worktree `name` of `main`, laid out like `git worktree add`:
+/// `commondir` and the `gitdir` backlink in the worktree's git folder.
+/// `gitdir_line` is what the checkout's `.git` file says.
+fn linked(
+    root: &Path,
+    main_git: &Path,
+    name: &str,
+    gitdir_line: Option<&str>,
+) -> std::path::PathBuf {
+    let gitdir = main_git.join("worktrees").join(name);
+    fs::create_dir_all(&gitdir).unwrap();
+    let wt = root.join(name);
+    fs::create_dir_all(wt.join("a")).unwrap();
+    fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+    fs::write(
+        gitdir.join("gitdir"),
+        format!("{}\n", wt.join(".git").display()),
+    )
+    .unwrap();
+    let line = gitdir_line.map_or_else(|| gitdir.display().to_string(), str::to_owned);
+    fs::write(wt.join(".git"), format!("gitdir: {line}\n")).unwrap();
+    wt
 }
 
 // Owner decision 2: a linked worktree shares the main checkout's `.lzr/`, and
@@ -419,23 +447,102 @@ fn memory_from_the_root_or_a_subfolder_resolves_to_one_store() {
 #[test]
 fn a_linked_worktree_stores_in_the_main_checkout_with_its_own_work_root() {
     let tmp = tempfile::tempdir().unwrap();
-    let main = repo(tmp.path(), "mainrepo", "ref: refs/heads/main\n");
-    let gitdir = main.join(".git/worktrees/wt");
+    let main = real(&repo(tmp.path(), "mainrepo", "ref: refs/heads/main\n"));
+    let wt = linked(&real(tmp.path()), &main.join(".git"), "wt", None);
+    assert_eq!(memory_root(&wt.join("a"), None), Some((main, wt)));
+}
+
+#[test]
+fn a_relative_gitdir_and_a_symlinked_checkout_give_the_same_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let top = real(tmp.path());
+    let main = real(&repo(&top, "mainrepo", "ref: refs/heads/main\n"));
+    let wt = linked(
+        &top,
+        &main.join(".git"),
+        "wt",
+        Some("../mainrepo/.git/worktrees/wt"),
+    );
+    let from_worktree = memory_root(&wt.join("a"), None).unwrap().0;
+    let link = top.join("link");
+    std::os::unix::fs::symlink(&main, &link).unwrap();
+    let from_link = memory_root(&link, None).unwrap().0;
+    assert_eq!(from_worktree, main);
+    assert_eq!(from_link, main, "the store root is canonical");
+}
+
+// A forged `.git` file must not move the store (and the `.gitignore` write and
+// the trusted notes) into another repository or into HOME.
+#[test]
+fn a_forged_gitdir_keeps_the_store_in_its_own_checkout() {
+    let tmp = tempfile::tempdir().unwrap();
+    let top = real(tmp.path());
+    let victim = real(&repo(&top, "victim", "ref: refs/heads/main\n"));
+    let other = linked(&top, &victim.join(".git"), "real-wt", None);
+    // The forger copies the victim's worktree gitdir into its own `.git` file:
+    // the backlink there names `real-wt`, not this checkout.
+    let forged = top.join("forged");
+    fs::create_dir_all(&forged).unwrap();
+    let line = victim.join(".git/worktrees/real-wt");
+    fs::write(forged.join(".git"), format!("gitdir: {}\n", line.display())).unwrap();
+    assert_eq!(memory_root(&forged, None), Some((forged.clone(), forged)));
+    // No commondir at all, or one that leaves the repository's `.git`.
+    let loose = top.join("loose");
+    fs::create_dir_all(&loose).unwrap();
+    fs::write(
+        loose.join(".git"),
+        format!("gitdir: {}\n", top.join("victim/.git").display()),
+    )
+    .unwrap();
+    assert_eq!(memory_root(&loose, None), Some((loose.clone(), loose)));
+    assert!(other.exists());
+}
+
+#[test]
+fn a_bare_layout_is_not_shared() {
+    let tmp = tempfile::tempdir().unwrap();
+    let top = real(tmp.path());
+    let bare = top.join("p/.bare");
+    fs::create_dir_all(&bare).unwrap();
+    let wt = linked(&top, &bare, "x", None);
+    assert_eq!(memory_root(&wt, None), Some((wt.clone(), wt)));
+}
+
+#[test]
+fn a_submodule_inside_a_linked_worktree_keeps_its_own_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let top = real(tmp.path());
+    let main = real(&repo(&top, "mainrepo", "ref: refs/heads/main\n"));
+    let wt = linked(&top, &main.join(".git"), "wt", None);
+    let gitdir = main.join(".git/worktrees/wt/modules/sub");
     fs::create_dir_all(&gitdir).unwrap();
-    let wt = tmp.path().join("wt");
-    fs::create_dir_all(wt.join("a")).unwrap();
-    fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
-    assert_eq!(memory_root(&wt.join("a")), Some((main, wt)));
+    let sub = wt.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(sub.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    assert_eq!(memory_root(&sub, None), Some((sub.clone(), sub)));
 }
 
 #[test]
 fn a_submodule_keeps_its_own_store() {
     let tmp = tempfile::tempdir().unwrap();
-    let main = repo(tmp.path(), "mainrepo", "ref: refs/heads/main\n");
+    let main = real(&repo(tmp.path(), "mainrepo", "ref: refs/heads/main\n"));
     let gitdir = main.join(".git/modules/sub");
     fs::create_dir_all(&gitdir).unwrap();
     let sub = main.join("sub");
     fs::create_dir_all(&sub).unwrap();
     fs::write(sub.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
-    assert_eq!(memory_root(&sub), Some((sub.clone(), sub)));
+    assert_eq!(memory_root(&sub, None), Some((sub.clone(), sub)));
+}
+
+// HOME is never a project: a dotfiles repository at `~/.git` gets no `~/.lzr`.
+#[test]
+fn home_is_never_a_memory_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = real(&repo(tmp.path(), "home", "ref: refs/heads/main\n"));
+    fs::create_dir_all(home.join("notes")).unwrap();
+    assert_eq!(memory_root(&home, Some(&home)), None);
+    assert_eq!(memory_root(&home.join("notes"), Some(&home)), None);
+    // A repository below HOME is still a project.
+    let app = real(&repo(&home, "app", "ref: refs/heads/main\n"));
+    assert_eq!(memory_root(&app, Some(&home)), Some((app.clone(), app)));
 }
