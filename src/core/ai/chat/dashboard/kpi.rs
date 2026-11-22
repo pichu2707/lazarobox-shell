@@ -7,7 +7,7 @@ use super::{
         usage_fmt::{compact, duration, grouped, pct},
         usage_view::add,
     },
-    Range, UsageData,
+    Range, UsageData, overlap,
 };
 
 /// A safety bound on the days a sparkline covers. `All` is sized from the
@@ -246,9 +246,12 @@ pub(super) fn kpis(data: &UsageData, range: Range) -> [Kpi; 4] {
             3,
             "Agent time",
             agent_time(&now),
-            format!(
-                "{} agent turns",
-                grouped(now.turns.saturating_add(now.workers))
+            overlap(data, range).map_or_else(
+                || {
+                    let turns = now.turns.saturating_add(now.workers);
+                    format!("{} agent turns", grouped(turns))
+                },
+                |n| format!("up to {n} at once"),
             ),
         ),
     ]

@@ -125,10 +125,12 @@ fn every_row_starts_with_its_glyph_and_carries_the_provider_label() {
         let (p, line) = &table(&rows, 100).rows[0];
         assert_eq!(*p, provider);
         assert!(line.starts_with(provider.glyph()), "{line}");
-        assert!(
-            line.contains(provider.label()) && line.contains(model),
-            "{line}"
-        );
+        // A local or other row names its engine, the rest their provider.
+        let name = match provider {
+            Provider::Local | Provider::Other => engine,
+            _ => provider.label(),
+        };
+        assert!(line.contains(name) && line.contains(model), "{line}");
     }
 }
 
@@ -398,4 +400,23 @@ fn an_engine_missing_from_billed_never_shows_dollars() {
         !shown(&rows, 100).contains('$') || shown(&rows, 100).lines().next().unwrap().contains('$')
     );
     assert!(!table(&rows, 100).rows[0].1.contains('$'));
+}
+
+#[test]
+fn local_and_other_rows_name_their_engine_and_cloud_rows_their_provider() {
+    let text = shown(
+        &built(vec![
+            used("ollama", Some("llama3"), 40, 10),
+            used("lmstudio", Some("llama3"), 30, 10),
+            used("foo", Some("bar"), 20, 10),
+            used("claude", Some("sonnet"), 10, 10),
+        ]),
+        100,
+    );
+    let line = |name: &str| text.lines().find(|l| l.contains(name)).unwrap().to_owned();
+    assert!(line("llama3").starts_with("⬡ ollama"), "{text}");
+    let studio = text.lines().find(|l| l.starts_with("⬡ lmstudio"));
+    assert!(studio.is_some(), "{text}");
+    assert!(line("bar").starts_with("⬦ foo"), "{text}");
+    assert!(line("sonnet").starts_with("✻ Anthropic"), "{text}");
 }

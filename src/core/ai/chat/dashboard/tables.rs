@@ -42,6 +42,8 @@ pub struct Usd {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ModelRow {
     pub provider: Provider,
+    /// The engine, which names a Local or Other row.
+    pub engine: String,
     pub model: String,
     pub input: Option<u64>,
     pub output: Option<u64>,
@@ -72,9 +74,10 @@ pub fn models(data: &UsageData, range: Range, billed: &Billed) -> Vec<ModelRow> 
                 floor: false,
             });
         let row = by
-            .entry((engine, model.clone()))
+            .entry((engine.clone(), model.clone()))
             .or_insert_with(|| ModelRow {
                 provider: classify(&r.engine, r.model.as_deref()),
+                engine,
                 model,
                 input: None,
                 output: None,
@@ -214,7 +217,7 @@ pub struct Table {
 }
 
 /// `text` cut to `width` columns with `…`, or padded to them.
-fn pad(text: &str, width: usize) -> String {
+pub(super) fn pad(text: &str, width: usize) -> String {
     let mut out = String::new();
     let mut used = 0;
     let cut = text.width() > width;
@@ -234,7 +237,7 @@ fn pad(text: &str, width: usize) -> String {
 }
 
 /// A token figure: `~` when some record lacked it, `n/a` when none had it.
-fn count(value: Option<u64>, partial: bool) -> String {
+pub(super) fn count(value: Option<u64>, partial: bool) -> String {
     match value {
         Some(n) if partial => format!("~{}", compact(n)),
         Some(n) => compact(n),
@@ -306,7 +309,11 @@ pub fn table(models: &[ModelRow], width: usize) -> Table {
         .iter()
         .zip(&cells)
         .map(|(m, c)| {
-            let first = format!("{} {}", m.provider.glyph(), m.provider.label());
+            let name = match m.provider {
+                Provider::Local | Provider::Other => m.engine.as_str(),
+                _ => m.provider.label(),
+            };
+            let first = format!("{} {name}", m.provider.glyph());
             (m.provider, line(&first, &m.model, c))
         })
         .collect();

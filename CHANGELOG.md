@@ -10,6 +10,10 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **`/cost` shows an Agents table and how many agents ran at once.** Under the provider bar, a row for each engine that ran orchestrator workers in the range shows its glyph and name, `input`, `output` and `time`, with no dollars or turns. The time is the summed wall time of its workers, so parallel agents add up; a time no worker recorded is `n/a` and a partly known one starts with `~`. A range with no workers says `no agent runs in this range`. The Agent time card now says `up to N at once`, the most workers that ran at the same moment, and keeps `<n> agent turns` when no worker has a known start. The Local and Other rows of the Models table now name their engine (`⬡ ollama`, `⬡ lmstudio`) instead of the provider.
+
 ## [1.37.0] - 2026-11-22
 
 ### Added

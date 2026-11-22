@@ -4,7 +4,9 @@
 
 use ratatui::{buffer::Buffer, style::Style};
 
-use crate::core::ai::chat::dashboard::{Dashboard, NO_TOKENS, segments, share_legend, table};
+use crate::core::ai::chat::dashboard::{
+    Dashboard, NO_AGENTS, NO_TOKENS, agent_table, segments, share_legend, table,
+};
 use crate::ui::theme::LazaroboxTheme;
 
 /// Draws the blocks from `y`: a gap, the Models title, the table and its
@@ -58,5 +60,30 @@ pub(super) fn render(
     }
     for (n, line) in (1u16..).zip(share_legend(&model.providers, w)) {
         buf.set_stringn(0, at + n, line, w, base);
+    }
+}
+
+/// Draws the Agents block from `y`: a gap, the title, then the table or the
+/// line that says no worker ran.
+pub(super) fn render_agents(
+    model: &Dashboard,
+    y: u16,
+    width: u16,
+    buf: &mut Buffer,
+    theme: &LazaroboxTheme,
+) {
+    let base = Style::default().bg(theme.bg_base);
+    let (muted, w) = (base.fg(theme.text_muted), usize::from(width));
+    buf.set_stringn(0, y + 1, "Agents · orchestrator workers", w, muted);
+    if model.agents.is_empty() {
+        buf.set_stringn(0, y + 2, NO_AGENTS, w, muted);
+        return;
+    }
+    let t = agent_table(&model.agents, w);
+    buf.set_stringn(0, y + 2, &t.head, w, muted);
+    for (at, (provider, line)) in (y + 3..).zip(&t.rows) {
+        buf.set_stringn(0, at, line, w, base);
+        let glyph = provider.glyph().to_string();
+        buf.set_stringn(0, at, glyph, 1, base.fg(theme.provider_color(*provider)));
     }
 }

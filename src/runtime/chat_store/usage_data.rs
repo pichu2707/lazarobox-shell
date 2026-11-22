@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 
 use super::worker::usage_report;
-use crate::core::ai::chat::dashboard::{HourCell, UsageData};
+use crate::core::ai::chat::dashboard::{AgentDay, HourCell, Span, UsageData};
 
 /// The local days before `?1` (a unix time) of the row's `ts`. Rows and tasks
 /// share it, so a record falls on the same day in both.
@@ -84,7 +84,60 @@ pub(super) fn usage_data(
             })
         })?
         .collect::<Result<_, _>>()?;
-    Ok(UsageData { rows, tasks, hours })
+    let wall = wall_sql(conn)?;
+    // The worker records of each engine, with their wall time.
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {DAY_SQL} AS day, engine, COUNT(*), SUM(input), SUM(output),
+                MAX(partial OR input IS NULL OR output IS NULL), {wall}
+           FROM turn_usage WHERE role = 'worker' GROUP BY 1, 2 ORDER BY 1, 2",
+    ))?;
+    let count = |v: Option<i64>| v.and_then(|n| u64::try_from(n).ok());
+    let agents = stmt
+        .query_map([at], |r| {
+            Ok(AgentDay {
+                days_ago: u32::try_from(r.get::<_, i64>(0)?).unwrap_or(u32::MAX),
+                engine: r.get(1)?,
+                workers: count(Some(r.get(2)?)).unwrap_or(0),
+                input: count(r.get(3)?),
+                output: count(r.get(4)?),
+                partial: r.get(5)?,
+                wall_ms: count(r.get(6)?),
+                timed: count(Some(r.get(7)?)).unwrap_or(0),
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(UsageData {
+        rows,
+        tasks,
+        hours,
+        agents,
+        spans: spans(conn, at)?,
+    })
+}
+
+/// The worker runs with a start. A file without `started_at` has none, so the
+/// rest of `/cost` still shows.
+fn spans(conn: &Connection, at: i64) -> rusqlite::Result<Vec<Span>> {
+    let present: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('turn_usage') WHERE name = 'started_at')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !present {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {DAY_SQL}, started_at, ts FROM turn_usage
+          WHERE role = 'worker' AND started_at IS NOT NULL ORDER BY ts, id",
+    ))?;
+    let spans = stmt.query_map([at], |r| {
+        Ok(Span {
+            days_ago: u32::try_from(r.get::<_, i64>(0)?).unwrap_or(u32::MAX),
+            start: r.get(1)?,
+            end: r.get(2)?,
+        })
+    })?;
+    spans.collect()
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use ratatui::{
 use super::*;
 use crate::core::ai::chat::{
     cost_view::CostView,
-    dashboard::{HourCell, Range, UsageData},
+    dashboard::{AgentDay, HourCell, Range, Span, UsageData},
     provider::Provider,
     usage_view::UsageRow,
 };
@@ -330,6 +330,39 @@ fn usage() -> UsageData {
             hour(0, 5, 22, 50),
             hour(9, 0, 8, 400),
         ],
+        // Two workers of claude overlapped and one of ollama has no wall time.
+        agents: vec![
+            agent_day("claude", (2, 1_200, 300), Some(95_000)),
+            agent_day("ollama", (1, 400, 80), None),
+        ],
+        spans: vec![
+            Span {
+                days_ago: 0,
+                start: 100,
+                end: 160,
+            },
+            Span {
+                days_ago: 0,
+                start: 130,
+                end: 195,
+            },
+        ],
+    }
+}
+
+fn agent_day(
+    engine: &str,
+    (workers, input, output): (u64, u64, u64),
+    wall: Option<u64>,
+) -> AgentDay {
+    AgentDay {
+        engine: engine.into(),
+        workers,
+        input: Some(input),
+        output: Some(output),
+        wall_ms: wall,
+        timed: wall.map_or(0, |_| workers),
+        ..AgentDay::default()
     }
 }
 
@@ -349,17 +382,17 @@ fn dashboard(width: u16, height: u16) -> String {
 
 #[test]
 fn snapshot_the_dashboard_in_a_wide_pane() {
-    insta::assert_snapshot!(dashboard(100, 43));
+    insta::assert_snapshot!(dashboard(100, 48));
 }
 
 #[test]
 fn snapshot_the_dashboard_in_a_medium_pane() {
-    insta::assert_snapshot!(dashboard(72, 48));
+    insta::assert_snapshot!(dashboard(72, 53));
 }
 
 #[test]
 fn snapshot_the_dashboard_in_a_narrow_pane() {
-    insta::assert_snapshot!(dashboard(50, 58));
+    insta::assert_snapshot!(dashboard(50, 63));
 }
 
 #[test]
@@ -541,7 +574,7 @@ fn the_keys_line_advertises_the_range_only_where_it_works() {
 
 #[test]
 fn the_wide_tiers_keep_the_text_report_lines_under_the_cards() {
-    for (width, height) in [(100, 43), (72, 48), (50, 58)] {
+    for (width, height) in [(100, 48), (72, 53), (50, 63)] {
         let shown = dashboard(width, height);
         assert!(shown.contains("this chat: 6 tokens"), "{width}: {shown}");
         assert!(shown.contains("llama3:8b"), "{width}: {shown}");
@@ -1089,7 +1122,13 @@ fn a_provider_glyph_is_drawn_in_its_colour_with_the_label_beside_it() {
             .lines()
             .find(|l| l.starts_with(p.glyph()))
             .unwrap_or_else(|| panic!("{p:?} row\n{shown}"));
-        assert!(row.contains(p.label()), "{row}");
+        // A local or other row names its engine, the rest their provider.
+        let name = match p {
+            Provider::Local => "ollama",
+            Provider::Other => "foo",
+            _ => p.label(),
+        };
+        assert!(row.contains(name), "{row}");
     }
 }
 
