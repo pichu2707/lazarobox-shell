@@ -10,6 +10,10 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **Wall time of each usage record.** Chat turns and worker runs now store how long they took, from send to end, as `wall_ms`, and the second they began as `started_at` (`ts` minus the wall time, rounded up to the second). Both columns are nullable and added to an existing usage table on first use; earlier rows keep them empty and are never estimated. Nothing shows them yet. An earlier build ignores the columns. Compaction and summary rows stay empty.
+
 ## [1.34.0] - 2026-11-21
 
 ### Added

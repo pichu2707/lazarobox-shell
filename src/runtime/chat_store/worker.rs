@@ -579,6 +579,12 @@ fn record_usage(
 ) -> Result<(DayRead, Option<String>), String> {
     let at = now();
     ensure_usage(conn).map_err(|err| usage_reason(&err).to_owned())?;
+    // The run began `wall_ms` before `ts`, rounded up to the second: the same
+    // store lag as `ts`. No wall time, no start.
+    let started = usage
+        .wall_ms
+        .and_then(|ms| i64::try_from(ms.div_ceil(1_000)).ok())
+        .map(|secs| at.saturating_sub(secs));
     // A run that used several models names none of them: it is stored as
     // `mixed`, so `/cost` can tell it from a model nobody reported (NULL).
     let model = match (&usage.model, usage.multi_model) {
@@ -589,9 +595,9 @@ fn record_usage(
     conn.execute(
         "INSERT INTO turn_usage(ts, conversation_id, engine, model, role, worker, input, output,
              cache_read, cache_write, reasoning, cost_micros, cost_source, duration_ms, partial,
-             prefill_ms, load_ms)
+             prefill_ms, load_ms, started_at, wall_ms)
          VALUES (?1, (SELECT id FROM conversations WHERE id = ?2), ?3, ?4, ?5, ?15, ?6, ?7, ?8,
-             ?9, ?10, ?11, ?12, ?13, ?14, ?16, ?17)",
+             ?9, ?10, ?11, ?12, ?13, ?14, ?16, ?17, ?18, ?19)",
         rusqlite::params![
             at,
             conversation,
@@ -610,6 +616,8 @@ fn record_usage(
             worker,
             count_of(usage.prefill_ms),
             count_of(usage.load_ms),
+            started,
+            count_of(usage.wall_ms),
         ],
     )
     .map_err(|err| usage_reason(&err).to_owned())?;

@@ -1127,7 +1127,9 @@ fn the_usage_table_holds_only_counts_ids_and_timestamps() {
             "duration_ms",
             "partial",
             "prefill_ms",
-            "load_ms"
+            "load_ms",
+            "started_at",
+            "wall_ms"
         ]
     );
 }
