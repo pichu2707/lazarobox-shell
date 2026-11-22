@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.38.0] - 2026-11-22
+
 ### Added
 
 - **`/cost` and the usage lines write token counts short.** The usage line under an answer, the text view under 40 columns and the status bar segment now read `1.2k`, `123.5k`, `1.2M`, `11.6B` from a thousand up (`today: 1.2k tok`, `usage: in 1.2M · out 123.5k`), the same as the dashboard. The limit notes keep the exact figure with commas (`turn used 123,456 tokens (limit 100,000)`). The dashboard no longer repeats the text report under the cards, and the two text charts (`per day`, `per engine`) are gone from every width: the dashboard sections replace them. The text view under 40 columns keeps its other lines.
@@ -3219,7 +3221,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.37.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.38.0...HEAD
+[1.38.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.37.0...v1.38.0
 [1.37.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.36.0...v1.37.0
 [1.36.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.35.0...v1.36.0
 [1.35.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.34.0...v1.35.0
