@@ -11,7 +11,7 @@ pub use daily::{
 };
 pub use heat::{
     BUCKETS_BELOW, Buckets, HEAT_ROWS, Heat, HourCell, buckets, heat, heat_columns, heat_legend,
-    heat_peak, shade,
+    heat_rows, rows_peak, shade,
 };
 pub use kpi::{Delta, Kpi, bucket, groups};
 

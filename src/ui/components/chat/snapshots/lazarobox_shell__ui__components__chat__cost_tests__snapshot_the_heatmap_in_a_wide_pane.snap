@@ -2,7 +2,7 @@
 source: src/ui/components/chat/cost_tests.rs
 expression: "heat(100).join(\"\\n\")"
 ---
-Busy hours · weekday x local hour · ░ ▒ ▓ █ low to high
+Busy hours · weekday x local hour · blank no records · · no tokens reported · ░ ▒ ▓ █ low to high
     00          06          12          18
 Mon
 Tue                             ██▒▒

@@ -4,7 +4,7 @@
 use ratatui::{buffer::Buffer, style::Style};
 
 use crate::core::ai::chat::dashboard::{
-    Heat, buckets, heat_columns, heat_legend, heat_peak, shade,
+    Heat, heat_columns, heat_legend, heat_rows, rows_peak, shade,
 };
 use crate::ui::theme::LazaroboxTheme;
 
@@ -16,18 +16,15 @@ const LABEL: u16 = 4;
 pub(super) fn render(heat: &Heat, y: u16, width: u16, buf: &mut Buffer, theme: &LazaroboxTheme) {
     let base = Style::default().bg(theme.bg_base);
     let w = usize::from(width);
-    let peak = heat_peak(heat);
     let empty = heat.iter().flatten().all(Option::is_none);
     buf.set_stringn(0, y, heat_legend(empty, w), w, base.fg(theme.text_muted));
     if empty {
         return;
     }
     let grouped = heat_columns(width) == 8;
-    let rows: Vec<Vec<Option<u64>>> = if grouped {
-        buckets(heat).iter().map(|r| r.to_vec()).collect()
-    } else {
-        heat.iter().map(|r| r.to_vec()).collect()
-    };
+    // Each layout is shaded against its own peak: a bucket adds hours up.
+    let rows = heat_rows(heat, width);
+    let peak = rows_peak(&rows);
     // Hours a column covers, and its width: a grid of 8 or 24 columns.
     let (hours, cell) = if grouped { (3, 3) } else { (1, 2) };
     // An hour label every 3 hours when grouped, every 6 otherwise.

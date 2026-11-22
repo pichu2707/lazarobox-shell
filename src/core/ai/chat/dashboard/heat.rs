@@ -60,9 +60,19 @@ pub fn heat_columns(width: u16) -> usize {
     if width < BUCKETS_BELOW { 8 } else { 24 }
 }
 
-/// The largest cell of the grid.
-pub fn heat_peak(heat: &Heat) -> u64 {
-    heat.iter().flatten().flatten().copied().max().unwrap_or(0)
+/// The rows as drawn at `width`: 24 hours, or 8 buckets of three.
+pub fn heat_rows(heat: &Heat, width: u16) -> Vec<Vec<Option<u64>>> {
+    if heat_columns(width) == 8 {
+        buckets(heat).iter().map(|r| r.to_vec()).collect()
+    } else {
+        heat.iter().map(|r| r.to_vec()).collect()
+    }
+}
+
+/// The largest cell of the drawn rows: buckets add hours up, so each layout
+/// is shaded against its own peak.
+pub fn rows_peak(rows: &[Vec<Option<u64>>]) -> u64 {
+    rows.iter().flatten().flatten().copied().max().unwrap_or(0)
 }
 
 /// The glyph of a cell when `max` is the darkest: ` ` for no record,
@@ -75,14 +85,17 @@ pub fn shade(value: Option<u64>, max: u64) -> char {
     }
 }
 
-/// The legend in the longest form that fits `width` columns; with nothing to
-/// show it says so.
+/// The legend in the longest form that fits `width` columns, ending in the
+/// scale; with nothing to show it says so.
 pub fn heat_legend(empty: bool, width: usize) -> String {
     if empty {
         return "no hourly usage in this range".to_owned();
     }
     let scale = "░ ▒ ▓ █ low to high";
+    let marks = "blank no records · · no tokens reported";
     [
+        format!("Busy hours · weekday x local hour · {marks} · {scale}"),
+        format!("Hours · local time · {marks} · {scale}"),
         format!("Busy hours · weekday x local hour · {scale}"),
         format!("Hours · local time · {scale}"),
     ]

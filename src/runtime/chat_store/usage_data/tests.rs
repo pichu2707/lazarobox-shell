@@ -287,3 +287,37 @@ fn a_store_without_the_table_has_no_hours() {
     let conn = Connection::open_in_memory().unwrap();
     assert!(usage_data(&conn, None, AT).unwrap().hours.is_empty());
 }
+
+/// The usage of Friday 20:00 UTC read in a zone 5 h 30 min ahead (POSIX
+/// `IST-5:30`, no tz database needed) is Saturday 01:30. The zone is set on a
+/// child run of this test, so no other test sees the change; without
+/// `localtime` the cell would be Friday 20:00.
+#[test]
+fn hours_follow_the_local_zone_not_utc() {
+    const FRIDAY_2000_UTC: i64 = 1_800_043_200;
+    if std::env::var_os("LAZAROBOX_HEAT_TZ_CHILD").is_none() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture"])
+            .arg("runtime::chat_store::usage_data::tests::hours_follow_the_local_zone_not_utc")
+            .env("TZ", "IST-5:30")
+            .env("LAZAROBOX_HEAT_TZ_CHILD", "1")
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{log}");
+        assert!(log.contains("1 passed"), "the child ran nothing: {log}");
+        return;
+    }
+    let conn = store();
+    put(&conn, chat(FRIDAY_2000_UTC, Some(1), 90));
+    let data = usage_data(&conn, None, FRIDAY_2000_UTC).unwrap();
+    // Saturday is the sixth row (Monday first), at hour 1.
+    let want = HourCell {
+        days_ago: 0,
+        weekday: 5,
+        hour: 1,
+        tokens: 100,
+    };
+    assert_eq!(data.hours, [want]);
+}

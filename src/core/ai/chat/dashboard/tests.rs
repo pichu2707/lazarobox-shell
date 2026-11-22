@@ -598,7 +598,7 @@ fn a_single_busy_hour_is_the_only_cell_and_the_darkest_glyph() {
     let d = heat_of(vec![cell(0, 1, 14, 5)], Range::Week);
     let filled: Vec<_> = d.heat.iter().flatten().flatten().collect();
     assert_eq!(filled, [&5]);
-    assert_eq!(heat_peak(&d.heat), 5);
+    assert_eq!(rows_peak(&heat_rows(&d.heat, 100)), 5);
     assert_eq!(shade(Some(5), 5), '█');
 }
 
@@ -617,7 +617,7 @@ fn the_heat_only_counts_the_hours_inside_the_range() {
 fn an_empty_range_has_an_empty_heat() {
     let d = heat_of(vec![cell(20, 0, 0, 5)], Range::Week);
     assert!(d.heat.iter().flatten().all(Option::is_none));
-    assert_eq!(heat_peak(&d.heat), 0);
+    assert_eq!(rows_peak(&heat_rows(&d.heat, 100)), 0);
 }
 
 #[test]
@@ -670,4 +670,55 @@ fn the_heat_adds_its_rows_to_the_height_of_the_dashboard() {
     let without = build(vec![], Range::Week);
     assert_eq!(with.height(100), 2 + CARD_ROWS + CHART_ROWS + HEAT_ROWS);
     assert_eq!(without.height(100), 2 + 1);
+}
+
+#[test]
+fn the_peak_is_the_largest_cell_of_the_rows_that_are_drawn() {
+    // Two busy hours of one bucket (Tuesday 12:00-14:00) and a lighter bucket.
+    let d = heat_of(
+        vec![cell(0, 1, 12, 500), cell(0, 1, 13, 500), cell(0, 2, 9, 300)],
+        Range::Week,
+    );
+    let hours = heat_rows(&d.heat, 100);
+    assert_eq!((hours.len(), hours[0].len()), (7, 24));
+    assert_eq!(rows_peak(&hours), 500);
+    let grouped = heat_rows(&d.heat, 50);
+    assert_eq!((grouped.len(), grouped[0].len()), (7, 8));
+    assert_eq!(rows_peak(&grouped), 1_000);
+    // The lighter bucket is not the darkest against the grouped peak.
+    assert_eq!(shade(grouped[1][4], 1_000), '█');
+    assert_eq!(shade(grouped[2][3], 1_000), '▒');
+}
+
+#[test]
+fn the_range_boundaries_are_exclusive_at_7_30_and_90_days() {
+    let hours = vec![
+        cell(6, 0, 1, 1),
+        cell(7, 0, 2, 10),
+        cell(29, 0, 3, 100),
+        cell(30, 0, 4, 1_000),
+        cell(60, 0, 5, 10_000),
+        cell(89, 0, 6, 100_000),
+        cell(90, 0, 7, 1_000_000),
+    ];
+    let total = |range| {
+        let d = heat_of(hours.clone(), range);
+        d.heat.iter().flatten().flatten().sum::<u64>()
+    };
+    assert_eq!(total(Range::Week), 1);
+    assert_eq!(total(Range::Month), 111);
+    assert_eq!(total(Range::Quarter), 111_111);
+    assert_eq!(total(Range::All), 1_111_111);
+}
+
+#[test]
+fn the_legend_explains_the_marks_when_the_width_allows_and_never_clips() {
+    let wide = heat_legend(false, 100);
+    assert!(wide.contains("blank no records"), "{wide}");
+    assert!(wide.contains("· no tokens reported"), "{wide}");
+    for width in [40, 59, 60, 79, 80, 99, 100] {
+        let l = heat_legend(false, width);
+        assert!(l.ends_with("░ ▒ ▓ █ low to high"), "{width}: {l}");
+        assert!(l.chars().count() <= width, "{width}: {l}");
+    }
 }

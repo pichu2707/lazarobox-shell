@@ -934,16 +934,32 @@ fn a_known_zero_hour_is_marked_and_never_blank() {
 }
 
 #[test]
-fn a_pane_as_short_as_six_rows_scrolls_through_every_weekday() {
-    let mut chat = chat_with(CostView::with_data(usage(), lines()));
-    for height in 0..=10 {
-        draw(&chat, 100, height);
+fn a_short_pane_shows_every_weekday_while_it_scrolls() {
+    for height in [4, 6, 10] {
+        let mut chat = chat_with(CostView::with_data(usage(), lines()));
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..120 {
+            let shown = text(&draw(&chat, 100, height));
+            for day in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] {
+                if shown.lines().any(|l| l.starts_with(day)) {
+                    seen.insert(day);
+                }
+            }
+            press(&mut chat, KeyCode::Down);
+        }
+        assert_eq!(seen.len(), 7, "{height}: {seen:?}");
     }
-    // Scrolling down brings every weekday into the six rows, one press at a time.
-    let mut seen = false;
-    for _ in 0..80 {
-        press(&mut chat, KeyCode::Down);
-        seen |= text(&draw(&chat, 100, 6)).contains("Sun");
-    }
-    assert!(seen);
+}
+
+#[test]
+fn narrow_cells_are_shaded_against_the_busiest_bucket_not_the_busiest_hour() {
+    let mut data = one_hour();
+    // Two busy hours add up in one bucket; a lighter bucket sits beside it.
+    data.hours = vec![hour(0, 1, 12, 500), hour(0, 1, 13, 500), hour(0, 2, 9, 300)];
+    let rows = heat_of(data, 50);
+    let all: String = rows[2..].concat();
+    // Only the busiest cell is the darkest glyph (one cell, 3 columns wide).
+    assert_eq!(all.matches('█').count(), 3, "{rows:?}");
+    assert!(rows[3].contains('█'), "{rows:?}");
+    assert!(!rows[4].contains('█') && rows[4].contains('▒'), "{rows:?}");
 }
