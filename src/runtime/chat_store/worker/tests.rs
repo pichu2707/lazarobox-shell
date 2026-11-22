@@ -3680,3 +3680,64 @@ fn the_block_survives_closing_and_reopening_the_store() {
         "an older build counts it as a row it does not know"
     );
 }
+
+// Usage dashboard: `wall_ms` and `started_at` are additive timing columns.
+fn timing_rows(conn: &Connection) -> Vec<(i64, Option<i64>, Option<i64>)> {
+    conn.prepare("SELECT ts, started_at, wall_ms FROM turn_usage ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn a_record_stores_wall_time_and_a_start_rounded_up_to_the_second() {
+    let (_dir, _worker, mut conn) = fixture();
+    let usage = |wall_ms| TurnUsage {
+        input: Some(10),
+        wall_ms,
+        ..TurnUsage::default()
+    };
+    for wall in [Some(2_500), Some(3_000), Some(0), None] {
+        let _ = record_usage(&mut conn, None, ("claude", "chat", None), &usage(wall)).unwrap();
+    }
+    let rows = timing_rows(&conn);
+    let got: Vec<_> = rows
+        .iter()
+        .map(|(ts, started, wall)| (started.map(|s| ts - s), *wall))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (Some(3), Some(2_500)),
+            (Some(3), Some(3_000)),
+            (Some(0), Some(0)),
+            (None, None)
+        ]
+    );
+}
+
+#[test]
+fn an_old_usage_table_gains_the_timing_columns_and_keeps_its_rows() {
+    let (_dir, _worker, mut conn) = fixture();
+    conn.execute_batch(
+        "ALTER TABLE turn_usage DROP COLUMN started_at;
+         ALTER TABLE turn_usage DROP COLUMN wall_ms;",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO turn_usage(ts, engine, model, role, input, output)
+         VALUES (1000, 'codex', 'm', 'chat', 20, 5)",
+        [],
+    )
+    .unwrap();
+    ensure_usage(&mut conn).unwrap();
+    assert_eq!(timing_rows(&conn), [(1000, None, None)]);
+    let input: i64 = conn
+        .query_row("SELECT input FROM turn_usage", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(input, 20);
+    // Idempotent: a second run adds nothing and fails nowhere.
+    ensure_usage(&mut conn).unwrap();
+}

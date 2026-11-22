@@ -29,6 +29,7 @@ pub mod next_step;
 pub mod note;
 pub mod notify;
 pub mod prompts;
+pub mod provider;
 pub mod review;
 pub mod review_view;
 pub mod run_trace;
@@ -42,6 +43,7 @@ pub mod text_call;
 pub mod tool;
 pub mod transcript;
 pub mod usage;
+pub mod usage_fmt;
 pub mod usage_view;
 pub mod wait_line;
 pub mod workspace;
@@ -2177,6 +2179,12 @@ impl ChatState {
             && let Some(usage) = self.turn_usage.as_mut()
         {
             usage.partial = true;
+        }
+        let wall = self.started.map(|at| {
+            u64::try_from(now.saturating_duration_since(at).as_millis()).unwrap_or(u64::MAX)
+        });
+        if let Some(usage) = self.turn_usage.as_mut() {
+            usage.wall_ms = wall;
         }
         if let Some(usage) = self.turn_usage.clone() {
             self.session_usage

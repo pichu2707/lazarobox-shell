@@ -355,3 +355,21 @@ fn merge_drops_prefill_when_only_one_request_reported_it() {
     sum.merge(&timed(Some(5), None));
     assert_eq!(sum.prefill_ms, None);
 }
+
+#[test]
+fn merge_keeps_the_longest_wall_time() {
+    let wall = |ms| TurnUsage {
+        wall_ms: ms,
+        ..TurnUsage::default()
+    };
+    let mut sum = wall(Some(900));
+    sum.merge(&wall(Some(1_500)));
+    assert_eq!(sum.wall_ms, Some(1_500));
+    sum.merge(&wall(Some(10)));
+    assert_eq!(sum.wall_ms, Some(1_500));
+    sum.merge(&wall(None));
+    assert_eq!(sum.wall_ms, Some(1_500));
+    let mut none = wall(None);
+    none.merge(&wall(None));
+    assert_eq!(none.wall_ms, None);
+}
