@@ -11,6 +11,8 @@ Terms: "the file" = `secrets.toml` in the lazarobox config folder. "Table" = a t
 ### Requirement: Location and ownership [S1]
 The file MUST be `secrets.toml` in the lazarobox config folder, the folder of `config.toml` (see configuration: `$XDG_CONFIG_HOME/lazarobox/`, else `$HOME/.config/lazarobox/`), so its default place is `~/.config/lazarobox/secrets.toml` (C6). It is edited by the user. lazarobox MUST NEVER create, write, rename, delete or change the mode of the file, from the menu or anywhere else, except by the menu save of one value (openspec change `mcp-connectors`, Menu save) and by Connect Google's save of the values its plan lists, in one write with one `secrets.toml.bak` (config-menu, Connect Google), both after the user's confirmation. A missing file is not an error, produces no notice, and leaves every server with the values from lazarobox's own environment only. No value from the file is ever written to `config.toml`.
 
+lazarobox also writes one file besides `secrets.toml` and the files named in the base: the lazarobox client cache, `lazarobox-google-client.json` in the same config folder (name confirmed in design), only by Link on the lazarobox route (lazarobox-google-client, Cache file). It is written by the secrets writer's folder and handle checks, mode 0600, atomically, and never replaces `secrets.toml`, `config.toml` or `google-oauth-client.json`. `secrets.toml` holds only the cache's path (`[gsc] GSC_OAUTH_CLIENT_SECRETS_FILE`), never its content.
+
 #### Scenario: Default place [auto]
 - GIVEN `XDG_CONFIG_HOME` unset and `HOME=/h`
 - WHEN the file is looked up
@@ -30,6 +32,16 @@ The file MUST be `secrets.toml` in the lazarobox config folder, the folder of `c
 - GIVEN a config folder with and without a `secrets.toml`
 - WHEN servers start and stop, the menu opens, saves and closes, and the app quits
 - THEN no `secrets.toml` is created, an existing one is byte-identical with the same mode, and `config.toml` holds none of its values
+
+#### Scenario: Link writes only the cache [gsc-lazarobox-client, auto]
+- GIVEN a config folder with `secrets.toml` and `google-oauth-client.json`
+- WHEN Link on the lazarobox route succeeds
+- THEN `lazarobox-google-client.json` exists with mode 0600, and `secrets.toml`, `config.toml` and `google-oauth-client.json` are byte-identical with the same mode
+
+#### Scenario: Read-only everywhere else [gsc-lazarobox-client, auto]
+- GIVEN no Link on the lazarobox route
+- WHEN servers start and stop and the menu opens, saves and closes
+- THEN the cache is not created, changed or deleted
 
 ### Requirement: Mode 0600 [S1]
 The file MUST be used only when it is a regular file with mode 0600 or stricter, that is with no group or other permission bit set (C6). Otherwise (assumption) it MUST NOT be read at all, every server starts as if it were missing, and the problem `secrets.toml: mode must be 0600 (chmod 600 <path>)` or `secrets.toml: not a regular file` is reported (see Problems without values). The path shown is sanitized.
@@ -114,6 +126,8 @@ A problem with the file MUST be shown as a sanitized system line `mcp: <problem>
 ### Requirement: OAuth client file read back [google-connect]
 `google-oauth-client.json` in the config folder MUST be readable back for Connect Google: the file the client form writes, and the JSON Google downloads for a Desktop client (`installed.client_id`, `installed.client_secret`, other keys ignored). It MUST be opened in the config folder judged as the secrets writer judges it (not a symlink, owned by the user, not writable by group or others) and judged on the open handle: a regular file, owned by the user, with one link, with no group or other permission bit, at most 16 KiB. The id MUST end in `.apps.googleusercontent.com` and both values MUST be printable ASCII, as the form checks them. A missing file (or a missing config folder, which is not created) is `None`, not an error. The secret MUST NEVER be drawn, logged or put in a notice; only the id is shown (`client: <id>`). Copying the id and the secret into `[google]` of `secrets.toml` happens only through Connect Google's plan and `y`.
 
+The same reader, with the same open-handle judgment (not a symlink, owned by the user, one link, no group or other permission bit, at most 16 KiB, printable ASCII, id ending in `.apps.googleusercontent.com`, `installed` type), MUST read the lazarobox client cache, with one addition: the cache MUST also pass the integrity pin (lazarobox-google-client, Integrity pin), so an id of another project is refused. A missing cache is `None`, not an error. Its secret is never drawn, logged or put in a notice, and its refusals are named `lazarobox-google-client.json: <reason>` (the same reasons as the own file's). `google-oauth-client.json` is never read as the cache and the cache is never read as `google-oauth-client.json`.
+
 #### Scenario: The form's file and Google's download read back [google-connect, auto]
 - GIVEN `google-oauth-client.json` written by the form, then replaced by the JSON Google downloads with mode 0400
 - WHEN it is read back
@@ -128,6 +142,26 @@ A problem with the file MUST be shown as a sanitized system line `mcp: <problem>
 - GIVEN a file with only a `web` client
 - WHEN it is read back
 - THEN the notice is `google-oauth-client.json is not a Desktop OAuth client; save it again (o)`
+
+#### Scenario: Cache read back with the pin [gsc-lazarobox-client, auto]
+- GIVEN a cache holding a Desktop client of the pinned project, mode 0600
+- WHEN it is read back
+- THEN the id and secret are returned and no notice is shown
+
+#### Scenario: Cache of a foreign project [gsc-lazarobox-client, auto]
+- GIVEN a cache whose id is of another project number
+- WHEN it is read back
+- THEN it is refused with `lazarobox-google-client.json: not from the lazarobox project` and the secret is in no notice
+
+#### Scenario: Loose cache [gsc-lazarobox-client, auto]
+- GIVEN the cache with mode 0644, or a symlink, or a hard link
+- WHEN it is read back
+- THEN it is refused with `lazarobox-google-client.json: mode must be 0600 (chmod 600 <path>)` or the symlink or hard-link notice, and no notice holds the secret
+
+#### Scenario: The two files are separate [gsc-lazarobox-client, auto]
+- GIVEN both files present and valid with different ids
+- WHEN each is read back
+- THEN each returns its own id and neither read changes the other
 
 ### Requirement: Several values in one save [google-connect]
 Connect Google's save MUST set every value of its plan in one write of `secrets.toml`, by the rules of the menu save of one value (each key keeps its place and comment, a missing key goes at the end of its table, a missing table at the end of the file), with one `secrets.toml.bak` generation, and the first refusal MUST write nothing. A value that already holds something MUST be kept, and the plan MUST say so (`Kept in secrets.toml`).
