@@ -1,0 +1,11 @@
+---
+source: src/ui/components/chat/cost_tests.rs
+expression: "rows[at..=at + 6].join(\"\\n\")"
+---
+in above · out below · 1 bar = 3 days
+██▇▆▅▅▄▃▂▂▁
+█████████████▇▆▅▅▄▃▂▂▁
+████████████████████████▇▆▅▅▄▃
+▀▀████████████████████████████
+        ▀▀▀▀▀█████████████████
+                   ▀▀▀▀▀██████

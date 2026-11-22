@@ -1,9 +1,14 @@
 //! The `/cost` dashboard model. Pure: it is built from the usage the store
 //! read, with no clock and no colour; the UI only lays it out.
 
+mod daily;
 mod kpi;
 
-pub use kpi::{Delta, Kpi, bucket};
+pub use daily::{
+    CHART_ROWS, DOWN_ROWS, DayTokens, Fit, UP_ROWS, daily, fit, last_days, legend, level, notes,
+    peak,
+};
+pub use kpi::{Delta, Kpi, bucket, groups};
 
 use super::usage_view::UsageRow;
 
@@ -107,6 +112,11 @@ pub struct Dashboard {
     /// No usage falls in the range.
     pub empty: bool,
     pub kpis: [Kpi; 4],
+    /// Tokens by local day, oldest first.
+    pub daily: Vec<DayTokens>,
+    /// Set when the chart covers only the last N days of an `All` range that
+    /// reaches further back than the chart can show.
+    pub last_days: Option<u32>,
 }
 
 impl Dashboard {
@@ -115,10 +125,13 @@ impl Dashboard {
             range,
             empty: kpi::is_empty(data, range),
             kpis: kpi::kpis(data, range),
+            daily: daily(data, range),
+            last_days: last_days(data, range),
         }
     }
 
-    /// Rows the dashboard takes at `width`: the selector, a gap and the body.
+    /// Rows the dashboard takes at `width`: the selector, a gap, the cards and
+    /// the chart.
     pub fn height(&self, width: u16) -> u16 {
         let cards = match Tier::of(width) {
             Tier::Text => return 0,
@@ -127,7 +140,8 @@ impl Dashboard {
             Tier::Grid => 2 * CARD_ROWS + 1,
             Tier::Column => 4 * CARD_ROWS + 3,
         };
-        2 + cards
+        let chart = if self.empty { 0 } else { CHART_ROWS };
+        2 + cards + chart
     }
 }
 

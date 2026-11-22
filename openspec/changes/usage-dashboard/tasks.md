@@ -96,10 +96,10 @@ Count = added non-test `.rs` lines, minus blank lines and comments. Tests, fixtu
 
 ## S2: tokens by day (~200)
 
-- [ ] 2.1 RED: model tests: days 400/100/0 in, 100/200/0 out; the 1-vs-100000 day keeps one cell; empty day is not zero; 90d/All bucket size in the legend.
-- [ ] 2.2 GREEN: `dashboard/daily.rs`, `cost/daily.rs` (mirrored cells, `▁…█` up, `▀/█` down, legend `in`/`out`); wire into the layout.
-- [ ] 2.3 RED/GREEN: snapshots at 100/72/50 (new); existing snapshots changed by the new section are reviewed one by one.
-- [ ] 2.4 CHANGELOG `[Unreleased]`. Close: protocol checks.
+- [x] 2.1 RED: model tests: days 400/100/0 in, 100/200/0 out; the 1-vs-100000 day keeps one cell; empty day is not zero; 90d/All bucket size in the legend.
+- [x] 2.2 GREEN: `dashboard/daily.rs`, `cost/daily.rs` (mirrored cells, `▁…█` up, `▀/█` down, legend `in`/`out`); wire into the layout. Result: `Dashboard.daily`, `daily.rs` (`DayTokens`, `fit`, `level`, `peak`, `legend`), `cost/daily.rs`; 3 up rows in eighths, 3 down rows in halves, one scale for both; the legend degrades by width and always says the bar size.
+- [x] 2.3 RED/GREEN: snapshots at 100/72/50 (new); existing snapshots changed by the new section are reviewed one by one. Result: wide, medium and narrow gain the chart (pane heights raised so the report stays visible); new 40-column 90d bucket snapshot.
+- [x] 2.4 CHANGELOG `[Unreleased]`. Close: protocol checks.
 
 ## S3: heatmap (~240)
 
