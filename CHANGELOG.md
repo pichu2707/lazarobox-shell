@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.35.0] - 2026-11-22
+
 ### Added
 
 - **Wall time of each usage record.** Chat turns and worker runs now store how long they took, from send to end, as `wall_ms`, and the second they began as `started_at` (`ts` minus the wall time, rounded up to the second). Both columns are nullable and added to an existing usage table on first use; earlier rows keep them empty and are never estimated. Nothing shows them yet. An earlier build ignores the columns. Compaction and summary rows stay empty.
@@ -3189,7 +3191,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.34.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.35.0...HEAD
+[1.35.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.34.0...v1.35.0
 [1.34.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.33.0...v1.34.0
 [1.33.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.32.0...v1.33.0
 [1.32.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.31.4...v1.32.0
