@@ -18,7 +18,7 @@ fn build(rows: Vec<UsageRow>, range: Range) -> Dashboard {
     Dashboard::build(
         &UsageData {
             rows,
-            tasks: Vec::new(),
+            ..UsageData::default()
         },
         range,
     )
@@ -43,6 +43,7 @@ fn tasks_count_conversations_and_runs_once_and_turns_count_chat_rows() {
             r.workers = 3;
         })],
         tasks: vec![(0, "c1".into()), (0, "c2".into()), (0, "r9".into())],
+        ..UsageData::default()
     };
     let d = Dashboard::build(&data, Range::Week);
     assert_eq!(d.kpis[2].label, "Tasks");
@@ -55,6 +56,7 @@ fn a_task_on_two_days_counts_once_and_one_outside_the_range_not_at_all() {
     let data = UsageData {
         rows: vec![input(0, 1)],
         tasks: vec![(0, "c1".into()), (3, "c1".into()), (8, "c2".into())],
+        ..UsageData::default()
     };
     assert_eq!(Dashboard::build(&data, Range::Week).kpis[2].value, "1");
     assert_eq!(Dashboard::build(&data, Range::Month).kpis[2].value, "2");
@@ -274,6 +276,7 @@ fn output_and_tasks_have_their_own_deltas() {
             row(8, |r| r.output = Some(200)),
         ],
         tasks: vec![(0, "c1".into()), (1, "c2".into()), (9, "c3".into())],
+        ..UsageData::default()
     };
     let d = Dashboard::build(&data, Range::Week);
     assert_eq!(d.kpis[1].delta, Delta::Up(50));
@@ -339,9 +342,10 @@ fn the_ranges_cycle_both_ways_and_have_a_label() {
 fn the_height_is_the_selector_plus_the_card_rows_of_the_tier() {
     let full = build(vec![input(0, 1)], Range::Week);
     // Selector and gap, then 4-row cards: one row, 2x2 with a gap, a column.
-    assert_eq!(full.height(100), 2 + 4 + CHART_ROWS);
-    assert_eq!(full.height(70), 2 + 9 + CHART_ROWS);
-    assert_eq!(full.height(50), 2 + 19 + CHART_ROWS);
+    let blocks = CHART_ROWS + HEAT_ROWS;
+    assert_eq!(full.height(100), 2 + 4 + blocks);
+    assert_eq!(full.height(70), 2 + 9 + blocks);
+    assert_eq!(full.height(50), 2 + 19 + blocks);
     assert_eq!(full.height(39), 0);
     // The empty state is the selector, a gap and one line.
     let empty = build(Vec::new(), Range::Week);
@@ -557,4 +561,113 @@ fn the_chart_adds_up_to_the_card_headline_when_it_shows_the_whole_range() {
         assert_eq!(compact(input), d.kpis[0].value, "{range:?}");
         assert_eq!(compact(output), d.kpis[1].value, "{range:?}");
     }
+}
+
+fn cell(days_ago: u32, weekday: u8, hour: u8, tokens: u64) -> HourCell {
+    HourCell {
+        days_ago,
+        weekday,
+        hour,
+        tokens,
+    }
+}
+
+fn heat_of(hours: Vec<HourCell>, range: Range) -> Dashboard {
+    Dashboard::build(
+        &UsageData {
+            rows: vec![input(0, 1)],
+            hours,
+            ..UsageData::default()
+        },
+        range,
+    )
+}
+
+#[test]
+fn the_heat_has_monday_first_and_a_cell_for_every_hour_of_every_weekday() {
+    let d = heat_of(vec![cell(0, 1, 14, 900), cell(1, 1, 14, 100)], Range::Week);
+    assert_eq!(d.heat.len(), 7);
+    assert!(d.heat.iter().all(|day| day.len() == 24));
+    // Tuesday is the second row; two days of the same cell add up.
+    assert_eq!(d.heat[1][14], Some(1_000));
+    assert_eq!(d.heat[0][14], None);
+}
+
+#[test]
+fn a_single_busy_hour_is_the_only_cell_and_the_darkest_glyph() {
+    let d = heat_of(vec![cell(0, 1, 14, 5)], Range::Week);
+    let filled: Vec<_> = d.heat.iter().flatten().flatten().collect();
+    assert_eq!(filled, [&5]);
+    assert_eq!(heat_peak(&d.heat), 5);
+    assert_eq!(shade(Some(5), 5), '█');
+}
+
+#[test]
+fn the_heat_only_counts_the_hours_inside_the_range() {
+    let hours = vec![cell(3, 2, 9, 10), cell(20, 2, 9, 7), cell(120, 2, 9, 1)];
+    let week = heat_of(hours.clone(), Range::Week);
+    let month = heat_of(hours.clone(), Range::Month);
+    let all = heat_of(hours, Range::All);
+    assert_eq!(week.heat[2][9], Some(10));
+    assert_eq!(month.heat[2][9], Some(17));
+    assert_eq!(all.heat[2][9], Some(18));
+}
+
+#[test]
+fn an_empty_range_has_an_empty_heat() {
+    let d = heat_of(vec![cell(20, 0, 0, 5)], Range::Week);
+    assert!(d.heat.iter().flatten().all(Option::is_none));
+    assert_eq!(heat_peak(&d.heat), 0);
+}
+
+#[test]
+fn the_shade_is_ceil_four_v_over_max_and_a_cell_with_rows_is_never_blank() {
+    assert_eq!(shade(None, 100), ' ');
+    assert_eq!(shade(Some(0), 100), '·');
+    assert_eq!(shade(Some(1), 100), '░');
+    assert_eq!(shade(Some(25), 100), '░');
+    assert_eq!(shade(Some(26), 100), '▒');
+    assert_eq!(shade(Some(50), 100), '▒');
+    assert_eq!(shade(Some(51), 100), '▓');
+    assert_eq!(shade(Some(75), 100), '▓');
+    assert_eq!(shade(Some(76), 100), '█');
+    assert_eq!(shade(Some(100), 100), '█');
+    // A zero peak (every cell a known zero) never divides by zero.
+    assert_eq!(shade(Some(0), 0), '·');
+}
+
+#[test]
+fn three_hour_buckets_have_eight_columns_a_weekday_and_keep_unknown_apart() {
+    let d = heat_of(
+        vec![
+            cell(0, 0, 0, 1),
+            cell(0, 0, 2, 2),
+            cell(0, 0, 3, 4),
+            cell(0, 6, 23, 8),
+        ],
+        Range::Week,
+    );
+    let b = buckets(&d.heat);
+    assert_eq!(b.len(), 7);
+    assert!(b.iter().all(|day| day.len() == 8));
+    assert_eq!(b[0][0], Some(3));
+    assert_eq!(b[0][1], Some(4));
+    assert_eq!(b[0][2], None);
+    assert_eq!(b[6][7], Some(8));
+}
+
+#[test]
+fn the_heat_uses_buckets_under_60_columns_only() {
+    assert_eq!(heat_columns(59), 8);
+    assert_eq!(heat_columns(60), 24);
+    assert_eq!(heat_columns(40), 8);
+    assert_eq!(heat_columns(100), 24);
+}
+
+#[test]
+fn the_heat_adds_its_rows_to_the_height_of_the_dashboard() {
+    let with = heat_of(vec![cell(0, 0, 0, 1)], Range::Week);
+    let without = build(vec![], Range::Week);
+    assert_eq!(with.height(100), 2 + CARD_ROWS + CHART_ROWS + HEAT_ROWS);
+    assert_eq!(without.height(100), 2 + 1);
 }

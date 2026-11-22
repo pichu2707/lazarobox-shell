@@ -13,6 +13,7 @@ use crate::core::ai::chat::{cost_view::CostView, dashboard::TEXT_BELOW};
 
 mod cards;
 mod daily;
+mod heat;
 mod layout;
 
 /// The keys line of the text report.

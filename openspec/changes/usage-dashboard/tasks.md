@@ -103,9 +103,9 @@ Count = added non-test `.rs` lines, minus blank lines and comments. Tests, fixtu
 
 ## S3: heatmap (~240)
 
-- [ ] 3.1 RED: tests: Tuesday 14:00 peak is the darkest glyph; empty cells blank, non-empty never blank; 59 columns -> 8 columns per weekday; Monday first via `(w+6)%7`; level `ceil(4v/max)`.
-- [ ] 3.2 GREEN: hours query in `usage_data.rs` (placement by `ts`, C4); `dashboard/heat.rs`; `cost/heat.rs`.
-- [ ] 3.3 RED/GREEN: snapshots at 100 and 50 columns. Close: protocol checks. CHANGELOG `[Unreleased]`.
+- [x] 3.1 RED: tests: Tuesday 14:00 peak is the darkest glyph; empty cells blank, non-empty never blank; 59 columns -> 8 columns per weekday; Monday first via `(w+6)%7`; level `ceil(4v/max)`.
+- [x] 3.2 GREEN: hours query in `usage_data.rs` (placement by `ts`, C4); `dashboard/heat.rs`; `cost/heat.rs`. Result: `UsageData.hours` (`HourCell`, grouped by day, weekday and hour of `ts`, Monday first in SQL), `Dashboard.heat` (`Heat`, `buckets`, `shade`, `heat_columns`), `HEAT_ROWS` = 10 (gap, legend, axis, 7 weekdays); cells 2 columns wide for 24 hours, 3 for 8 buckets under 60; `·` for a known zero; legend says `no hourly usage in this range` when empty.
+- [x] 3.3 RED/GREEN: snapshots at 100 and 50 columns. Close: protocol checks. CHANGELOG `[Unreleased]`.
 
 ## S4: models table + provider bar (~300)
 

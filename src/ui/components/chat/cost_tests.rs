@@ -10,7 +10,7 @@ use ratatui::{
 use super::*;
 use crate::core::ai::chat::{
     cost_view::CostView,
-    dashboard::{Range, UsageData},
+    dashboard::{HourCell, Range, UsageData},
     usage_view::UsageRow,
 };
 
@@ -318,6 +318,24 @@ fn usage() -> UsageData {
             row(9, 300, 90, 30_000),
         ],
         tasks: vec![(0, "c1".into()), (2, "c2".into()), (2, "r7".into())],
+        // Tuesday 14:00 is the peak; the nine-day-old hour is outside the week.
+        hours: vec![
+            hour(0, 1, 14, 900),
+            hour(0, 1, 15, 300),
+            hour(2, 3, 9, 510),
+            hour(2, 3, 10, 100),
+            hour(0, 5, 22, 50),
+            hour(9, 0, 8, 400),
+        ],
+    }
+}
+
+fn hour(days_ago: u32, weekday: u8, hour: u8, tokens: u64) -> HourCell {
+    HourCell {
+        days_ago,
+        weekday,
+        hour,
+        tokens,
     }
 }
 
@@ -328,17 +346,17 @@ fn dashboard(width: u16, height: u16) -> String {
 
 #[test]
 fn snapshot_the_dashboard_in_a_wide_pane() {
-    insta::assert_snapshot!(dashboard(100, 25));
+    insta::assert_snapshot!(dashboard(100, 35));
 }
 
 #[test]
 fn snapshot_the_dashboard_in_a_medium_pane() {
-    insta::assert_snapshot!(dashboard(72, 30));
+    insta::assert_snapshot!(dashboard(72, 40));
 }
 
 #[test]
 fn snapshot_the_dashboard_in_a_narrow_pane() {
-    insta::assert_snapshot!(dashboard(50, 40));
+    insta::assert_snapshot!(dashboard(50, 50));
 }
 
 #[test]
@@ -463,6 +481,7 @@ fn surge(times: u64) -> UsageData {
             (0, "c3".into()),
             (8, "c4".into()),
         ],
+        ..UsageData::default()
     }
 }
 
@@ -515,7 +534,7 @@ fn the_keys_line_advertises_the_range_only_where_it_works() {
 
 #[test]
 fn the_wide_tiers_keep_the_text_report_lines_under_the_cards() {
-    for (width, height) in [(100, 25), (72, 30), (50, 40)] {
+    for (width, height) in [(100, 35), (72, 40), (50, 50)] {
         let shown = dashboard(width, height);
         assert!(shown.contains("this chat: 6 tokens"), "{width}: {shown}");
         assert!(shown.contains("llama3:8b"), "{width}: {shown}");
@@ -562,7 +581,7 @@ fn a_resize_that_shortens_the_sheet_pulls_the_scroll_back() {
         press(&mut chat, KeyCode::Down);
     }
     assert!(!text(&draw(&chat, 50, 10)).contains("[7d]"));
-    let shown = text(&draw(&chat, 100, 30));
+    let shown = text(&draw(&chat, 100, 40));
     assert!(shown.contains("[7d] 30d 90d All"), "{shown}");
 }
 
@@ -581,7 +600,7 @@ fn snapshot_a_card_with_an_approximate_time_and_millions() {
 
 /// The rows of the chart: the legend, the six rows under it and the notes.
 fn chart(width: u16) -> Vec<String> {
-    chart_in(&dashboard(width, 40))
+    chart_in(&dashboard(width, 70))
 }
 
 fn chart_in(shown: &str) -> Vec<String> {
@@ -644,6 +663,7 @@ fn a_long_range_states_the_bucket_size_in_the_legend() {
     let data = UsageData {
         rows,
         tasks: Vec::new(),
+        ..UsageData::default()
     };
     let mut chat = chat_with(CostView::with_data(data, lines()));
     chat.cost_mut()
@@ -668,6 +688,7 @@ fn a_known_zero_day_is_marked_and_an_empty_range_has_no_chart() {
             ..UsageRow::default()
         }],
         tasks: Vec::new(),
+        ..UsageData::default()
     };
     let chat = chat_with(CostView::with_data(data, lines()));
     let shown = text(&draw(&chat, 100, 40));
@@ -708,10 +729,11 @@ fn snapshot_the_chart_buckets_90_days_at_the_smallest_dashboard_width() {
     let data = UsageData {
         rows,
         tasks: Vec::new(),
+        ..UsageData::default()
     };
     let mut chat = chat_with(CostView::with_data(data, Vec::new()));
     press(&mut chat, KeyCode::Char('3'));
-    let shown = text(&draw(&chat, 40, 40));
+    let shown = text(&draw(&chat, 40, 70));
     let rows: Vec<&str> = shown.lines().collect();
     let at = rows
         .iter()
@@ -735,6 +757,7 @@ fn days_from_today(count: u32, set: impl Fn(&mut UsageRow)) -> UsageData {
     UsageData {
         rows,
         tasks: Vec::new(),
+        ..UsageData::default()
     }
 }
 
@@ -769,4 +792,158 @@ fn a_series_cut_at_400_days_says_so_under_the_chart() {
         let rows = chart_in(&text(&draw(&chat, width, 60)));
         assert!(rows[7].contains("last 400 days"), "{width}: {rows:?}");
     }
+}
+
+/// The rows of the heatmap: the legend, the hour axis and the seven weekdays.
+fn heat_in(shown: &str) -> Vec<String> {
+    let rows: Vec<&str> = shown.lines().collect();
+    let at = rows
+        .iter()
+        .position(|r| r.contains("low to high") || r.contains("no hourly usage"))
+        .unwrap_or_else(|| panic!("no heat legend in\n{shown}"));
+    rows[at..=at + 8].iter().map(|r| (*r).to_owned()).collect()
+}
+
+fn heat(width: u16) -> Vec<String> {
+    heat_in(&dashboard(width, 80))
+}
+
+/// One busy hour: Tuesday 14:00 and nothing else.
+fn one_hour() -> UsageData {
+    UsageData {
+        rows: vec![UsageRow {
+            days_ago: 0,
+            engine: "claude".into(),
+            input: Some(5),
+            ..UsageRow::default()
+        }],
+        hours: vec![hour(0, 1, 14, 5)],
+        ..UsageData::default()
+    }
+}
+
+fn heat_of(data: UsageData, width: u16) -> Vec<String> {
+    let chat = chat_with(CostView::with_data(data, lines()));
+    heat_in(&text(&draw(&chat, width, 80)))
+}
+
+#[test]
+fn snapshot_the_heatmap_in_a_wide_pane() {
+    insta::assert_snapshot!(heat(100).join("\n"));
+}
+
+#[test]
+fn snapshot_the_heatmap_in_a_narrow_pane() {
+    insta::assert_snapshot!(heat(50).join("\n"));
+}
+
+#[test]
+fn the_heatmap_starts_on_monday_and_names_every_weekday() {
+    let rows = heat(100);
+    let names: Vec<&str> = rows[2..].iter().map(|r| &r[..3]).collect();
+    assert_eq!(names, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]);
+}
+
+#[test]
+fn the_peak_hour_is_the_darkest_glyph_and_empty_cells_are_blank() {
+    let rows = heat(100);
+    // Tuesday is row 3 under the legend and the axis; hour 14 starts at 4 + 28.
+    assert_eq!(cell(&rows, 3, 32), '█', "{rows:?}");
+    assert_eq!(cell(&rows, 3, 33), '█', "{rows:?}");
+    assert_eq!(cell(&rows, 3, 34), '▒', "{rows:?}");
+    // Monday has nothing this week; its row is the label and no glyph.
+    assert_eq!(rows[2].trim_end(), "Mon", "{rows:?}");
+}
+
+#[test]
+fn intensity_is_told_apart_by_glyph_alone() {
+    let rows = heat(100);
+    // Thursday 09:00 is 510 of 900 and 10:00 is 100 of 900.
+    assert_eq!(cell(&rows, 5, 4 + 9 * 2), '▓', "{rows:?}");
+    assert_eq!(cell(&rows, 5, 4 + 10 * 2), '░', "{rows:?}");
+}
+
+#[test]
+fn a_single_busy_hour_is_one_cell_at_every_width() {
+    for width in [40, 59, 60, 79, 80, 100] {
+        let rows = heat_of(one_hour(), width);
+        let shades: usize = rows[2..]
+            .iter()
+            .map(|r| r.chars().filter(|c| "░▒▓█".contains(*c)).count())
+            .sum();
+        // A cell is 2 columns of 24 hours, or 3 of 8 buckets.
+        assert_eq!(shades, if width < 60 { 3 } else { 2 }, "{width}: {rows:?}");
+        assert!(rows[3].contains('█'), "{width}: {rows:?}");
+    }
+}
+
+#[test]
+fn under_60_columns_the_hours_are_grouped_by_three() {
+    // 14:00 is the bucket 12-14 (5th, index 4): 4 + 4 * 3.
+    for width in [40, 59] {
+        let rows = heat_of(one_hour(), width);
+        assert_eq!(cell(&rows, 3, 16), '█', "{width}: {rows:?}");
+        assert_eq!(rows[1].matches("00").count(), 1, "{rows:?}");
+        assert!(rows[1].contains("21"), "{width}: {rows:?}");
+    }
+    for width in [60, 80] {
+        let rows = heat_of(one_hour(), width);
+        assert_eq!(cell(&rows, 3, 32), '█', "{width}: {rows:?}");
+        assert!(rows[1].contains("18"), "{width}: {rows:?}");
+    }
+}
+
+#[test]
+fn the_heat_legend_is_never_clipped_across_the_tier_boundaries() {
+    for width in [40, 59, 60, 79, 80, 100] {
+        let rows = heat(width);
+        assert!(
+            rows[0].ends_with("░ ▒ ▓ █ low to high"),
+            "{width}: {rows:?}"
+        );
+        assert!(rows[0].chars().count() <= usize::from(width), "{rows:?}");
+    }
+}
+
+#[test]
+fn under_40_columns_the_text_report_has_no_heatmap() {
+    let shown = dashboard(39, 40);
+    assert!(!shown.contains("low to high"), "{shown}");
+}
+
+#[test]
+fn a_range_with_usage_and_no_hours_says_so_instead_of_an_empty_grid() {
+    let mut data = one_hour();
+    data.hours.clear();
+    let rows = heat_of(data, 100);
+    assert!(
+        rows[0].contains("no hourly usage in this range"),
+        "{rows:?}"
+    );
+    // An empty range has no dashboard blocks at all.
+    let chat = chat_with(CostView::with_data(UsageData::default(), lines()));
+    assert!(!text(&draw(&chat, 100, 40)).contains("Tue"));
+}
+
+#[test]
+fn a_known_zero_hour_is_marked_and_never_blank() {
+    let mut data = one_hour();
+    data.hours = vec![hour(0, 1, 14, 0)];
+    let rows = heat_of(data, 100);
+    assert_eq!(cell(&rows, 3, 32), '·', "{rows:?}");
+}
+
+#[test]
+fn a_pane_as_short_as_six_rows_scrolls_through_every_weekday() {
+    let mut chat = chat_with(CostView::with_data(usage(), lines()));
+    for height in 0..=10 {
+        draw(&chat, 100, height);
+    }
+    // Scrolling down brings every weekday into the six rows, one press at a time.
+    let mut seen = false;
+    for _ in 0..80 {
+        press(&mut chat, KeyCode::Down);
+        seen |= text(&draw(&chat, 100, 6)).contains("Sun");
+    }
+    assert!(seen);
 }
