@@ -10,7 +10,7 @@
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -90,16 +90,35 @@ fn newest(queue: &mpsc::Receiver<Job>) -> Option<Job> {
     Some(job)
 }
 
+/// How many times a start is tried while the program file is busy.
+const START_TRIES: u32 = 5;
+
+/// Starts `program`. `ETXTBSY` (the file is open for writing, as during an
+/// upgrade or when a forked child still holds a copy of the fd) goes away in
+/// milliseconds, so it is retried a few times before it is reported.
+fn spawn(tool: Tool, program: &Path) -> std::io::Result<Child> {
+    let mut tries = 1;
+    loop {
+        let started = Command::new(program)
+            .args(tool.args())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        match started {
+            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && tries < START_TRIES => {
+                tries += 1;
+                thread::sleep(Duration::from_millis(20));
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Runs `tool` as `program` with `text` on stdin and waits at most
 /// `timeout`. `Err` carries a short reason for the notice.
 fn run(tool: Tool, program: &Path, text: &str, timeout: Duration) -> Result<(), String> {
-    let mut child = Command::new(program)
-        .args(tool.args())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| error.to_string())?;
+    let mut child = spawn(tool, program).map_err(|error| error.to_string())?;
     if let Some(mut stdin) = child.stdin.take() {
         let payload = tool.payload(text);
         // On its own thread: a tool that never reads must not stall the
@@ -146,7 +165,6 @@ pub fn timeout(tool: Tool) -> Duration {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::time::Instant;
 
@@ -157,8 +175,7 @@ mod tests {
     /// A fake tool: the script `body` under `name` in `dir`.
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let program = dir.join(name);
-        fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(&program, format!("#!/bin/sh\n{body}\n"));
         program
     }
 
@@ -283,6 +300,24 @@ mod tests {
     }
 
     /// Reads `/proc`, so Linux only.
+    /// A tool being written when the copy starts (ETXTBSY) is retried, not
+    /// reported as a failure.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_tool_still_open_for_writing_is_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = script(dir.path(), "wl-copy", "cat > /dev/null");
+        let writer = fs::OpenOptions::new().write(true).open(&program).unwrap();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(60));
+            drop(writer);
+        });
+        let (clip, rx) = worker(program, CLIP_TIMEOUT);
+        clip.copy(1, "x".to_owned()).unwrap();
+        assert_eq!(answer(&rx).1, Ok(()));
+        release.join().unwrap();
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn the_tool_gets_null_stdout_and_stderr() {
