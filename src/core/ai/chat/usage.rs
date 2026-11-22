@@ -4,6 +4,7 @@
 
 use serde_json::Value;
 
+use super::usage_fmt::grouped;
 use crate::core::ai::sanitize::clean;
 
 /// Longest model id kept, in characters.
@@ -246,13 +247,25 @@ pub fn net_input(total: Option<u64>, cached: Option<u64>) -> Option<u64> {
 /// turn). A turn with no known total never triggers it.
 pub fn turn_note(usage: &TurnUsage, limit: Option<u64>) -> Option<String> {
     let (total, limit) = (usage.total()?, limit?);
-    (total > limit).then(|| format!("turn used {total} tokens (limit {limit})"))
+    (total > limit).then(|| {
+        format!(
+            "turn used {} tokens (limit {})",
+            grouped(total),
+            grouped(limit)
+        )
+    })
 }
 
 /// The note of a day whose known tokens reached `limit`.
 pub fn day_tokens_note(today: Option<u64>, limit: Option<u64>) -> Option<String> {
     let (today, limit) = (today?, limit?);
-    (today >= limit).then(|| format!("today's usage reached {today} tokens (limit {limit})"))
+    (today >= limit).then(|| {
+        format!(
+            "today's usage reached {} tokens (limit {})",
+            grouped(today),
+            grouped(limit)
+        )
+    })
 }
 
 /// The note of a day whose spend (millionths of a dollar, per-token engines

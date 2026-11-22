@@ -287,7 +287,7 @@ fn the_turn_note_needs_a_known_total_over_the_limit() {
     let note = |u: &TurnUsage, limit| turn_note(u, limit);
     assert_eq!(
         note(&usage(Some(900), Some(300)), Some(1_000)).as_deref(),
-        Some("turn used 1200 tokens (limit 1000)")
+        Some("turn used 1,200 tokens (limit 1,000)")
     );
     assert_eq!(note(&usage(Some(400), Some(100)), Some(1_000)), None);
     assert_eq!(
@@ -304,7 +304,7 @@ fn the_turn_note_needs_a_known_total_over_the_limit() {
 fn the_day_token_note_fires_when_the_limit_is_reached() {
     assert_eq!(
         day_tokens_note(Some(5_200), Some(5_000)).as_deref(),
-        Some("today's usage reached 5200 tokens (limit 5000)")
+        Some("today's usage reached 5,200 tokens (limit 5,000)")
     );
     assert!(
         day_tokens_note(Some(5_000), Some(5_000)).is_some(),

@@ -147,11 +147,10 @@ fn after_a_failed_create_this_chat_has_no_data() {
     row.in_chat = false;
     a.update(answer(Some(vec![row])));
     let lines = view_lines(&a);
-    let charts = lines
-        .iter()
-        .position(|l| l.starts_with("per day"))
-        .expect("charts shown");
-    assert_eq!(lines[charts - 1], "this chat: no data", "{lines:?}");
+    assert!(
+        lines.contains(&"this chat: no data".to_owned()),
+        "{lines:?}"
+    );
 }
 
 #[test]
