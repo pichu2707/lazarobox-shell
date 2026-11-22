@@ -6,12 +6,12 @@ use std::{
     fs::{self, OpenOptions},
     io::{ErrorKind, Write},
     os::unix::fs::OpenOptionsExt,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use ignore::{Match, gitignore::GitignoreBuilder};
 
-use super::STORE_DIR;
+use super::{NOTES_DIR, STORE_DIR};
 use crate::runtime::bounded_read::{ReadError, read_regular};
 
 /// The most bytes read from a rules file.
@@ -82,6 +82,29 @@ fn read_rules(path: &Path) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
+/// The `info/exclude` file of the repository at `root`. A `.git` file (a
+/// submodule or linked checkout) names the git folder, and a `commondir` in
+/// that folder names the one that holds the shared `info/exclude`.
+fn exclude_path(root: &Path) -> PathBuf {
+    let dot_git = root.join(".git");
+    let mut git = dot_git.clone();
+    if fs::symlink_metadata(&dot_git).is_ok_and(|meta| meta.is_file()) {
+        let named = read_regular(&dot_git, RULES_CAP).ok().and_then(|bytes| {
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            text.lines()
+                .find_map(|line| line.strip_prefix("gitdir:"))
+                .map(|path| root.join(path.trim()))
+        });
+        if let Some(gitdir) = named {
+            git = match read_regular(&gitdir.join("commondir"), 4096) {
+                Ok(bytes) => gitdir.join(String::from_utf8_lossy(&bytes).trim()),
+                Err(_) => gitdir,
+            };
+        }
+    }
+    git.join("info/exclude")
+}
+
 /// Decides and applies the edit for the repository at `root`.
 pub fn ensure(root: &Path) -> GitignoreOutcome {
     let file = root.join(".gitignore");
@@ -90,7 +113,7 @@ pub fn ensure(root: &Path) -> GitignoreOutcome {
         Err(reason) => return GitignoreOutcome::Failed(reason),
     };
     // A rules file that cannot be read adds no rule: the entry is then added.
-    let exclude = read_rules(&root.join(".git/info/exclude")).ok().flatten();
+    let exclude = read_rules(&exclude_path(root)).ok().flatten();
     let mut matcher = GitignoreBuilder::new(root);
     for text in [&exclude, &current].into_iter().flatten() {
         for line in String::from_utf8_lossy(text).lines() {
@@ -98,11 +121,15 @@ pub fn ensure(root: &Path) -> GitignoreOutcome {
         }
     }
     // The folder itself is what is asked about, so `*.json` does not count.
+    // `.lzr/*` and `.lzr/memory/notes/` leave the folder itself unmatched but
+    // ignore everything in it, so the notes folder is asked about too.
     if let Ok(matcher) = matcher.build() {
-        match matcher.matched_path_or_any_parents(STORE_DIR, true) {
-            Match::Ignore(_) => return GitignoreOutcome::AlreadyIgnored,
-            Match::Whitelist(_) => return GitignoreOutcome::Shared,
-            Match::None => {}
+        for dir in [STORE_DIR.to_owned(), format!("{STORE_DIR}/{NOTES_DIR}")] {
+            match matcher.matched_path_or_any_parents(&dir, true) {
+                Match::Ignore(_) => return GitignoreOutcome::AlreadyIgnored,
+                Match::Whitelist(_) => return GitignoreOutcome::Shared,
+                Match::None => {}
+            }
         }
     }
     let eol = match &current {
@@ -158,6 +185,55 @@ mod tests {
             );
             assert_eq!(ignore_file(&dir), text);
         }
+    }
+
+    #[test]
+    fn a_rule_for_the_folders_contents_counts_as_ignoring_it() {
+        for entry in [
+            ".lzr/*",
+            "**/.lzr",
+            "**/.lzr/",
+            ".lzr/**",
+            ".lzr/memory/notes/",
+        ] {
+            let dir = repo();
+            let text = format!("target/\n{entry}\n");
+            fs::write(dir.path().join(".gitignore"), &text).unwrap();
+            assert_eq!(
+                ensure(dir.path()),
+                GitignoreOutcome::AlreadyIgnored,
+                "{entry}"
+            );
+            assert_eq!(ignore_file(&dir), text, "{entry}");
+        }
+    }
+
+    #[test]
+    fn a_git_file_points_to_the_info_exclude_of_its_git_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = dir.path().join("modules/x");
+        fs::create_dir_all(git.join("info")).unwrap();
+        fs::write(git.join("info/exclude"), ".lzr/\n").unwrap();
+        fs::write(dir.path().join(".git"), "gitdir: modules/x\n").unwrap();
+        assert_eq!(ensure(dir.path()), GitignoreOutcome::AlreadyIgnored);
+        assert!(!dir.path().join(".gitignore").exists());
+    }
+
+    #[test]
+    fn a_git_folder_with_a_commondir_uses_the_common_info_exclude() {
+        let dir = tempfile::tempdir().unwrap();
+        let common = dir.path().join("main.git");
+        let gitdir = common.join("worktrees/w");
+        fs::create_dir_all(common.join("info")).unwrap();
+        fs::create_dir_all(&gitdir).unwrap();
+        fs::write(common.join("info/exclude"), ".lzr/\n").unwrap();
+        fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+        fs::write(
+            dir.path().join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+        assert_eq!(ensure(dir.path()), GitignoreOutcome::AlreadyIgnored);
     }
 
     #[test]

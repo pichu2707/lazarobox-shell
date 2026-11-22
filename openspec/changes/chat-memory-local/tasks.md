@@ -89,7 +89,7 @@ Task rule for C12: the existing engram-down notice path stays as is; the mirror 
 - [ ] 1a.7 (config default and read done in S1a; the `local = false` sends nothing test is in S1a2) RED `config.rs` test: `[ai.memory] local` defaults true; `local = false` reads and writes nothing in `.lzr/`; engram `enabled`/`acknowledged` unchanged.
 - [x] 1a.8 GREEN `local/{mod,note,area,gitignore,port,ledger}.rs`: schema, `LocalCmd`/`LocalReply` carrying typed outcomes (saved, skipped, foreign count, unreadable count, gitignore result, read-only, no-git).
 - [x] 1a.9 GREEN `workspace::memory_root(cwd)`, `config.rs` local switch, `paths.rs` deny entries.
-- [ ] (S1a2) 1a.10 GREEN runtime thread `memory_local.rs` + routing `Effect::LocalMemory` / `AppEvent::LocalMemory` in `app.rs`/`runtime.rs`; notes load once at project entry. Ledger rules (S1a3): a ledger file that is not valid UTF-8 maps to `Damaged`, and a `Damaged` or `Newer` ledger is reported, trusts no note and is never rewritten (a save is refused with a visible line).
+- [x] (S1a2, S1a3) 1a.10 GREEN runtime thread `memory_local.rs` + routing `Effect::LocalMemory` / `AppEvent::LocalMemory` in `app.rs`/`runtime.rs`; notes load once at project entry. Ledger rules (S1a3): a ledger file that is not valid UTF-8 maps to `Damaged`, and a `Damaged` or `Newer` ledger is reported, trusts no note and is never rewritten (a save is refused with a visible line).
 - [ ] 1a.11 REFACTOR; CHANGELOG `[Unreleased]` entry. Run exit gate. Split by slice: S1a (store core), S1a2 (gitignore, port), S1a3 (thread), S1a4 (app routing, CHANGELOG for the load at chat open); each runs the exit gate on its own PR.
 
 ## S1b: Screen, PII, save pipeline (base: main after S1a)
@@ -164,9 +164,8 @@ Task rule for C12: the existing engram-down notice path stays as is; the mirror 
 - [ ] 6.1 After the last slice merges: close #431 with a link to the merged PRs; comment on #366 that only the Drive sync remains.
 - [ ] 6.2 Remove all `../lazarobox-shell-<slice>` worktrees (`scripts/clean-builds.sh`).
 
-### Follow-ups from #836 review (for S1a3)
+### Follow-ups from #836 review (S1a3 status)
 
-- `read_regular` opens without `O_NOFOLLOW`; consider adding it for the rules files.
-- In a linked worktree, `.git` is a file: `.git/info/exclude` must be found through the common git dir.
-- Windows: the `.gitignore` edit uses unix-only flags; add a `cfg` fallback.
-- Add `.lzr/*` and similar partial-pattern cases to the gitignore decision tests.
+- Done in S1a3: `.git/info/exclude` is found through a `.git` file (submodule, linked checkout) and its `commondir`; `.lzr/*`, `**/.lzr`, `.lzr/**` and `.lzr/memory/notes/` count as ignoring the folder.
+- Left: `read_regular` opens without `O_NOFOLLOW`. Adding it there would refuse a symlinked `AGENTS.md` or rules file that users keep on purpose; it needs a decision on which callers must refuse links (the `.gitignore` reads already do).
+- Left: Windows. `bounded_read.rs` and `gitignore.rs` use `std::os::unix` and `libc` unconditionally, like the rest of the runtime; a `cfg` fallback belongs to a crate-wide Windows pass, not to this edit.
