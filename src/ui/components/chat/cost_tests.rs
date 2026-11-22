@@ -1003,6 +1003,7 @@ fn billed() -> Vec<(String, crate::core::ai::chat::usage_view::Billing)> {
     vec![
         ("claude".into(), Billing::Subscription),
         ("codex".into(), Billing::PerToken),
+        ("gemini".into(), Billing::Subscription),
     ]
 }
 

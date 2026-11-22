@@ -2,7 +2,7 @@
 source: src/ui/components/chat/cost_tests.rs
 expression: "models_block(&models_view(models_usage()), 50)"
 ---
-Models · by total tokens
+Models · by tokens
 provider    model                          in  out
 ⬡ Local     llama3:8b                    4.0k 1.0k
 ✻ Anthropic sonnet                       2.4k  600

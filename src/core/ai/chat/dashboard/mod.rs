@@ -16,8 +16,8 @@ pub use heat::{
 };
 pub use kpi::{Delta, Kpi, bucket, groups};
 pub use tables::{
-    Billed, MODELS_MAX, ModelRow, NO_TOKENS, Share, Table, Usd, apportion, blocks_rows, models,
-    segments, share_legend, shares, table,
+    Billed, MODELS_MAX, ModelRow, NO_TOKENS, Share, Table, Usd, apportion, blocks_rows, cells,
+    models, segments, share_legend, shares, table,
 };
 
 use super::usage_view::UsageRow;

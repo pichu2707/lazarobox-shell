@@ -25,6 +25,7 @@ fn billed() -> Billed {
     vec![
         ("claude".to_owned(), Billing::Subscription),
         ("codex".to_owned(), Billing::PerToken),
+        ("gemini".to_owned(), Billing::Subscription),
     ]
 }
 
@@ -209,7 +210,7 @@ fn many_models_are_cut_with_a_visible_count() {
     assert_eq!(table(&rows[..MODELS_MAX], 100).notes, Vec::<String>::new());
     // The hidden models still count in the shares.
     let all: u64 = shares(&rows).iter().map(|s| s.tokens).sum();
-    assert_eq!(all, rows.iter().filter_map(|r| r.total).sum::<u64>());
+    assert_eq!(all, rows.iter().filter_map(|r| r.tokens).sum::<u64>());
 }
 
 #[test]
@@ -228,7 +229,7 @@ fn the_segments_always_fill_the_bar_and_a_small_provider_keeps_a_cell() {
             vec![u64::MAX, u64::MAX, 1],
             vec![3],
         ] {
-            let cells = apportion(&values, width);
+            let cells = cells(&values, width);
             assert_eq!(cells.iter().sum::<u64>(), width, "{values:?}");
             assert!(
                 cells.iter().all(|c| *c >= 1),
@@ -236,8 +237,8 @@ fn the_segments_always_fill_the_bar_and_a_small_provider_keeps_a_cell() {
             );
         }
     }
-    assert_eq!(apportion(&[0, 5], 10), [0, 10]);
-    assert_eq!(apportion(&[0, 0], 10), [0, 0]);
+    assert_eq!(cells(&[0, 5], 10), [0, 10]);
+    assert_eq!(cells(&[0, 0], 10), [0, 0]);
 }
 
 #[test]
@@ -266,7 +267,8 @@ fn models_of_one_provider_share_one_segment() {
 #[test]
 fn zero_or_unknown_tokens_make_no_segment() {
     let mut gap = used("ollama", Some("a"), 0, 0);
-    gap.total = None;
+    gap.input = None;
+    gap.output = None;
     assert!(shares(&built(vec![gap])).is_empty());
     assert!(shares(&built(vec![used("ollama", Some("a"), 0, 0)])).is_empty());
     assert!(shares(&[]).is_empty());
@@ -307,6 +309,93 @@ fn the_blocks_take_no_rows_without_models_and_grow_with_them() {
     assert_eq!(blocks_rows(&[], &[], 100), 0);
     let r = priced();
     let s = shares(&r);
-    assert!(blocks_rows(&r, &s, 100) >= 9);
-    assert!(blocks_rows(&r, &s, 40) >= blocks_rows(&r, &s, 100));
+    // Gap, title, header, 2 rows, gap, title, bar and one legend line.
+    assert_eq!(blocks_rows(&r, &s, 100), 9);
+    // A 70-column pane adds the list-price note.
+    assert_eq!(blocks_rows(&r, &s, 70), 10);
+    // No tokens: the bar and legend are one line.
+    assert_eq!(blocks_rows(&r, &[], 100), 8);
+}
+
+#[test]
+fn an_input_only_record_counts_in_the_bar_the_order_and_the_percent() {
+    let mut only = used("ollama", Some("a"), 900, 0);
+    only.output = None;
+    only.total = None;
+    only.partial = true;
+    let rows = built(vec![only, used("claude", Some("b"), 50, 50)]);
+    assert_eq!(rows[0].model, "a");
+    assert_eq!(rows[0].tokens, Some(900));
+    let s = shares(&rows);
+    assert_eq!(
+        (s[0].provider, s[0].percent, s[0].partial),
+        (Provider::Local, 90, true)
+    );
+    assert!(!s[1].partial);
+    let text = share_legend(&s, 100).join(" ");
+    assert!(
+        text.contains("⬡ Local ~90%") && text.contains("✻ Anthropic 10%"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_provider_with_a_complete_and_an_input_only_record_adds_both() {
+    let mut only = used("claude", Some("a"), 300, 0);
+    only.output = None;
+    only.total = None;
+    only.partial = true;
+    let rows = built(vec![only, used("claude", Some("b"), 100, 100)]);
+    let s = shares(&rows);
+    assert_eq!((s[0].tokens, s[0].partial), (500, true));
+}
+
+#[test]
+fn when_every_record_is_input_only_the_bar_still_has_a_share() {
+    let mut only = used("ollama", Some("a"), 700, 0);
+    only.output = None;
+    only.total = None;
+    only.partial = true;
+    let s = shares(&built(vec![only]));
+    assert_eq!(s.len(), 1);
+    assert_eq!(s[0].percent, 100);
+    assert_ne!(blocks_rows(&built(vec![]), &s, 100), 1);
+}
+
+#[test]
+fn a_tiny_share_reads_under_one_percent_and_keeps_its_cell() {
+    let rows = built(vec![
+        used("claude", Some("a"), 1_000_000, 0),
+        used("foo", Some("b"), 1, 0),
+    ]);
+    let s = shares(&rows);
+    assert_eq!(s.iter().map(|x| x.percent).sum::<u64>(), 100);
+    assert_eq!(s[1].percent, 0);
+    assert!(share_legend(&s, 100).join(" ").contains("⬦ Other <1%"));
+    assert_eq!(segments(&s, 60)[1].1, 1);
+    assert_eq!(apportion(&[1_000_000, 1], 100), [100, 0]);
+}
+
+#[test]
+fn equal_totals_keep_the_engine_and_model_order() {
+    let rows = built(vec![
+        used("ollama", Some("b"), 5, 5),
+        used("ollama", Some("a"), 5, 5),
+        used("lmstudio", Some("z"), 5, 5),
+    ]);
+    let order: Vec<&str> = rows.iter().map(|r| r.model.as_str()).collect();
+    assert_eq!(order, ["z", "a", "b"]);
+}
+
+#[test]
+fn an_engine_missing_from_billed_never_shows_dollars() {
+    let mut claude = used("claude", Some("sonnet"), 5, 5);
+    claude.cost_micros = Some(500_000);
+    claude.costed = 2;
+    let rows = models(&data(vec![claude]), Range::All, &Vec::new());
+    assert!(rows[0].usd.is_none());
+    assert!(
+        !shown(&rows, 100).contains('$') || shown(&rows, 100).lines().next().unwrap().contains('$')
+    );
+    assert!(!table(&rows, 100).rows[0].1.contains('$'));
 }

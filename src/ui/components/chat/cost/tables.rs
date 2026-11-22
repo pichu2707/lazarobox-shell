@@ -22,7 +22,7 @@ pub(super) fn render(
     let base = Style::default().bg(theme.bg_base);
     let (muted, w) = (base.fg(theme.text_muted), usize::from(width));
     let t = table(&model.models, w);
-    buf.set_stringn(0, y + 1, "Models · by total tokens", w, muted);
+    buf.set_stringn(0, y + 1, "Models · by tokens", w, muted);
     buf.set_stringn(0, y + 2, &t.head, w, muted);
     let mut at = y + 3;
     for (provider, line) in &t.rows {

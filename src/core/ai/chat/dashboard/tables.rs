@@ -45,7 +45,8 @@ pub struct ModelRow {
     pub model: String,
     pub input: Option<u64>,
     pub output: Option<u64>,
-    pub total: Option<u64>,
+    /// Known input plus output, as the table and the cards add them.
+    pub tokens: Option<u64>,
     pub turns: u64,
     /// A record was cut or lacked its input or output.
     pub partial: bool,
@@ -53,7 +54,7 @@ pub struct ModelRow {
     pub usd: Option<Usd>,
 }
 
-/// The pairs of the range, biggest total first (unknown totals last).
+/// The pairs of the range, most tokens first (unknown last).
 pub fn models(data: &UsageData, range: Range, billed: &Billed) -> Vec<ModelRow> {
     let to = range.days().unwrap_or(u32::MAX);
     let mut by: BTreeMap<(String, String), ModelRow> = BTreeMap::new();
@@ -77,7 +78,7 @@ pub fn models(data: &UsageData, range: Range, billed: &Billed) -> Vec<ModelRow> 
                 model,
                 input: None,
                 output: None,
-                total: None,
+                tokens: None,
                 turns: 0,
                 partial: false,
                 usd,
@@ -85,14 +86,14 @@ pub fn models(data: &UsageData, range: Range, billed: &Billed) -> Vec<ModelRow> 
         add_row(row, r);
     }
     let mut rows: Vec<ModelRow> = by.into_values().collect();
-    rows.sort_by_key(|m| Reverse(m.total));
+    rows.sort_by_key(|m| Reverse(m.tokens));
     rows
 }
 
 fn add_row(row: &mut ModelRow, r: &UsageRow) {
     row.input = add(row.input, r.input);
     row.output = add(row.output, r.output);
-    row.total = add(row.total, r.total);
+    row.tokens = add(row.tokens, add(r.input, r.output));
     row.turns = row.turns.saturating_add(r.turns);
     row.partial |= incomplete(r);
     if let Some(usd) = &mut row.usd {
@@ -106,34 +107,38 @@ fn add_row(row: &mut ModelRow, r: &UsageRow) {
 pub struct Share {
     pub provider: Provider,
     pub tokens: u64,
-    /// Whole percent; the shares add up to exactly 100.
+    /// Whole percent by the largest remainder, so the shares add up to
+    /// exactly 100; a tiny share can be 0 and reads `<1%`.
     pub percent: u64,
+    /// Some record of the provider lacked its input or output.
+    pub partial: bool,
 }
 
 /// The providers with tokens, biggest first. Every model counts, shown or not.
 pub fn shares(models: &[ModelRow]) -> Vec<Share> {
-    let mut by: Vec<(Provider, u64)> = Provider::ALL.map(|p| (p, 0)).to_vec();
+    let mut by: Vec<(Provider, u64, bool)> = Provider::ALL.map(|p| (p, 0, false)).to_vec();
     for m in models {
-        if let Some((_, sum)) = by.iter_mut().find(|(p, _)| *p == m.provider) {
-            *sum = sum.saturating_add(m.total.unwrap_or(0));
+        if let Some((_, sum, partial)) = by.iter_mut().find(|(p, ..)| *p == m.provider) {
+            *sum = sum.saturating_add(m.tokens.unwrap_or(0));
+            *partial |= m.partial;
         }
     }
-    by.retain(|(_, tokens)| *tokens > 0);
-    by.sort_by_key(|(_, tokens)| Reverse(*tokens));
-    let percents = apportion(&by.iter().map(|(_, t)| *t).collect::<Vec<_>>(), 100);
+    by.retain(|(_, tokens, _)| *tokens > 0);
+    by.sort_by_key(|(_, tokens, _)| Reverse(*tokens));
+    let percents = apportion(&by.iter().map(|(_, t, _)| *t).collect::<Vec<_>>(), 100);
     by.into_iter()
         .zip(percents)
-        .map(|((provider, tokens), percent)| Share {
+        .map(|((provider, tokens, partial), percent)| Share {
             provider,
             tokens,
             percent,
+            partial,
         })
         .collect()
 }
 
 /// Splits `units` among `values` in proportion, by the largest remainder, so
-/// the parts add up to `units` exactly. A value above 0 keeps at least one
-/// unit while there is a unit to take from a bigger part.
+/// the parts add up to `units` exactly. A small part can get none.
 pub fn apportion(values: &[u64], units: u64) -> Vec<u64> {
     let sum: u128 = values.iter().map(|v| u128::from(*v)).sum();
     if sum == 0 {
@@ -150,13 +155,16 @@ pub fn apportion(values: &[u64], units: u64) -> Vec<u64> {
     for &i in order.iter().take(left) {
         out[i] += 1;
     }
+    out
+}
+
+/// [`apportion`], but a value above 0 keeps at least one unit while there is
+/// a unit to take from a bigger part: a provider with tokens keeps a cell.
+pub fn cells(values: &[u64], units: u64) -> Vec<u64> {
+    let mut out = apportion(values, units);
     for i in 0..values.len() {
-        let biggest = (0..values.len()).max_by_key(|&j| out[j]);
-        if values[i] > 0
-            && out[i] == 0
-            && let Some(big) = biggest
-            && out[big] > 1
-        {
+        let big = (0..values.len()).max_by_key(|&j| out[j]).unwrap_or(0);
+        if values[i] > 0 && out[i] == 0 && out[big] > 1 {
             out[big] -= 1;
             out[i] = 1;
         }
@@ -167,7 +175,7 @@ pub fn apportion(values: &[u64], units: u64) -> Vec<u64> {
 /// The cells of each provider in a bar `width` columns wide.
 pub fn segments(shares: &[Share], width: usize) -> Vec<(Provider, usize)> {
     let tokens: Vec<u64> = shares.iter().map(|s| s.tokens).collect();
-    let cells = apportion(&tokens, u64::try_from(width).unwrap_or(0));
+    let cells = cells(&tokens, u64::try_from(width).unwrap_or(0));
     shares
         .iter()
         .zip(cells)
@@ -179,12 +187,12 @@ pub fn segments(shares: &[Share], width: usize) -> Vec<(Provider, usize)> {
 pub fn share_legend(shares: &[Share], width: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for s in shares {
-        let item = format!(
-            "{} {} {}%",
-            s.provider.glyph(),
-            s.provider.label(),
-            s.percent
-        );
+        let pct = match s.percent {
+            0 => "<1".to_owned(),
+            n => n.to_string(),
+        };
+        let mark = if s.partial { "~" } else { "" };
+        let item = format!("{} {} {mark}{pct}%", s.provider.glyph(), s.provider.label());
         match lines.last_mut() {
             Some(line) if line.width() + 3 + item.width() <= width => {
                 line.push_str(" · ");

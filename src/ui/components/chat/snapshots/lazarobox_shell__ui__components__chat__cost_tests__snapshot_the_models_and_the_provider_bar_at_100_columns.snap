@@ -2,12 +2,12 @@
 source: src/ui/components/chat/cost_tests.rs
 expression: "models_block(&models_view(models_usage()), 100)"
 ---
-Models · by total tokens
+Models · by tokens
 provider    model                                        in  out turns $
 ⬡ Local     llama3:8b                                  4.0k 1.0k     2
 ✻ Anthropic sonnet                                     2.4k  600     2 $0.5000 list-price equivalent
 ❂ OpenAI    gpt-5                                       960  240     2 $0.0049
-✦ Google    unknown                                     720  180     2
+✦ Google    unknown                                     720  180     2 n/a
 ⬦ Other     mixed                                       320   80     2
 
 Providers · share of tokens

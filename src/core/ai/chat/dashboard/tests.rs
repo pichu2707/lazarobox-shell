@@ -349,9 +349,9 @@ fn the_ranges_cycle_both_ways_and_have_a_label() {
 fn the_height_is_the_selector_plus_the_card_rows_of_the_tier() {
     let full = build(vec![input(0, 1)], Range::Week);
     // Selector and gap, then 4-row cards: one row, 2x2 with a gap, a column.
-    // The models take a gap, a title, the header, one row, a gap, a title and
-    // the line that says no tokens were reported.
-    let blocks = CHART_ROWS + HEAT_ROWS + 7;
+    // The models take a gap, a title, the header, one row, a gap, a title, the
+    // bar and one legend line: an input-only record has tokens.
+    let blocks = CHART_ROWS + HEAT_ROWS + 8;
     assert_eq!(full.height(100), 2 + 4 + blocks);
     assert_eq!(full.height(70), 2 + 9 + blocks);
     assert_eq!(full.height(50), 2 + 19 + blocks);
@@ -678,7 +678,7 @@ fn the_heat_uses_buckets_under_60_columns_only() {
 fn the_heat_adds_its_rows_to_the_height_of_the_dashboard() {
     let with = heat_of(vec![cell(0, 0, 0, 1)], Range::Week);
     let without = build(vec![], Range::Week);
-    assert_eq!(with.height(100), 2 + CARD_ROWS + CHART_ROWS + HEAT_ROWS + 7);
+    assert_eq!(with.height(100), 2 + CARD_ROWS + CHART_ROWS + HEAT_ROWS + 8);
     assert_eq!(without.height(100), 2 + 1);
 }
 
