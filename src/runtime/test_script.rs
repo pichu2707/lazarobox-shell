@@ -7,14 +7,7 @@
 //! is the same), so the helper closes its fd and then waits until no copy of
 //! it is left anywhere.
 
-use std::{
-    fs,
-    io::Write,
-    os::unix::fs::OpenOptionsExt,
-    path::Path,
-    thread,
-    time::{Duration, Instant},
-};
+use std::{fs, io::Write, os::unix::fs::OpenOptionsExt, path::Path, thread};
 
 /// Writes `text` to `path` as an executable (`mode`) and returns once no
 /// process holds the file open for writing, so running it cannot hit ETXTBSY.
@@ -65,6 +58,7 @@ fn wait_until_unshared(path: &Path) {
 /// leases, EACCES, EPERM...): waiting cannot help, so it returns at once.
 #[cfg(target_os = "linux")]
 fn wait_while_shared(path: &Path, mut lease: impl FnMut() -> Result<(), i32>) {
+    use std::time::{Duration, Instant};
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match lease() {
