@@ -90,7 +90,7 @@ Task rule for C12: the existing engram-down notice path stays as is; the mirror 
 - [x] 1a.8 GREEN `local/{mod,note,area,gitignore,port,ledger}.rs`: schema, `LocalCmd`/`LocalReply` carrying typed outcomes (saved, skipped, foreign count, unreadable count, gitignore result, read-only, no-git).
 - [x] 1a.9 GREEN `workspace::memory_root(cwd)`, `config.rs` local switch, `paths.rs` deny entries.
 - [x] (S1a2, S1a3) 1a.10 GREEN runtime thread `memory_local.rs` + routing `Effect::LocalMemory` / `AppEvent::LocalMemory` in `app.rs`/`runtime.rs`; notes load once at project entry. Ledger rules (S1a3): a ledger file that is not valid UTF-8 maps to `Damaged`, and a `Damaged` or `Newer` ledger is reported, trusts no note and is never rewritten (a save is refused with a visible line).
-- [ ] 1a.11 REFACTOR; CHANGELOG `[Unreleased]` entry. Run exit gate. Split by slice: S1a (store core), S1a2 (gitignore, port), S1a3 (thread), S1a4 (app routing, CHANGELOG for the load at chat open); each runs the exit gate on its own PR.
+- [x] 1a.11 REFACTOR; CHANGELOG `[Unreleased]` entry. Run exit gate. Split by slice: S1a (store core), S1a2 (gitignore, port), S1a3 (thread), S1a4 (app routing, CHANGELOG for the load at chat open); each runs the exit gate on its own PR.
 
 ## S1b: Screen, PII, save pipeline (base: main after S1a)
 
@@ -172,12 +172,12 @@ Task rule for C12: the existing engram-down notice path stays as is; the mirror 
 
 ### Follow-ups from #843 review (for S1a4)
 
-- Cap the number of note files read per load (design: 5,000 notes rank within a time bound) and show a visible line when the cap is hit. It needs a new field on `LocalReply::Loaded`, which did not fit the S1a3 budget.
+- Done in S1a4: note files read per load are capped at 5,000 (`MAX_NOTES`); `LocalReply::Loaded.capped` counts the rest and a visible line says so. Ranking within a time bound is left for the slice that injects notes.
 - Done in S1a3 after review: private files 0600 and folders 0700 (a wider existing folder is tightened), flock on `<data>/memory.lock` around the ledger and machine-id, panic and full-channel failures reach the pane, a regenerated machine id is said, linked `.lzr`/`memory`/`notes` folders and linked note files are refused, `gitdir:`/`commondir` are trusted only inside a real `.git`.
 
 ### S1a4 required and remaining minors (from the #843 reviews)
 
-- REQUIRED: S1a4 must consume `LocalReply::Saved.notice` and every thread failure reply, and show them as visible lines in the pane, with tests.
+- Done in S1a4 (REQUIRED): the app consumes `LocalReply::Saved.notice` and every thread failure reply, and shows them as visible lines in the pane, with tests.
 - Minor: a `.tmp` file is leaked after a panic in the middle of a write.
 - Minor: the fallback reply threads for a full reply channel are unbounded.
 - Minor: `create_dir_all` after `plain_store` is a TOCTOU window (same-user threat).

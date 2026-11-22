@@ -4850,6 +4850,28 @@ mod tests {
         panes.shutdown_store(STORE_JOIN_BOUND);
     }
 
+    #[tokio::test]
+    async fn a_local_memory_effect_reaches_its_thread_and_the_reply_comes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (panes, _rx, _rec) = fake_panes(None);
+        let (tx, mut rx) = mpsc::channel(MEMORY_CHANNEL);
+        let mut panes =
+            panes.with_local_memory(memory_local::spawn(Some(dir.path().join("data")), None, tx));
+        let pane = PaneId::for_test(2);
+        panes.apply(vec![Effect::LocalMemory(
+            crate::core::ai::memory::local::port::LocalCmd::Load {
+                pane,
+                epoch: 0,
+                cwd: dir.path().to_string_lossy().into_owned(),
+            },
+        )]);
+        let reply = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+        assert!(
+            matches!(reply, Ok(Some(LocalReply::Loaded { root: None, .. }))),
+            "{reply:?}"
+        );
+    }
+
     #[test]
     fn a_store_effect_without_a_store_thread_is_ignored() {
         let (mut panes, _rx, _rec) = fake_panes(None);

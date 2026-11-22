@@ -68,6 +68,7 @@ fn loaded(epoch: u32, root: bool, foreign: usize, unreadable: usize) -> AppEvent
         foreign,
         unreadable,
         newer: 0,
+        capped: 0,
         ledger: None,
     })
 }
@@ -142,6 +143,7 @@ fn a_save_outcome_shows_its_lines_and_never_reaches_the_model() {
         id: "n-1".into(),
         cut: false,
         gitignore: Some(GitignoreOutcome::Added),
+        notice: None,
     }));
     a.update(AppEvent::LocalMemory(LocalReply::Failed {
         pane: chat_id(),
@@ -164,5 +166,90 @@ fn a_chat_without_a_folder_says_there_is_no_git_project() {
     assert_eq!(
         systems(&a),
         ["memory: no git repository here; nothing is remembered for this folder"]
+    );
+}
+
+fn failed(failure: Failure) -> AppEvent {
+    AppEvent::LocalMemory(LocalReply::Failed {
+        pane: chat_id(),
+        failure,
+    })
+}
+
+#[test]
+fn a_save_notice_is_a_visible_line() {
+    let (mut a, _) = opened(true);
+    a.update(AppEvent::LocalMemory(LocalReply::Saved {
+        pane: chat_id(),
+        id: "n-1".into(),
+        cut: false,
+        gitignore: None,
+        notice: Some("memory: the machine id was made again".into()),
+    }));
+    assert_eq!(systems(&a), ["memory: the machine id was made again"]);
+    assert!(a.take_dirty());
+}
+
+#[test]
+fn a_thread_that_cannot_start_or_died_says_so() {
+    let (mut a, _) = opened(true);
+    a.update(failed(Failure::Unavailable(
+        "the memory thread stopped".into(),
+    )));
+    a.update(failed(Failure::Unavailable(
+        "an internal error stopped this command".into(),
+    )));
+    assert_eq!(
+        systems(&a),
+        [
+            "memory: not available (the memory thread stopped); notes are not read or saved",
+            "memory: not available (an internal error stopped this command); notes are not read or saved",
+        ]
+    );
+    assert!(a.take_dirty());
+}
+
+#[test]
+fn a_write_failure_says_the_notes_are_not_saved() {
+    let (mut a, _) = opened(true);
+    a.update(failed(Failure::Io("disk full".into())));
+    assert_eq!(
+        systems(&a),
+        ["memory: cannot write .lzr/ (disk full); notes from this chat are not saved"]
+    );
+}
+
+#[test]
+fn a_failure_for_a_closed_pane_is_dropped_without_a_redraw() {
+    let (mut a, _) = opened(true);
+    a.take_dirty();
+    let gone = AppEvent::LocalMemory(LocalReply::Failed {
+        pane: PaneId::FIRST,
+        failure: Failure::Unavailable("x".into()),
+    });
+    a.update(gone);
+    assert!(!a.take_dirty());
+}
+
+#[test]
+fn a_load_that_hit_the_note_cap_says_how_many_were_not_read() {
+    let (mut a, _) = opened(true);
+    a.update(AppEvent::LocalMemory(LocalReply::Loaded {
+        pane: chat_id(),
+        epoch: 0,
+        root: Some(Root {
+            store: "/srv/app".into(),
+            area: ".".into(),
+        }),
+        notes: Vec::new(),
+        foreign: 0,
+        unreadable: 0,
+        newer: 0,
+        capped: 3,
+        ledger: None,
+    }));
+    assert_eq!(
+        systems(&a),
+        ["memory: only the first 5000 notes in .lzr/ were read; 3 more were left out"]
     );
 }
