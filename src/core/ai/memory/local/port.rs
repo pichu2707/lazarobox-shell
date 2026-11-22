@@ -140,7 +140,7 @@ impl LocalReply {
                 ),
                 (
                     *newer,
-                    format!("{} made by a newer lazarobox were skipped", notes(*newer)),
+                    format!("memory: skipped {} made by a newer lazarobox", notes(*newer)),
                 ),
                 (
                     *capped,
@@ -258,13 +258,21 @@ mod tests {
     }
 
     #[test]
+    fn one_note_from_a_newer_lazarobox_is_singular() {
+        assert_eq!(
+            loaded(true, 0, 0, 1).lines(),
+            ["memory: skipped 1 note made by a newer lazarobox"]
+        );
+    }
+
+    #[test]
     fn foreign_unreadable_and_newer_notes_each_get_a_line() {
         assert_eq!(
             loaded(true, 5, 2, 3).lines(),
             [
                 "memory: 5 notes from others ignored (not created on this machine)",
                 "memory: skipped 2 unreadable notes in .lzr/",
-                "3 notes made by a newer lazarobox were skipped",
+                "memory: skipped 3 notes made by a newer lazarobox",
             ]
         );
         assert_eq!(

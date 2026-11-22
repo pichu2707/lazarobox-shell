@@ -253,3 +253,14 @@ fn a_load_that_hit_the_note_cap_says_how_many_were_not_read() {
         ["memory: only the first 5000 notes in .lzr/ were read; 3 more were left out"]
     );
 }
+
+#[test]
+fn a_dead_thread_says_so_once_however_many_loads_it_fails() {
+    let (mut a, _) = opened(true);
+    let dead = || failed(Failure::Unavailable("the memory thread stopped".into()));
+    a.update(dead());
+    a.update(dead());
+    assert_eq!(systems(&a).len(), 1);
+    a.update(failed(Failure::Unavailable("another reason".into())));
+    assert_eq!(systems(&a).len(), 2);
+}

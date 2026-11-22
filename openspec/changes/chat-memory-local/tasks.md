@@ -178,6 +178,7 @@ Task rule for C12: the existing engram-down notice path stays as is; the mirror 
 ### S1a4 required and remaining minors (from the #843 reviews)
 
 - Done in S1a4 (REQUIRED): the app consumes `LocalReply::Saved.notice` and every thread failure reply, and shows them as visible lines in the pane, with tests.
+- Follow-up (S1b, ranking): `note_files` lists and sorts every file name before the 5,000 cap applies, so the listing itself is unbounded; bound it together with the ranking within a time bound.
 - Minor: a `.tmp` file is leaked after a panic in the middle of a write.
 - Minor: the fallback reply threads for a full reply channel are unbounded.
 - Minor: `create_dir_all` after `plain_store` is a TOCTOU window (same-user threat).

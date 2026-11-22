@@ -3,7 +3,7 @@
 //! visible, display-only line.
 
 use super::*;
-use crate::core::ai::memory::local::port::{LocalCmd, LocalReply, NO_GIT_LINE};
+use crate::core::ai::memory::local::port::{Failure, LocalCmd, LocalReply, NO_GIT_LINE};
 
 impl App {
     /// A conversation view opened (or changed folder): asks for the notes of
@@ -42,7 +42,25 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
-        let lines = reply.lines();
+        // A thread that cannot answer fails every load the same way: one chat
+        // says it once.
+        let said = matches!(
+            reply,
+            LocalReply::Failed {
+                failure: Failure::Unavailable(_),
+                ..
+            }
+        );
+        let lines: Vec<String> = reply
+            .lines()
+            .into_iter()
+            .filter(|line| {
+                !said
+                    || !chat
+                        .entries()
+                        .contains(&crate::core::ai::chat::Entry::System(line.clone()))
+            })
+            .collect();
         self.dirty |= !lines.is_empty();
         for line in lines {
             chat.push_system(line);

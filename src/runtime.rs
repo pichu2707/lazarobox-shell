@@ -111,7 +111,10 @@ use crate::{
                 store::{StoreCmd, StoreReply},
             },
             config::{AiConfig, NotifyMode, Profile},
-            memory::{local::port::LocalReply, port::MemReply},
+            memory::{
+                local::port::{Failure, LocalReply},
+                port::MemReply,
+            },
             orchestra::SessionKey,
         },
         config::{Config, config_path},
@@ -2348,6 +2351,11 @@ impl Panes {
                 Effect::LocalMemory(cmd) => {
                     if let Some(memory) = self.local_memory.as_ref() {
                         memory.send(cmd);
+                    } else {
+                        feedback.push(AppEvent::LocalMemory(LocalReply::Failed {
+                            pane: cmd.pane(),
+                            failure: Failure::Unavailable("no memory thread".to_owned()),
+                        }));
                     }
                 }
                 // Returns at once: the thread owns the database, and a slow
@@ -4869,6 +4877,28 @@ mod tests {
         assert!(
             matches!(reply, Ok(Some(LocalReply::Loaded { root: None, .. }))),
             "{reply:?}"
+        );
+    }
+
+    #[test]
+    fn a_local_memory_effect_without_its_thread_is_answered_with_a_failure() {
+        use crate::core::ai::memory::local::port::{Failure, LocalCmd};
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let pane = PaneId::for_test(2);
+        let (_, feedback) = panes.apply(vec![Effect::LocalMemory(LocalCmd::Load {
+            pane,
+            epoch: 0,
+            cwd: "/x".into(),
+        })]);
+        assert!(
+            matches!(
+                feedback.as_slice(),
+                [AppEvent::LocalMemory(LocalReply::Failed {
+                    failure: Failure::Unavailable(_),
+                    ..
+                })]
+            ),
+            "{feedback:?}"
         );
     }
 
