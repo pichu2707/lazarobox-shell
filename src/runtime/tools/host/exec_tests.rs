@@ -582,7 +582,7 @@ async fn a_worker_command_asks_with_its_key_and_label() {
 // The helper is a shell script that runs what follows `--`, so these tests
 // need no Landlock; the real helper is covered by `runner` and `tests/jail.rs`.
 
-use std::{ffi::OsString, os::unix::fs::PermissionsExt, time::Duration};
+use std::{ffi::OsString, time::Duration};
 
 use super::gate::RunGate;
 use crate::core::ai::tools::allow::Program;
@@ -608,8 +608,7 @@ const CARGO: &str = "#!/bin/sh\n\
 
 fn script(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, text).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(path, text);
 }
 
 /// A world where `cargo` is a script under `$CARGO_HOME/bin` and the helper

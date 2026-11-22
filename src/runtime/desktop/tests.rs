@@ -476,8 +476,10 @@ fn finding_candidates_never_runs_a_terminal() {
     let marker = fx.home.path().join("ran");
     for name in ["kitty", "foot", "zutty"] {
         let path = bin.join(name);
-        fs::write(&path, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(
+            &path,
+            format!("#!/bin/sh\ntouch {}\n", marker.display()),
+        );
     }
     let path_var = std::env::join_paths([&bin]).unwrap();
     let lookup = |cmd: &str| which(cmd, Some(&path_var));
@@ -511,8 +513,7 @@ fn a_symlinked_alternative_is_offered_under_its_target_name() {
     let bin = fx.home.path().join("bin");
     fs::create_dir_all(&bin).unwrap();
     let real = bin.join("konsole");
-    fs::write(&real, "#!/bin/sh\n").unwrap();
-    fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&real, "#!/bin/sh\n");
     // `konsole` is not on PATH, only the alternative that points at it.
     let alt_dir = fx.home.path().join("alt");
     fs::create_dir_all(&alt_dir).unwrap();

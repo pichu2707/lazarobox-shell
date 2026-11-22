@@ -227,7 +227,7 @@ pub async fn resolve(process: OsString, shell: Option<OsString>, limit: Duration
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, time::Instant};
+    use std::{fs, time::Instant};
 
     use super::*;
 
@@ -241,8 +241,7 @@ mod tests {
 
     fn fake_shell(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(&path, format!("#!/bin/sh\n{body}\n"));
         path
     }
 

@@ -197,8 +197,6 @@ async fn the_drain_reads_what_is_left_and_stops_at_its_bound_when_the_pipe_stays
 
 // --- the jailed run: scrub, private folders, integrity, ring ---
 
-use std::os::unix::fs::PermissionsExt;
-
 use crate::core::ai::jail::{NetBind, Rlimits};
 use crate::core::ai::tools::allow::Program;
 use crate::runtime::tools::integrity::Kind;
@@ -221,8 +219,7 @@ fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path().canonicalize().unwrap();
     let helper = base.join("helper");
-    std::fs::write(&helper, HELPER).unwrap();
-    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&helper, HELPER);
     let root = base.join("project");
     std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
     std::fs::write(root.join(".git/config"), "[core]\n").unwrap();

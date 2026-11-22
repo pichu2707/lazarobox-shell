@@ -1087,8 +1087,7 @@ mod tests {
         // test often sets to the fake bin dir alone: give the fixture the
         // system tools back.
         let text = format!("#!/bin/sh\nPATH=\"$PATH:/usr/bin:/bin\"\n{body}\n");
-        fs::write(&path, text).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+        crate::runtime::test_script::write_executable_mode(&path, text, mode);
         path
     }
 
@@ -1963,8 +1962,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // No prelude: the script prints the PATH it was started with.
         let script = dir.path().join("claude");
-        fs::write(&script, "#!/bin/sh\necho \"$PATH\"\n").unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(&script, "#!/bin/sh\necho \"$PATH\"\n");
         let got = version(&script, OsStr::new("/opt/login/bin:/usr/bin")).await;
         assert_eq!(got, Some(b"/opt/login/bin:/usr/bin\n".to_vec()));
     }

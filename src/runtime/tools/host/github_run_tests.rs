@@ -6,7 +6,6 @@
 use std::{
     ffi::OsString,
     fs,
-    os::unix::fs::PermissionsExt,
     path::Path,
     process::Command,
     sync::{Mutex, atomic::AtomicU64},
@@ -87,8 +86,7 @@ fn rig_core(
         dir = dir.display()
     );
     let program = dir.join("gh");
-    fs::write(&program, script).unwrap();
-    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&program, script);
     let host = Arc::new(ToolHost {
         home: Some(home.into()),
         xdg_config_home: None,

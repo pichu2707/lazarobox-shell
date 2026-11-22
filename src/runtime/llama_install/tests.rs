@@ -779,11 +779,9 @@ async fn the_download_dir_is_created_private() {
 
 /// Writes an executable `<dir>/llama-server`.
 fn put_server(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).unwrap();
     let file = dir.join("llama-server");
-    std::fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&file, "#!/bin/sh\nexit 0\n");
     file
 }
 
