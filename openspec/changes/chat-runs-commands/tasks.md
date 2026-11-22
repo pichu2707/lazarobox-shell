@@ -55,11 +55,11 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 
 ## S1a: Settle core (base: main)
 
-- [ ] 1a.1 RED `settle.rs` tests: `Limits::Follow` byte-identical to today (10 s, any key `UserTyped`; #819/#824/#841 suites untouched); `Limits::Run` step order (alt screen, typed, settled, waiting, `WAIT_CAP`, `CUT_OFF`).
-- [ ] 1a.2 RED waiting phase: enters after 1 s quiet with `echo_off == Some(true)`, foreground not shell, no alt screen; `take_waiting()` true once; suspends cut-off; leaves on output or echo on; `sleep 40` (echo on) never waits.
-- [ ] 1a.3 RED clocks: `CUT_OFF` 30 s from the later of write, end of wait, last Enter; `StillRunning` (or `Unconfirmed` if foreground/anchor unknown); `NoInput` at 5 min.
-- [ ] 1a.4 RED `user_key(Key{line,enter,interrupt})`: attended flag, open range grows with probes, Enter/Ctrl+C/Ctrl+D close it; hidden cursor fails closed.
-- [ ] 1a.5 GREEN `settle.rs` (`Limits`, `Key`, `End::{StillRunning,NoInput}`, phase, ranges, `Settle::run`). CHANGELOG. Exit gate.
+- [x] 1a.1 RED `settle.rs` tests: `Limits::Follow` byte-identical to today (10 s, any key `UserTyped`; #819/#824/#841 suites untouched); `Limits::Run` step order (alt screen, typed, settled, waiting, `WAIT_CAP`, `CUT_OFF`).
+- [x] 1a.2 RED waiting phase: enters after 1 s quiet with `echo_off == Some(true)`, foreground not shell, no alt screen; `take_waiting()` true once; suspends cut-off; leaves on output or echo on; `sleep 40` (echo on) never waits.
+- [x] 1a.3 RED clocks: `CUT_OFF` 30 s from the later of write, end of wait, last Enter; `StillRunning` (or `Unconfirmed` if foreground/anchor unknown); `NoInput` at 5 min.
+- [x] 1a.4 RED `user_key(Key{line,enter,interrupt})`: attended flag, open range grows with probes, Enter/Ctrl+C/Ctrl+D close it; hidden cursor fails closed.
+- [x] 1a.5 GREEN `settle.rs` (`Limits`, `Key`, `End::{StillRunning,NoInput}`, phase, ranges, `Settle::run`). No CHANGELOG entry: no user-visible change. Also touched: `report.rs` (a placeholder arm for the new ends, reworded in S1b) and `app/auto_run.rs` (compile fixes; wired in S1c). Exit gate.
 
 ## S1b: Echo probe and capture (base: main after S1a)
 

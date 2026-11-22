@@ -3,6 +3,7 @@
 //! so every rule is testable without a pty or a timer (design D22).
 
 use std::{
+    ops::RangeInclusive,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -11,6 +12,13 @@ use std::{
 pub const QUIET: Duration = Duration::from_millis(250);
 /// Longest wait after the write.
 pub const TIMEOUT: Duration = Duration::from_secs(10);
+/// Quiet, with echo off and a program in front, before the run counts as
+/// waiting for input.
+pub const WAIT_QUIET: Duration = Duration::from_secs(1);
+/// Longest wait for input before the run is handed back.
+pub const WAIT_CAP: Duration = Duration::from_secs(300);
+/// Fixed cut-off of a model run; the waiting phase pauses it.
+pub const CUT_OFF: Duration = Duration::from_secs(30);
 
 /// What the pane looked like at the write.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -33,6 +41,30 @@ pub struct Probe {
     pub cursor_line: Option<usize>,
     pub generation: u32,
     pub alt_screen: bool,
+    /// Whether the terminal's echo is off (a password prompt), when known.
+    pub echo_off: Option<bool>,
+}
+
+/// Which end rules apply to a run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Limits {
+    /// A command the user typed: 10 s, and any key is `UserTyped`.
+    Follow,
+    /// A command the model ran: the waiting phase, a 30 s cut-off, and keys
+    /// typed to a program do not end it.
+    Run,
+    /// A run that went on after the cut-off: as `Run`, with no cut-off.
+    Continue,
+}
+
+/// A key the user sent to the pane during a run.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Key {
+    /// The cursor's absolute line at the key; `None` while it was hidden.
+    pub line: Option<usize>,
+    pub enter: bool,
+    /// Ctrl+C or Ctrl+D.
+    pub interrupt: bool,
 }
 
 /// How a run ended. `PaneGone` is never produced by [`Settle::step`]: the
@@ -44,9 +76,27 @@ pub enum End {
     /// 10 s passed and the foreground was never known, so the run may well
     /// have finished: the model is not told it is "still running".
     Unconfirmed,
+    /// 30 s passed and the command still runs (`Limits::Run`).
+    StillRunning,
+    /// A program waited for input for longer than [`WAIT_CAP`].
+    NoInput,
     FullScreen,
     UserTyped,
     PaneGone,
+}
+
+/// The model-run state of a [`Settle`].
+#[derive(Default)]
+struct Ext {
+    /// When the current waiting phase began.
+    waiting: Option<Instant>,
+    waiting_entered: bool,
+    attended: bool,
+    withheld: bool,
+    /// Closed ranges of absolute lines that hold the user's input.
+    hidden: Vec<RangeInclusive<usize>>,
+    /// The range the user is typing into now.
+    open: Option<RangeInclusive<usize>>,
 }
 
 /// The state of one run in flight.
@@ -61,6 +111,16 @@ pub struct Settle {
     /// A line the cursor must pass as well, when the Enter was pressed on the
     /// last row of a wrapped echo (#819).
     floor: usize,
+    limits: Limits,
+    /// The foreground at the last step: `None` until the first one.
+    foreground: Option<bool>,
+    /// The time of the last step, for events that carry no clock.
+    seen: Instant,
+    /// The cut-off counts from here: the later of the write, the end of the
+    /// last waiting phase and the last Enter.
+    base: Instant,
+    /// What only a model run uses, boxed so a typed follow stays small.
+    ext: Box<Ext>,
 }
 
 impl Settle {
@@ -75,7 +135,26 @@ impl Settle {
             generation,
             anchored: true,
             floor: 0,
+            limits: Limits::Follow,
+            foreground: None,
+            seen: written,
+            base: written,
+            ext: Box::default(),
         }
+    }
+
+    /// A run the model started (`Limits::Run`).
+    // Used by the app from slice S1c of chat-runs-commands.
+    #[allow(dead_code)]
+    pub fn run(anchor: Anchor, written: Instant) -> Self {
+        Self::new(anchor, written).limits(Limits::Run)
+    }
+
+    /// The end rules this run follows.
+    #[allow(dead_code)] // S1c/S2c
+    pub fn limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// Progress means passing `line` too (the row the cursor was on at the
@@ -103,11 +182,69 @@ impl Settle {
     /// BEFORE [`Settle::step`], so output of the same tick restarts the quiet.
     pub fn output(&mut self, now: Instant) {
         self.last = self.last.max(now);
+        if self.ext.waiting.take().is_some() {
+            self.base = self.base.max(now);
+        }
     }
 
-    /// The user sent a key to the pane during the run.
-    pub fn user_key(&mut self) {
-        self.typed = true;
+    /// The user sent a key to the pane during the run. In a model run a key
+    /// to a program is recorded for redaction and does not end the run; a key
+    /// while the shell (or an unknown foreground) owns the pane does.
+    pub fn user_key(&mut self, key: Key) {
+        if self.limits == Limits::Follow || self.foreground != Some(false) {
+            self.typed = true;
+            return;
+        }
+        self.ext.attended = true;
+        let Some(line) = key.line else {
+            self.ext.withheld = true;
+            return;
+        };
+        let range = self.ext.open.take().map_or(line..=line, |open| {
+            (*open.start().min(&line))..=(*open.end().max(&line))
+        });
+        if key.enter || key.interrupt {
+            self.ext.hidden.push(range);
+        } else {
+            self.ext.open = Some(range);
+        }
+        if key.enter {
+            self.base = self.base.max(self.seen);
+        }
+    }
+
+    /// Whether the user typed to a program during the run.
+    #[allow(dead_code)] // S1c
+    pub fn attended(&self) -> bool {
+        self.ext.attended
+    }
+
+    /// A key was typed while the cursor was hidden: nothing may be read.
+    #[allow(dead_code)] // S1c
+    pub fn withheld(&self) -> bool {
+        self.ext.withheld
+    }
+
+    /// The absolute lines that hold what the user typed, closed or not.
+    #[allow(dead_code)] // S1c
+    pub fn hidden(&self) -> Vec<RangeInclusive<usize>> {
+        self.ext
+            .hidden
+            .iter()
+            .cloned()
+            .chain(self.ext.open.clone())
+            .collect()
+    }
+
+    /// Whether the run is waiting for input now.
+    pub fn waiting(&self) -> bool {
+        self.ext.waiting.is_some()
+    }
+
+    /// `true` once, when the waiting phase began.
+    #[allow(dead_code)] // S1c
+    pub fn take_waiting(&mut self) -> bool {
+        std::mem::take(&mut self.ext.waiting_entered)
     }
 
     /// Whether the lines read after the run line up with the anchor: false
@@ -118,15 +255,24 @@ impl Settle {
 
     /// Checks the end rules in order; `None` keeps waiting.
     ///
-    /// 1. The alternate screen is `FullScreen`; a user key is `UserTyped`.
+    /// 1. The alternate screen is `FullScreen`; a user key is `UserTyped`
+    ///    (in a model run, only a key typed at the shell).
     /// 2. 10 s since the write is `TimedOut` (`Unconfirmed` when the foreground
     ///    is unknown or no cursor line was ever seen), even when the rest holds.
     /// 3. `Settled` needs ALL of: the foreground is the shell (`None` waits,
     ///    which fails closed); 250 ms of quiet; and progress, meaning the
     ///    cursor moved to a later line, the real cwd changed, or the line
     ///    generation changed (then the lines are not comparable).
+    /// 4. A model run then looks for the waiting phase (see `WAIT_QUIET`),
+    ///    ends it as `NoInput` after `WAIT_CAP`, and otherwise ends it as
+    ///    `StillRunning` after `CUT_OFF`, a clock the waiting phase pauses.
     pub fn step(&mut self, probe: &Probe) -> Option<End> {
         self.generation = probe.generation;
+        self.foreground = probe.foreground;
+        self.seen = probe.now;
+        if let (Some(open), Some(line)) = (self.ext.open.as_mut(), probe.cursor_line) {
+            *open = *open.start()..=*open.end().max(&line);
+        }
         if let (false, Some(line)) = (self.anchored, probe.cursor_line) {
             self.anchor.line = line;
             self.anchored = true;
@@ -138,7 +284,7 @@ impl Settle {
             return Some(End::UserTyped);
         }
         let since = |from: Instant| probe.now.saturating_duration_since(from);
-        if since(self.written) >= TIMEOUT {
+        if self.limits == Limits::Follow && since(self.written) >= TIMEOUT {
             return Some(if probe.foreground.is_none() || !self.anchored {
                 End::Unconfirmed
             } else {
@@ -150,8 +296,37 @@ impl Settle {
             .is_some_and(|l| l > self.anchor.line.max(self.floor))
             || probe.cwd.as_ref().is_some_and(|c| *c != self.anchor.cwd)
             || !self.lines_comparable();
-        (probe.foreground == Some(true) && since(self.last) >= QUIET && progress)
-            .then_some(End::Settled)
+        if probe.foreground == Some(true) && since(self.last) >= QUIET && progress {
+            return Some(End::Settled);
+        }
+        if self.limits == Limits::Follow {
+            return None;
+        }
+        self.wait_or_cut(probe)
+    }
+
+    /// Steps 4 to 6 of a model run: the waiting phase, its cap, the cut-off.
+    fn wait_or_cut(&mut self, probe: &Probe) -> Option<End> {
+        let since = |from: Instant| probe.now.saturating_duration_since(from);
+        let asks = probe.foreground == Some(false) && probe.echo_off == Some(true);
+        if self.ext.waiting.is_some() && !asks {
+            // Echo came back on or the program ended.
+            self.ext.waiting = None;
+            self.base = self.base.max(probe.now);
+        } else if self.ext.waiting.is_none() && asks && since(self.last) >= WAIT_QUIET {
+            self.ext.waiting = Some(probe.now);
+            self.ext.waiting_entered = true;
+        }
+        if let Some(since_wait) = self.ext.waiting.map(since) {
+            return (since_wait >= WAIT_CAP).then_some(End::NoInput);
+        }
+        (self.limits == Limits::Run && since(self.base) >= CUT_OFF).then(|| {
+            if probe.foreground.is_none() || !self.anchored {
+                End::Unconfirmed
+            } else {
+                End::StillRunning
+            }
+        })
     }
 }
 
@@ -190,6 +365,7 @@ mod tests {
                 cursor_line: Some(6),
                 generation: 1,
                 alt_screen: false,
+                echo_off: None,
             }
         }
 
@@ -215,6 +391,7 @@ mod tests {
             cursor_line: Some(7),
             generation: 1,
             alt_screen: false,
+            echo_off: None,
         };
         assert_eq!(settle.step(&probe), None, "still on the floor row");
         probe.cursor_line = Some(8);
@@ -321,7 +498,7 @@ mod tests {
     #[test]
     fn a_user_key_aborts_as_user_typed() {
         let mut r = run();
-        r.settle.user_key();
+        r.settle.user_key(Key::default());
         assert_eq!(r.step(&r.probe(10)), Some(End::UserTyped));
     }
 
@@ -345,11 +522,11 @@ mod tests {
         p.alt_screen = true;
         assert_eq!(r.step(&p), Some(End::FullScreen));
         let mut r = run();
-        r.settle.user_key();
+        r.settle.user_key(Key::default());
         assert_eq!(r.step(&r.probe(10_000)), Some(End::UserTyped));
         // The alt screen wins over a user key.
         let mut r = run();
-        r.settle.user_key();
+        r.settle.user_key(Key::default());
         let mut p = r.probe(10);
         p.alt_screen = true;
         assert_eq!(r.step(&p), Some(End::FullScreen));
@@ -406,5 +583,263 @@ mod tests {
         let mut p = r2.probe(10_000);
         p.cursor_line = Some(5);
         assert_eq!(r2.step(&p), Some(End::TimedOut));
+    }
+
+    // --- Limits::Run / Limits::Continue (chat-runs-commands S1a) ---
+
+    fn model_run() -> Run {
+        let mut r = run();
+        r.settle = Settle::run(r.settle.anchor().unwrap().clone(), r.t0);
+        r
+    }
+
+    /// A program owns the foreground, `ms` after the write.
+    fn program(r: &Run, ms: u64, echo_off: Option<bool>) -> Probe {
+        let mut p = r.probe(ms);
+        p.foreground = Some(false);
+        p.cursor_line = Some(5);
+        p.echo_off = echo_off;
+        p
+    }
+
+    const KEY: Key = Key {
+        line: Some(7),
+        enter: false,
+        interrupt: false,
+    };
+
+    #[test]
+    fn follow_never_waits_and_any_key_is_user_typed() {
+        let mut r = run();
+        assert_eq!(r.step(&program(&r, 5_000, Some(true))), None);
+        assert!(!r.settle.take_waiting(), "Follow has no waiting phase");
+        r.settle.user_key(KEY);
+        assert_eq!(
+            r.step(&program(&r, 5_001, Some(true))),
+            Some(End::UserTyped)
+        );
+        let mut r = run();
+        assert_eq!(r.step(&program(&r, 10_000, None)), Some(End::TimedOut));
+    }
+
+    #[test]
+    fn a_model_run_is_cut_off_at_thirty_seconds_not_ten() {
+        let mut r = model_run();
+        assert_eq!(r.step(&program(&r, 10_000, Some(false))), None);
+        assert_eq!(r.step(&program(&r, 29_999, Some(false))), None);
+        assert_eq!(
+            r.step(&program(&r, 30_000, Some(false))),
+            Some(End::StillRunning)
+        );
+    }
+
+    #[test]
+    fn the_cut_off_is_unconfirmed_when_the_foreground_or_the_anchor_is_unknown() {
+        let mut r = model_run();
+        let mut p = program(&r, 30_000, None);
+        p.foreground = None;
+        assert_eq!(r.step(&p), Some(End::Unconfirmed));
+        let mut r = model_run();
+        r.settle = Settle::run(r.settle.anchor.clone(), r.t0).unanchored();
+        let mut p = program(&r, 30_000, None);
+        p.cursor_line = None;
+        assert_eq!(r.step(&p), Some(End::Unconfirmed));
+    }
+
+    #[test]
+    fn a_program_waits_only_after_a_second_of_quiet_with_echo_off() {
+        let mut r = model_run();
+        assert_eq!(r.step(&program(&r, 999, Some(true))), None);
+        assert!(!r.settle.take_waiting(), "not quiet for a second yet");
+        assert_eq!(r.step(&program(&r, 1_000, Some(true))), None);
+        assert!(r.settle.waiting());
+        assert!(r.settle.take_waiting(), "true once, on entry");
+        assert_eq!(r.step(&program(&r, 1_016, Some(true))), None);
+        assert!(!r.settle.take_waiting());
+    }
+
+    #[test]
+    fn echo_on_or_unknown_or_a_shell_foreground_never_waits() {
+        for echo_off in [Some(false), None] {
+            let mut r = model_run();
+            assert_eq!(r.step(&program(&r, 20_000, echo_off)), None, "sleep 40");
+            assert!(!r.settle.waiting());
+        }
+        let mut r = model_run();
+        let mut p = program(&r, 2_000, Some(true));
+        p.foreground = Some(true);
+        p.cursor_line = Some(5);
+        assert_eq!(r.step(&p), None);
+        assert!(!r.settle.waiting(), "the shell owns the foreground");
+        let mut r = model_run();
+        let mut p = program(&r, 2_000, Some(true));
+        p.alt_screen = true;
+        assert_eq!(
+            r.step(&p),
+            Some(End::FullScreen),
+            "no waiting on the alt screen"
+        );
+    }
+
+    #[test]
+    fn waiting_suspends_the_cut_off_and_output_resumes_it() {
+        let mut r = model_run();
+        r.step(&program(&r, 1_000, Some(true)));
+        assert_eq!(r.step(&program(&r, 31_000, Some(true))), None);
+        assert_eq!(r.step(&program(&r, 120_000, Some(true))), None);
+        r.settle.output(r.t0 + MS(121_000));
+        assert_eq!(r.step(&program(&r, 121_016, Some(false))), None);
+        assert!(!r.settle.waiting(), "output ends the phase");
+        assert_eq!(r.step(&program(&r, 150_999, Some(false))), None);
+        assert_eq!(
+            r.step(&program(&r, 151_000, Some(false))),
+            Some(End::StillRunning)
+        );
+    }
+
+    #[test]
+    fn echo_coming_back_on_ends_the_phase_and_restarts_the_cut_off() {
+        let mut r = model_run();
+        r.step(&program(&r, 1_000, Some(true)));
+        assert_eq!(r.step(&program(&r, 40_000, Some(false))), None);
+        assert!(!r.settle.waiting());
+        assert_eq!(r.step(&program(&r, 69_999, Some(false))), None);
+        assert_eq!(
+            r.step(&program(&r, 70_000, Some(false))),
+            Some(End::StillRunning)
+        );
+    }
+
+    #[test]
+    fn a_wait_longer_than_five_minutes_ends_as_no_input() {
+        let mut r = model_run();
+        r.step(&program(&r, 1_000, Some(true)));
+        assert_eq!(r.step(&program(&r, 300_999, Some(true))), None);
+        assert_eq!(
+            r.step(&program(&r, 301_000, Some(true))),
+            Some(End::NoInput)
+        );
+    }
+
+    #[test]
+    fn an_enter_typed_to_the_program_restarts_the_cut_off() {
+        let mut r = model_run();
+        assert_eq!(r.step(&program(&r, 20_000, Some(false))), None);
+        r.settle.user_key(Key { enter: true, ..KEY });
+        assert_eq!(r.step(&program(&r, 49_999, Some(false))), None);
+        assert_eq!(
+            r.step(&program(&r, 50_000, Some(false))),
+            Some(End::StillRunning)
+        );
+    }
+
+    #[test]
+    fn a_key_to_a_program_attends_the_run_and_a_key_at_the_shell_ends_it() {
+        let mut r = model_run();
+        r.step(&program(&r, 100, Some(true)));
+        r.settle.user_key(KEY);
+        assert!(r.settle.attended());
+        assert_eq!(
+            r.step(&program(&r, 200, Some(true))),
+            None,
+            "the run goes on"
+        );
+        // The program ends, the prompt returns and the run settles as usual.
+        assert_eq!(r.step(&r.probe(900)), Some(End::Settled));
+        let mut r = model_run();
+        r.step(&r.probe(100));
+        r.settle.user_key(KEY);
+        assert_eq!(
+            r.step(&r.probe(110)),
+            Some(End::UserTyped),
+            "the shell owned it"
+        );
+        let mut r = model_run();
+        r.settle.user_key(KEY);
+        assert_eq!(
+            r.step(&program(&r, 10, None)),
+            Some(End::UserTyped),
+            "unknown foreground"
+        );
+    }
+
+    #[test]
+    fn typed_keys_extend_one_range_that_enter_closes() {
+        let mut r = model_run();
+        r.step(&program(&r, 100, Some(true)));
+        r.settle.user_key(Key {
+            line: Some(7),
+            ..KEY
+        });
+        r.settle.user_key(Key {
+            line: Some(8),
+            ..KEY
+        });
+        let mut p = program(&r, 200, Some(true));
+        p.cursor_line = Some(9);
+        r.step(&p);
+        assert_eq!(r.settle.hidden(), vec![7..=9], "a wrapped echo is covered");
+        r.settle.user_key(Key {
+            line: Some(9),
+            enter: true,
+            ..KEY
+        });
+        p.cursor_line = Some(12);
+        r.step(&p);
+        assert_eq!(r.settle.hidden(), vec![7..=9], "output below stays visible");
+        r.settle.user_key(Key {
+            line: Some(12),
+            interrupt: true,
+            ..KEY
+        });
+        r.settle.user_key(Key {
+            line: Some(13),
+            ..KEY
+        });
+        assert_eq!(r.settle.hidden(), vec![7..=9, 12..=12, 13..=13]);
+        assert!(!r.settle.withheld());
+    }
+
+    #[test]
+    fn a_key_with_a_hidden_cursor_withholds_the_output() {
+        let mut r = model_run();
+        r.step(&program(&r, 100, Some(true)));
+        assert!(!r.settle.withheld());
+        r.settle.user_key(Key { line: None, ..KEY });
+        assert!(r.settle.withheld());
+    }
+
+    #[test]
+    fn model_run_order_alt_typed_settled_wait_cap_cut_off() {
+        // alt screen over a key at the shell
+        let mut r = model_run();
+        r.step(&r.probe(100));
+        r.settle.user_key(KEY);
+        let mut p = r.probe(200);
+        p.alt_screen = true;
+        assert_eq!(r.step(&p), Some(End::FullScreen));
+        // settled over the cut-off
+        let mut r = model_run();
+        assert_eq!(r.step(&r.probe(30_000)), Some(End::Settled));
+        // typed over settled
+        let mut r = model_run();
+        r.step(&r.probe(100));
+        r.settle.user_key(KEY);
+        assert_eq!(r.step(&r.probe(30_000)), Some(End::UserTyped));
+        // the cap wins over the suspended cut-off
+        let mut r = model_run();
+        r.step(&program(&r, 1_000, Some(true)));
+        assert_eq!(
+            r.step(&program(&r, 400_000, Some(true))),
+            Some(End::NoInput)
+        );
+    }
+
+    #[test]
+    fn a_continuation_has_no_cut_off() {
+        let mut r = model_run();
+        r.settle = Settle::run(r.settle.anchor.clone(), r.t0).limits(Limits::Continue);
+        assert_eq!(r.step(&program(&r, 600_000, Some(false))), None);
+        assert_eq!(r.step(&r.probe(600_500)), Some(End::Settled));
     }
 }
