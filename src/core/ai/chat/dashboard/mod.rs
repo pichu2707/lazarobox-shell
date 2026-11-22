@@ -2,11 +2,16 @@
 //! read, with no clock and no colour; the UI only lays it out.
 
 mod daily;
+mod heat;
 mod kpi;
 
 pub use daily::{
     CHART_ROWS, DOWN_ROWS, DayTokens, Fit, UP_ROWS, daily, fit, last_days, legend, level, notes,
     peak,
+};
+pub use heat::{
+    BUCKETS_BELOW, Buckets, HEAT_ROWS, Heat, HourCell, buckets, heat, heat_columns, heat_legend,
+    heat_rows, rows_peak, shade,
 };
 pub use kpi::{Delta, Kpi, bucket, groups};
 
@@ -103,6 +108,8 @@ pub struct UsageData {
     /// Distinct `(days ago, task key)` pairs: `c<id>` for a conversation,
     /// `r<run>` for an orchestrator run.
     pub tasks: Vec<(u32, String)>,
+    /// Tokens by local weekday and hour, placed by the end time of the record.
+    pub hours: Vec<HourCell>,
 }
 
 /// The model of one range.
@@ -117,6 +124,8 @@ pub struct Dashboard {
     /// Set when the chart covers only the last N days of an `All` range that
     /// reaches further back than the chart can show.
     pub last_days: Option<u32>,
+    /// Tokens by weekday (Monday first) and local hour.
+    pub heat: Heat,
 }
 
 impl Dashboard {
@@ -127,11 +136,12 @@ impl Dashboard {
             kpis: kpi::kpis(data, range),
             daily: daily(data, range),
             last_days: last_days(data, range),
+            heat: heat(data, range),
         }
     }
 
-    /// Rows the dashboard takes at `width`: the selector, a gap, the cards and
-    /// the chart.
+    /// Rows the dashboard takes at `width`: the selector, a gap, the cards,
+    /// the chart and the heatmap.
     pub fn height(&self, width: u16) -> u16 {
         let cards = match Tier::of(width) {
             Tier::Text => return 0,
@@ -140,8 +150,12 @@ impl Dashboard {
             Tier::Grid => 2 * CARD_ROWS + 1,
             Tier::Column => 4 * CARD_ROWS + 3,
         };
-        let chart = if self.empty { 0 } else { CHART_ROWS };
-        2 + cards + chart
+        let blocks = if self.empty {
+            0
+        } else {
+            CHART_ROWS + HEAT_ROWS
+        };
+        2 + cards + blocks
     }
 }
 

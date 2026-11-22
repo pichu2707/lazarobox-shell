@@ -1,6 +1,6 @@
 ---
 source: src/ui/components/chat/cost_tests.rs
-expression: "dashboard(72, 30)"
+expression: "dashboard(72, 40)"
 ---
 AI usage (alpha)
 [7d] 30d 90d All
@@ -23,6 +23,16 @@ Tokens by day · in above, out below · 1 bar = 1 day
 
 
 
+
+Busy hours · weekday x local hour · ░ ▒ ▓ █ low to high
+    00          06          12          18
+Mon
+Tue                             ██▒▒
+Wed
+Thu                   ▓▓░░
+Fri
+Sat                                             ░░
+Sun
 
 today: 6 tokens · 2 turns
 last 7 days: 126 tokens · 3 turns

@@ -1,6 +1,7 @@
 use rusqlite::Connection;
 
 use super::*;
+use crate::core::ai::chat::dashboard::HourCell;
 use crate::runtime::chat_store::ensure_usage;
 
 const AT: i64 = 1_800_000_000;
@@ -219,6 +220,104 @@ fn both_queries_take_the_day_from_the_shared_fragment() {
         "worker.rs has its own day SQL"
     );
     assert!(worker.contains("{DAY_SQL}"));
-    assert_eq!(data.matches("{DAY_SQL}").count(), 2);
+    assert_eq!(data.matches("{DAY_SQL}").count(), 3);
     assert_eq!(data.matches("julianday(").count(), 2, "only the const");
+}
+
+/// The local weekday (0 Sunday) and hour SQLite reads for `ts`.
+fn local(conn: &Connection, ts: i64) -> (u8, u8) {
+    conn.query_row(
+        "SELECT CAST(strftime('%w', ?1, 'unixepoch', 'localtime') AS INTEGER),
+                CAST(strftime('%H', ?1, 'unixepoch', 'localtime') AS INTEGER)",
+        [ts],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn hours_are_placed_by_the_local_end_time_with_monday_first() {
+    let conn = store();
+    put(&conn, chat(AT, Some(1), 90));
+    let data = usage_data(&conn, None, AT).unwrap();
+    let (w, h) = local(&conn, AT);
+    // Sunday is the last row: `(w + 6) % 7`.
+    let want = HourCell {
+        days_ago: 0,
+        weekday: (w + 6) % 7,
+        hour: h,
+        // The row holds input 10 and the output given.
+        tokens: 100,
+    };
+    assert_eq!(data.hours, [want]);
+}
+
+#[test]
+fn records_of_one_hour_add_up_and_another_hour_or_day_is_its_own_cell() {
+    let conn = store();
+    // The same hour twice, the next hour, and the same hour a week back.
+    put(&conn, chat(AT, Some(1), 10));
+    put(&conn, chat(AT, Some(1), 20));
+    put(&conn, chat(AT + 3_600, Some(1), 5));
+    put(&conn, chat(AT - 7 * DAY, Some(1), 1));
+    let data = usage_data(&conn, None, AT + 3_600).unwrap();
+    // Each record holds input 10: 20 + 30 in one cell, 15, and 11 a week back.
+    let mut got: Vec<u64> = data.hours.iter().map(|c| c.tokens).collect();
+    got.sort_unstable();
+    assert_eq!(got, [11, 15, 50]);
+    assert_eq!(data.hours.len(), 3);
+}
+
+#[test]
+fn a_record_with_no_known_tokens_still_makes_its_cell() {
+    let conn = store();
+    conn.execute(
+        "INSERT INTO turn_usage(ts, engine, role, input, output)
+         VALUES (?1, 'ollama', 'chat', NULL, NULL)",
+        [AT],
+    )
+    .unwrap();
+    let data = usage_data(&conn, None, AT).unwrap();
+    assert_eq!(data.hours.len(), 1);
+    assert_eq!(data.hours[0].tokens, 0);
+}
+
+#[test]
+fn a_store_without_the_table_has_no_hours() {
+    let conn = Connection::open_in_memory().unwrap();
+    assert!(usage_data(&conn, None, AT).unwrap().hours.is_empty());
+}
+
+/// The usage of Friday 20:00 UTC read in a zone 5 h 30 min ahead (POSIX
+/// `IST-5:30`, no tz database needed) is Saturday 01:30. The zone is set on a
+/// child run of this test, so no other test sees the change; without
+/// `localtime` the cell would be Friday 20:00.
+#[test]
+fn hours_follow_the_local_zone_not_utc() {
+    const FRIDAY_2000_UTC: i64 = 1_800_043_200;
+    if std::env::var_os("LAZAROBOX_HEAT_TZ_CHILD").is_none() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture"])
+            .arg("runtime::chat_store::usage_data::tests::hours_follow_the_local_zone_not_utc")
+            .env("TZ", "IST-5:30")
+            .env("LAZAROBOX_HEAT_TZ_CHILD", "1")
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{log}");
+        assert!(log.contains("1 passed"), "the child ran nothing: {log}");
+        return;
+    }
+    let conn = store();
+    put(&conn, chat(FRIDAY_2000_UTC, Some(1), 90));
+    let data = usage_data(&conn, None, FRIDAY_2000_UTC).unwrap();
+    // Saturday is the sixth row (Monday first), at hour 1.
+    let want = HourCell {
+        days_ago: 0,
+        weekday: 5,
+        hour: 1,
+        tokens: 100,
+    };
+    assert_eq!(data.hours, [want]);
 }

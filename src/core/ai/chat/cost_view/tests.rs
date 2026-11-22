@@ -107,6 +107,7 @@ fn data() -> UsageData {
     UsageData {
         rows: vec![row(0, 10), row(20, 500)],
         tasks: Vec::new(),
+        ..UsageData::default()
     }
 }
 

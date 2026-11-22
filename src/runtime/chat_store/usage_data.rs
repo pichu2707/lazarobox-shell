@@ -1,10 +1,10 @@
 //! What `/cost` reads from the usage table, read-only: the folded rows and
-//! the task keys. No DDL runs here; a column an older file lacks reads NULL.
+//! the task keys and the hours. No DDL runs here; a column an older file lacks reads NULL.
 
 use rusqlite::Connection;
 
 use super::worker::usage_report;
-use crate::core::ai::chat::dashboard::UsageData;
+use crate::core::ai::chat::dashboard::{HourCell, UsageData};
 
 /// The local days before `?1` (a unix time) of the row's `ts`. Rows and tasks
 /// share it, so a record falls on the same day in both.
@@ -63,7 +63,28 @@ pub(super) fn usage_data(
             Ok((u32::try_from(day).unwrap_or(u32::MAX), r.get(1)?))
         })?
         .collect::<Result<_, _>>()?;
-    Ok(UsageData { rows, tasks })
+    // The weekday is Monday first (`(w + 6) % 7`), the hour the local one of
+    // the end time `ts`, and a record with no known token still makes its cell.
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {DAY_SQL} AS day,
+                (CAST(strftime('%w', ts, 'unixepoch', 'localtime') AS INTEGER) + 6) % 7,
+                CAST(strftime('%H', ts, 'unixepoch', 'localtime') AS INTEGER),
+                SUM(COALESCE(input, 0) + COALESCE(output, 0))
+           FROM turn_usage GROUP BY 1, 2, 3 ORDER BY 1, 2, 3",
+    ))?;
+    let hours = stmt
+        .query_map([at], |r| {
+            let day: i64 = r.get(0)?;
+            let tokens: i64 = r.get(3)?;
+            Ok(HourCell {
+                days_ago: u32::try_from(day).unwrap_or(u32::MAX),
+                weekday: r.get(1)?,
+                hour: r.get(2)?,
+                tokens: u64::try_from(tokens).unwrap_or(0),
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(UsageData { rows, tasks, hours })
 }
 
 #[cfg(test)]
