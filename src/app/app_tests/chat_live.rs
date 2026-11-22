@@ -171,6 +171,8 @@ fn prefix_c_opens_a_focused_chat_to_the_right_without_spawning_anything() {
             Effect::ResizePty(PaneId::FIRST, _)
                 | Effect::DetectEngines
                 | Effect::PreparePrompt { .. }
+                // The local memory reads the notes of the project.
+                | Effect::LocalMemory(LocalCmd::Load { .. })
                 // The `/github` hint reads the origin of the folder.
                 | Effect::ProbeOrigin { dialog: false, .. }
         )),

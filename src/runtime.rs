@@ -82,6 +82,7 @@ use chat_store::StoreHandle;
 use config_write::save_config;
 use engram::{Loopback, Memory};
 use futures::StreamExt;
+use memory_local::LocalMemory;
 use orchestra::{OrchestraEvent, RunManager};
 use ratatui::{
     DefaultTerminal,
@@ -112,7 +113,10 @@ use crate::{
                 store::{StoreCmd, StoreReply},
             },
             config::{AiConfig, NotifyMode, Profile},
-            memory::port::MemReply,
+            memory::{
+                local::port::{Failure, LocalReply},
+                port::MemReply,
+            },
             orchestra::SessionKey,
         },
         config::{Config, config_path},
@@ -371,6 +375,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
     let show_cache = Arc::new(ai_detect::ShowCache::default());
     let (chat_tx, chat_rx) = mpsc::channel(chat::APP_CHANNEL);
     let (memory_tx, memory_rx) = mpsc::channel(MEMORY_CHANNEL);
+    let (local_tx, local_rx) = mpsc::channel(MEMORY_CHANNEL);
     // Off unless the config activates it: then no worker ever starts, nothing
     // touches the network and the token is never read from the environment.
     // A pane's command still gets `memory applies after a restart` back, for
@@ -745,6 +750,13 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
                 )),
         )
         .with_store(chat_store::spawn_at(store_path, store_tx))
+        // The local project memory (`.lzr/`): its ledger and machine id live
+        // next to the chat store.
+        .with_local_memory(memory_local::spawn(
+            store_dir.clone(),
+            env::var_os("HOME").map(PathBuf::from),
+            local_tx,
+        ))
         // The Connectors probe: the chat start path with the same values, on
         // the Hub's channel; one `y` per probe.
         .with_prober(mcp::probe::Prober::new(
@@ -841,6 +853,7 @@ pub async fn run(start_args: crate::core::start::StartArgs) -> io::Result<()> {
         ai: ai_rx,
         chat: chat_rx,
         memory: memory_rx,
+        local_memory: local_rx,
         store: store_rx,
         prompt: prompt_rx,
         update: update_rx,
@@ -1078,6 +1091,8 @@ struct Inbox {
     ai: mpsc::Receiver<Detection>,
     chat: mpsc::Receiver<chat::Tagged>,
     memory: mpsc::Receiver<MemReply>,
+    /// What the local memory thread answered.
+    local_memory: mpsc::Receiver<LocalReply>,
     store: mpsc::Receiver<StoreReply>,
     prompt: mpsc::Receiver<(PaneId, Resolved)>,
     update: mpsc::Receiver<Option<String>>,
@@ -1144,6 +1159,7 @@ async fn run_loop(
         ai: mut ai_rx,
         chat: mut chat_rx,
         memory: mut memory_rx,
+        local_memory: mut local_memory_rx,
         store: mut store_rx,
         prompt: mut prompt_rx,
         update: mut update_rx,
@@ -1225,6 +1241,13 @@ async fn run_loop(
             // waits (it never reads a closed channel before shutdown).
             Some(reply) = memory_rx.recv() => {
                 if step(&mut app, AppEvent::Memory(reply), panes) {
+                    return Ok(());
+                }
+            }
+            // The local memory thread's sender lives in `panes.local_memory`,
+            // so this arm never reads a closed channel before shutdown.
+            Some(reply) = local_memory_rx.recv() => {
+                if step(&mut app, AppEvent::LocalMemory(reply), panes) {
                     return Ok(());
                 }
             }
@@ -1557,6 +1580,9 @@ struct Panes {
     folder_probes: Option<folder::Prober>,
     /// The engram memory worker; off unless the config activates it.
     memory: Memory,
+    /// The local project memory thread. `None` ignores its effects (unit
+    /// tests).
+    local_memory: Option<LocalMemory>,
     /// The chat history thread. `None` ignores the store effects (unit tests).
     store: Option<StoreHandle>,
     /// The session of every pane spawned, closed ones included: their jobs
@@ -1621,6 +1647,7 @@ impl Panes {
             run_checks: None,
             folder_probes: None,
             memory: Memory::off(),
+            local_memory: None,
             store: None,
             sessions: Vec::new(),
             list_running: Box::new(jobs::running),
@@ -1753,6 +1780,12 @@ impl Panes {
 
     fn with_run_checks(mut self, checker: run_check::Checker) -> Self {
         self.run_checks = Some(checker);
+        self
+    }
+
+    /// Sets the thread of the local project memory.
+    fn with_local_memory(mut self, memory: LocalMemory) -> Self {
+        self.local_memory = Some(memory);
         self
     }
 
@@ -2316,6 +2349,17 @@ impl Panes {
                 }
                 // Returns at once: the worker owns the queue and the timeouts.
                 Effect::Memory(cmd) => self.memory.send(cmd),
+                // Returns at once: the thread owns the `.lzr/` files.
+                Effect::LocalMemory(cmd) => {
+                    if let Some(memory) = self.local_memory.as_ref() {
+                        memory.send(cmd);
+                    } else {
+                        feedback.push(AppEvent::LocalMemory(LocalReply::Failed {
+                            pane: cmd.pane(),
+                            failure: Failure::Unavailable("no memory thread".to_owned()),
+                        }));
+                    }
+                }
                 // Returns at once: the thread owns the database, and a slow
                 // write only delays its own queue.
                 Effect::Store(cmd) => {
@@ -4814,6 +4858,50 @@ mod tests {
             "{reply:?}"
         );
         panes.shutdown_store(STORE_JOIN_BOUND);
+    }
+
+    #[tokio::test]
+    async fn a_local_memory_effect_reaches_its_thread_and_the_reply_comes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (panes, _rx, _rec) = fake_panes(None);
+        let (tx, mut rx) = mpsc::channel(MEMORY_CHANNEL);
+        let mut panes =
+            panes.with_local_memory(memory_local::spawn(Some(dir.path().join("data")), None, tx));
+        let pane = PaneId::for_test(2);
+        panes.apply(vec![Effect::LocalMemory(
+            crate::core::ai::memory::local::port::LocalCmd::Load {
+                pane,
+                epoch: 0,
+                cwd: dir.path().to_string_lossy().into_owned(),
+            },
+        )]);
+        let reply = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+        assert!(
+            matches!(reply, Ok(Some(LocalReply::Loaded { root: None, .. }))),
+            "{reply:?}"
+        );
+    }
+
+    #[test]
+    fn a_local_memory_effect_without_its_thread_is_answered_with_a_failure() {
+        use crate::core::ai::memory::local::port::{Failure, LocalCmd};
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let pane = PaneId::for_test(2);
+        let (_, feedback) = panes.apply(vec![Effect::LocalMemory(LocalCmd::Load {
+            pane,
+            epoch: 0,
+            cwd: "/x".into(),
+        })]);
+        assert!(
+            matches!(
+                feedback.as_slice(),
+                [AppEvent::LocalMemory(LocalReply::Failed {
+                    failure: Failure::Unavailable(_),
+                    ..
+                })]
+            ),
+            "{feedback:?}"
+        );
     }
 
     #[test]

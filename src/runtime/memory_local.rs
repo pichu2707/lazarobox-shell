@@ -30,7 +30,7 @@ use crate::core::{
         gitignore::{self, GitignoreOutcome},
         ledger::{self, Ledger, LedgerError},
         note::{LocalNote, NewNote, Unreadable},
-        port::{Failure, LocalCmd, LocalReply, Root},
+        port::{Failure, LocalCmd, LocalReply, MAX_NOTES, Root},
     },
     layout::PaneId,
 };
@@ -171,6 +171,7 @@ fn load(
             foreign: 0,
             unreadable: 0,
             newer: 0,
+            capped: 0,
             ledger: None,
         };
     };
@@ -179,10 +180,11 @@ fn load(
         Some(Err(error)) => (Ledger::default(), Some(error)),
         found => (found.and_then(Result::ok).unwrap_or_default(), None),
     };
-    let (mut notes, mut foreign, mut unreadable, mut newer) = (Vec::new(), 0, 0, 0);
+    let (mut notes, mut foreign, mut unreadable, mut newer, mut capped) = (Vec::new(), 0, 0, 0, 0);
     match note_files(&store) {
         Ok(files) => {
-            for file in files {
+            capped = files.len().saturating_sub(MAX_NOTES);
+            for file in files.into_iter().take(MAX_NOTES) {
                 let plain = fs::symlink_metadata(&file).is_ok_and(|m| m.is_file());
                 match read_regular(&file, NOTE_CAP)
                     .ok()
@@ -207,6 +209,7 @@ fn load(
         foreign,
         unreadable,
         newer,
+        capped,
         ledger: ledger_error,
     }
 }
@@ -828,6 +831,28 @@ mod tests {
             assert_eq!((notes.len(), foreign), (1, 0), "{cwd:?}");
         }
         assert_eq!(fs::read_dir(rig.data.join("memory")).unwrap().count(), 1);
+    }
+
+    // The cap on notes read per load: the rest is counted, never read.
+    #[test]
+    fn a_load_reads_at_most_the_cap_and_counts_the_rest() {
+        let rig = Rig::new();
+        rig.save("one");
+        let notes = rig.repo.join(".lzr/memory/notes");
+        for i in 0..=MAX_NOTES {
+            fs::write(notes.join(format!("z{i:05}.json")), "{").unwrap();
+        }
+        let LocalReply::Loaded {
+            notes,
+            unreadable,
+            capped,
+            ..
+        } = rig.load(&rig.repo)
+        else {
+            panic!();
+        };
+        // The saved note sorts first and is read; the cap cuts the last two.
+        assert_eq!((notes.len(), unreadable, capped), (1, MAX_NOTES - 1, 2));
     }
 
     // M3: a repository at HOME is never a project.

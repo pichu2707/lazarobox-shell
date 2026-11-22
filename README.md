@@ -1526,7 +1526,7 @@ save_summaries = false  # default false; true saves the summary of long chats
 local = true          # default true; the project memory in .lzr/ (see below)
 ```
 
-`local` is separate from the engram switches above: it is the project memory kept in `.lzr/` at the git root, with no engram involved. In this version the key is only accepted and `.lzr` is a folder the chat's file tools never write; nothing reads or writes notes yet, so `local = true` changes nothing you can see. Later versions will use it, and `local = false` will then read and write nothing in `.lzr/`.
+`local` is separate from the engram switches above: it is the project memory kept in `.lzr/` at the git root, with no engram involved. In this version a chat only reads it: when a chat opens (or changes folder) it reads `.lzr/memory/notes/` and keeps the notes this machine wrote and nobody changed. Notes that came from others (a clone or a pull) or were edited outside lazarobox are ignored and counted in a line of the chat (`memory: N notes from others ignored (not created on this machine)`); unreadable files are skipped and counted (`memory: skipped N unreadable notes in .lzr/`); at most 5000 notes are read per load, and the line `memory: only the first 5000 notes in .lzr/ were read; N more were left out` says how many were not. A folder outside git says `memory: no git repository here; nothing is remembered for this folder`. A clean load says nothing. Nothing writes notes yet, and `.lzr` is a folder the chat's file tools never write. With `local = false` nothing is read or written in `.lzr/`.
 
 **Privacy (read it before turning it on):**
 

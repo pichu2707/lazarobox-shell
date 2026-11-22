@@ -10,6 +10,9 @@ use super::{
 };
 use crate::core::layout::PaneId;
 
+/// The most note files read in one load; the rest are counted and left out.
+pub const MAX_NOTES: usize = 5000;
+
 /// The line for a folder outside any git repository.
 pub const NO_GIT_LINE: &str =
     "memory: no git repository here; nothing is remembered for this folder";
@@ -63,6 +66,8 @@ pub enum LocalReply {
         foreign: usize,
         unreadable: usize,
         newer: usize,
+        /// Note files past [`MAX_NOTES`]: not read.
+        capped: usize,
         /// The private ledger could not be used: nothing is trusted.
         ledger: Option<LedgerError>,
     },
@@ -108,6 +113,7 @@ impl LocalReply {
                 foreign,
                 unreadable,
                 newer,
+                capped,
                 ledger,
                 ..
             } => [
@@ -134,7 +140,13 @@ impl LocalReply {
                 ),
                 (
                     *newer,
-                    format!("{} made by a newer lazarobox were skipped", notes(*newer)),
+                    format!("memory: skipped {} made by a newer lazarobox", notes(*newer)),
+                ),
+                (
+                    *capped,
+                    format!(
+                        "memory: only the first {MAX_NOTES} notes in .lzr/ were read; {capped} more were left out"
+                    ),
                 ),
             ]
             .into_iter()
@@ -190,6 +202,7 @@ mod tests {
             foreign,
             unreadable,
             newer,
+            capped: 0,
             ledger: None,
         }
     }
@@ -205,6 +218,7 @@ mod tests {
                 foreign,
                 unreadable,
                 newer,
+                capped,
                 ..
             } => LocalReply::Loaded {
                 pane,
@@ -214,6 +228,7 @@ mod tests {
                 foreign,
                 unreadable,
                 newer,
+                capped,
                 ledger: Some(ledger),
             },
             other => other,
@@ -243,13 +258,21 @@ mod tests {
     }
 
     #[test]
+    fn one_note_from_a_newer_lazarobox_is_singular() {
+        assert_eq!(
+            loaded(true, 0, 0, 1).lines(),
+            ["memory: skipped 1 note made by a newer lazarobox"]
+        );
+    }
+
+    #[test]
     fn foreign_unreadable_and_newer_notes_each_get_a_line() {
         assert_eq!(
             loaded(true, 5, 2, 3).lines(),
             [
                 "memory: 5 notes from others ignored (not created on this machine)",
                 "memory: skipped 2 unreadable notes in .lzr/",
-                "3 notes made by a newer lazarobox were skipped",
+                "memory: skipped 3 notes made by a newer lazarobox",
             ]
         );
         assert_eq!(
