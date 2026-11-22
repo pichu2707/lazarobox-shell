@@ -783,8 +783,7 @@ mod tests {
 
     fn script(dir: &Path, body: &str) {
         let path = dir.join(PROGRAM);
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(&path, format!("#!/bin/sh\n{body}\n"));
     }
 
     #[test]
@@ -1154,8 +1153,7 @@ mod tests {
     // The sound: three players in order, one argv each, no shell.
     fn tool(dir: &Path, name: &str, body: &str) {
         let path = dir.join(name);
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(&path, format!("#!/bin/sh\n{body}\n"));
     }
 
     const OGA: &str = "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga";
@@ -1500,8 +1498,7 @@ mod tests {
         let log = dir.path().join("log");
         // Executable bit set but not a program the kernel can run.
         let bad = dir.path().join("canberra-gtk-play");
-        fs::write(&bad, "\u{0}garbage").unwrap();
-        fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(&bad, "\u{0}garbage");
         tool(
             dir.path(),
             "pw-play",

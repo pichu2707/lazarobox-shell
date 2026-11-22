@@ -317,10 +317,8 @@ fn live_rig(folder: &Folder) -> Rig {
 
 /// A helper script `body` in the lab, ready to run.
 fn script(folder: &Folder, body: &str) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let helper = folder.home.parent().unwrap().join("helper");
-    std::fs::write(&helper, body).unwrap();
-    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&helper, body);
     helper
 }
 

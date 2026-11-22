@@ -406,8 +406,7 @@ mod tests {
              {tail}\n",
             rec = record.display()
         );
-        fs::write(&path, body).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(&path, body);
         path
     }
 
@@ -517,8 +516,7 @@ mod tests {
         let rig = rig();
         assert_eq!(rig.server().find().await, Binary::Missing);
         let script = rig.bin_dir.join("engram");
-        fs::write(&script, "#!/bin/sh\nexit 1\n").unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(&script, "#!/bin/sh\nexit 1\n");
         assert_eq!(
             rig.server().find().await,
             Binary::Found {
@@ -581,8 +579,10 @@ mod tests {
     async fn find_runs_the_version_command_with_its_path() {
         let rig = rig();
         let script = rig.bin_dir.join("engram");
-        fs::write(&script, "#!/bin/sh\necho \"engram 1.0 ${PATH##*:}\"\n").unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(
+            &script,
+            "#!/bin/sh\necho \"engram 1.0 ${PATH##*:}\"\n",
+        );
         let path = format!("{}:/opt/login/bin", rig.bin_dir.display());
         let found = Server::new(path.clone().into(), rig.state.clone())
             .find()

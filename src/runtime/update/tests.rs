@@ -898,8 +898,7 @@ mod install_env {
         let dir = path.parent().unwrap();
         fs::create_dir_all(dir).unwrap();
         fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(path, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::runtime::test_script::write_executable(path, "#!/bin/sh\n");
     }
 
     fn env_for(root: &Path, cargo_home: Option<&Path>, path: &OsStr) -> update::InstallEnv {

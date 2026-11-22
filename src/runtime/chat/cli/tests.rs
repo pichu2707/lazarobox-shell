@@ -93,8 +93,7 @@ fn seed_logins(home: &Path) {
 
 fn script(path: &Path, rec: &Path, body: &str) {
     let text = format!("#!/bin/sh\nREC='{}'\n{body}\n", rec.display());
-    fs::write(path, text).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(path, text);
 }
 
 impl Lab {
@@ -1455,8 +1454,7 @@ async fn a_stream_that_just_ends_still_waits_for_the_exit_so_the_jail_marker_is_
 fn exe_in(dir: &Path, name: &str, mode: u32) -> PathBuf {
     fs::create_dir_all(dir).unwrap();
     let file = dir.join(name);
-    fs::write(&file, "#!/bin/sh\n").unwrap();
-    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&file, "#!/bin/sh\n");
     fs::set_permissions(dir, fs::Permissions::from_mode(mode)).unwrap();
     file
 }
@@ -2390,8 +2388,7 @@ fn shim_in_ssh(lab: &Lab) -> PathBuf {
     fs::create_dir_all(&dir).unwrap();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
     let shim = dir.join("lazarobox-shell");
-    fs::write(&shim, "").unwrap();
-    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&shim, "");
     shim
 }
 
@@ -2689,8 +2686,7 @@ async fn a_turn_that_runs_as_text_ends_its_session_and_a_wired_one_keeps_it() {
         &format!("{MCP_CLAUDE}{GOOD}"),
     );
     let shim = lab.bin.join("shim");
-    fs::write(&shim, "").unwrap();
-    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&shim, "");
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
     let mut job = claude_job(&lab, true);
     let wired = counted(&mut job);
@@ -2741,8 +2737,7 @@ async fn only_a_wired_turn_lets_claude_use_our_tools() {
     let lab = lab();
     script(&lab.bin.join("claude"), &lab.rec, OWN_TOOL);
     let shim = lab.bin.join("shim");
-    fs::write(&shim, "").unwrap();
-    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&shim, "");
     let wired = with_shim(&lab, lab.env(), shim.to_str().unwrap());
     let events = run_job(&wired, claude_job(&lab, true)).await;
     assert_eq!(
@@ -2781,8 +2776,7 @@ fn while_dormant_no_engine_starts_a_different_process_with_tools_on() {
         script(&lab.bin.join(name), &lab.rec, GOOD);
     }
     let shim = lab.bin.join("shim");
-    fs::write(&shim, "").unwrap();
-    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&shim, "");
     let socket = lab.rec.join("s.sock");
     fs::write(&socket, "").unwrap();
     let wire = Box::new(McpWire {
@@ -2882,8 +2876,7 @@ fn wired_codex_job(lab: &Lab) -> Job {
 
 fn trusted_shim(lab: &Lab) -> PathBuf {
     let shim = lab.bin.join("shim");
-    fs::write(&shim, "").unwrap();
-    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::runtime::test_script::write_executable(&shim, "");
     shim
 }
 

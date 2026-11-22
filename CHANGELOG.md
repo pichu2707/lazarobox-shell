@@ -10,6 +10,10 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Copying no longer fails when the clipboard tool is busy for a moment (#844).** Starting the tool is tried up to five times, 20 ms apart, when the system answers `Text file busy` (the file is open for writing, as during an upgrade of the tool). Any other error is reported at once, as before.
+
 ## [1.38.0] - 2026-11-22
 
 ### Added
