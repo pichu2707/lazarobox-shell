@@ -1526,7 +1526,10 @@ enabled = true        # por defecto false
 acknowledged = true   # advertencia de privacidad aceptada
 port = 7437           # por defecto ENGRAM_PORT si es válido, si no 7437
 save_summaries = false  # por defecto false; true guarda el resumen de los chats largos
+local = true          # por defecto true; la memoria del proyecto en .lzr/ (ver abajo)
 ```
+
+`local` es independiente de los interruptores de engram de arriba: es la memoria del proyecto que se guarda en `.lzr/`, en la raíz de git, sin engram de por medio. En esta versión la clave solo se acepta y `.lzr` es una carpeta en la que las herramientas de archivos del chat nunca escriben; nada lee ni escribe notas todavía, así que `local = true` no cambia nada visible. Las próximas versiones la usarán y entonces `local = false` no leerá ni escribirá nada en `.lzr/`.
 
 **Privacidad (léelo antes de activarla):**
 

@@ -666,7 +666,8 @@ fn canonical_new(path: &Path) -> Option<PathBuf> {
 }
 
 /// Folder names a write never enters, at any depth below HOME or a drive.
-const WRITE_DENIED_DIRS: &[&str] = &[".git", "node_modules"];
+/// `.lzr` is the local memory store: only lazarobox writes it.
+const WRITE_DENIED_DIRS: &[&str] = &[".git", "node_modules", ".lzr"];
 
 /// File names that run code when the project is built or tested: a change
 /// carries a warning in the review. Lower case, compared ASCII
@@ -750,7 +751,7 @@ fn is_build_file(rel: &Path) -> bool {
 ///   part, empty part or trailing slash, and no secret-looking run;
 /// - the real target is the root joined to that text, so no link sits on the
 ///   way, in or out of the root, and nothing below HOME is excluded by name,
-///   position or secret root, nor is a `.git` or `node_modules` folder (an
+///   position or secret root, nor is a `.git`, `node_modules` or `.lzr` folder (an
 ///   env template such as `.env.example` is the one name let through);
 /// - the target itself, and any folder above it, may not exist yet.
 ///
@@ -965,6 +966,22 @@ mod tests {
             res(&f.home, &f.home.join("project"), input),
             PathVerdict::Allowed(_)
         )
+    }
+
+    // The private ledger of the local memory decides which notes are trusted:
+    // tools never read it, so a model cannot learn or forge a note hash.
+    #[test]
+    fn the_local_memory_ledger_root_is_never_readable() {
+        let f = fixture();
+        let ledger = f.home.join(".local/share/lazarobox/memory");
+        fs::create_dir_all(&ledger).unwrap();
+        fs::write(ledger.join("0123456789abcdef.json"), "{}").unwrap();
+        assert!(!allowed(&f, "~/.local/share/lazarobox/memory"));
+        assert!(!allowed(
+            &f,
+            "~/.local/share/lazarobox/memory/0123456789abcdef.json"
+        ));
+        assert!(!allowed(&f, "~/.local/share/lazarobox/machine-id"));
     }
 
     // Spec (agent-tools, path policy): excluded folders and children.
@@ -2179,6 +2196,19 @@ mod write_tests {
             "my.git/x",
             "node_modules2/x",
         ] {
+            assert!(ok(&f, input).is_some(), "{input}");
+        }
+    }
+
+    // The local memory store is written only by lazarobox, so a model-driven
+    // write can never plant a note that later reads as trusted.
+    #[test]
+    fn the_local_memory_store_is_refused_at_any_depth_and_case() {
+        let f = fixture();
+        for input in [".lzr/memory/notes/n-1.json", "src/.lzr/x", ".LZR/x", ".lzr"] {
+            assert_eq!(ok(&f, input), None, "{input}");
+        }
+        for input in [".lzrc", "lzr/x", "my.lzr/x"] {
             assert!(ok(&f, input).is_some(), "{input}");
         }
     }

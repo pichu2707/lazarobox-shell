@@ -10,6 +10,10 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **Local project memory: groundwork (first slice of #431).** The format is in place but nothing reads or writes notes yet, so you will not see a change. The `[ai.memory] local` key (default `true`) is accepted and documented, and `.lzr` is now a folder the chat's file tools never write. Under the hood: a note is one small JSON file under `.lzr/memory/notes/` with a closed list of kinds, an area, text cut at 1000 characters, control characters stripped and caps on what is read back; the store of a linked worktree is the main checkout's `.lzr/` only when the checkout and the main repository vouch for each other (a forged `.git` file gets its own store), HOME is never a project, and the notes this machine wrote are recorded in a private ledger in the data folder, never in the note.
+
 ## [1.37.0] - 2026-11-22
 
 ### Added

@@ -72,6 +72,58 @@ pub fn project_tag(cwd: &Path) -> Option<String> {
     clean_tag(&name_of(&dir))
 }
 
+/// Where the local memory of a chat in `cwd` lives: `(store_root, work_root)`.
+/// The work root is the checkout the chat is in. The store root is canonical
+/// and is the main repository for a linked worktree, so every worktree shares
+/// one `.lzr/`; a submodule is its own repository. `None` outside a
+/// repository, and when the work root or the store root is `home`: a dotfiles
+/// repository at `~/.git` is never a project.
+pub fn memory_root(cwd: &Path, home: Option<&Path>) -> Option<(PathBuf, PathBuf)> {
+    let work = find_repo(cwd)?.root;
+    let store = linked_main(&work).unwrap_or_else(|| work.clone());
+    let store = store.canonicalize().ok()?;
+    let at_home = home.is_some_and(|home| same_dir(home, &store) || same_dir(home, &work));
+    (!at_home).then_some((store, work))
+}
+
+/// Whether two directories are the same one: by real path, or by name when
+/// either cannot be resolved (a missing HOME must not switch a guard off).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// The main checkout of the linked worktree `work`, when its `.git` file names
+/// a git folder that sits directly inside `<common>/worktrees/`, where
+/// `common` is that folder's `commondir`, a real directory named `.git`, and
+/// the folder's `gitdir` backlink names this checkout.
+///
+/// What this guarantees: the claim is vouched for from inside the main
+/// repository's own `.git/worktrees/`, where only someone who can already
+/// write into that `.git` can create an entry. A layout built entirely in
+/// the checkout (a `.git` file, a fake git folder with a `commondir` and a
+/// backlink) is not under `<common>/worktrees/` and gets no shared store. It
+/// does not stop someone who can write into the main repository's `.git`.
+fn linked_main(work: &Path) -> Option<PathBuf> {
+    let dot_git = work.join(".git");
+    let text = read_regular(&dot_git, GIT_FILE_CAP).ok()?;
+    let gitdir = work.join(gitdir_of(&String::from_utf8_lossy(&text))?);
+    let gitdir = gitdir.canonicalize().ok()?;
+    let line = |name: &str| {
+        let bytes = read_regular(&gitdir.join(name), GIT_FILE_CAP).ok()?;
+        Some(String::from_utf8_lossy(&bytes).trim().to_owned())
+    };
+    let common = gitdir.join(line("commondir")?).canonicalize().ok()?;
+    let backlink = gitdir.join(line("gitdir")?).canonicalize().ok()?;
+    let genuine = backlink == dot_git.canonicalize().ok()?
+        && common.file_name().is_some_and(|name| name == ".git")
+        && common.is_dir()
+        && Some(gitdir.parent()?.to_owned()) == common.join("worktrees").canonicalize().ok();
+    genuine.then(|| common.parent().map(Path::to_owned))?
+}
+
 /// The git root of a chat's origin `cwd`: the directory that holds `.git`,
 /// found by the same walk as the workspace block. `None` outside a
 /// repository. User MCP servers declared for a project apply to this root only.

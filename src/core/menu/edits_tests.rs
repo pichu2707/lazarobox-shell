@@ -119,6 +119,7 @@ fn saved() -> AiConfig {
         acknowledged: false,
         port: 7437,
         save_summaries: false,
+        local: true,
     };
     ai
 }
@@ -333,6 +334,7 @@ fn saved_memory(enabled: bool, acknowledged: bool) -> AiConfig {
         acknowledged,
         port: 7437,
         save_summaries: false,
+        local: true,
     };
     ai
 }
