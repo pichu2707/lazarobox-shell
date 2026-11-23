@@ -892,7 +892,7 @@ The command must be a single one: no `&&`, `;`, `|`, `$`, `*`, backticks or redi
 **Output the model sees.** The model receives the text that was left on screen after the command, not a shell stream:
 
 - At most 8 KiB and 200 rows: the beginning and the end are kept and the cut is marked. It goes through the same cleanup and secret redaction as the read tools.
-- A `cd` also reports the new directory. A command that is still running after 30 s returns `still running` with what was visible until then, and the chat goes on while it keeps running in the pane (`Ctrl+C` in the pane stops it). The result never includes the exit code.
+- A `cd` also reports the new directory. A command that is still running after 30 s returns `still running` with what was visible until then, and the chat goes on while it keeps running in the pane (`Ctrl+C` in the pane stops it). When that command ends, the chat resumes again by itself with its final output, starting with `lazarobox: the command you approved in pane N finished.`; `Ctrl+C` in the pane, a new message or closing the pane ends that follow with a line in the chat (`pane N: you interrupted the command; send a message to go on`, `stopped waiting for the command in pane N`, `pane N closed; send a message to go on`). The result never includes the exit code.
 - If the shell rewrites what was typed (for example **fish** abbreviations), the command's echo is not recognized and the result is `output not available`.
 - If your prompt spans several lines, the upper ones may leak into the output the model receives (they are redacted, but not detected).
 - A full-screen program, something you type at the shell while the command runs, or a pane that closes also return no output.

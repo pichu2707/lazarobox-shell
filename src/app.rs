@@ -1100,6 +1100,9 @@ pub struct App {
     /// Commands the user ran that wait for the others of their chat (#819):
     /// chat, pane number and the worded report, `None` until the runtime sends it.
     held_resumes: Vec<(PaneId, usize, Option<String>)>,
+    /// The held outputs that come from a command cut at the cut-off, by chat
+    /// and pane number: they resume the chat with another lead line.
+    continued: Vec<(PaneId, usize)>,
     /// The send in flight is the resume of a followed command: it forgets no
     /// other typed line.
     resume_sending: bool,
@@ -1315,6 +1318,7 @@ impl App {
             ended_runs: HashSet::new(),
             run_keep: run_store::RunKeep::default(),
             held_resumes: Vec::new(),
+            continued: Vec::new(),
             resume_sending: false,
             lost_saves: HashSet::new(),
             still_running: Vec::new(),

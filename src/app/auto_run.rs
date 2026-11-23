@@ -16,7 +16,7 @@
 //! local attacker who can write a path component).
 
 use super::{
-    typed_run::{Typed, closed_line},
+    typed_run::{Typed, closed_line, interrupted_line},
     *,
 };
 use crate::core::ai::{
@@ -28,7 +28,7 @@ use crate::core::ai::{
         Locality,
         capture::capture,
         report::{cwd_result, system_line},
-        settle::{Anchor, End, Key, Probe, Settle},
+        settle::{Anchor, End, Key, Limits, Probe, Settle},
     },
 };
 
@@ -74,6 +74,9 @@ struct Running {
     cd_target: Option<PathBuf>,
     /// The pane's number when it was written, for a pane that closes.
     number: usize,
+    /// The user pressed Ctrl+C or Ctrl+D in the pane while the run went on
+    /// after the cut-off: the next probe ends the follow.
+    interrupted: bool,
 }
 
 impl RunSlot {
@@ -94,6 +97,7 @@ impl RunSlot {
                 },
                 cd_target: None,
                 number,
+                interrupted: false,
             }),
             by_user: false,
             resume: true,
@@ -118,6 +122,7 @@ impl RunSlot {
     /// The user wrote to the pane: the run is no longer the only thing in it.
     pub(super) fn user_key(&mut self, key: Key) {
         if let Stage::Running(run) = &mut self.stage {
+            run.interrupted |= key.interrupt && run.settle.rules() == Limits::Continue;
             run.settle.user_key(key);
         }
     }
@@ -398,6 +403,7 @@ impl App {
                 },
                 cd_target,
                 number,
+                interrupted: false,
             });
             pty.run = Some(slot);
         }
@@ -460,6 +466,12 @@ impl App {
         let (chat, Stage::Running(run)) = (slot.chat, &mut slot.stage) else {
             return Vec::new();
         };
+        if run.interrupted {
+            let number = run.number;
+            pty.run = None;
+            self.say_in_chat(chat, interrupted_line(number));
+            return self.flush_resumes(chat);
+        }
         let probe = Probe {
             now,
             foreground,
@@ -532,6 +544,24 @@ impl App {
         if resume {
             return self.end_follow(chat, command, report);
         }
+        // A command cut at the cut-off keeps running: its call is answered
+        // below, and the app goes on following it until it ends (design D9).
+        if end == End::StillRunning {
+            pty.run = Some(RunSlot {
+                chat,
+                turn,
+                call,
+                command: command.clone(),
+                stage: Stage::Running(Running {
+                    settle: run.settle.limits(Limits::Continue),
+                    cd_target: None,
+                    number: report.number,
+                    interrupted: false,
+                }),
+                by_user: false,
+                resume: true,
+            });
+        }
         if let Some(chat) = self.panes.get_mut(&chat).and_then(PaneState::chat_mut) {
             chat.clear_run_fallbacks();
             if let Some(line) = system_line(&command, &report) {
@@ -602,6 +632,7 @@ impl App {
             pty.typed.take_if(|t| t.chat == id);
         }
         self.held_resumes.retain(|(chat, ..)| *chat != id);
+        self.continued.retain(|(chat, _)| *chat != id);
     }
 
     /// Drops every run slot that `stale` names, which frees the pane's

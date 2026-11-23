@@ -153,7 +153,11 @@ fn a_run_still_going_after_30_s_is_cut_with_its_line() {
             "pane 1: npm run dev is still running after 30 s; the chat goes on with the output so far"
         ]
     );
-    assert_eq!(slot(&a), None, "the mark is released");
+    let (_, _, _, command) = slot(&a).expect("the cut command goes on being followed");
+    assert_eq!(
+        command, "npm run dev",
+        "a continuation follow, no call to answer"
+    );
 }
 
 #[test]

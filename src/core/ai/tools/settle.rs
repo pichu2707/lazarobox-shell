@@ -159,7 +159,6 @@ impl Settle {
     }
 
     /// The end rules this run follows.
-    #[allow(dead_code)] // S1c/S2c
     pub fn limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
         self

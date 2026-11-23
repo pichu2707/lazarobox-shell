@@ -18,7 +18,7 @@ use crate::core::ai::{
     chat::engine::Availability,
     tools::{
         report::RunReport,
-        settle::{Anchor, End, TIMEOUT},
+        settle::{Anchor, End, Limits, TIMEOUT},
     },
 };
 
@@ -37,6 +37,12 @@ const NOT_SENT: &str =
 /// Said to the chat when the pane of the command it waits for closes.
 pub(super) fn closed_line(number: usize) -> String {
     format!("pane {number} closed; send a message to go on")
+}
+
+/// Said when the user interrupted a command that kept running after the
+/// cut-off.
+pub(super) fn interrupted_line(number: usize) -> String {
+    format!("pane {number}: you interrupted the command; send a message to go on")
 }
 
 /// A model's command typed into a pane and not yet run.
@@ -172,6 +178,9 @@ impl App {
         self.say_in_chat(chat, line);
         if report.end == End::Settled {
             self.held_resumes.push((chat, n, None));
+            if report.limits == Limits::Continue {
+                self.continued.push((chat, n));
+            }
             return vec![Effect::ResumeNote {
                 chat,
                 command,
@@ -215,12 +224,17 @@ impl App {
         }
         let mine: Vec<_> = self.held_resumes.extract_if(.., |h| h.0 == chat).collect();
         let numbers: Vec<usize> = mine.iter().map(|h| h.1).collect();
+        let continued: Vec<_> = self.continued.extract_if(.., |c| c.0 == chat).collect();
         let note = (mine.iter())
             .filter_map(|(_, n, text)| Some((n, text.as_ref()?)))
             .map(|(n, text)| {
-                format!(
-                    "lazarobox: the user ran the command you typed in pane {n}, and it finished.\n{text}"
-                )
+                if continued.contains(&(chat, *n)) {
+                    format!("lazarobox: the command you approved in pane {n} finished.\n{text}")
+                } else {
+                    format!(
+                        "lazarobox: the user ran the command you typed in pane {n}, and it finished.\n{text}"
+                    )
+                }
             })
             .collect::<Vec<_>>()
             .join("\n\n");
@@ -264,6 +278,7 @@ impl App {
         }
         // What was held for the commands it stopped following is not sent.
         let held: Vec<_> = self.held_resumes.extract_if(.., |h| h.0 == chat).collect();
+        self.continued.retain(|c| c.0 != chat);
         self.say_not_sent(chat, held.into_iter().map(|h| h.1));
     }
 
