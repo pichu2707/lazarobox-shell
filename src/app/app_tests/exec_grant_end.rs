@@ -258,7 +258,7 @@ fn a_plain_chat_next_turn_offers_exec_and_every_command_still_asks() {
     assert_eq!(next.families, a.ai.families().with(Family::Exec));
     assert_eq!(next.families, a.offered_families(id2()));
     assert!(!a.ai.toggle(ToolToggle::Exec), "the saved toggle is off");
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         let (mut a, turn) = super::tool_approval::live();
         a.ai.set_tools_enabled(true);
         a.ai.set_approval(mode);

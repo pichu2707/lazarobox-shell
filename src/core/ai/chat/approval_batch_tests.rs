@@ -38,7 +38,7 @@ fn view_of(ask: &ApprovalAsk) -> ReviewView {
 #[test]
 fn a_batch_prompts_in_every_mode_and_for_every_origin() {
     let ask = batch();
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         for origin in [Origin::Tool, Origin::Block] {
             assert_eq!(
                 route(&ask, origin, mode, FREE),

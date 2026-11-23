@@ -5,9 +5,9 @@ use super::chat_history::{chat_of, history_app, listed, opened, prompt_for, resu
 use super::*;
 use crate::core::ai::config::ApprovalMode;
 
-fn auto_config() -> AiConfig {
+fn run_config() -> AiConfig {
     let mut ai = chat_live::ollama();
-    ai.set_approval(ApprovalMode::Auto);
+    ai.set_approval(ApprovalMode::Run);
     ai
 }
 
@@ -18,9 +18,9 @@ fn a_chat_pane_opens_in_the_configured_mode() {
     press(&mut a, "c");
     assert_eq!(chat_of_focus(&a), ApprovalMode::Ask);
 
-    let mut b = launched(80, 25).with_ai(auto_config());
+    let mut b = launched(80, 25).with_ai(run_config());
     press(&mut b, "c");
-    assert_eq!(chat_of_focus(&b), ApprovalMode::Auto);
+    assert_eq!(chat_of_focus(&b), ApprovalMode::Run);
 }
 
 fn chat_of_focus(a: &App) -> ApprovalMode {
@@ -42,7 +42,7 @@ fn set_mode(a: &mut App, mode: ApprovalMode) {
 fn a_config_change_does_not_touch_an_open_chat() {
     let mut a = launched(80, 25).with_ai(chat_live::ollama());
     press(&mut a, "c");
-    a.ai.set_approval(ApprovalMode::Auto);
+    a.ai.set_approval(ApprovalMode::Run);
     assert_eq!(chat_of_focus(&a), ApprovalMode::Ask);
 }
 
@@ -51,14 +51,14 @@ fn a_config_change_does_not_touch_an_open_chat() {
 #[test]
 fn starting_a_new_conversation_resets_the_mode_to_the_config() {
     let mut a = history_app();
-    a.ai.set_approval(ApprovalMode::Auto);
+    a.ai.set_approval(ApprovalMode::Run);
     press(&mut a, "c");
     let id = a.focused();
     a.update(prompt_for(id));
     listed(&mut a, id, rows());
     set_mode(&mut a, ApprovalMode::Ask);
     a.update(key('n'));
-    assert_eq!(chat_of(&a).approval_mode(), ApprovalMode::Auto);
+    assert_eq!(chat_of(&a).approval_mode(), ApprovalMode::Run);
 }
 
 #[test]
@@ -67,20 +67,20 @@ fn resuming_a_conversation_resets_the_mode_to_the_config() {
     let id = a.focused();
     a.update(prompt_for(id));
     listed(&mut a, id, rows());
-    a.ai.set_approval(ApprovalMode::Auto);
+    a.ai.set_approval(ApprovalMode::Run);
     a.update_settled(resumed(id, 30, "programmer"));
-    assert_eq!(chat_of(&a).approval_mode(), ApprovalMode::Auto);
+    assert_eq!(chat_of(&a).approval_mode(), ApprovalMode::Run);
 
     // And the other way: the toggled chat goes back to ask.
     a.ai.set_approval(ApprovalMode::Ask);
-    set_mode(&mut a, ApprovalMode::Auto);
+    set_mode(&mut a, ApprovalMode::Run);
     a.focused_state_mut().chat_mut().unwrap().open_list();
     listed(&mut a, id, rows());
     a.update_settled(resumed(id, 10, "analyst"));
     assert_eq!(chat_of(&a).approval_mode(), ApprovalMode::Ask);
 }
 
-// 2e-3.4: `auto` no longer types on its own ---------------------------------
+// 2e-3.4: `auto` was removed; `ask` is the only mode that asks for every command ---------------------------------
 
 use super::tool_approval::{announce, decision, live, pending, run, shell_output};
 use crate::core::ai::chat::{
@@ -92,16 +92,15 @@ fn auto_typed(a: &App) -> u8 {
     run_pane::chat(a, id2()).auto_typed()
 }
 
-// A model's command prompts in every mode, `auto` included: `y` runs it.
+// A model's command prompts in `ask`: `y` runs it.
 #[test]
-fn a_model_command_prompts_in_ask_and_auto() {
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto] {
-        let (mut a, turn) = live();
-        set_mode(&mut a, mode);
-        assert_eq!(announce(&mut a, turn, 1, run("cd x")), vec![], "{mode:?}");
-        assert!(pending(&a).is_some(), "{mode:?}");
-        assert_eq!(auto_typed(&a), 0, "{mode:?}");
-    }
+fn a_model_command_prompts_in_ask() {
+    let mode = ApprovalMode::Ask;
+    let (mut a, turn) = live();
+    set_mode(&mut a, mode);
+    assert_eq!(announce(&mut a, turn, 1, run("cd x")), vec![], "{mode:?}");
+    assert!(pending(&a).is_some(), "{mode:?}");
+    assert_eq!(auto_typed(&a), 0, "{mode:?}");
 }
 
 // A `cargo install` update pane is not a shell: nothing is typed into its
@@ -138,32 +137,31 @@ fn lines(a: &App) -> Vec<String> {
         .collect()
 }
 
-const RUN_LINE: &str = "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)";
+const ASK_LINE: &str =
+    "approval: ask (every command asks for y; y runs it and the chat reads the output)";
+const RUN_LINE: &str = "approval: run (read-only commands run at once; every other command asks for y; y runs it and the chat reads the output)";
 
-// Spec (modal-input): `a` cycles ask, auto, run, ask, with one system line per
-// mode and nothing written to a PTY.
+// Spec (chat-pane): `a` cycles ask, run, ask, with one system line per mode
+// (the exact lines of the spec) and nothing written to a PTY.
 #[test]
 fn prefix_a_cycles_the_mode_of_the_focused_chat_and_says_so() {
     let (mut a, _) = live();
-    assert_eq!(press(&mut a, "a"), vec![]);
-    assert_eq!(chat_of_focus(&a), ApprovalMode::Auto);
-    assert!(
-        lines(&a).contains(&"approval: auto (every command asks for y, like ask; y runs it and the chat reads the output)".to_owned()),
-        "{:?}",
-        lines(&a)
-    );
     assert_eq!(press(&mut a, "a"), vec![]);
     assert_eq!(chat_of_focus(&a), ApprovalMode::Run);
     assert_eq!(lines(&a).last().map(String::as_str), Some(RUN_LINE));
     assert_eq!(press(&mut a, "a"), vec![]);
     assert_eq!(chat_of_focus(&a), ApprovalMode::Ask);
-    assert_eq!(lines(&a).last().map(String::as_str), Some("approval: ask"));
+    assert_eq!(lines(&a).last().map(String::as_str), Some(ASK_LINE));
+    assert!(
+        !lines(&a).iter().any(|l| l.contains("auto")),
+        "{:?}",
+        lines(&a)
+    );
 }
 
 #[test]
 fn entering_run_needs_no_confirmation() {
     let (mut a, _) = live();
-    set_mode(&mut a, ApprovalMode::Auto);
     assert_eq!(press(&mut a, "a"), vec![]);
     assert_eq!(chat_of_focus(&a), ApprovalMode::Run);
     assert!(a.menu().is_none());
@@ -180,7 +178,7 @@ fn the_toggle_leaves_the_other_chats_alone() {
     press(&mut a, "a");
     assert_eq!(
         run_pane::chat(&a, second).approval_mode(),
-        ApprovalMode::Auto
+        ApprovalMode::Run
     );
     assert_eq!(run_pane::chat(&a, id2()).approval_mode(), ApprovalMode::Ask);
 }
@@ -190,7 +188,7 @@ fn the_toggle_leaves_the_other_chats_alone() {
 fn cycling_the_mode_leaves_a_pending_confirm_pending() {
     let (mut a, turn) = live();
     announce(&mut a, turn, 1, run("cd x"));
-    for want in [ApprovalMode::Auto, ApprovalMode::Run, ApprovalMode::Ask] {
+    for want in [ApprovalMode::Run, ApprovalMode::Ask] {
         assert_eq!(press(&mut a, "a"), vec![]);
         assert_eq!(chat_of_focus(&a), want);
         assert_eq!(pending(&a), Some((run("cd x"), Some((turn, CallId(1))))));
@@ -228,11 +226,11 @@ fn a_inside_a_group_toggles_nothing() {
     assert_eq!(chat_of_focus(&a), ApprovalMode::Ask);
 }
 
-// Spec (agent-tools, config menu): saving `auto` from the menu is no decision
+// Spec (agent-tools, config menu): saving `run` from the menu is no decision
 // on a pending approval: it stays pending, nothing is typed or written, and
 // the open chat keeps its mode.
 #[test]
-fn saving_auto_from_the_menu_leaves_a_pending_approval_alone() {
+fn saving_run_from_the_menu_leaves_a_pending_approval_alone() {
     let (mut a, turn) = live();
     announce(&mut a, turn, 1, run("cd x"));
     assert_eq!(chat_of_focus(&a), ApprovalMode::Ask);
@@ -252,7 +250,7 @@ fn saving_auto_from_the_menu_leaves_a_pending_approval_alone() {
 
     assert_eq!(
         a.ai().approval(),
-        ApprovalMode::Auto,
+        ApprovalMode::Run,
         "the save went through"
     );
     assert_eq!(pending(&a), before, "the approval is still pending");
@@ -264,13 +262,13 @@ fn saving_auto_from_the_menu_leaves_a_pending_approval_alone() {
 }
 
 // agent-orchestrator / Outside read follows the mode as a chat read: in
-// `ask`, `auto` and `run`, a worker's read ask gets exactly the answer the
+// `ask` and `run`, a worker's read ask gets exactly the answer the
 // same chat read gets (the same effects, a prompt or none), and only its
 // prompt carries the worker label.
 #[test]
 fn a_worker_read_is_answered_by_the_mode_as_the_same_chat_read() {
     use crate::core::ai::chat::approval::Reach;
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         for reach in [
             Reach::Root,
             Reach::Broad,
@@ -338,7 +336,7 @@ fn a_chat_read_keeps_its_answers_in_every_mode() {
         ),
         (ApprovalMode::Ask, Reach::Root, true, true, None),
         (
-            ApprovalMode::Auto,
+            ApprovalMode::Ask,
             Reach::Other,
             false,
             false,
@@ -348,13 +346,6 @@ fn a_chat_read_keeps_its_answers_in_every_mode() {
         // A path the guard refuses (`.env`) never prompts, in any mode (T10).
         (
             ApprovalMode::Ask,
-            Reach::Refused,
-            true,
-            false,
-            Some(Decision::Unprompted),
-        ),
-        (
-            ApprovalMode::Auto,
             Reach::Refused,
             true,
             false,

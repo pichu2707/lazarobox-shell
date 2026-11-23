@@ -473,12 +473,12 @@ fn the_run_pauses_after_three_fallbacks_and_a_turn_or_a_run_clears_it() {
 #[test]
 fn the_mode_changes_neither_the_request_nor_the_stored_messages() {
     let mut ask = chat();
-    let mut auto = chat();
-    auto.set_approval_mode(ApprovalMode::Auto);
+    let mut run = chat();
+    run.set_approval_mode(ApprovalMode::Run);
     let (_, ask_request) = sent(&mut ask, "hello");
-    let (_, auto_request) = sent(&mut auto, "hello");
-    assert_eq!(ask_request, auto_request);
-    assert_eq!(ask.outbox, auto.outbox);
+    let (_, run_request) = sent(&mut run, "hello");
+    assert_eq!(ask_request, run_request);
+    assert_eq!(ask.outbox, run.outbox);
 }
 
 // Spec (code-write, Orphan, close and quit): the model learns of a user-side

@@ -1,4 +1,4 @@
-//! The `AUTO` and `RUN` badges of a chat in auto or run approval mode (spec chat-pane,
+//! The `RUN` badge of a chat in run approval mode (spec chat-pane,
 //! "Approval mode badge").
 
 use ratatui::{
@@ -77,32 +77,24 @@ fn assert_badge_of(buf: &Buffer, text: &str, bg: Color) {
 }
 
 fn assert_badge(buf: &Buffer) {
-    assert_badge_of(buf, " AUTO ", theme().warning_orange);
+    assert_badge_of(buf, " RUN ", theme().error_red);
 }
 
 #[test]
-fn auto_draws_the_badge_top_right_of_the_conversation() {
-    let buf = draw(&chat_in(ApprovalMode::Auto), 30, 6);
+fn run_draws_the_badge_top_right_of_the_conversation() {
+    let buf = draw(&chat_in(ApprovalMode::Run), 30, 6);
     assert_badge(&buf);
 }
 
 #[test]
 fn the_badge_shows_in_the_list_and_editor_views_too() {
-    let mut list = chat_in(ApprovalMode::Auto);
+    let mut list = chat_in(ApprovalMode::Run);
     list.open_list();
     assert_badge(&draw(&list, 40, 8));
 
-    let mut editor = chat_in(ApprovalMode::Auto);
+    let mut editor = chat_in(ApprovalMode::Run);
     editor.open_note_editor().expect("an answer to save");
     assert_badge(&draw(&editor, 40, 10));
-}
-
-#[test]
-fn below_six_columns_the_badge_is_one_letter() {
-    let buf = draw(&chat_in(ApprovalMode::Auto), 5, 4);
-    assert_eq!(buf[(4, 0)].symbol(), "A");
-    assert_eq!(buf[(4, 0)].bg, theme().warning_orange);
-    assert!(!row(&buf, 0).contains("AUTO"));
 }
 
 #[test]
@@ -135,11 +127,9 @@ fn below_five_columns_the_run_badge_is_one_letter() {
 fn the_badge_follows_the_mode_and_the_tools_flag() {
     let mut chat = answered();
     assert_eq!(chat.mode_badge(), None);
-    chat.set_approval_mode(ApprovalMode::Auto);
+    chat.set_approval_mode(ApprovalMode::Run);
     assert_eq!(chat.mode_badge(), None, "tools off");
     chat.set_run_hint(true);
-    assert_eq!(chat.mode_badge(), Some(ApprovalMode::Auto));
-    chat.set_approval_mode(ApprovalMode::Run);
     assert_eq!(chat.mode_badge(), Some(ApprovalMode::Run));
     chat.set_approval_mode(ApprovalMode::Ask);
     assert_eq!(chat.mode_badge(), None);
@@ -147,8 +137,9 @@ fn the_badge_follows_the_mode_and_the_tools_flag() {
 
 #[test]
 fn ask_mode_and_tools_off_draw_no_marker() {
+    // There is no AUTO badge any more: `ask` draws nothing at all.
     let ask = draw(&chat_in(ApprovalMode::Ask), 30, 6);
-    let mut off = chat_in(ApprovalMode::Auto);
+    let mut off = chat_in(ApprovalMode::Run);
     off.set_run_hint(false);
     let off = draw(&off, 30, 6);
     for buf in [ask, off] {
@@ -162,7 +153,7 @@ fn ask_mode_and_tools_off_draw_no_marker() {
 
 #[test]
 fn tiny_areas_do_not_panic() {
-    for mode in [ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Run] {
         let chat = chat_in(mode);
         for width in 1..=10 {
             for height in 1..=2 {
@@ -170,16 +161,6 @@ fn tiny_areas_do_not_panic() {
             }
         }
     }
-}
-
-#[test]
-fn the_badge_snapshot() {
-    let buf = draw(&chat_in(ApprovalMode::Auto), 30, 5);
-    let shot = (0..buf.area.height)
-        .map(|y| row(&buf, y).trim_end().to_owned())
-        .collect::<Vec<_>>()
-        .join("\n");
-    insta::assert_snapshot!("auto_badge_30x5", shot);
 }
 
 #[test]
@@ -231,11 +212,11 @@ fn an_orphan_wears_a_distinct_badge_with_its_review_key() {
 
 #[test]
 fn the_batch_badge_and_the_mode_badge_share_the_row_without_touching() {
-    let buf = draw(&with_batch(ApprovalMode::Auto, Badge::Orphan(12)), 40, 5);
+    let buf = draw(&with_batch(ApprovalMode::Run, Badge::Orphan(12)), 40, 5);
     let top = row(&buf, 0);
     assert!(top.starts_with(" orphan 12 · Ctrl+G "), "{top:?}");
-    assert!(top.ends_with(" AUTO "), "{top:?}");
-    insta::assert_snapshot!("orphan_and_auto_badges_40x5", shot_of(&buf));
+    assert!(top.ends_with(" RUN "), "{top:?}");
+    insta::assert_snapshot!("orphan_and_run_badges_40x5", shot_of(&buf));
 }
 
 #[test]
@@ -275,7 +256,7 @@ fn the_batch_badge_shows_in_every_view_but_the_review() {
 #[test]
 fn the_batch_badge_degrades_on_tiny_areas() {
     for badge in [Badge::Staged(7), Badge::Orphan(120)] {
-        let chat = with_batch(ApprovalMode::Auto, badge);
+        let chat = with_batch(ApprovalMode::Run, badge);
         for width in 1..=24 {
             for height in 1..=2 {
                 draw(&chat, width, height);
@@ -361,8 +342,4 @@ fn a_blocked_chat_in_run_wears_a_marker_that_promises_no_run() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!("blocked_run_marker_80x6", shot);
-    // Auto is unchanged: it never ran a command by itself.
-    let mut auto = chat_in(ApprovalMode::Auto);
-    auto.note_github_read();
-    assert_badge(&draw(&auto, 30, 6));
 }

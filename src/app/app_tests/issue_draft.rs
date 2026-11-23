@@ -72,7 +72,7 @@ fn accepted() -> (App, u64) {
 // and only an unmodified lowercase `y` accepts.
 #[test]
 fn every_mode_prompts_and_only_a_lowercase_y_accepts() {
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         let (mut a, turn) = live();
         super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
         assert_eq!(announce(&mut a, turn, 1, draft()), Vec::new(), "{mode:?}");

@@ -81,7 +81,7 @@ pub enum PrefixAction {
     /// Opens the confirm to type the last shell block of the focused chat's
     /// last answer into a shell pane. Never runs it.
     RunInPane,
-    /// Flips the focused chat between `ask` and `auto` for its conversation.
+    /// Flips the focused chat between `ask` and `run` for its conversation.
     ToggleApproval,
     /// Opens the `/exec` dialog of the focused chat. Never grants.
     OpenExecGrant,
@@ -256,11 +256,7 @@ pub const PREFIX_TREE: &[Binding] = &[
     // Left out of the hint for the same reason: the root hint is full.
     unhinted(act('e', "run in pane", PrefixAction::RunInPane)),
     // Left out of the hint for the same reason: the root hint is full.
-    unhinted(act(
-        'a',
-        "approval: ask/auto/run",
-        PrefixAction::ToggleApproval,
-    )),
+    unhinted(act('a', "approval: ask/run", PrefixAction::ToggleApproval)),
     // `w` is the window group, so Write takes `f` (files). Both only open the
     // dialog of the command; `y` there is what grants.
     unhinted(act('x', "Exec grant dialog", PrefixAction::OpenExecGrant)),
@@ -365,6 +361,20 @@ mod tests {
         assert_eq!(clip_hint(&entries, 1), "…");
         assert_eq!(clip_hint(&entries, 0), "");
         assert_eq!(clip_hint::<&str>(&[], 10), "");
+    }
+
+    // Spec: the approval mode `auto` is gone, so no help label names it.
+    #[test]
+    fn no_prefix_label_mentions_the_removed_auto_approval() {
+        for table in tables() {
+            for binding in table {
+                assert!(
+                    !binding.description.to_lowercase().contains("auto"),
+                    "{}",
+                    binding.description
+                );
+            }
+        }
     }
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {

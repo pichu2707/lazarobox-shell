@@ -205,7 +205,7 @@ fn a_list_row_cycles_both_ways_and_wraps() {
     for (label, first, second, last) in [
         ("Profile", "analyst", "programmer", "programmer"),
         ("Notify", "auto", "desktop", "off"),
-        ("Approval", "ask", "auto", "run"),
+        ("Approval", "ask", "run", "run"),
     ] {
         let mut ai = AiConfig::default();
         let list = choice(row(label)).unwrap();

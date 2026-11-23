@@ -115,14 +115,10 @@ fn ten_j_presses_walk_the_tools_tab_and_wrap() {
 }
 
 #[test]
-fn the_row_reads_ask_auto_or_run_and_needs_the_ai_section() {
+fn the_row_reads_ask_or_run_and_needs_the_ai_section() {
     assert_eq!(
         value_of(&open_with(ApprovalMode::Ask), "Approval").as_deref(),
         Some("ask")
-    );
-    assert_eq!(
-        value_of(&open_with(ApprovalMode::Auto), "Approval").as_deref(),
-        Some("auto")
     );
     assert_eq!(
         value_of(&open_with(ApprovalMode::Run), "Approval").as_deref(),
@@ -132,13 +128,13 @@ fn the_row_reads_ask_auto_or_run_and_needs_the_ai_section() {
     assert_eq!(value_of(&plain_menu, "Approval"), None, "no AI, no row");
 }
 
-// Spec (config-menu): the row cycles ask, auto, run, ask; the backward keys
+// Spec (config-menu): the row cycles ask, run, ask; the backward keys
 // walk the same ring the other way.
 #[test]
-fn the_forward_keys_cycle_ask_auto_run_and_emit_nothing() {
+fn the_forward_keys_cycle_ask_run_and_emit_nothing() {
     for code in [KeyCode::Char('l'), KeyCode::Right] {
         let mut m = on_approval(ApprovalMode::Ask);
-        for want in [ApprovalMode::Auto, ApprovalMode::Run, ApprovalMode::Ask] {
+        for want in [ApprovalMode::Run, ApprovalMode::Ask] {
             assert_eq!(send(&mut m, code, false), MenuCommand::None, "{code:?}");
             assert_eq!(m.ai_draft().approval(), want, "{code:?}");
             assert_eq!(value_of(&m, "Approval").as_deref(), Some(want.id()));
@@ -147,10 +143,10 @@ fn the_forward_keys_cycle_ask_auto_run_and_emit_nothing() {
 }
 
 #[test]
-fn the_backward_keys_cycle_ask_run_auto_ask() {
+fn the_backward_keys_cycle_ask_run_ask() {
     for code in [KeyCode::Char('h'), KeyCode::Left] {
         let mut m = on_approval(ApprovalMode::Ask);
-        for want in [ApprovalMode::Run, ApprovalMode::Auto, ApprovalMode::Ask] {
+        for want in [ApprovalMode::Run, ApprovalMode::Ask] {
             assert_eq!(send(&mut m, code, false), MenuCommand::None, "{code:?}");
             assert_eq!(m.ai_draft().approval(), want, "{code:?}");
         }
@@ -161,13 +157,9 @@ fn the_backward_keys_cycle_ask_run_auto_ask() {
 fn enter_cycles_but_a_repeated_enter_is_ignored() {
     let mut m = on_approval(ApprovalMode::Ask);
     assert_eq!(send(&mut m, KeyCode::Enter, false), MenuCommand::None);
-    assert_eq!(m.ai_draft().approval(), ApprovalMode::Auto);
+    assert_eq!(m.ai_draft().approval(), ApprovalMode::Run);
     assert_eq!(send(&mut m, KeyCode::Enter, true), MenuCommand::None);
-    assert_eq!(
-        m.ai_draft().approval(),
-        ApprovalMode::Auto,
-        "repeat ignored"
-    );
+    assert_eq!(m.ai_draft().approval(), ApprovalMode::Run, "repeat ignored");
 }
 
 #[test]
@@ -197,20 +189,13 @@ fn the_edit_is_the_approval_key_alone_and_only_when_changed() {
     let mut m = on_approval(ApprovalMode::Ask);
     assert_eq!(m.edits(&live), vec![]);
     press(&mut m, 'l');
-    assert_eq!(m.edits(&live), vec![approval_edit("auto")]);
-    press(&mut m, 'l');
+    assert_eq!(m.edits(&live), vec![approval_edit("run")]);
     press(&mut m, 'l');
     assert_eq!(m.edits(&live), vec![], "back to the open value");
-    let mut auto = on_approval(ApprovalMode::Auto);
-    press(&mut auto, 'l');
+    let mut run = on_approval(ApprovalMode::Run);
+    press(&mut run, 'l');
     assert_eq!(
-        auto.edits(&live),
-        vec![approval_edit("run")],
-        "run is written as the string"
-    );
-    press(&mut auto, 'l');
-    assert_eq!(
-        auto.edits(&live),
+        run.edits(&live),
         vec![approval_edit("ask")],
         "the default is written explicitly"
     );
@@ -225,16 +210,26 @@ fn the_approval_edit_comes_right_after_the_tools_edit() {
     let edits = m.edits(&Config::default());
     assert_eq!(edits.len(), 2);
     assert_eq!(edits[0].key, "enabled");
-    assert_eq!(edits[1], approval_edit("auto"));
+    assert_eq!(edits[1], approval_edit("run"));
 }
 
 // Accepted behaviour (design D18): a bad file value falls back to `ask`, the
 // menu opens on `ask` and offers no edit, so the bad value stays in the file
-// until `auto` is saved. `Tools` behaves the same way.
+// until `run` is saved. `Tools` behaves the same way.
 #[test]
 fn a_bad_file_value_opens_on_ask_with_no_edit() {
     let (config, ai, _) =
         Config::load_with_ai(Ok("[ai.tools]\napproval = \"AUTO\"\n".into()), None);
+    let m = MenuState::open(&config).with_ai(ai, Some(machine()));
+    assert_eq!(value_of(&m, "Approval").as_deref(), Some("ask"));
+    assert_eq!(m.edits(&config), vec![]);
+}
+
+// Spec (config-menu): a file that holds the removed `auto` reads `ask`.
+#[test]
+fn a_file_holding_the_removed_auto_opens_on_ask() {
+    let (config, ai, _) =
+        Config::load_with_ai(Ok("[ai.tools]\napproval = \"auto\"\n".into()), None);
     let m = MenuState::open(&config).with_ai(ai, Some(machine()));
     assert_eq!(value_of(&m, "Approval").as_deref(), Some("ask"));
     assert_eq!(m.edits(&config), vec![]);

@@ -1497,10 +1497,10 @@ other = 1
     #[test]
     fn the_approval_key_is_created_in_its_own_table_as_a_string() {
         use crate::core::ai::config::ApprovalMode;
-        let out = apply_edit(None, &approval_edit(ApprovalMode::Auto)).unwrap();
-        assert_eq!(out, "[ai.tools]\napproval = \"auto\"\n");
+        let out = apply_edit(None, &approval_edit(ApprovalMode::Run)).unwrap();
+        assert_eq!(out, "[ai.tools]\napproval = \"run\"\n");
         let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
-        assert_eq!(ai.approval(), ApprovalMode::Auto);
+        assert_eq!(ai.approval(), ApprovalMode::Run);
         assert_eq!(notice, None);
     }
 
@@ -1508,13 +1508,13 @@ other = 1
     fn the_approval_key_is_created_next_to_enabled() {
         use crate::core::ai::config::ApprovalMode;
         let existing = "[ai.tools]\nenabled = true  # on\n\n[ai]\nnotify = \"bell\"\n";
-        let out = apply_edit(Some(existing), &approval_edit(ApprovalMode::Auto)).unwrap();
+        let out = apply_edit(Some(existing), &approval_edit(ApprovalMode::Run)).unwrap();
         assert_eq!(
             out,
-            "[ai.tools]\nenabled = true  # on\napproval = \"auto\"\n\n[ai]\nnotify = \"bell\"\n"
+            "[ai.tools]\nenabled = true  # on\napproval = \"run\"\n\n[ai]\nnotify = \"bell\"\n"
         );
         let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
-        assert_eq!(ai.approval(), ApprovalMode::Auto);
+        assert_eq!(ai.approval(), ApprovalMode::Run);
         assert!(ai.tools_enabled());
         assert_eq!(notice, None);
     }
@@ -1522,7 +1522,7 @@ other = 1
     #[test]
     fn an_existing_approval_is_updated_in_place_and_keeps_its_comment() {
         use crate::core::ai::config::ApprovalMode;
-        let existing = "[ai.tools]\n# how\napproval = \"auto\"  # careful\nenabled = true\n";
+        let existing = "[ai.tools]\n# how\napproval = \"run\"  # careful\nenabled = true\n";
         let out = apply_edit(Some(existing), &approval_edit(ApprovalMode::Ask)).unwrap();
         assert_eq!(
             out,
@@ -1544,7 +1544,7 @@ other = 1
         use crate::core::ai::config::ApprovalMode;
         let mcp = "[[ai.mcp.servers]]\nname = \"docs\"\ncommand = \"/usr/bin/docs-mcp\"\n";
         let existing = format!("[ai.tools]\nenabled = false\n\n{mcp}");
-        let out = apply_edit(Some(&existing), &approval_edit(ApprovalMode::Auto)).unwrap();
+        let out = apply_edit(Some(&existing), &approval_edit(ApprovalMode::Run)).unwrap();
         assert!(out.contains(mcp), "{out:?}");
         assert!(out.contains("enabled = false"), "{out:?}");
     }
@@ -1554,7 +1554,7 @@ other = 1
         use crate::core::ai::config::ApprovalMode;
         let existing = "[ai.tools.approval]\nx = 1\n";
         assert_eq!(
-            apply_edit(Some(existing), &approval_edit(ApprovalMode::Auto)),
+            apply_edit(Some(existing), &approval_edit(ApprovalMode::Run)),
             Err(EditError::KeyIsTable {
                 table: "ai.tools",
                 key: "approval"
@@ -1571,13 +1571,13 @@ other = 1
         let existing = format!("[statusline]\nposition = \"top\"\n\n{mcp}");
         let edits = [
             ConfigEdit::tools_flag(false),
-            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Auto),
+            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Run),
             edit("statusline", "bottom"),
         ];
         let out = apply_edit(Some(&existing), &edits).unwrap();
         assert!(out.contains(mcp), "{out:?}");
         assert!(
-            out.contains("enabled = false") && out.contains("approval = \"auto\""),
+            out.contains("enabled = false") && out.contains("approval = \"run\""),
             "{out:?}"
         );
         // A file with no ai.mcp gains none.
@@ -1598,7 +1598,7 @@ other = 1
         let existing = format!("[statusline]\nposition = \"top\"\n\n{mcp}");
         let edits = [
             ConfigEdit::tools_flag(false),
-            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Auto),
+            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Run),
             edit("statusline", "bottom"),
         ];
         let out = apply_edit(Some(&existing), &edits).unwrap();
@@ -1614,7 +1614,7 @@ other = 1
         let existing = format!("[ai]\nengine = \"ollama\"\n\n{servers}");
         let edits = [
             ConfigEdit::tools_flag(false),
-            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Auto),
+            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Run),
             edit("statusline", "bottom"),
         ];
         let out = apply_edit(Some(&existing), &edits).unwrap();
@@ -1686,7 +1686,7 @@ other = 1
         ];
         let edits = [
             ConfigEdit::tools_flag(false),
-            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Auto),
+            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Run),
         ];
         for existing in layouts {
             let out = apply_edit(Some(&existing), &edits).unwrap();
@@ -1695,7 +1695,7 @@ other = 1
             assert!(!after.tools_enabled(), "{out:?}");
             assert_eq!(
                 after.approval(),
-                crate::core::ai::config::ApprovalMode::Auto,
+                crate::core::ai::config::ApprovalMode::Run,
                 "{out:?}"
             );
             assert_eq!(after.mcp_servers(), before.mcp_servers(), "{out:?}");
@@ -1715,7 +1715,7 @@ other = 1
                 assert_eq!(&out[at..at + mcp.len()], mcp, "{out:?}");
                 assert_eq!(
                     &out[at + mcp.len()..],
-                    "\n[ai.tools]\nenabled = false\napproval = \"auto\"\n"
+                    "\n[ai.tools]\nenabled = false\napproval = \"run\"\n"
                 );
             }
         }

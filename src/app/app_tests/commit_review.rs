@@ -66,7 +66,7 @@ pub(super) fn read_all(a: &mut App) {
 
 #[test]
 fn a_commit_opens_the_review_in_every_approval_mode_and_never_runs_by_itself() {
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         let (mut a, turn) = live();
         a.panes
             .get_mut(&id2())

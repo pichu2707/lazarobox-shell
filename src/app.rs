@@ -9036,22 +9036,22 @@ mod app_tests {
         open_menu(&mut a);
         goto_row(&mut a, "Approval");
         assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
-        assert_eq!(a.menu().unwrap().ai_draft().approval(), ApprovalMode::Auto);
+        assert_eq!(a.menu().unwrap().ai_draft().approval(), ApprovalMode::Run);
         assert_eq!(a.ai().approval(), ApprovalMode::Ask, "not saved yet");
         let edit = ConfigEdit {
             table: "ai.tools",
             key: "approval",
-            value: "auto".into(),
+            value: "run".into(),
         };
         assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
         a.update(AppEvent::ConfigSaved);
         assert!(a.menu().is_none());
-        assert_eq!(a.ai().approval(), ApprovalMode::Auto);
+        assert_eq!(a.ai().approval(), ApprovalMode::Run);
         open_menu(&mut a);
         goto_row(&mut a, "Approval");
         a.update(key('l'));
         a.update(esc());
-        assert_eq!(a.ai().approval(), ApprovalMode::Auto, "Esc keeps the saved");
+        assert_eq!(a.ai().approval(), ApprovalMode::Run, "Esc keeps the saved");
     }
 
     // Spec (agent-tools, config menu): the saved mode reaches later opens, not
@@ -9068,10 +9068,10 @@ mod app_tests {
         a.update(key('l'));
         a.update(key('s'));
         a.update(AppEvent::ConfigSaved);
-        assert_eq!(a.ai().approval(), ApprovalMode::Auto);
+        assert_eq!(a.ai().approval(), ApprovalMode::Run);
         assert_eq!(mode(&mut a), ApprovalMode::Ask, "the open chat keeps ask");
         press(&mut a, "c");
-        assert_eq!(mode(&mut a), ApprovalMode::Auto, "a later open takes it");
+        assert_eq!(mode(&mut a), ApprovalMode::Run, "a later open takes it");
     }
 
     // Spec (Context toggle): Esc restores the flag captured at open.

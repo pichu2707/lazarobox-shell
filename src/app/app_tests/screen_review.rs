@@ -71,7 +71,7 @@ fn sent(turn: u64, text: String) -> Effect {
 
 #[test]
 fn the_ask_opens_the_review_of_the_frozen_screen_in_every_mode() {
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         let (mut a, turn) = live();
         chat_mut(&mut a).set_approval_mode(mode);
         shell_output(&mut a, b"$ ls\r\nREADME.md\r\n");

@@ -52,7 +52,7 @@ fn typed_live() -> App {
         .get_mut(&id2())
         .and_then(PaneState::chat_mut)
         .unwrap()
-        .set_approval_mode(ApprovalMode::Auto);
+        .set_approval_mode(ApprovalMode::Ask);
     a.update(AppEvent::Cwd(SHELL, LAUNCH.into()));
     announce(&mut a, turn, 1, run("echo hi"));
     result(&mut a, turn, 1, ToolStatus::Ok);
@@ -199,7 +199,7 @@ fn a_line_the_user_had_started_before_the_typing_is_not_followed() {
         .get_mut(&id2())
         .and_then(PaneState::chat_mut)
         .unwrap()
-        .set_approval_mode(ApprovalMode::Auto);
+        .set_approval_mode(ApprovalMode::Ask);
     a.update(AppEvent::Cwd(SHELL, LAUNCH.into()));
     in_shell(&mut a, key('x'));
     announce(&mut a, turn, 1, run("echo hi"));
@@ -216,7 +216,7 @@ fn a_typing_the_runtime_refused_follows_nothing() {
         .get_mut(&id2())
         .and_then(PaneState::chat_mut)
         .unwrap()
-        .set_approval_mode(ApprovalMode::Auto);
+        .set_approval_mode(ApprovalMode::Ask);
     a.update(AppEvent::Cwd(SHELL, LAUNCH.into()));
     announce(&mut a, turn, 1, run("echo hi"));
     result(&mut a, turn, 1, ToolStatus::Denied);
@@ -382,7 +382,7 @@ fn an_orchestrating_chat_tracks_no_typed_line() {
         .get_mut(&id2())
         .and_then(PaneState::chat_mut)
         .unwrap();
-    chat.set_approval_mode(ApprovalMode::Auto);
+    chat.set_approval_mode(ApprovalMode::Ask);
     chat.set_orch(true);
     a.update(AppEvent::Cwd(SHELL, LAUNCH.into()));
     announce(&mut a, turn, 1, run("echo hi"));
@@ -510,7 +510,7 @@ fn two_followed() -> (App, PaneId) {
         .get_mut(&id2())
         .and_then(PaneState::chat_mut)
         .unwrap()
-        .set_approval_mode(ApprovalMode::Auto);
+        .set_approval_mode(ApprovalMode::Ask);
     a.update(AppEvent::Cwd(SHELL, LAUNCH.into()));
     announce(&mut a, turn, 1, run("echo one"));
     result(&mut a, turn, 1, ToolStatus::Ok);
@@ -637,7 +637,7 @@ fn an_untracked_typed_line_keeps_the_old_waiting_line() {
         .get_mut(&id2())
         .and_then(PaneState::chat_mut)
         .unwrap()
-        .set_approval_mode(ApprovalMode::Auto);
+        .set_approval_mode(ApprovalMode::Ask);
     a.panes
         .get_mut(&SHELL)
         .and_then(PaneState::pty_mut)

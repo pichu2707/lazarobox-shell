@@ -85,10 +85,10 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 
 ## S2b: `auto` removed and migrated (base: main after S2a)
 
-- [ ] 2b.1 RED `config.rs`: parser maps `"auto"` to `ask` with problem `"auto" was removed; using "ask"`, writes nothing; `"AUTO"`, `true` give `expected "ask" or "run"`.
-- [ ] 2b.2 RED load rewrite (tempfile): `auto` becomes `"ask"` only, comments and other bytes intact; one notice; second start silent; read-only file shows the failure notice with reason at each start; other problems present means no rewrite.
-- [ ] 2b.3 RED toggle lines (`approval: ask (...)`, `approval: run (...)`), no ` AUTO ` badge, menu cycles `ask`, `run` and never shows `auto`; hint `ask: y runs; run: safe reads alone, rest y; per chat`.
-- [ ] 2b.4 GREEN `core/ai/config.rs`, startup load via `core/config_edit.rs`, `app/tool.rs`, `core/ai/chat/mod.rs`, `ui/components/chat.rs`. CHANGELOG; README pair (`auto` removed, mapped once). Exit gate.
+- [x] 2b.1 RED `config.rs`: parser maps `"auto"` to `ask` with problem `"auto" was removed; using "ask"`, writes nothing; `"AUTO"`, `true` give `expected "ask" or "run"`.
+- [x] 2b.2 RED load rewrite (tempfile): `auto` becomes `"ask"` only, comments and other bytes intact; one notice; second start silent; read-only file shows the failure notice with reason at each start; other problems present means no rewrite.
+- [x] 2b.3 RED toggle lines (`approval: ask (...)`, `approval: run (...)`), no ` AUTO ` badge, menu cycles `ask`, `run` and never shows `auto`; hint `ask: y runs; run: safe reads alone, rest y; per chat`.
+- [x] 2b.4 GREEN `core/ai/config.rs`, startup load via `core/config_edit.rs`, `app/tool.rs`, `core/ai/chat/mod.rs`, `ui/components/chat.rs`. CHANGELOG; README pair (`auto` removed, mapped once). Exit gate.
 - [ ] 2b.5 `[manual]` isolated home with `approval = "auto"`: notice once, file now `ask`, second launch silent; read-only config shows the failure notice.
 
 ## S2c: Continuation after the cut-off (base: main after S2b)

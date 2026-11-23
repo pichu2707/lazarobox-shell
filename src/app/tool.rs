@@ -38,6 +38,11 @@ pub(super) const TOOLS_OFF: &str = "tools are off";
 pub(super) const WORKER_OVER: &str = "the worker already ended";
 const APPROVAL_CHAT_ONLY: &str = "The approval mode is for chat panes; open one with Ctrl+Space c";
 const QUEUE_FULL_NOTICE: &str = "Too many worker approvals are waiting; the last one was denied";
+/// The system line of a switch to `ask`.
+const APPROVAL_ASK_LINE: &str =
+    "approval: ask (every command asks for y; y runs it and the chat reads the output)";
+/// The system line of a switch to `run`.
+const APPROVAL_RUN_LINE: &str = "approval: run (read-only commands run at once; every other command asks for y; y runs it and the chat reads the output)";
 const APPROVAL_TOOLS_OFF: &str = "Tools are off: there is no approval mode to change";
 const TURN_OVER: &str = "the turn is over";
 const NO_SHELL: &str = "there is no shell pane in this tab";
@@ -499,9 +504,8 @@ impl App {
         let blocked = chat.block_why();
         chat.push_system_line(match (mode, blocked) {
             (ApprovalMode::Run, Some(why)) => why.run_line().to_owned(),
-            (ApprovalMode::Auto, _) => "approval: auto (every command asks for y, like ask; y runs it and the chat reads the output)".to_owned(),
-            (ApprovalMode::Run, None) => "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)".to_owned(),
-            (ApprovalMode::Ask, _) => "approval: ask".to_owned(),
+            (ApprovalMode::Run, None) => APPROVAL_RUN_LINE.to_owned(),
+            (ApprovalMode::Ask, _) => APPROVAL_ASK_LINE.to_owned(),
         });
         self.dirty = true;
         Vec::new()
