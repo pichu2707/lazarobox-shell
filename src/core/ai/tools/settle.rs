@@ -146,8 +146,6 @@ impl Settle {
     }
 
     /// A run the model started (`Limits::Run`).
-    // Used by the app from slice S1c of chat-runs-commands.
-    #[allow(dead_code)]
     pub fn run(anchor: Anchor, written: Instant) -> Self {
         Self::new(anchor, written).limits(Limits::Run)
     }

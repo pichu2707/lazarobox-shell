@@ -32,6 +32,10 @@ use crate::core::ai::{
     },
 };
 
+/// The system line (after `pane N: `) that says a run waits for the user.
+const WAITING: &str =
+    "waiting for your input in the pane; type it there (it is never sent to the chat)";
+
 /// Why a call is denied when its target pane is closed or has no process.
 pub const PANE_GONE: &str = "the pane is gone";
 
@@ -112,9 +116,9 @@ impl RunSlot {
     }
 
     /// The user wrote to the pane: the run is no longer the only thing in it.
-    pub(super) fn user_key(&mut self) {
+    pub(super) fn user_key(&mut self, key: Key) {
         if let Stage::Running(run) = &mut self.stage {
-            run.settle.user_key(Key::default());
+            run.settle.user_key(key);
         }
     }
 }
@@ -161,6 +165,8 @@ pub enum RunEvent {
     Probe {
         foreground: Option<bool>,
         cwd: Option<PathBuf>,
+        /// Whether the terminal echo is off (a password prompt), when known.
+        echo_off: Option<bool>,
     },
     /// The command the user ran in pane `number` finished (#819): the runtime
     /// worded its report, output capped and redacted, and the chat goes on
@@ -230,7 +236,11 @@ impl App {
     pub(super) fn on_run(&mut self, target: PaneId, event: RunEvent) -> Vec<Effect> {
         let Some(call) = event.call() else {
             return match event {
-                RunEvent::Probe { foreground, cwd } => self.on_probe(target, foreground, cwd),
+                RunEvent::Probe {
+                    foreground,
+                    cwd,
+                    echo_off,
+                } => self.on_probe(target, foreground, cwd, echo_off),
                 RunEvent::Resume { number, text } => self.resume_turn(target, number, &text),
                 _ => Vec::new(),
             };
@@ -380,7 +390,7 @@ impl App {
                 generation: pty.emu.line_generation(),
                 cwd,
             };
-            let settle = Settle::new(anchor, written);
+            let settle = Settle::run(anchor, written);
             slot.stage = Stage::Running(Running {
                 settle: if line.is_some() {
                     settle
@@ -412,11 +422,23 @@ impl App {
     /// The user wrote to pane `id`: a run being settled ends as `UserTyped`
     /// at the next probe.
     pub(super) fn note_typed(&mut self, id: PaneId) {
-        if let Some(slot) = (self.panes.get_mut(&id))
-            .and_then(PaneState::pty_mut)
-            .and_then(|pty| pty.run.as_mut())
-        {
-            slot.user_key();
+        self.note_key(id, false, false);
+    }
+
+    /// The same, for a key that ends the line (`enter`) or interrupts the
+    /// program (`interrupt`). The settle machine records the cursor's line at
+    /// this moment, so what the user typed can be hidden from the report.
+    pub(super) fn note_key(&mut self, id: PaneId, enter: bool, interrupt: bool) {
+        let Some(pty) = self.panes.get_mut(&id).and_then(PaneState::pty_mut) else {
+            return;
+        };
+        let line = pty.emu.live_cursor_line();
+        if let Some(slot) = pty.run.as_mut() {
+            slot.user_key(Key {
+                line,
+                enter,
+                interrupt,
+            });
         }
     }
 
@@ -427,12 +449,16 @@ impl App {
         target: PaneId,
         foreground: Option<bool>,
         cwd: Option<PathBuf>,
+        echo_off: Option<bool>,
     ) -> Vec<Effect> {
         let now = (self.clock)();
         let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) else {
             return Vec::new();
         };
-        let Some(Stage::Running(run)) = pty.run.as_mut().map(|slot| &mut slot.stage) else {
+        let Some(slot) = pty.run.as_mut() else {
+            return Vec::new();
+        };
+        let (chat, Stage::Running(run)) = (slot.chat, &mut slot.stage) else {
             return Vec::new();
         };
         let probe = Probe {
@@ -442,9 +468,13 @@ impl App {
             cursor_line: pty.emu.live_cursor_line(),
             generation: pty.emu.line_generation(),
             alt_screen: pty.emu.mouse_facts().alt_screen,
-            echo_off: None,
+            echo_off,
         };
-        match run.settle.step(&probe) {
+        let end = run.settle.step(&probe);
+        if let Some(number) = run.settle.take_waiting().then_some(run.number) {
+            self.say_in_chat(chat, format!("pane {number}: {WAITING}"));
+        }
+        match end {
             Some(end) => self.end_run(target, end, cwd),
             None => Vec::new(),
         }
@@ -475,16 +505,16 @@ impl App {
             return Vec::new();
         };
         let output = match end {
-            End::Settled | End::TimedOut | End::Unconfirmed => {
-                // A run that never timed out has its prompt on the cursor line.
-                let prompt_below = end != End::TimedOut;
-                (run.settle.anchor())
-                    .and_then(|anchor| capture(&mut pty.emu, anchor, &command, prompt_below, &[]))
+            End::Settled | End::TimedOut | End::Unconfirmed | End::StillRunning | End::NoInput => {
+                // Only a run that settled or could not be confirmed has its
+                // prompt on the cursor line; a cut or waiting one has none.
+                let prompt_below = matches!(end, End::Settled | End::Unconfirmed);
+                (run.settle.anchor()).and_then(|anchor| {
+                    let hidden = run.settle.hidden();
+                    capture(&mut pty.emu, anchor, &command, prompt_below, &hidden)
+                })
             }
-            // `StillRunning` and `NoInput` only come from `Limits::Run` (S1c).
-            End::StillRunning | End::NoInput | End::FullScreen | End::UserTyped | End::PaneGone => {
-                None
-            }
+            End::FullScreen | End::UserTyped | End::PaneGone => None,
         };
         let report = RunReport {
             // A command the user ran keeps the label it was typed under.
@@ -497,8 +527,7 @@ impl App {
             cwd: cwd_result(real_cwd, osc7),
             cd_target: run.cd_target,
             output,
-            // Wired with the typed-key records in S1c of chat-runs-commands.
-            withheld: false,
+            withheld: run.settle.withheld(),
             limits: run.settle.rules(),
         };
         if resume {

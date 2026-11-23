@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use super::{
     exec::{Verb, parse},
     label,
-    settle::{CUT_OFF, End, Limits, TIMEOUT},
+    settle::{CUT_OFF, End, Limits, TIMEOUT, WAIT_CAP},
 };
 use crate::core::ai::{memory::redact::redact, sanitize::clean};
 
@@ -284,6 +284,23 @@ pub fn words(command: &str, report: &RunReport, nonce: Option<&str>) -> Words {
 /// sanitizer as the paths (it is the model's text). The app adds the line when
 /// the run ends, with no output to clean.
 pub fn system_line(command: &str, report: &RunReport) -> Option<String> {
+    let n = report.number;
+    match report.end {
+        End::StillRunning => {
+            return Some(format!(
+                "pane {n}: {} is still running after {} s; the chat goes on with the output so far",
+                shown_text(command),
+                CUT_OFF.as_secs()
+            ));
+        }
+        End::NoInput => {
+            return Some(format!(
+                "pane {n}: no input after {} min; the chat goes on (the command still waits in the pane)",
+                WAIT_CAP.as_secs() / 60
+            ));
+        }
+        _ => {}
+    }
     let cd = report.cd_target.is_some() || parse(command).is_ok_and(|safe| safe.verb() == Verb::Cd);
     match &report.cwd {
         Some((path, CwdSource::Proc)) if cd && report.end == End::Settled => Some(format!(
@@ -316,6 +333,25 @@ mod tests {
 
     fn words_of(r: &RunReport) -> Words {
         words("ls -l", r, Some(NONCE))
+    }
+
+    #[test]
+    fn a_cut_off_and_a_missing_input_leave_a_system_line() {
+        let cut = system_line("npm run dev", &report(End::StillRunning, Some("x")));
+        assert_eq!(
+            cut.as_deref(),
+            Some(
+                "pane 2: npm run dev is still running after 30 s; the chat goes on with the output so far"
+            )
+        );
+        let none = system_line("sudo true", &report(End::NoInput, None));
+        assert_eq!(
+            none.as_deref(),
+            Some(
+                "pane 2: no input after 5 min; the chat goes on (the command still waits in the pane)"
+            )
+        );
+        assert_eq!(system_line("ls", &report(End::Unconfirmed, None)), None);
     }
 
     #[test]
@@ -611,7 +647,10 @@ mod tests {
         let w = words_of(&report(End::StillRunning, Some("so far")));
         assert!(w.text.contains("\nso far\n"), "{}", w.text);
         assert_eq!(w.row, "ran in pane 2 \u{2014} still running");
-        assert_eq!(w.system, None);
+        assert!(
+            w.system
+                .is_some_and(|l| l.contains("still running after 30 s"))
+        );
     }
 
     #[test]

@@ -843,7 +843,7 @@ In **run** mode lazarobox does what `auto` does not: a search or navigation comm
 
 ![cd .. leaves the chat folder, so it asks for confirmation; with n it is rejected](docs/assets/run-outside.gif)
 
-**With `y` it runs.** The command runs like one that goes on its own: one Enter, at most 10 s of waiting and the output trimmed to 8 KiB (the first 100 and last 100 lines). It does not count toward the limit of five unconfirmed commands per turn. `y` only types it, without Enter, as in `ask` (the confirmation says so with `y type it (no Enter)`), and the chat line says why (`not run: …`), when:
+**With `y` it runs.** The command runs like one that goes on its own: one Enter, at most 30 s of running time and the output trimmed to 8 KiB (the first 100 and last 100 lines). It does not count toward the limit of five unconfirmed commands per turn. `y` only types it, without Enter, as in `ask` (the confirmation says so with `y type it (no Enter)`), and the chat line says why (`not run: …`), when:
 
 - the command spans several lines (`a multi-line command is typed, not run`);
 - the pane's directory cannot be read, as on macOS (`the pane's directory cannot be read on this system`);
@@ -895,10 +895,11 @@ The command must be a single one: no `&&`, `;`, `|`, `$`, `*`, backticks or redi
 **Output the model sees.** The model receives the text that was left on screen after the command, not a shell stream:
 
 - At most 8 KiB and 200 rows: the beginning and the end are kept and the cut is marked. It goes through the same cleanup and secret redaction as the read tools.
-- A `cd` also reports the new directory. A command that does not finish in 10 s returns `still running` with what was visible until then. The result never includes the exit code.
+- A `cd` also reports the new directory. A command that is still running after 30 s returns `still running` with what was visible until then, and the chat goes on while it keeps running in the pane (`Ctrl+C` in the pane stops it). The result never includes the exit code.
 - If the shell rewrites what was typed (for example **fish** abbreviations), the command's echo is not recognized and the result is `output not available`.
 - If your prompt spans several lines, the upper ones may leak into the output the model receives (they are redacted, but not detected).
-- A full-screen program, something you type in the pane while it runs, or a pane that closes also return no output.
+- A full-screen program, something you type at the shell while the command runs, or a pane that closes also return no output.
+- **A command that asks for input** (a `sudo` password, a `[Y/n]` question) shows `pane N: waiting for your input in the pane; type it there (it is never sent to the chat)`. The wait starts when the terminal's echo is off (the kernel's own password signal), the program is in front and the pane has been quiet for 1 s; the 30 s clock is paused meanwhile. Type the answer in the pane: the chat resumes by itself when the command ends. What you type in the pane never goes to the model: the rows you typed on are replaced by `[input typed in the pane: hidden]`, and if you typed while the cursor was hidden the whole output is withheld (`output not available: you typed in the pane`). A password typed with echo off is never on the screen. If nobody types for 5 min, the chat goes on with `pane N: no input after 5 min; the chat goes on (the command still waits in the pane)`.
 
 **Privacy.** In `run` the pane's output **is sent to the model**, also with cloud engines (claude, codex, gemini): it may include file names, paths and whatever the command prints. The text of the chat-folder files the model reads and the lines it finds with `grep` are also sent, without asking. In `ask` and `auto` the model receives nothing of the output or the directory. If something must not leave your machine, do not use `run` with that conversation.
 

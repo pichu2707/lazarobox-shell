@@ -339,6 +339,7 @@ fn finish_run(a: &mut App) {
         crate::app::RunEvent::Probe {
             foreground: Some(true),
             cwd: Some(LAUNCH.into()),
+            echo_off: None,
         },
     ));
 }

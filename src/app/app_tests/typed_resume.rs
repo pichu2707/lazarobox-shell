@@ -56,6 +56,7 @@ fn probe(a: &mut App, after: u64, t0: u64) -> Vec<Effect> {
         RunEvent::Probe {
             foreground: Some(true),
             cwd: Some(LAUNCH.into()),
+            echo_off: None,
         },
     ))
 }
@@ -532,6 +533,7 @@ fn settle_pane(a: &mut App, pane: PaneId) -> Vec<Effect> {
         RunEvent::Probe {
             foreground: Some(true),
             cwd: Some(LAUNCH.into()),
+            echo_off: None,
         },
     ))
 }

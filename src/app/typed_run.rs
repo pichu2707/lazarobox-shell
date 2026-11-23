@@ -162,6 +162,8 @@ impl App {
                     }
                     End::Unconfirmed => "could not confirm the command finished".to_owned(),
                     End::UserTyped => "you typed while the command ran".to_owned(),
+                    End::StillRunning => "the command is still running".to_owned(),
+                    End::NoInput => "the command waits for input".to_owned(),
                     _ => "the command opened a full-screen program".to_owned(),
                 };
                 format!("pane {n}: {why}; send a message to go on")

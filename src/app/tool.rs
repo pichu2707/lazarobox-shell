@@ -600,7 +600,8 @@ impl App {
             pty.user_dirty = !ends_line;
         }
         let focus = self.tab().focus;
-        self.note_typed(focus);
+        let interrupt = (ctrl('c') || ctrl('d')) && key.modifiers == KeyModifiers::CONTROL;
+        self.note_key(focus, enter, interrupt);
         if let Some((typed, exact)) = followed {
             self.follow_enter(focus, typed, exact);
         }

@@ -10,6 +10,10 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **A command the model runs can wait for your input, and runs for up to 30 s.** When a command asks for something with the terminal echo off (a `sudo` password), the chat shows `pane N: waiting for your input in the pane; type it there (it is never sent to the chat)`, pauses the clock and resumes by itself when the command ends. What you type in the pane never reaches the model: typed rows become `[input typed in the pane: hidden]`, and a key typed with the cursor hidden withholds the output. A command still running after 30 s returns `still running` with the output so far and goes on in the pane; after 5 min without input the chat goes on with `no input after 5 min`. Keys typed while a program (not the shell) owns the pane no longer end the run.
+
 ## [1.39.0] - 2026-11-22
 
 ### Added
