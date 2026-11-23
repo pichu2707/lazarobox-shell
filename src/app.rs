@@ -3852,7 +3852,9 @@ impl App {
                     pty.line_pending = None;
                 }
                 self.mark_dirty(self.tab().focus);
-                self.note_typed(self.tab().focus);
+                // Outside a bracketed paste a newline runs the line.
+                let enter = !modes.bracketed_paste && text.contains(['\r', '\n']);
+                self.note_key(self.tab().focus, enter, false);
                 self.return_to_live();
                 vec![Effect::WritePty(self.tab().focus, bytes)]
             }
@@ -9481,6 +9483,8 @@ mod app_tests {
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;
     mod tool_run_settle;
+    /// A model run that waits for input, is cut off or hears the user.
+    mod tool_run_wait;
     /// `y` in `run` mode runs a model's command; elsewhere it types.
     mod tool_run_y;
     /// A typed command the user ran resumes the chat (#819).

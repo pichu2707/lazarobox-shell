@@ -90,6 +90,9 @@ pub enum End {
 struct Ext {
     /// When the current waiting phase began.
     waiting: Option<Instant>,
+    /// When the run first entered the wait: the cap counts from here, and the
+    /// waiting line is shown only for this entry.
+    first_wait: Option<Instant>,
     waiting_entered: bool,
     attended: bool,
     withheld: bool,
@@ -146,8 +149,6 @@ impl Settle {
     }
 
     /// A run the model started (`Limits::Run`).
-    // Used by the app from slice S1c of chat-runs-commands.
-    #[allow(dead_code)]
     pub fn run(anchor: Anchor, written: Instant) -> Self {
         Self::new(anchor, written).limits(Limits::Run)
     }
@@ -332,9 +333,13 @@ impl Settle {
             self.base = self.base.max(probe.now);
         } else if self.ext.waiting.is_none() && asks && since(self.last) >= WAIT_QUIET {
             self.ext.waiting = Some(probe.now);
-            self.ext.waiting_entered = true;
+            if self.ext.first_wait.is_none() {
+                self.ext.first_wait = Some(probe.now);
+                self.ext.waiting_entered = true;
+            }
         }
-        if let Some(since_wait) = self.ext.waiting.map(since) {
+        if self.ext.waiting.is_some() {
+            let since_wait = self.ext.first_wait.map_or(Duration::ZERO, since);
             return (since_wait >= WAIT_CAP).then_some(End::NoInput);
         }
         (self.limits == Limits::Run && since(self.base) >= CUT_OFF).then(|| {
@@ -903,6 +908,33 @@ mod tests {
         r.step(&program(&r, 1_000, Some(true)));
         r.step(&program(&r, 200_000, None));
         r.step(&program(&r, 200_016, Some(true)));
+        assert_eq!(r.step(&program(&r, 300_999, Some(true))), None);
+        assert_eq!(
+            r.step(&program(&r, 301_000, Some(true))),
+            Some(End::NoInput)
+        );
+    }
+
+    #[test]
+    fn output_while_echo_is_off_does_not_show_the_waiting_line_again() {
+        let mut r = model_run();
+        r.step(&program(&r, 1_000, Some(true)));
+        assert!(r.settle.take_waiting());
+        // "Sorry, try again." and a new prompt, echo still off.
+        r.settle.output(r.t0 + MS(5_000));
+        r.step(&program(&r, 5_016, Some(true)));
+        r.step(&program(&r, 6_100, Some(true)));
+        assert!(r.settle.waiting(), "the run waits again");
+        assert!(!r.settle.take_waiting(), "the line is shown once per run");
+    }
+
+    #[test]
+    fn re_entering_the_wait_does_not_restart_the_wait_cap() {
+        let mut r = model_run();
+        r.step(&program(&r, 1_000, Some(true)));
+        r.settle.output(r.t0 + MS(200_000));
+        r.step(&program(&r, 200_016, Some(true)));
+        r.step(&program(&r, 201_100, Some(true)));
         assert_eq!(r.step(&program(&r, 300_999, Some(true))), None);
         assert_eq!(
             r.step(&program(&r, 301_000, Some(true))),

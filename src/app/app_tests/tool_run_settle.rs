@@ -54,6 +54,7 @@ fn probe(a: &mut App, foreground: Option<bool>, cwd: Option<&str>) -> Vec<Effect
         RunEvent::Probe {
             foreground,
             cwd: cwd.map(Into::into),
+            echo_off: None,
         },
     ))
 }
@@ -80,7 +81,7 @@ fn report(end: End) -> RunReport {
         cd_target: None,
         output: None,
         withheld: false,
-        limits: crate::core::ai::tools::settle::Limits::Follow,
+        limits: crate::core::ai::tools::settle::Limits::Run,
     }
 }
 
@@ -140,12 +141,12 @@ fn output_restarts_the_quiet() {
 
 #[test]
 fn a_prompt_that_did_not_move_keeps_waiting_until_the_timeout() {
-    for (foreground, end) in [(Some(false), End::TimedOut), (None, End::Unconfirmed)] {
+    for (foreground, end) in [(Some(false), End::StillRunning), (None, End::Unconfirmed)] {
         let (mut a, turn) = written("ls", None);
         let t0 = now();
-        at(t0 + 5_000);
+        at(t0 + 29_000);
         assert_eq!(probe(&mut a, foreground, Some(LAUNCH)), vec![], "{end:?}");
-        at(t0 + 10_000);
+        at(t0 + 30_000);
         assert_eq!(
             probe(&mut a, foreground, Some(LAUNCH)),
             vec![done(turn, report(end))],
@@ -345,7 +346,7 @@ fn a_cursor_never_seen_ends_unconfirmed_at_the_timeout() {
     checked(&mut a, 1);
     let t0 = now();
     assert_eq!(
-        probe_at(&mut a, 10_000, t0),
+        probe_at(&mut a, 30_000, t0),
         vec![done(turn, report(End::Unconfirmed))]
     );
 }
@@ -439,13 +440,17 @@ fn a_cd_that_timed_out_or_could_not_be_confirmed_adds_no_system_line() {
     for foreground in [Some(false), None] {
         let (mut a, _) = written("cd dev", Some("/launch/dev"));
         let t0 = now();
-        at(t0 + 10_000);
+        at(t0 + 30_000);
         let effects = probe(&mut a, foreground, Some("/launch/dev"));
         assert!(
             matches!(effects[..], [Effect::RunDone { .. }]),
             "{effects:?}"
         );
-        assert_eq!(system_lines(&a), Vec::<String>::new(), "{foreground:?}");
+        // No `cd` arrow line: only the cut-off line of a command still running.
+        let cut =
+            "pane 1: cd dev is still running after 30 s; the chat goes on with the output so far";
+        let want: Vec<String> = foreground.map(|_| cut.to_owned()).into_iter().collect();
+        assert_eq!(system_lines(&a), want, "{foreground:?}");
     }
 }
 
@@ -552,9 +557,9 @@ fn a_run_that_timed_out_reports_the_output_so_far() {
     let t0 = now();
     at(t0 + 10);
     shell_output(&mut a, b"ls\r\nfirst\r\npart");
-    at(t0 + 10_000);
+    at(t0 + 30_000);
     let got = report_of(&probe(&mut a, Some(false), Some(LAUNCH)));
-    assert_eq!(got.end, End::TimedOut);
+    assert_eq!(got.end, End::StillRunning);
     assert_eq!(got.output.as_deref(), Some("first\npart"));
 }
 

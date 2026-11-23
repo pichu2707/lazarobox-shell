@@ -97,6 +97,7 @@ fn a_run_on_y_ends_with_a_report() {
         RunEvent::Probe {
             foreground: Some(true),
             cwd: Some(LAUNCH.into()),
+            echo_off: None,
         },
     ));
     assert!(
@@ -129,6 +130,7 @@ fn a_cd_run_on_y_adds_the_system_line() {
         RunEvent::Probe {
             foreground: Some(true),
             cwd: Some("/srv".into()),
+            echo_off: None,
         },
     ));
     assert!(

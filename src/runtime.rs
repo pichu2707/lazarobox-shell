@@ -2631,8 +2631,16 @@ impl Panes {
         (ids.iter())
             .filter_map(|id| Some((*id, self.handles.get(id)?)))
             .map(|(id, handle)| {
-                let (foreground, cwd) = (handle.shell_in_foreground(), handle.cwd());
-                AppEvent::Run(id, RunEvent::Probe { foreground, cwd })
+                let foreground = handle.shell_in_foreground();
+                let (cwd, echo_off) = (handle.cwd(), handle.echo_off());
+                AppEvent::Run(
+                    id,
+                    RunEvent::Probe {
+                        foreground,
+                        cwd,
+                        echo_off,
+                    },
+                )
             })
             .collect()
     }
@@ -6235,9 +6243,13 @@ mod tests {
     fn a_probe_reads_the_foreground_and_cwd_of_the_named_panes_only() {
         use crate::app::RunEvent;
         let (mut panes, _rx, _rec) = fake_panes(None);
-        for (n, foreground, cwd) in [(1, Some(true), Some("/srv/a")), (2, None, None)] {
+        for (n, foreground, cwd, echo_off) in [
+            (1, Some(true), Some("/srv/a"), Some(false)),
+            (2, None, None, None),
+        ] {
             let pty = FakePty {
                 foreground,
+                echo_off,
                 cwd: cwd.map(Into::into),
                 ..FakePty::default()
             };
@@ -6251,6 +6263,7 @@ mod tests {
                 RunEvent::Probe {
                     foreground: Some(true),
                     cwd: Some("/srv/a".into()),
+                    echo_off: Some(false),
                 }
             )]
         );
@@ -6261,6 +6274,7 @@ mod tests {
                 RunEvent::Probe {
                     foreground: None,
                     cwd: None,
+                    echo_off: None,
                 }
             )]
         );
