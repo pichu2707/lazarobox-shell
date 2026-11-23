@@ -93,8 +93,8 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 
 ## S2c: Continuation after the cut-off (base: main after S2b)
 
-- [ ] 2c.1 RED `typed_resume.rs`: server cut at 30 s resumes the chat with partial output; when it later ends the chat resumes again with final output and `lazarobox: the command you approved in pane N finished.`; Ctrl+C in the pane, a new message or closing the pane ends it with a visible line; #819/#824/#841 unchanged.
-- [ ] 2c.2 GREEN `app/auto_run.rs`, `app/typed_run.rs` (`resume` slot with `Limits::Continue`, `held_resumes`/`flush_resumes`). CHANGELOG; README pair. Exit gate.
+- [x] 2c.1 RED `typed_resume.rs`: server cut at 30 s resumes the chat with partial output; when it later ends the chat resumes again with final output and `lazarobox: the command you approved in pane N finished.`; Ctrl+C in the pane, a new message or closing the pane ends it with a visible line; #819/#824/#841 unchanged.
+- [x] 2c.2 GREEN `app/auto_run.rs`, `app/typed_run.rs` (`resume` slot with `Limits::Continue`, `held_resumes`/`flush_resumes`). CHANGELOG; README pair. Exit gate.
 - [ ] 2c.3 `[manual]` `npm run dev` (or `sleep 45; echo done`): partial output and notice at 30 s, resume when it ends.
 
 ## S3a: Head-keyed grammar and tiers (base: main after S2c)

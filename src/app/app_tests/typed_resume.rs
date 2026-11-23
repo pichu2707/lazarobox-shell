@@ -839,3 +839,138 @@ fn esc_in_an_idle_chat_with_nothing_to_stop_says_nothing() {
     )));
     assert_eq!(system_lines(&a).len(), lines);
 }
+
+// chat-runs-commands S2c: a run cut at 30 s goes on as a continuation follow.
+
+const APPROVED_LEAD: &str = "lazarobox: the command you approved in pane 1 finished.";
+
+fn probe_fg(a: &mut App, t: u64, foreground: bool) -> Vec<Effect> {
+    at(t);
+    a.update(AppEvent::Run(
+        SHELL,
+        RunEvent::Probe {
+            foreground: Some(foreground),
+            cwd: Some(LAUNCH.into()),
+            echo_off: Some(false),
+        },
+    ))
+}
+
+/// A `run` chat whose `npm run dev` was approved with `y` and cut at 30 s.
+/// The chat has taken the partial result and is idle. Returns the app, the
+/// write time and the effects of the cut.
+fn cut_run() -> (App, u64, Vec<Effect>) {
+    let (mut a, turn) = super::tool_run::run_live();
+    super::tool_approval::announce(&mut a, turn, 1, run("npm run dev"));
+    let effects = a.update(key('y'));
+    assert!(
+        matches!(effects[..], [Effect::AutoRun { .. }]),
+        "{effects:?}"
+    );
+    let t0 = now();
+    shell_output(&mut a, b"npm run dev\r\nready on :3000\r\n");
+    let cut = probe_fg(&mut a, t0 + 30_000, false);
+    result(&mut a, turn, 1, ToolStatus::Ok);
+    a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
+    (a, t0, cut)
+}
+
+#[test]
+fn a_cut_run_hands_over_its_partial_output_and_is_followed_on() {
+    let (a, _, cut) = cut_run();
+    match &cut[..] {
+        [Effect::RunDone { report, .. }] => assert_eq!(report.end, End::StillRunning),
+        other => panic!("expected one RunDone, got {other:?}"),
+    }
+    let (chat, _, _, command) = slot(&a).expect("the cut command is still followed");
+    assert_eq!((chat, command.as_str()), (id2(), "npm run dev"));
+    assert_eq!(a.run_probes(), vec![SHELL], "probed with no timer");
+}
+
+#[test]
+fn a_continuation_has_no_cut_off_of_its_own() {
+    let (mut a, t0, _) = cut_run();
+    assert!(probe_fg(&mut a, t0 + 600_000, false).is_empty());
+    assert!(slot(&a).is_some());
+}
+
+#[test]
+fn the_cut_command_ending_resumes_the_chat_with_the_final_output() {
+    let (mut a, t0, _) = cut_run();
+    shell_output(&mut a, b"compiled\r\n$ ");
+    let effects = probe_fg(&mut a, t0 + 45_000, true);
+    let [Effect::ResumeNote { report, .. }] = &effects[..] else {
+        panic!("expected one ResumeNote, got {effects:?}");
+    };
+    assert_eq!(report.end, End::Settled);
+    assert!(says(&a, "pane 1: the command finished"));
+    assert_eq!(slot(&a), None, "the follow is over");
+    let sent = resume_event(&mut a, 1, "Ran in pane 1. compiled");
+    assert!(matches!(sent[..], [Effect::ChatSend { .. }]), "{sent:?}");
+    let last = chat_of(&a).messages().last().unwrap().text.clone();
+    assert!(last.starts_with(APPROVED_LEAD), "{last}");
+    assert!(last.contains("Ran in pane 1. compiled"), "{last}");
+    assert!(
+        !last.contains("the user ran the command you typed"),
+        "{last}"
+    );
+}
+
+#[test]
+fn ctrl_c_in_the_pane_ends_the_follow_with_a_line_and_no_turn() {
+    let (mut a, t0, _) = cut_run();
+    in_shell(
+        &mut a,
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+    shell_output(&mut a, b"^C\r\n$ ");
+    let effects = probe_fg(&mut a, t0 + 31_000, true);
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(says(
+        &a,
+        "pane 1: you interrupted the command; send a message to go on"
+    ));
+    assert_eq!(slot(&a), None);
+    assert!(a.held_resumes.is_empty());
+    assert_eq!(a.run_probes(), vec![]);
+}
+
+#[test]
+fn a_new_message_ends_the_follow_with_a_line() {
+    let (mut a, _, _) = cut_run();
+    let availability = a.turn_availability(id2());
+    a.send_text(id2(), "something else", &availability);
+    assert!(says(&a, "stopped waiting for the command in pane 1"));
+    assert_eq!(slot(&a), None);
+}
+
+#[test]
+fn closing_the_pane_ends_the_follow_with_a_line() {
+    let (mut a, _, _) = cut_run();
+    let effects = a.deny_closing_runs(&[SHELL]);
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(says(&a, "pane 1 closed; send a message to go on"));
+    assert_eq!(slot(&a), None);
+}
+
+#[test]
+fn a_run_that_cannot_be_confirmed_at_the_cut_is_not_followed_on() {
+    let (mut a, turn) = super::tool_run::run_live();
+    super::tool_approval::announce(&mut a, turn, 1, run("npm run dev"));
+    a.update(key('y'));
+    let t0 = now();
+    at(t0 + 30_000);
+    let effects = a.update(AppEvent::Run(
+        SHELL,
+        RunEvent::Probe {
+            foreground: None,
+            cwd: Some(LAUNCH.into()),
+            echo_off: None,
+        },
+    ));
+    match &effects[..] {
+        [Effect::RunDone { report, .. }] => assert_eq!(report.end, End::Unconfirmed),
+        other => panic!("expected one RunDone, got {other:?}"),
+    }
+    assert_eq!(slot(&a), None);
+}
