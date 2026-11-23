@@ -148,7 +148,7 @@ fn prefix_a_cycles_the_mode_of_the_focused_chat_and_says_so() {
     assert_eq!(press(&mut a, "a"), vec![]);
     assert_eq!(chat_of_focus(&a), ApprovalMode::Auto);
     assert!(
-        lines(&a).contains(&"approval: auto (commands are typed, never run)".to_owned()),
+        lines(&a).contains(&"approval: auto (every command asks for y, like ask; y runs it and the chat reads the output)".to_owned()),
         "{:?}",
         lines(&a)
     );

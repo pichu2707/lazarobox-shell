@@ -499,7 +499,7 @@ impl App {
         let blocked = chat.block_why();
         chat.push_system_line(match (mode, blocked) {
             (ApprovalMode::Run, Some(why)) => why.run_line().to_owned(),
-            (ApprovalMode::Auto, _) => "approval: auto (commands are typed, never run)".to_owned(),
+            (ApprovalMode::Auto, _) => "approval: auto (every command asks for y, like ask; y runs it and the chat reads the output)".to_owned(),
             (ApprovalMode::Run, None) => "approval: run (cd, pwd, ls, tree, find, grep, rg and reads inside the chat's folder run at once and their output goes to the model; a cloud chat whose folder is your home or / asks for them; paths outside the folder and other commands, git and mkdir included, ask)".to_owned(),
             (ApprovalMode::Ask, _) => "approval: ask".to_owned(),
         });
@@ -524,7 +524,7 @@ impl App {
     }
 
     /// The user sends a key to the focused pane. Enter, Ctrl+C and Ctrl+U end
-    /// the line an auto-typed command waited on. Every key marks the pane
+    /// the line a `y`-typed command waited on. Every key marks the pane
     /// dirty; only Enter and Ctrl+C clear it. Ctrl+U does not: a shell may kill
     /// only the text left of the cursor (design D21).
     pub(super) fn note_user_key(&mut self, key: &KeyEvent) {

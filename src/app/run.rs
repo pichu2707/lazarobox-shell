@@ -602,11 +602,15 @@ impl App {
                 // would make `y` type it instead; the reason is on screen
                 // before the key. A prompt opened before the GitHub read
                 // follows the block, which comes before any other reason.
+                let live_target = chat
+                    .run_target()
+                    .filter(|target| self.shell_panes().contains(target));
                 let blocker = approval.call().and_then(|_| {
-                    let pane = chat.run_target()?;
+                    let pane = live_target?;
                     self.y_run_blocker(id, pane, approval.ask(), command)
                 });
-                let runs = approval.call().is_some() && blocker.is_none();
+                // `y` only shows TARGET_GONE when the target is gone: no run.
+                let runs = approval.call().is_some() && blocker.is_none() && live_target.is_some();
                 if let Some(block) = chat.block_why().filter(|_| approval.call().is_some()) {
                     why = Some(block.reason().to_owned());
                 } else if why.is_none() {

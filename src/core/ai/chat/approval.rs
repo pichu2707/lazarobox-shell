@@ -373,7 +373,7 @@ impl ApprovalAsk {
 /// Which calls wait for the user's answer before they run (D17).
 /// `run_in_pane` always does. `read_file`, `grep` and `edit_file` do on a cloud
 /// engine, because the text they return goes to the provider, and run free on a
-/// local one. The directory tools never ask. The mode of the chat (ask or auto-type, D18) is
+/// local one. The directory tools never ask. The mode of the chat (ask, auto or run) is
 /// not an input: the app applies it to the ask this returns.
 ///
 /// The path of a read ask is shown as it is: the caller passes the target
@@ -829,7 +829,7 @@ pub fn names_utf8(lc_all: Option<&str>, lc_ctype: Option<&str>, lang: Option<&st
 pub struct AutoCtx {
     /// Commands already typed or run without a prompt in this turn.
     pub typed_this_turn: u8,
-    /// An earlier auto-typed command in the target pane is still unsent.
+    /// An earlier command `y` typed (not run) in the target pane is still unsent.
     pub line_pending: bool,
     /// The target pane has the focus: the user may be typing in it.
     pub target_focused: bool,

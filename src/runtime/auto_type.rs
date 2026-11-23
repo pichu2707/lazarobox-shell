@@ -1,4 +1,4 @@
-//! The write half of the chat's auto-type (design D18) and of its run (D21):
+//! The write half of the chat's typed commands (design D18) and of its run (D21):
 //! the command was typed only if the shell, and not a program it started,
 //! owns the terminal now.
 

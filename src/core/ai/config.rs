@@ -186,8 +186,8 @@ pub enum ApprovalMode {
     /// The user confirms each command with `y`. The default.
     #[default]
     Ask,
-    /// The command is typed into the pane without a prompt, never followed
-    /// by Enter.
+    /// Asks like `Ask`: every command opens the prompt and `y` runs a model's
+    /// command. Nothing is typed without a prompt any more.
     Auto,
     /// Reads, searches and the navigation commands of the safe list run at
     /// once inside the chat's folder and their output goes to the model;
