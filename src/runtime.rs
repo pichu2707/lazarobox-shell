@@ -2911,6 +2911,42 @@ mod tests {
         )
     }
 
+    fn start_with_file(text: &str) -> (Startup, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, text).unwrap();
+        let got = startup(
+            &crate::core::start::parse_args(&[]),
+            Some(&path),
+            None,
+            None,
+            dir.path(),
+        );
+        (got, fs::read_to_string(&path).unwrap())
+    }
+
+    // Spec (configuration): the migration notice is what start-up shows when
+    // `auto` is the file's only problem.
+    #[test]
+    fn startup_shows_the_migration_notice_when_auto_is_the_only_problem() {
+        let (got, file) = start_with_file("[ai.tools]\napproval = \"auto\"\n");
+        assert_eq!(
+            got.notice.as_deref(),
+            Some("config: ai.tools.approval: \"auto\" was removed; the file now says \"ask\"")
+        );
+        assert_eq!(file, "[ai.tools]\napproval = \"ask\"\n");
+    }
+
+    #[test]
+    fn startup_keeps_the_load_problems_notice_and_the_file_when_auto_has_company() {
+        let text = "[ai.tools]\nenabled = 1\napproval = \"auto\"\n";
+        let (got, file) = start_with_file(text);
+        let notice = got.notice.expect("the load problems are shown");
+        assert!(notice.starts_with("config (2 problems)"), "{notice}");
+        assert!(!notice.contains("the file now says"), "{notice}");
+        assert_eq!(file, text);
+    }
+
     // Spec (start-dir): an invalid `--dir` starts in the launch cwd with a
     // notice shown inside the app; nothing exits.
     #[test]

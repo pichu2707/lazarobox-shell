@@ -639,6 +639,28 @@ mod tests {
     }
 
     #[test]
+    fn an_inline_table_or_dotted_key_auto_is_rewritten_and_only_that_value() {
+        for text in [
+            "# top\nai = { tools = { approval = \"auto\" } } # tail\n[statusline]\nposition = \"top\"\n",
+            "# top\nai.tools.approval = \"auto\" # tail\n[statusline]\nposition = \"top\"\n",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = config_in(&dir);
+            fs::write(&path, text).unwrap();
+            let notice = migrate_auto(&path, text, None, None);
+            assert!(
+                notice.is_some_and(|n| n.contains("the file now says")),
+                "{text:?}"
+            );
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                text.replace("\"auto\"", "\"ask\""),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_read_only_file_shows_the_failure_notice_with_its_reason_at_each_start() {
         let dir = tempfile::tempdir().unwrap();
         let path = config_in(&dir);
