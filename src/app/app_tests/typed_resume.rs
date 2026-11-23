@@ -4,12 +4,15 @@
 //! plus the output the `run` mode already caps and redacts.
 
 use super::run_pane_keys::system_lines;
-use super::tool_approval::{announce, live, result, run, shell_output};
+use super::tool_approval::{live, result, run, shell_output};
 use super::tool_run::{chat_of, in_shell, slot};
 use super::*;
 use crate::app::RunEvent;
 use crate::core::ai::{
-    chat::engine::{CallId, Finish, StreamEvent, ToolStatus},
+    chat::{
+        approval::{ApprovalAsk, RunPolicy},
+        engine::{CallId, Finish, StreamEvent, ToolStatus},
+    },
     config::ApprovalMode,
     tools::{
         report::{CwdSource, RunReport},
@@ -20,6 +23,14 @@ use crate::core::pty::PtyEvent;
 
 const SHELL: PaneId = PaneId::FIRST;
 const CHANGED: &str = "typed command changed: send a message to go on";
+
+/// The ask arrives and the user's `y` only types it: the policy hook says no,
+/// the one way a model's command is still typed and then followed (#819).
+fn announce(a: &mut App, turn: u64, call: u64, ask: ApprovalAsk) -> Vec<Effect> {
+    a.run_policy = RunPolicy { y_runs: false };
+    super::tool_approval::announce(a, turn, call, ask);
+    a.update(key('y'))
+}
 
 fn enter() -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -192,7 +203,6 @@ fn a_line_the_user_had_started_before_the_typing_is_not_followed() {
     a.update(AppEvent::Cwd(SHELL, LAUNCH.into()));
     in_shell(&mut a, key('x'));
     announce(&mut a, turn, 1, run("echo hi"));
-    a.update(key('y'));
     a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
     in_shell(&mut a, enter());
     assert!(slot(&a).is_none());
@@ -277,7 +287,6 @@ fn a_command_typed_with_y_in_ask_mode_is_followed_too() {
     let (mut a, turn) = live();
     a.update(AppEvent::Cwd(SHELL, LAUNCH.into()));
     announce(&mut a, turn, 1, run("echo hi"));
-    a.update(key('y'));
     a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
     in_shell(&mut a, enter());
     assert!(slot(&a).is_some());

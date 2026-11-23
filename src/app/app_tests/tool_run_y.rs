@@ -1,7 +1,6 @@
-//! `y` in `run` mode: a model's command the user approves is run like a safe
-//! one, with one Enter, and its output goes back to the model. When it cannot
-//! run, `y` types it as in `ask` and says why. `ask`, `auto` and the confirm
-//! of `Prefix e` keep typing without Enter.
+//! `y` on a model's command, in every mode: it is run with one Enter, and its
+//! output goes back to the model. When it cannot run, `y` types it and says
+//! why. The confirm of `Prefix e` is the user's own command and only types.
 
 use super::run_pane::{BLOCK, one_shell_and_a_chat};
 use super::tool_approval::{announce, announce_now, decision, pending, result, run};
@@ -10,11 +9,11 @@ use super::*;
 use crate::app::RunEvent;
 use crate::core::ai::{
     chat::{
-        Entry,
+        BlockWhy, Entry,
         approval::{
-            HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, OUTSIDE_ROOT, RUN_KEYS, RUN_NOW_KEYS, RUNNING,
+            HALF_TYPED, MULTI_LINE, NO_CWD, NON_UTF8, OUTSIDE_ROOT, RUN_KEYS, RUNNING, TYPE_KEYS,
         },
-        engine::{CallId, Decision, ToolStatus},
+        engine::{CallId, Decision, StreamEvent, ToolStatus},
     },
     config::ApprovalMode,
 };
@@ -55,9 +54,16 @@ fn y_on(a: &mut App, turn: u64, command: &str) -> Vec<Effect> {
 
 // S1: an off-list command, `cd` outside the folder among them, runs on `y`.
 #[test]
-fn y_runs_an_asked_command_with_one_enter_in_run_mode() {
-    for command in ["cargo build", "mkdir x", "python3 test.py", "npm test"] {
+fn y_runs_an_asked_command_with_one_enter_in_every_mode() {
+    for (mode, command) in [
+        (ApprovalMode::Run, "cargo build"),
+        (ApprovalMode::Run, "mkdir x"),
+        (ApprovalMode::Ask, "python3 test.py"),
+        (ApprovalMode::Ask, "npm test"),
+        (ApprovalMode::Auto, "cargo build"),
+    ] {
         let (mut a, turn) = run_live();
+        chat_mut(&mut a).set_approval_mode(mode);
         let bytes = format!("{command}\r");
         assert_eq!(
             y_on(&mut a, turn, command),
@@ -244,29 +250,24 @@ fn y_types_into_a_pane_that_still_runs_a_command() {
     );
 }
 
-// S1, S2: the mode when `y` is pressed decides, not the mode the prompt
-// opened in.
+// The mode when `y` is pressed does not decide: `y` runs in all of them.
 #[test]
-fn the_mode_at_y_decides_whether_it_runs() {
-    for (from, to, runs) in [
-        (ApprovalMode::Run, ApprovalMode::Ask, false),
-        (ApprovalMode::Run, ApprovalMode::Auto, false),
-        (ApprovalMode::Ask, ApprovalMode::Run, true),
+fn the_mode_at_y_does_not_change_that_it_runs() {
+    for (from, to) in [
+        (ApprovalMode::Run, ApprovalMode::Ask),
+        (ApprovalMode::Run, ApprovalMode::Auto),
+        (ApprovalMode::Ask, ApprovalMode::Run),
     ] {
         let (mut a, turn) = run_live();
         chat_mut(&mut a).set_approval_mode(from);
         announce(&mut a, turn, 1, run("cargo build"));
         chat_mut(&mut a).set_approval_mode(to);
         NOW_MS.with(|n| n.set(n.get() + 1_000));
-        let expected = if runs {
-            vec![run_effect(turn, b"cargo build\r")]
-        } else {
-            vec![
-                Effect::WritePty(PaneId::FIRST, b"cargo build".to_vec()),
-                decision(turn, 1, Decision::Sent),
-            ]
-        };
-        assert_eq!(a.update(key('y')), expected, "{from:?} -> {to:?}");
+        assert_eq!(
+            a.update(key('y')),
+            vec![run_effect(turn, b"cargo build\r")],
+            "{from:?} -> {to:?}"
+        );
     }
 }
 
@@ -320,24 +321,39 @@ fn a_not_run_answers_a_y_run_once_and_never_after_the_call_ended() {
     assert_eq!(a.update(not_run()), vec![], "the call is over");
 }
 
-// S2: `ask` and `auto` keep typing on `y`.
+// A conversation that read GitHub text is typed-only in every mode.
 #[test]
-fn y_in_ask_and_auto_still_types_without_enter() {
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto] {
+fn y_in_a_github_blocked_chat_only_types_in_every_mode() {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         let (mut a, turn) = run_live();
         chat_mut(&mut a).set_approval_mode(mode);
-        // `auto` asks when the target has the user's text.
-        shell_pty(&mut a).user_dirty = true;
-        assert_eq!(
-            y_on(&mut a, turn, "cargo build"),
-            vec![
-                Effect::WritePty(PaneId::FIRST, b"cargo build".to_vec()),
-                decision(turn, 1, Decision::Sent),
-            ],
-            "{mode:?}"
+        a.update(AppEvent::Chat(id2(), turn, StreamEvent::GithubStarted));
+        let effects = y_on(&mut a, turn, "cargo build");
+        let why = BlockWhy::Marker.reason();
+        assert!(
+            matches!(&effects[..], [Effect::WritePty(PaneId::FIRST, bytes), last]
+                if !bytes.ends_with(b"\r") && *last == decision(turn, 1, Decision::SentNotRun(why))),
+            "{mode:?}: {effects:?}"
         );
         assert_eq!(slot(&a), None, "{mode:?}");
     }
+}
+
+// macOS has no `proc_cwd`: `y` only types, with the visible reason.
+#[test]
+fn y_in_ask_without_a_readable_cwd_only_types_with_the_reason() {
+    let (mut a, turn) = run_live();
+    chat_mut(&mut a).set_approval_mode(ApprovalMode::Ask);
+    shell_pty(&mut a).proc_cwd = None;
+    let effects = y_on(&mut a, turn, "cargo build");
+    assert_eq!(
+        effects,
+        vec![
+            Effect::WritePty(PaneId::FIRST, b"cargo build".to_vec()),
+            decision(turn, 1, Decision::SentNotRun(NO_CWD)),
+        ]
+    );
+    assert_eq!(NO_CWD, "the pane's directory cannot be read on this system");
 }
 
 // S2: the confirm of `Prefix e` is the user's own command: it only types.
@@ -356,27 +372,35 @@ fn the_prefix_e_confirm_still_types_in_run_mode() {
     assert_eq!(slot(&a), None);
 }
 
-// S4: the hint says what `y` does in each mode.
+// S4: the hint says what `y` does, in every mode.
 #[test]
-fn the_hint_of_a_model_run_says_y_runs_it_only_in_run_mode() {
-    let (mut a, turn) = run_live();
-    announce(&mut a, turn, 1, run("cargo build"));
-    assert_eq!(a.approval_prompt(id2()).unwrap().keys, RUN_NOW_KEYS);
-    assert_eq!(RUN_NOW_KEYS, "y run it · n cancel · p next pane");
-
-    let (mut a, turn) = run_live();
-    chat_mut(&mut a).set_approval_mode(ApprovalMode::Ask);
-    announce(&mut a, turn, 1, run("cargo build"));
-    assert_eq!(a.approval_prompt(id2()).unwrap().keys, RUN_KEYS);
+fn the_hint_of_a_model_run_says_y_runs_it() {
+    for mode in [ApprovalMode::Run, ApprovalMode::Ask, ApprovalMode::Auto] {
+        let (mut a, turn) = run_live();
+        chat_mut(&mut a).set_approval_mode(mode);
+        announce(&mut a, turn, 1, run("cargo build"));
+        assert_eq!(a.approval_prompt(id2()).unwrap().keys, RUN_KEYS, "{mode:?}");
+    }
 
     // S3: when `y` would only type, the hint says so before the key.
     let (mut a, turn) = run_live();
     shell_pty(&mut a).user_dirty = true;
     announce(&mut a, turn, 1, run("cargo build"));
-    assert_eq!(a.approval_prompt(id2()).unwrap().keys, RUN_KEYS);
+    assert_eq!(a.approval_prompt(id2()).unwrap().keys, TYPE_KEYS);
 
     let mut a = one_shell_and_a_chat(BLOCK);
     chat_mut(&mut a).set_approval_mode(ApprovalMode::Run);
     press(&mut a, "e");
+    assert_eq!(a.approval_prompt(id2()).unwrap().keys, TYPE_KEYS);
+}
+
+// With the target pane gone `y` only shows the notice, so the hint must not
+// say it runs the command.
+#[test]
+fn the_hint_does_not_advertise_running_when_the_target_is_gone() {
+    let (mut a, turn) = run_live();
+    announce(&mut a, turn, 1, run("cargo build"));
     assert_eq!(a.approval_prompt(id2()).unwrap().keys, RUN_KEYS);
+    chat_mut(&mut a).set_run_target(None);
+    assert_eq!(a.approval_prompt(id2()).unwrap().keys, TYPE_KEYS);
 }

@@ -373,7 +373,7 @@ impl ApprovalAsk {
 /// Which calls wait for the user's answer before they run (D17).
 /// `run_in_pane` always does. `read_file`, `grep` and `edit_file` do on a cloud
 /// engine, because the text they return goes to the provider, and run free on a
-/// local one. The directory tools never ask. The mode of the chat (ask or auto-type, D18) is
+/// local one. The directory tools never ask. The mode of the chat (ask, auto or run) is
 /// not an input: the app applies it to the ask this returns.
 ///
 /// The path of a read ask is shown as it is: the caller passes the target
@@ -661,8 +661,6 @@ pub enum Route<'a> {
     /// Open the approval overlay, as in `ask` mode. In `run` mode, `Some`
     /// says why the command is not run directly.
     Prompt(Option<Fallback>),
-    /// Type the command into the target pane without a prompt, no Enter.
-    AutoType,
     /// Check the command, then type it and press Enter (`run` mode only).
     AutoRun(SafeCommand<'a>),
 }
@@ -831,7 +829,7 @@ pub fn names_utf8(lc_all: Option<&str>, lc_ctype: Option<&str>, lang: Option<&st
 pub struct AutoCtx {
     /// Commands already typed or run without a prompt in this turn.
     pub typed_this_turn: u8,
-    /// An earlier auto-typed command in the target pane is still unsent.
+    /// An earlier command `y` typed (not run) in the target pane is still unsent.
     pub line_pending: bool,
     /// The target pane has the focus: the user may be typing in it.
     pub target_focused: bool,
@@ -852,13 +850,13 @@ pub struct AutoCtx {
     pub github_read: Option<BlockWhy>,
 }
 
-/// `AutoType` only for a model `run_in_pane` in `auto` mode, and `AutoRun`
-/// only in `run` mode for a command the grammar accepts, with fewer than
+/// `AutoRun` only in `run` mode for a command the grammar accepts, with fewer than
 /// [`MAX_AUTO_PER_TURN`] typed or run this turn, no pending line or run in the
 /// target, the target not focused or dirty, its directory known, the tab
 /// shown, the run not paused and the locale UTF-8 for a non-ASCII command.
 /// Every other case, a read, an external call or a command the user started,
-/// prompts. `auto` and `ask` never produce `AutoRun`.
+/// prompts. `auto` and `ask` never produce `AutoRun`: their commands run on
+/// the user's `y` (see [`may_run_on_y`]).
 pub fn route<'a>(
     ask: &'a ApprovalAsk,
     origin: Origin,
@@ -866,9 +864,6 @@ pub fn route<'a>(
     ctx: AutoCtx,
 ) -> Route<'a> {
     match (ask, origin, mode) {
-        (ApprovalAsk::Run { .. }, Origin::Tool, ApprovalMode::Auto) if busy(ctx).is_none() => {
-            Route::AutoType
-        }
         (ApprovalAsk::Run { command }, Origin::Tool, ApprovalMode::Run) => route_run(command, ctx),
         _ => Route::Prompt(None),
     }
@@ -912,6 +907,52 @@ fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
         Ok(safe) => busy(ctx).map_or(Route::AutoRun(safe), because),
         Err(fallback) => Route::Prompt(Some(fallback)),
     }
+}
+
+/// What may restrict `y` on a model's command. A default constant for now:
+/// no file, model, tool result or environment variable sets it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RunPolicy {
+    /// `y` may run the command; `false` types it instead.
+    pub y_runs: bool,
+}
+
+impl Default for RunPolicy {
+    fn default() -> Self {
+        Self { y_runs: true }
+    }
+}
+
+/// Why `y` only types when the policy says no.
+pub const POLICY_TYPED: &str = "commands are not run in this chat (policy)";
+/// Why `y` only types a command of a worker's ask.
+pub const WORKER_TYPED: &str = "a worker's command is not run from the chat";
+
+/// Whether `y` may run a model's command (D11). `Err` carries the reason the
+/// command is only typed: a blocked conversation, a worker's ask or a policy
+/// that forbids runs, in that order. The one place that decides it.
+pub fn may_run_on_y(
+    ask: &ApprovalAsk,
+    blocked: Option<BlockWhy>,
+    policy: RunPolicy,
+) -> Result<(), &'static str> {
+    if let Some(why) = blocked {
+        return Err(why.reason());
+    }
+    if matches!(
+        ask,
+        ApprovalAsk::WorkerRead { .. }
+            | ApprovalAsk::Exec {
+                worker: Some(_),
+                ..
+            }
+    ) {
+        return Err(WORKER_TYPED);
+    }
+    if !policy.y_runs {
+        return Err(POLICY_TYPED);
+    }
+    Ok(())
 }
 
 /// How a chat in `mode` answers a model's read or search ask itself, with
@@ -1092,10 +1133,10 @@ pub struct ApprovalPrompt {
     pub notice: Option<String>,
 }
 
-/// The keys of a run prompt.
-pub const RUN_KEYS: &str = "y type it (no Enter) · n cancel · p next pane";
-/// The keys of a model's run prompt in `run` mode, where `y` runs it.
-pub const RUN_NOW_KEYS: &str = "y run it · n cancel · p next pane";
+/// The keys of a model's run prompt, where `y` runs the command.
+pub const RUN_KEYS: &str = "y run it · n cancel · p next pane";
+/// The keys of a run prompt where `y` only types the command.
+pub const TYPE_KEYS: &str = "y type it (no Enter) · n cancel · p next pane";
 /// The keys of a read prompt.
 pub const READ_KEYS: &str = "y read it · n deny";
 /// The keys of the prompt that sends what the panes run.
@@ -1504,10 +1545,10 @@ mod tests {
 
     // Spec (chat-pane, approval mode): D18 routing.
     #[test]
-    fn a_model_run_in_auto_mode_is_typed_when_nothing_blocks_it() {
+    fn a_model_run_in_auto_mode_prompts_and_runs_on_y() {
         let ask = run_ask();
         let route = route(&ask, Origin::Tool, ApprovalMode::Auto, FREE);
-        assert_eq!(route, Route::AutoType);
+        assert_eq!(route, Route::Prompt(None));
     }
 
     #[test]
@@ -1562,19 +1603,6 @@ mod tests {
                 "{ctx:?}"
             );
         }
-    }
-
-    #[test]
-    fn the_fifth_call_of_a_turn_is_typed_and_the_sixth_prompts() {
-        let fifth = AutoCtx {
-            typed_this_turn: MAX_AUTO_PER_TURN - 1,
-            ..FREE
-        };
-        assert_eq!(MAX_AUTO_PER_TURN, 5);
-        assert_eq!(
-            route(&run_ask(), Origin::Tool, ApprovalMode::Auto, fifth),
-            Route::AutoType
-        );
     }
 
     // Spec (pane-execution, run routing): the matrix of S3.1.
@@ -1995,7 +2023,7 @@ mod tests {
         };
         assert_eq!(
             route(&run_ask(), Origin::Tool, ApprovalMode::Auto, blocked),
-            Route::AutoType
+            Route::Prompt(None)
         );
         assert_eq!(
             route(&run_ask(), Origin::Tool, ApprovalMode::Ask, blocked),

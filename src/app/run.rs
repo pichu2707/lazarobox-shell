@@ -12,14 +12,14 @@ use crate::core::ai::{
             Approval, ApprovalAsk, ApprovalPrompt, CONSENT_KEYS, EXTERNAL_KEYS,
             FOLDER_CHECKING_KEYS, FOLDER_KEYS, HALF_TYPED, ISSUE_DRAFT_KEYS, JUDGE_KEYS,
             LIMIT_KEYS, LimitFile, MULTI_LINE, NO_CWD, NON_UTF8, OUTSIDE_KEYS, Origin, PANES_KEYS,
-            Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUN_NOW_KEYS, RUNNING, Reply, SEARCH_KEYS,
-            drive_grant_prompt, exec_notice, grant_prompt, run_sent_line, tool_grant_prompt,
+            Press, READ_KEYS, RUN_CANCELLED, RUN_KEYS, RUNNING, Reply, SEARCH_KEYS, TYPE_KEYS,
+            drive_grant_prompt, exec_notice, grant_prompt, may_run_on_y, run_sent_line,
+            tool_grant_prompt,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
         yank,
     },
-    config::ApprovalMode,
     sanitize,
     tools::command::{CONTINUATION, validate},
 };
@@ -293,10 +293,10 @@ impl App {
             .collect()
     }
 
-    /// `y` on a run. A model's command in a chat in `run` mode (the mode now,
-    /// not when the prompt opened) is run, with one Enter, unless
-    /// [`y_run_blocker`](Self::y_run_blocker) says why not; then, and in every
-    /// other case, it is typed into the target pane.
+    /// `y` on a run. A model's command is run, with one Enter, in every mode,
+    /// unless [`may_run_on_y`] or [`y_run_blocker`](Self::y_run_blocker) says
+    /// why not; then, and for a command the user opened, it is typed into the
+    /// target pane.
     fn approve_run(&mut self, id: PaneId) -> Vec<Effect> {
         let Some(target) = self
             .panes
@@ -316,14 +316,9 @@ impl App {
             return Vec::new();
         };
         let call = approval.call();
-        let runs_on_y = (self.panes.get(&id))
-            .and_then(PaneState::chat_state)
-            .is_some_and(|chat| chat.approval_mode() == ApprovalMode::Run);
         let mut not_run = None;
-        if let Some(call) = call
-            && runs_on_y
-        {
-            match self.y_run_blocker(id, target, command) {
+        if let Some(call) = call {
+            match self.y_run_blocker(id, target, approval.ask(), command) {
                 None => return self.run_approved(id, call, target, command),
                 Some(why) => not_run = Some(why),
             }
@@ -331,17 +326,24 @@ impl App {
         self.type_run(id, call, target, command, not_run)
     }
 
-    /// Why `y` in `run` mode cannot run `command` in `target` and types it
-    /// instead: what the write step or the settle could not handle, and the
-    /// user's own line, which the Enter would run with it. The turn's limit,
-    /// the focus and the shown tab are for runs nobody approved.
-    fn y_run_blocker(&self, chat: PaneId, target: PaneId, command: &str) -> Option<&'static str> {
+    /// Why `y` cannot run `command` in `target` and types it instead: the
+    /// policy hook, what the write step or the settle could not handle, and
+    /// the user's own line, which the Enter would run with it. The turn's
+    /// limit, the focus and the shown tab are for runs nobody approved.
+    fn y_run_blocker(
+        &self,
+        chat: PaneId,
+        target: PaneId,
+        ask: &ApprovalAsk,
+        command: &str,
+    ) -> Option<&'static str> {
         let pty = self.panes.get(&target).and_then(PaneState::pty);
         let blocked =
             (self.panes.get(&chat).and_then(PaneState::chat_state)).and_then(ChatState::block_why);
-        Some(if let Some(why) = blocked {
-            why.reason()
-        } else if command.contains('\n') {
+        if let Err(why) = may_run_on_y(ask, blocked, self.run_policy) {
+            return Some(why);
+        }
+        Some(if command.contains('\n') {
             MULTI_LINE
         } else if !self.cwd_readable || pty.is_none_or(|pty| pty.proc_cwd.is_none()) {
             NO_CWD
@@ -596,25 +598,29 @@ impl App {
         let mut why = approval.why().map(str::to_owned);
         match approval.ask() {
             ApprovalAsk::Run { command } => {
-                // A prompt opened before the GitHub read follows the block,
-                // which `run` checks before any other reason.
-                if approval.call().is_some()
-                    && chat.approval_mode() == ApprovalMode::Run
-                    && let Some(block) = chat.block_why()
-                {
+                // Only a model's command runs on `y`, and only when nothing
+                // would make `y` type it instead; the reason is on screen
+                // before the key. A prompt opened before the GitHub read
+                // follows the block, which comes before any other reason.
+                let live_target = chat
+                    .run_target()
+                    .filter(|target| self.shell_panes().contains(target));
+                let blocker = approval.call().and_then(|_| {
+                    let pane = live_target?;
+                    self.y_run_blocker(id, pane, approval.ask(), command)
+                });
+                // `y` only shows TARGET_GONE when the target is gone: no run.
+                let runs = approval.call().is_some() && blocker.is_none() && live_target.is_some();
+                if let Some(block) = chat.block_why().filter(|_| approval.call().is_some()) {
                     why = Some(block.reason().to_owned());
+                } else if why.is_none() {
+                    why = blocker.map(str::to_owned);
                 }
-                // Only a model's command runs on `y`, only in `run` mode, and
-                // only when nothing would make `y` type it instead.
-                let runs = approval.call().is_some()
-                    && chat.approval_mode() == ApprovalMode::Run
-                    && (chat.run_target())
-                        .is_some_and(|pane| self.y_run_blocker(id, pane, command).is_none());
                 let target = chat.run_target().and_then(|pane| self.pane_label(pane));
                 Some(ApprovalPrompt {
                     target: target.unwrap_or_else(|| "target pane is gone".to_owned()),
                     command: command.clone(),
-                    keys: if runs { RUN_NOW_KEYS } else { RUN_KEYS },
+                    keys: if runs { RUN_KEYS } else { TYPE_KEYS },
                     armed,
                     why,
                     notice: None,

@@ -79,9 +79,9 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 
 ## S2a: `y` runs in both modes (base: main after S1c)
 
-- [ ] 2a.1 RED `approval.rs` `may_run_on_y` table: blocked conversation, worker ask, `y_runs == false` give typed-only with the reason; default policy allows; `POLICY_TYPED`/`POLICY_ASKS` lines do not count toward the pause.
-- [ ] 2a.2 RED `app_tests/tool_run_y.rs`: `y` in `ask` runs (one write, one `\r`); GitHub-blocked chats and workers still type; macOS (`proc_cwd = None`) `y` only types with `the pane's directory cannot be read on this system`; keys line `y run it` / `y type it (no Enter)`.
-- [ ] 2a.3 GREEN `approval.rs` (`RunPolicy`, `may_run_on_y`, key-hint choice, `Route::AutoType` removed), `app/run.rs` `approve_run`. CHANGELOG; README pair. Exit gate.
+- [x] 2a.1 RED `approval.rs` `may_run_on_y` table: blocked conversation, worker ask, `y_runs == false` give typed-only with the reason; default policy allows; `POLICY_TYPED`/`POLICY_ASKS` lines do not count toward the pause.
+- [x] 2a.2 RED `app_tests/tool_run_y.rs`: `y` in `ask` runs (one write, one `\r`); GitHub-blocked chats and workers still type; macOS (`proc_cwd = None`) `y` only types with `the pane's directory cannot be read on this system`; keys line `y run it` / `y type it (no Enter)`.
+- [x] 2a.3 GREEN `approval.rs` (`RunPolicy`, `may_run_on_y`, key-hint choice, `Route::AutoType` removed), `app/run.rs` `approve_run`. CHANGELOG; README pair. Exit gate.
 
 ## S2b: `auto` removed and migrated (base: main after S2a)
 

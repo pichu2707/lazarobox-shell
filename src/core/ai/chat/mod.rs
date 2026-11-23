@@ -8,6 +8,8 @@ pub mod approval;
 #[cfg(test)]
 mod approval_batch_tests;
 pub mod approval_rows;
+#[cfg(test)]
+mod approval_y_tests;
 pub mod budget;
 pub mod claude;
 pub mod cli;

@@ -197,7 +197,8 @@ impl ToolStatus {
 /// follows the write action: `Sent` also means "allowed" for a read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Decision {
-    /// Allowed. For `run_in_pane` it means the command was typed: the app
+    /// Allowed. For `run_in_pane` it means the command was typed (`y` on a
+    /// command that did not run, or the user's own send): the app
     /// answers it only once every accept-time check passed and the write was
     /// handed to the pane, so the result row and the model's text may say so.
     /// A check that fails (a full-screen app, a shell that cannot take a
@@ -207,8 +208,8 @@ pub enum Decision {
     /// did not run it (a half-typed line, a program in the pane...); the model
     /// is told it has not run and why.
     SentNotRun(&'static str),
-    /// `Sent` for a command typed without a prompt (design D18) into the pane
-    /// the user knows as number `.0`; the result row names it.
+    /// `Sent` for a command typed into the pane the user knows as number
+    /// `.0`; the result row names it. No mode types without a prompt now.
     Typed(usize),
     /// Nothing was typed: pane number `.0` has a program in the foreground
     /// (or the runtime cannot tell). Carries the number so the reason can name

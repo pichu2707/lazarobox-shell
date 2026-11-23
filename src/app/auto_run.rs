@@ -299,7 +299,6 @@ impl App {
                     Route::Prompt(fallback) => {
                         self.fallback_why(slot.chat, fallback, &slot.command)
                     }
-                    Route::AutoType => None,
                 }
             }
         };

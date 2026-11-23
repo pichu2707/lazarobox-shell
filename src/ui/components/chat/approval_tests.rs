@@ -11,7 +11,7 @@ use super::{
 };
 use crate::core::ai::chat::{
     Entry, SendOutcome,
-    approval::{GITHUB_GRANT_KEYS, READ_KEYS, RUN_KEYS, grant_prompt},
+    approval::{GITHUB_GRANT_KEYS, READ_KEYS, TYPE_KEYS, grant_prompt},
     engine::{Availability, Finish, StreamEvent},
     transcript::Scroll,
     yank,
@@ -53,7 +53,7 @@ fn prompt(command: &str) -> ApprovalPrompt {
     ApprovalPrompt {
         target: "run in pane 2 (~/dev)".into(),
         command: command.into(),
-        keys: RUN_KEYS,
+        keys: TYPE_KEYS,
         armed: true,
         why: None,
         notice: None,
@@ -86,7 +86,7 @@ fn a_read_prompt_shows_the_path_in_full_and_the_read_keys() {
         .collect();
     assert_eq!(joined, format!("read {path}"));
     assert_eq!(rows.last(), Some(&Part::Keys(READ_KEYS.to_owned())));
-    assert!(!READ_KEYS.contains("pane") && RUN_KEYS.contains("p next pane"));
+    assert!(!READ_KEYS.contains("pane") && TYPE_KEYS.contains("p next pane"));
 }
 
 #[test]
