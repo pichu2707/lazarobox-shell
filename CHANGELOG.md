@@ -18,6 +18,8 @@ baseline.
 
 - **`y` runs the command a model asks for, in every mode (#845).** In `ask` (and `auto`) the `y` on a model's `run_in_pane` prompt now types the command, presses Enter, waits and returns its output to the model, as it did only in `run`; the keys read `y run it · n cancel · p next pane`. It only types, with `y type it (no Enter)` and the reason shown before the key, when the conversation read GitHub text, the pane's directory cannot be read (macOS), the command has several lines, the pane is busy or has a half-typed line, or the locale is not UTF-8 for a non-ASCII command. `auto` no longer types a command on its own: it asks like `ask`. What you run with `Ctrl+Space` `e` still only types.
 
+- **The `auto` approval mode is removed (#845).** `approval` takes `"ask"` or `"run"`; the Approval row of the menu and `Ctrl+Space` `a` cycle those two, there is no ` AUTO ` badge, and the toggle lines now read `approval: ask (every command asks for y; y runs it and the chat reads the output)` and `approval: run (read-only commands run at once; every other command asks for y; y runs it and the chat reads the output)`. A `config.toml` that still holds `approval = "auto"` loads as `ask`, and at the start lazarobox rewrites that one value to `"ask"` (comments and every other byte stay) and shows `config: ai.tools.approval: "auto" was removed; the file now says "ask"` once. If the file cannot be written the notice says why (`... using "ask" (the file was not changed: <reason>)`) and shows again at each start; a file with another problem is left alone. The Approval row hint is `ask: y runs; run: safe reads alone, rest y; per chat`, and the `run_in_pane` tool description no longer says the user presses Enter.
+
 ## [1.39.0] - 2026-11-22
 
 ### Added
