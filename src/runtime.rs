@@ -2142,33 +2142,9 @@ impl Panes {
                         let _ = wait.send(crate::core::ai::chat::engine::Answer::Screen(text));
                     }
                 }
-                // The write and the answer are one step: the answer is claimed
-                // first (a call that is over is owed none, so nothing is
-                // typed), and `Sent` is only said after the bytes were handed
-                // to a pane at its prompt.
-                Effect::AutoType {
-                    chat,
-                    target,
-                    bytes,
-                    number,
-                    turn,
-                    call,
-                } => {
-                    let answer = self
-                        .chats
-                        .as_ref()
-                        .and_then(|chats| chats.take(chat, turn, call))
-                        .filter(|answer| !answer.is_closed());
-                    if let Some(answer) = answer {
-                        let decision =
-                            auto_type::type_if_idle(self.handles.get_mut(&target), number, bytes);
-                        let _ = answer.send(decision.into());
-                    }
-                }
-                // The claim and the write are one step, as for `AutoType`, but
-                // the pane must also still be in the directory that was
-                // checked. The answer is not sent: the claimed wait is parked
-                // after the write, so a cancel or a closed chat also ends the
+                // The claim and the write are one step: the pane must still
+                // be in the directory that was checked. The answer is not
+                // sent: the claimed wait is parked after the write, so a cancel or a closed chat also ends the
                 // running call, and `RunDone` finishes it. A refusal writes
                 // nothing and claims nothing; the app is told, and asks the
                 // user.
@@ -5779,17 +5755,6 @@ mod tests {
             .ask(CallId(call), &ask)
     }
 
-    fn auto_type_effect(target: u32, call: u64) -> Effect {
-        Effect::AutoType {
-            chat: id(9),
-            target: id(target),
-            bytes: format!("cmd{target}").into_bytes(),
-            number: target as usize,
-            turn: 1,
-            call: crate::core::ai::chat::engine::CallId(call),
-        }
-    }
-
     // No silent no-op: an answer to a failure with no run manager attached
     // is told to the pane, never dropped without a word.
     #[tokio::test]
@@ -5836,56 +5801,6 @@ mod tests {
             decision(None, crate::core::ai::chat::engine::Decision::Sent),
         ]);
         assert!(quiet.is_empty(), "{quiet:?}");
-    }
-
-    // The effect writes to the target, not to the chat, and only at a prompt.
-    #[tokio::test]
-    async fn an_auto_type_writes_only_to_a_pane_whose_shell_is_in_the_foreground() {
-        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
-        let mut logs = Vec::new();
-        let mut waits = Vec::new();
-        for (n, foreground) in [(1, Some(true)), (2, Some(false)), (3, None)] {
-            let pty = FakePty {
-                foreground,
-                ..FakePty::default()
-            };
-            logs.push(pty.log.clone());
-            panes.handles.insert(id(n), Box::new(pty));
-            waits.push(waiting(&panes, n.into()));
-        }
-        waits.push(waiting(&panes, 4));
-        panes.apply((1..=4).map(|n| auto_type_effect(n, n.into())).collect());
-        assert_eq!(logs[0].lock().unwrap().writes, vec![b"cmd1".to_vec()]);
-        assert!(logs[1].lock().unwrap().writes.is_empty());
-        assert!(logs[2].lock().unwrap().writes.is_empty());
-        let mut answers = Vec::new();
-        for wait in waits {
-            answers.push(wait.await);
-        }
-        assert_eq!(answers[0], Decision::Typed(1));
-        assert_eq!(answers[1], Decision::Busy(2), "a child in the foreground");
-        assert_eq!(answers[2], Decision::Busy(3), "an unknown foreground");
-        assert!(matches!(answers[3], Decision::Denied(_)), "no such pane");
-    }
-
-    // One answer per call, and bytes only when that answer is `Sent`: when
-    // the wait is gone before the effect runs, nothing is typed.
-    #[tokio::test]
-    async fn an_auto_type_whose_call_is_over_writes_nothing() {
-        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
-        let pty = FakePty {
-            foreground: Some(true),
-            ..FakePty::default()
-        };
-        let log = pty.log.clone();
-        panes.handles.insert(id(1), Box::new(pty));
-        let ended = waiting(&panes, 1);
-        let dropped = waiting(&panes, 2);
-        panes.chats.as_ref().unwrap().waits().end_turn(id(9), 1);
-        drop(dropped);
-        panes.apply(vec![auto_type_effect(1, 1), auto_type_effect(1, 2)]);
-        assert!(log.lock().unwrap().writes.is_empty(), "no wait, no bytes");
-        assert!(matches!(ended.await, Decision::Denied(_)));
     }
 
     fn check_effect(target: u32, call: u64, command: &str) -> Effect {

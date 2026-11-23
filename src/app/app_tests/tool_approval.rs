@@ -8,7 +8,7 @@ use super::run_pane::{enter_turn, one_shell_and_a_chat};
 use super::*;
 use crate::core::ai::chat::{
     BlockWhy,
-    approval::{ANOTHER_PENDING, ApprovalAsk, Origin},
+    approval::{ANOTHER_PENDING, ApprovalAsk, Origin, POLICY_TYPED, RunPolicy},
     engine::{CallId, Decision, Finish, StreamEvent, ToolStatus, Tools},
 };
 use crate::core::ai::{
@@ -129,6 +129,7 @@ fn a_run_ask_opens_the_overlay_aimed_at_the_last_shell() {
 #[test]
 fn a_destructive_command_is_shown_exactly_and_waits_for_y() {
     let (mut a, turn) = live();
+    a.run_policy = RunPolicy { y_runs: false };
     assert_eq!(announce(&mut a, turn, 1, run("rm -rf ~")), vec![]);
     assert_eq!(a.approval_prompt(id2()).unwrap().command, "rm -rf ~");
     for other in [key('Y'), plain(KeyCode::Enter), key(' '), key('a')] {
@@ -139,7 +140,7 @@ fn a_destructive_command_is_shown_exactly_and_waits_for_y() {
         a.update(key('y')),
         vec![
             Effect::WritePty(PaneId::FIRST, b"rm -rf ~".to_vec()),
-            decision(turn, 1, Decision::Sent)
+            decision(turn, 1, Decision::SentNotRun(POLICY_TYPED))
         ]
     );
 }
@@ -212,12 +213,13 @@ fn the_screen_shows_a_worker_read_prompt_with_its_label() {
 #[test]
 fn y_types_the_command_and_answers_sent() {
     let (mut a, turn) = live();
+    a.run_policy = RunPolicy { y_runs: false };
     announce(&mut a, turn, 1, run("cd x"));
     assert_eq!(
         a.update(key('y')),
         vec![
             Effect::WritePty(PaneId::FIRST, b"cd x".to_vec()),
-            decision(turn, 1, Decision::Sent)
+            decision(turn, 1, Decision::SentNotRun(POLICY_TYPED))
         ]
     );
     assert_eq!(pending(&a), None);
@@ -261,6 +263,7 @@ fn a_multi_line_command_without_paste_mode_is_denied_with_the_reason() {
 #[test]
 fn with_paste_mode_a_multi_line_command_is_typed_framed_and_sent() {
     let (mut a, turn) = live();
+    a.run_policy = RunPolicy { y_runs: false };
     announce(&mut a, turn, 1, run("echo a\necho b"));
     shell_output(&mut a, b"\x1b[?2004h");
     let effects = a.update(key('y'));
@@ -269,7 +272,7 @@ fn with_paste_mode_a_multi_line_command_is_typed_framed_and_sent() {
     };
     assert!(bytes.starts_with(b"\x1b[200~") && bytes.ends_with(b"\x1b[201~"));
     assert!(!bytes.contains(&b'\r'));
-    assert_eq!(sent, &decision(turn, 1, Decision::Sent));
+    assert_eq!(sent, &decision(turn, 1, Decision::SentNotRun(POLICY_TYPED)));
 }
 
 // The target is checked when y comes: a pane that is gone keeps the prompt so
@@ -1083,6 +1086,8 @@ async fn what_the_model_is_told_follows_what_happened_to_the_pane() {
     };
     for full_screen in [false, true] {
         let (mut a, turn) = live();
+        // The policy hook says no: `y` types, and the typed command answers.
+        a.run_policy = RunPolicy { y_runs: false };
         if full_screen {
             shell_output(&mut a, b"\x1b[?1049h");
         }
@@ -1342,10 +1347,11 @@ mod guard {
         let sent = |turn| {
             vec![
                 Effect::WritePty(PaneId::FIRST, b"cd x".to_vec()),
-                decision(turn, 1, Decision::Sent),
+                decision(turn, 1, Decision::SentNotRun(POLICY_TYPED)),
             ]
         };
         let (mut a, turn) = asked(run("cd x"));
+        a.run_policy = RunPolicy { y_runs: false };
         assert_eq!(at(&mut a, 10, key('y')), vec![]);
         // The same `y` held until the delay is still the hold: it never answers.
         for t in (260..ms(ARM_DELAY)).step_by(250).chain([ms(ARM_DELAY)]) {
@@ -1357,6 +1363,7 @@ mod guard {
         );
         // A first press at exactly the delay approves.
         let (mut b, turn) = asked(run("cd x"));
+        b.run_policy = RunPolicy { y_runs: false };
         assert_eq!(at(&mut b, ms(ARM_DELAY), key('y')), sent(turn));
     }
 

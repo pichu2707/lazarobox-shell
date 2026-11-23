@@ -488,29 +488,16 @@ fn a_full_screen_pane_at_the_write_denies_the_call_and_writes_nothing() {
     assert_eq!(slot(&a), None);
 }
 
-// S3.5: Enter exists only in the run effect, which `ask` and `auto` never
-// produce (`y` in `run` mode does: see `tool_run_y`).
+// S3.5: without a `y`, `ask` and `auto` write nothing: a model's command only
+// prompts (`y` runs it: see `tool_run_y`).
 #[test]
-fn ask_and_auto_never_press_enter() {
-    let carries_enter = |effects: &[Effect]| {
-        effects.iter().any(|effect| match effect {
-            Effect::WritePty(_, bytes) | Effect::AutoType { bytes, .. } => bytes.contains(&b'\r'),
-            Effect::AutoRun { .. } => true,
-            _ => false,
-        })
-    };
-    // `auto` with a command `run` would execute.
-    let (mut a, turn) = live();
-    chat_mut(&mut a).set_approval_mode(ApprovalMode::Auto);
-    let effects = announce(&mut a, turn, 1, run("cd x"));
-    assert!(matches!(effects[..], [Effect::AutoType { .. }]));
-    assert!(!carries_enter(&effects));
-    assert_eq!(checked(&mut a, 1), vec![], "and no check ever comes");
-
-    // `ask`: the prompt and `y`.
-    let (mut a, turn) = live();
-    announce(&mut a, turn, 1, run("cd x"));
-    assert!(!carries_enter(&a.update(key('y'))));
+fn ask_and_auto_write_nothing_before_y() {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Auto] {
+        let (mut a, turn) = live();
+        chat_mut(&mut a).set_approval_mode(mode);
+        assert_eq!(announce(&mut a, turn, 1, run("cd x")), vec![], "{mode:?}");
+        assert_eq!(checked(&mut a, 1), vec![], "{mode:?}: no check ever comes");
+    }
 }
 
 // A run that could not be written asks the user instead.
@@ -742,7 +729,7 @@ fn turning_the_tools_off_frees_the_slot() {
 
 // C1: a model cannot open a continuation prompt by typing.
 #[test]
-fn an_unbalanced_quote_is_refused_by_y_and_by_auto() {
+fn an_unbalanced_quote_is_refused_by_y() {
     let reason = "the quotes of the command are not balanced";
     let (mut a, turn) = live();
     announce(&mut a, turn, 1, run("echo \"hello"));
@@ -751,15 +738,10 @@ fn an_unbalanced_quote_is_refused_by_y_and_by_auto() {
     assert_eq!(effects, vec![decision(turn, 1, Decision::Denied(reason))]);
 
     let (mut a, turn) = live();
-    chat_mut(&mut a).set_approval_mode(ApprovalMode::Auto);
+    announce(&mut a, turn, 1, run("ls \\"));
+    let effects = a.update(key('y'));
     assert_eq!(
-        announce(&mut a, turn, 1, run("echo 'x")),
-        vec![decision(turn, 1, Decision::Denied(reason))]
-    );
-    let (mut a, turn) = live();
-    chat_mut(&mut a).set_approval_mode(ApprovalMode::Auto);
-    assert_eq!(
-        announce(&mut a, turn, 1, run("ls \\")),
+        effects,
         vec![decision(
             turn,
             1,

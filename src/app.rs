@@ -578,26 +578,11 @@ pub enum Effect {
         call: CallId,
         text: ScreenText,
     },
-    /// Chat `chat` has a model's command for the shell pane `target` typed
-    /// without a prompt (design D18): the runtime writes `bytes` only when
-    /// the shell owns the terminal, and answers the call of turn `turn`
-    /// `Sent` or `Denied` itself. Never followed by Enter.
-    AutoType {
-        chat: PaneId,
-        target: PaneId,
-        bytes: Vec<u8>,
-        /// The number of `target` in its tab, as the user sees it; the
-        /// answers and the result row name the pane by it.
-        number: usize,
-        turn: u64,
-        call: CallId,
-    },
     /// A run that passed its check (design D21): the runtime writes `bytes`,
     /// which end in the one `\r`, in ONE write, only if the pane's real
     /// directory still is `cwd` and the shell owns the terminal. It claims the
     /// answer first and parks it after the write; `RunDone` finishes it.
-    /// Otherwise it sends `RunEvent::NotRun`. The only effect with an Enter:
-    /// `y` and `auto` cannot carry one.
+    /// Otherwise it sends `RunEvent::NotRun`. The only effect with an Enter.
     AutoRun {
         chat: PaneId,
         target: PaneId,
@@ -1187,6 +1172,8 @@ pub struct App {
     unknown_windows: HashSet<String>,
     /// Whether the shells' locale names UTF-8 (injected); a non-ASCII run needs it.
     utf8_locale: bool,
+    /// What may restrict `y` on a model's command: a constant for now.
+    run_policy: crate::core::ai::chat::approval::RunPolicy,
     /// How the tool badge of a model row is drawn (injected).
     tool_glyph: ToolGlyph,
     /// Whether `/proc/<pid>/cwd` exists; without it no run is routed.
@@ -1359,6 +1346,7 @@ impl App {
             tool_engines: MCP_VERIFIED,
             unknown_windows: HashSet::new(),
             utf8_locale: false,
+            run_policy: crate::core::ai::chat::approval::RunPolicy::default(),
             tool_glyph: ToolGlyph::default(),
             cwd_readable: cfg!(target_os = "linux"),
             probe: None,

@@ -10,7 +10,7 @@ use crate::core::ai::{
         BlockWhy, Entry,
         approval::{
             ApprovalAsk, GITHUB_BLOCK_LINE, GITHUB_READ, GITHUB_READ_ASK, NEWER_BLOCK_LINE,
-            RUN_KEYS, RUN_NOW_KEYS, Reach,
+            RUN_KEYS, Reach, TYPE_KEYS,
         },
         engine::{CallId, Decision, StreamEvent, ToolStatus},
     },
@@ -70,7 +70,7 @@ fn the_first_read_makes_every_command_take_the_prompt() {
     for call in 1..=4 {
         assert_eq!(announce(&mut a, turn, call, run("cd ~/dev")), vec![]);
         let prompt = a.approval_prompt(id2()).unwrap();
-        assert_eq!(prompt.keys, RUN_KEYS);
+        assert_eq!(prompt.keys, TYPE_KEYS);
         assert_eq!(prompt.why.as_deref(), Some(GITHUB_READ));
         assert_eq!(slot(&a), None, "nothing is checked");
         a.update(key('n'));
@@ -110,13 +110,13 @@ fn y_types_the_command_without_enter_and_says_it_was_not_run() {
 fn a_prompt_open_before_the_read_follows_the_block() {
     let (mut a, turn) = run_live();
     announce(&mut a, turn, 1, run("cargo build"));
-    assert_eq!(a.approval_prompt(id2()).unwrap().keys, RUN_NOW_KEYS);
+    assert_eq!(a.approval_prompt(id2()).unwrap().keys, RUN_KEYS);
     assert_ne!(
         a.approval_prompt(id2()).unwrap().why.as_deref(),
         Some(GITHUB_READ)
     );
     started(&mut a, turn);
-    assert_eq!(a.approval_prompt(id2()).unwrap().keys, RUN_KEYS);
+    assert_eq!(a.approval_prompt(id2()).unwrap().keys, TYPE_KEYS);
     assert_eq!(
         a.approval_prompt(id2()).unwrap().why.as_deref(),
         Some(GITHUB_READ)
@@ -163,27 +163,6 @@ fn the_door_that_adds_enter_types_instead() {
         b"pwd".to_vec(),
         (LAUNCH.into(), None),
     );
-    assert!(typed(&effects, turn, 1), "{effects:?}");
-}
-
-// Spec: Auto and ask unchanged.
-#[test]
-fn auto_types_without_a_prompt_and_ask_only_types_while_blocked() {
-    let (mut a, turn) = run_live();
-    chat_mut(&mut a).set_approval_mode(ApprovalMode::Auto);
-    started(&mut a, turn);
-    let effects = announce_now(&mut a, turn, 1, run("cd x"));
-    assert!(
-        matches!(&effects[..], [Effect::AutoType { bytes, .. }] if !bytes.contains(&b'\r')),
-        "{effects:?}"
-    );
-    assert_eq!(pending(&a), None);
-
-    let (mut a, turn) = run_live();
-    chat_mut(&mut a).set_approval_mode(ApprovalMode::Ask);
-    started(&mut a, turn);
-    announce(&mut a, turn, 1, run("cd x"));
-    let effects = a.update(key('y'));
     assert!(typed(&effects, turn, 1), "{effects:?}");
 }
 
