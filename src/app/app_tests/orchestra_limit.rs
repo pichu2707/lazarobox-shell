@@ -162,7 +162,7 @@ fn y_keeps_and_n_or_esc_split_to_the_workers_session() {
 // only the user's `y` keeps and `n` splits.
 #[test]
 fn y_and_n_answer_it_in_every_approval_mode() {
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         let (mut a, turn) = live();
         super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
         announce(&mut a, turn, 1, limit(1, "simple x>y"));
@@ -189,7 +189,7 @@ fn a_key_typed_before_the_prompt_is_armed_answers_nothing() {
 #[test]
 fn no_approval_mode_answers_a_limit_ask() {
     let ask = limit(1, "simple x>y");
-    for mode in [ApprovalMode::Ask, ApprovalMode::Run, ApprovalMode::Auto] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         assert_eq!(answers_itself(&ask, mode, false), None, "{mode:?}");
     }
 }

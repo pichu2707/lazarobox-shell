@@ -201,7 +201,7 @@ fn every_kind_of_row_writes_its_edit_in_the_fixed_save_order() {
             ("ai.tools", "search", "true".to_owned()),
             ("ai.tools", "git_write", "true".to_owned()),
             ("ai.tools", "github", "true".to_owned()),
-            ("ai.tools", "approval", "auto".to_owned()),
+            ("ai.tools", "approval", "run".to_owned()),
             ("ai.orchestrator", "enabled", "true".to_owned()),
             ("ai.servers.llamacpp", "idle_minutes", "0".to_owned()),
             ("ai.servers.llamacpp", "managed", "true".to_owned()),
@@ -244,7 +244,7 @@ enabled = false
 search = true
 git_write = true
 github = true
-approval = "auto"
+approval = "run"
 
 [ai.orchestrator]
 enabled = true

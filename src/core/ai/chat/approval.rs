@@ -1019,10 +1019,8 @@ pub fn answers_itself(ask: &ApprovalAsk, mode: ApprovalMode, blocked: bool) -> O
         (ApprovalMode::Run, Reach::Unshowable, _) => Some(Decision::Denied(UNSHOWABLE)),
         (ApprovalMode::Run, _, _) => None,
         // The local engine asks only for a read outside the root.
-        (ApprovalMode::Ask | ApprovalMode::Auto, Reach::Other | Reach::Unshowable, false) => {
-            Some(Decision::Unprompted)
-        }
-        (ApprovalMode::Ask | ApprovalMode::Auto, _, _) => None,
+        (ApprovalMode::Ask, Reach::Other | Reach::Unshowable, false) => Some(Decision::Unprompted),
+        (ApprovalMode::Ask, _, _) => None,
     }
 }
 
@@ -1459,7 +1457,7 @@ mod tests {
             }],
             outside: Vec::new(),
         };
-        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
             assert!(matches!(
                 route(&ask, Origin::Tool, mode, FREE),
                 Route::Prompt(None)
@@ -1535,20 +1533,12 @@ mod tests {
                 reach,
                 cloud,
             };
-            for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
                 let got = route(&worker, Origin::Tool, mode, FREE);
                 assert_eq!(got, route(&chat, Origin::Tool, mode, FREE), "{mode:?}");
                 assert_eq!(got, Route::Prompt(None), "{mode:?}");
             }
         }
-    }
-
-    // Spec (chat-pane, approval mode): D18 routing.
-    #[test]
-    fn a_model_run_in_auto_mode_prompts_and_runs_on_y() {
-        let ask = run_ask();
-        let route = route(&ask, Origin::Tool, ApprovalMode::Auto, FREE);
-        assert_eq!(route, Route::Prompt(None));
     }
 
     #[test]
@@ -1566,12 +1556,12 @@ mod tests {
         );
         for ask in [&read, &external] {
             assert_eq!(
-                route(ask, Origin::Tool, ApprovalMode::Auto, FREE),
+                route(ask, Origin::Tool, ApprovalMode::Ask, FREE),
                 Route::Prompt(None)
             );
         }
         assert_eq!(
-            route(&run_ask(), Origin::Block, ApprovalMode::Auto, FREE),
+            route(&run_ask(), Origin::Block, ApprovalMode::Ask, FREE),
             Route::Prompt(None)
         );
     }
@@ -1598,7 +1588,7 @@ mod tests {
         ];
         for ctx in blocked {
             assert_eq!(
-                route(&run_ask(), Origin::Tool, ApprovalMode::Auto, ctx),
+                route(&run_ask(), Origin::Tool, ApprovalMode::Ask, ctx),
                 Route::Prompt(None),
                 "{ctx:?}"
             );
@@ -1614,13 +1604,12 @@ mod tests {
     }
 
     #[test]
-    fn auto_and_ask_never_produce_a_run() {
+    fn ask_never_produces_a_run() {
         for ask in ["cd x", "ls", "pwd", "mkdir -p a", "rg foo", "git status"] {
-            for mode in [ApprovalMode::Auto, ApprovalMode::Ask] {
-                let ask = ask_of(ask);
-                let route = route(&ask, Origin::Tool, mode, FREE);
-                assert!(runs(&route).is_none(), "{mode:?} {ask:?}");
-            }
+            let mode = ApprovalMode::Ask;
+            let ask = ask_of(ask);
+            let route = route(&ask, Origin::Tool, mode, FREE);
+            assert!(runs(&route).is_none(), "{mode:?} {ask:?}");
         }
     }
 
@@ -1957,7 +1946,7 @@ mod tests {
         let ask = ask_for(&edit, Locality::Cloud).expect("a cloud edit asks");
         assert_eq!(ask, ask_for(&read, Locality::Cloud).unwrap());
         assert!(!format!("{ask:?}").contains("SECRET"));
-        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
             for origin in [Origin::Tool, Origin::Block] {
                 let read_ask = ask_for(&read, Locality::Cloud).unwrap();
                 assert_eq!(
@@ -2014,15 +2003,15 @@ mod tests {
         assert!(matches!(&got, Route::Prompt(Some(f)) if !counts_toward_pause(f)));
     }
 
-    // Spec (pane-execution, Auto and ask unchanged).
+    // Spec (pane-execution, ask unchanged).
     #[test]
-    fn auto_and_ask_route_as_before_while_blocked() {
+    fn ask_routes_as_before_while_blocked() {
         let blocked = AutoCtx {
             github_read: Some(BlockWhy::Marker),
             ..FREE
         };
         assert_eq!(
-            route(&run_ask(), Origin::Tool, ApprovalMode::Auto, blocked),
+            route(&run_ask(), Origin::Tool, ApprovalMode::Ask, blocked),
             Route::Prompt(None)
         );
         assert_eq!(
@@ -2034,7 +2023,7 @@ mod tests {
     // Spec (agent-tools, Reads in a blocked conversation).
     #[test]
     fn a_blocked_conversation_answers_no_cloud_read_or_search_itself() {
-        use ApprovalMode::{Ask, Auto, Run};
+        use ApprovalMode::{Ask, Run};
         use Reach::{Broad, Other, Refused, Root, Unshowable};
         let read = |reach, cloud| ApprovalAsk::Read {
             path: "~/a".into(),
@@ -2046,7 +2035,7 @@ mod tests {
             dir: ".".into(),
             reach,
         };
-        for mode in [Ask, Auto, Run] {
+        for mode in [Ask, Run] {
             for reach in [Root, Broad, Other] {
                 assert_eq!(answers_itself(&read(reach, true), mode, true), None);
                 assert_eq!(answers_itself(&search(reach), mode, true), None);
@@ -2126,7 +2115,7 @@ mod tests {
             blocked_read_reason(&worker_ask(Reach::Other, false), Some(BlockWhy::Marker)),
             None
         );
-        for mode in [ApprovalMode::Run, ApprovalMode::Ask, ApprovalMode::Auto] {
+        for mode in [ApprovalMode::Run, ApprovalMode::Ask] {
             for reach in [Reach::Root, Reach::Other, Reach::Broad] {
                 assert_eq!(
                     answers_itself(&worker_ask(reach, true), mode, true),
@@ -2187,7 +2176,7 @@ mod tests {
     // answers. `Some(None)` is a prompt.
     #[test]
     fn answers_itself_follows_its_table_for_every_mode_ask_and_reach() {
-        use ApprovalMode::{Ask, Auto, Run};
+        use ApprovalMode::{Ask, Run};
         use Reach::{Broad, Other, Refused, Root, Unshowable};
         let free = Some(Decision::Unprompted);
         let read = |reach, cloud| ApprovalAsk::Read {
@@ -2229,24 +2218,16 @@ mod tests {
         for (reach, cloud, run, others) in reads {
             for ask in [read(reach, cloud), worker(reach, cloud)] {
                 assert_eq!(answers_itself(&ask, Run, false), run, "{ask:?}");
-                for mode in [Ask, Auto] {
-                    assert_eq!(
-                        answers_itself(&ask, mode, false),
-                        others,
-                        "{mode:?} {ask:?}"
-                    );
-                }
+                assert_eq!(answers_itself(&ask, Ask, false), others, "{ask:?}");
             }
         }
         for (reach, run) in [(Root, free), (Broad, None), (Other, None), (Refused, None)] {
             assert_eq!(answers_itself(&search(reach), Run, false), run, "{reach:?}");
-            for mode in [Ask, Auto] {
-                assert_eq!(
-                    answers_itself(&search(reach), mode, false),
-                    None,
-                    "{mode:?}"
-                );
-            }
+            assert_eq!(
+                answers_itself(&search(reach), Ask, false),
+                None,
+                "{reach:?}"
+            );
         }
         let never = [
             run("ls"),
@@ -2259,7 +2240,7 @@ mod tests {
             ApprovalAsk::read("~/a"),
         ];
         for ask in never {
-            for mode in [Ask, Auto, Run] {
+            for mode in [Ask, Run] {
                 assert_eq!(answers_itself(&ask, mode, false), None, "{mode:?} {ask:?}");
             }
         }
@@ -2278,7 +2259,7 @@ mod tests {
             unasked,
         };
         for level in [McpApproval::Reads, McpApproval::All] {
-            for mode in [Ask, Auto, Run] {
+            for mode in [Ask, Run] {
                 assert_eq!(
                     answers_itself(&ext(Some(level)), mode, false),
                     Some(Decision::Unprompted),
@@ -2361,7 +2342,7 @@ mod tests {
     #[test]
     fn a_search_ask_prompts_in_every_mode() {
         let ask = search_ask("x", ".");
-        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
             for origin in [Origin::Tool, Origin::Block] {
                 assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
             }
@@ -2570,7 +2551,7 @@ mod tests {
     fn no_mode_answers_an_exec_ask_of_a_worker_or_a_chat() {
         let key = crate::core::ai::orchestra::WorkerKey::for_test(1, 2);
         for ask in [exec_ask(None), exec_ask(Some((key, "w")))] {
-            for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
                 for blocked in [false, true] {
                     assert_eq!(answers_itself(&ask, mode, blocked), None, "{mode:?}");
                 }
@@ -2762,7 +2743,7 @@ mod tests {
     #[test]
     fn no_approval_mode_answers_the_panes_ask() {
         let ask = ApprovalAsk::Panes { text: "x".into() };
-        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
             assert_eq!(answers_itself(&ask, mode, false), None, "{mode:?}");
         }
     }
@@ -2797,12 +2778,12 @@ mod tests {
             scrollback: None,
             review: None,
         };
-        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
             for blocked in [false, true] {
                 assert_eq!(answers_itself(&ask, mode, blocked), None, "{mode:?}");
             }
         }
-        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
             assert_eq!(
                 route(&ask, Origin::Tool, mode, FREE),
                 Route::Prompt(None),
@@ -2849,7 +2830,7 @@ mod tests {
             what: "gh_pr_view #7".into(),
             ollama_cloud: true,
         };
-        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
             for blocked in [false, true] {
                 assert_eq!(answers_itself(&ask, mode, blocked), None, "{mode:?}");
             }
@@ -2969,7 +2950,7 @@ mod tests {
             staged: false,
             path: ".".into(),
         };
-        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
             for origin in [Origin::Tool, Origin::Block] {
                 assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
             }
@@ -3080,7 +3061,7 @@ mod tests {
             earlier: None,
             worker: None,
         };
-        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
             for origin in [Origin::Tool, Origin::Block] {
                 assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
             }

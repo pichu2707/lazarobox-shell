@@ -1075,7 +1075,15 @@ fn startup(
 ) -> Startup {
     use crate::core::start::{Kind, resolve};
     let (config, ai, notice, workspace) = match config_path {
-        Some(path) => Config::load_with_workspace(fs::read_to_string(path), port_env, home),
+        Some(path) => {
+            let read = fs::read_to_string(path);
+            let moved = read
+                .as_deref()
+                .ok()
+                .and_then(|text| config_write::migrate_auto(path, text, port_env, home));
+            let (config, ai, notice, workspace) = Config::load_with_workspace(read, port_env, home);
+            (config, ai, moved.or(notice), workspace)
+        }
         None => (Config::default(), AiConfig::default(), None, None),
     };
     let kind = |p: &Path| match fs::metadata(p) {

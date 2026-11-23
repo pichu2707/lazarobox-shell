@@ -111,7 +111,7 @@ impl ConfigEdit {
         }
     }
 
-    /// The `ai.tools.approval` edit: a string, `ask`, `auto` or `run`, written even
+    /// The `ai.tools.approval` edit: a string, `ask` or `run`, written even
     /// when it equals the default.
     pub fn approval(mode: ApprovalMode) -> Self {
         Self {
@@ -119,6 +119,13 @@ impl ConfigEdit {
             key: "approval",
             value: Cow::Borrowed(mode.id()),
         }
+    }
+
+    /// The one rewrite made on load: `ai.tools.approval` back to `"ask"` in a
+    /// file that still holds the removed `"auto"` (design D13). It lives here
+    /// so the runtime never names the approval mode (design D19).
+    pub fn approval_ask() -> Self {
+        Self::approval(ApprovalMode::Ask)
     }
 
     /// An edit of an owned orchestrator flag (`ai.orchestrator.enabled` or
@@ -1375,7 +1382,7 @@ gemini = "per-token"
 
 [ai.tools]
 enabled = true
-approval = "auto"
+approval = "run"
 search = true
 write = true
 exec = true

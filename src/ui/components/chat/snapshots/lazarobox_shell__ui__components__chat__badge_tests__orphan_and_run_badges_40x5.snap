@@ -2,7 +2,7 @@
 source: src/ui/components/chat/badge_tests.rs
 expression: shot_of(&buf)
 ---
- orphan 12 · Ctrl+G                AUTO
+ orphan 12 · Ctrl+G                 RUN
 › question
 
 an answer

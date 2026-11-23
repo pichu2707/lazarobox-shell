@@ -294,8 +294,8 @@ impl Widget for ChatView<'_> {
 }
 
 impl ChatView<'_> {
-    /// ` AUTO ` (amber) or ` RUN ` (red) over the top-right cells of the
-    /// pane, `A` or `R` when it is narrower than that: an exception marker,
+    /// ` RUN ` (red) over the top-right cells of the
+    /// pane, `R` when it is narrower than that: an exception marker,
     /// drawn in every view. Returns the column it starts at.
     fn draw_mode_badge(&self, mode: ApprovalMode, area: Rect, buf: &mut Buffer) -> u16 {
         let (text, short, colour) = match mode {
@@ -305,7 +305,6 @@ impl ChatView<'_> {
                 (" RUN OFF ", "r", self.theme.warning_orange)
             }
             ApprovalMode::Run => (" RUN ", "R", self.theme.error_red),
-            ApprovalMode::Auto => (" AUTO ", "A", self.theme.warning_orange),
             // `mode_badge` never yields `ask`.
             ApprovalMode::Ask => return area.right(),
         };

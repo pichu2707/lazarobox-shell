@@ -9,7 +9,8 @@ use std::{
 };
 
 use crate::core::{
-    config::ConfigEdit,
+    ai::config::AUTO_REMOVED_PROBLEM,
+    config::{Config, ConfigEdit},
     config_edit::{EditError, apply_edit},
 };
 
@@ -68,6 +69,34 @@ pub(super) fn save_config(path: Option<&Path>, edits: &[ConfigEdit]) -> Result<(
         fs::create_dir_all(parent).map_err(failed)?;
     }
     write_atomic(&target, &content).map_err(failed)
+}
+
+/// The start-up migration of the removed `approval = "auto"` (design D13).
+/// `text` is the file as read. When its only problem is that value, it is
+/// rewritten to `"ask"` through [`save_config`] (comments and every other
+/// byte kept) and the notice says so; when the rewrite fails the notice
+/// carries the reason and the file stays as it was, so it shows again at the
+/// next start. `None` when there is nothing to do: no `auto`, or any other
+/// problem in the file (it is never rewritten then).
+pub(super) fn migrate_auto(
+    path: &Path,
+    text: &str,
+    port_env: Option<&str>,
+    home: Option<&Path>,
+) -> Option<String> {
+    let parsed = Config::parse_with_home(text, port_env, home).ok()?;
+    if parsed.problems != [AUTO_REMOVED_PROBLEM] {
+        return None;
+    }
+    let edit = [ConfigEdit::approval_ask()];
+    Some(match save_config(Some(path), &edit) {
+        Ok(()) => {
+            "config: ai.tools.approval: \"auto\" was removed; the file now says \"ask\"".to_owned()
+        }
+        Err(reason) => format!(
+            "config: ai.tools.approval: \"auto\" was removed; using \"ask\" (the file was not changed: {reason})"
+        ),
+    })
 }
 
 /// Writes `content` to `target` through a temp file in the same directory,
@@ -582,6 +611,74 @@ mod tests {
             0o444
         );
         assert_eq!(names(dir.path()), ["config.toml"]);
+    }
+
+    // Spec (configuration): `approval = "auto"` is rewritten once to `"ask"`
+    // on load, with one notice; nothing else in the file changes.
+    const AUTO_FILE: &str = "# my config\n[ai.tools]\nexec = true  # keep\napproval = \"auto\" # was auto\n\n[statusline]\nposition = \"top\"\n";
+
+    #[test]
+    fn an_auto_value_is_rewritten_once_and_only_that_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        fs::write(&path, AUTO_FILE).unwrap();
+        let notice = migrate_auto(&path, AUTO_FILE, None, None);
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: ai.tools.approval: \"auto\" was removed; the file now says \"ask\"")
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            AUTO_FILE.replace("\"auto\" # was", "\"ask\" # was")
+        );
+        // The second start finds no `auto`: nothing to say, nothing to write.
+        let again = fs::read_to_string(&path).unwrap();
+        assert_eq!(migrate_auto(&path, &again, None, None), None);
+        assert_eq!(fs::read_to_string(&path).unwrap(), again);
+        assert_eq!(names(dir.path()), ["config.toml"]);
+    }
+
+    #[test]
+    fn a_read_only_file_shows_the_failure_notice_with_its_reason_at_each_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        fs::write(&path, AUTO_FILE).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                migrate_auto(&path, AUTO_FILE, None, None).as_deref(),
+                Some(
+                    "config: ai.tools.approval: \"auto\" was removed; using \"ask\" (the file was not changed: config.toml is read-only)"
+                )
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), AUTO_FILE);
+        }
+    }
+
+    #[test]
+    fn another_problem_in_the_file_means_no_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        let text = "[ai.tools]\nenabled = 1\napproval = \"auto\"\n";
+        fs::write(&path, text).unwrap();
+        assert_eq!(migrate_auto(&path, text, None, None), None);
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    }
+
+    #[test]
+    fn other_approval_values_are_never_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        for text in [
+            "[ai.tools]\napproval = \"AUTO\"\n",
+            "[ai.tools]\napproval = true\n",
+            "[ai.tools]\napproval = \"run\"\n",
+            "[ai.tools]\n",
+        ] {
+            fs::write(&path, text).unwrap();
+            assert_eq!(migrate_auto(&path, text, None, None), None, "{text:?}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        }
     }
 
     // Spec: a temp left by a crash does not block the first save.

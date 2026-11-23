@@ -57,7 +57,7 @@ fn y_consents_and_n_declines_to_the_workers_session() {
 // No approval mode answers it: not `run`, not `auto`, not `ask`.
 #[test]
 fn no_approval_mode_answers_a_consent() {
-    for mode in [ApprovalMode::Ask, ApprovalMode::Run, ApprovalMode::Auto] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         assert_eq!(answers_itself(&consent(1, "code x>y"), mode, false), None);
     }
 }
@@ -96,7 +96,7 @@ fn the_judge_consent_prompt_is_one_line_naming_the_models() {
         run: crate::core::ai::orchestra::RunId(1),
         text,
     };
-    assert_eq!(answers_itself(&ask, ApprovalMode::Auto, false), None);
+    assert_eq!(answers_itself(&ask, ApprovalMode::Ask, false), None);
     announce(&mut a, turn, 1, ask);
     let prompt = a.approval_prompt(id2()).unwrap();
     assert!(prompt.target.contains("judge"), "{prompt:?}");

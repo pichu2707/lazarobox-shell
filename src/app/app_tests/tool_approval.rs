@@ -817,8 +817,7 @@ fn a_search_ask_shows_the_pattern_and_the_path() {
 #[test]
 fn y_on_a_search_answers_sent_and_n_denies_and_auto_mode_still_asks() {
     let (mut a, turn) = live();
-    super::tool_run::chat_mut(&mut a)
-        .set_approval_mode(crate::core::ai::config::ApprovalMode::Auto);
+    super::tool_run::chat_mut(&mut a).set_approval_mode(crate::core::ai::config::ApprovalMode::Ask);
     assert_eq!(announce(&mut a, turn, 1, search("x", ".")), Vec::new());
     assert_eq!(pending(&a).map(|(ask, _)| ask), Some(search("x", ".")));
     assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
@@ -834,8 +833,7 @@ fn y_on_a_search_answers_sent_and_n_denies_and_auto_mode_still_asks() {
 #[test]
 fn a_user_tool_asks_for_y_even_in_auto_mode() {
     let (mut a, turn) = live();
-    super::tool_run::chat_mut(&mut a)
-        .set_approval_mode(crate::core::ai::config::ApprovalMode::Auto);
+    super::tool_run::chat_mut(&mut a).set_approval_mode(crate::core::ai::config::ApprovalMode::Ask);
     assert_eq!(
         announce(&mut a, turn, 1, external("fs", "write", "{}")),
         Vec::new()
@@ -1572,8 +1570,7 @@ fn exec(program: &str, args: &[&str], cwd: &str) -> ApprovalAsk {
 #[test]
 fn a_command_asks_for_y_in_auto_mode_and_shows_the_program_the_arguments_and_the_folder() {
     let (mut a, turn) = live();
-    super::tool_run::chat_mut(&mut a)
-        .set_approval_mode(crate::core::ai::config::ApprovalMode::Auto);
+    super::tool_run::chat_mut(&mut a).set_approval_mode(crate::core::ai::config::ApprovalMode::Ask);
     let ask = exec("cargo", &["test", "-p", "x"], "crates/x");
     assert_eq!(announce(&mut a, turn, 1, ask.clone()), Vec::new());
     assert_eq!(pending(&a).map(|(ask, _)| ask), Some(ask));
@@ -1680,7 +1677,7 @@ fn the_prompt_carries_the_notice_and_nothing_hides_it_from_fits() {
 #[test]
 fn a_command_prompts_with_the_notice_in_every_approval_mode() {
     use crate::core::ai::config::ApprovalMode;
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         let (mut a, turn) = live();
         super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
         assert_eq!(
@@ -2168,21 +2165,20 @@ mod root_reads {
     // search still prompt, and a local read outside the root still runs.
     #[tokio::test]
     async fn ask_and_auto_modes_keep_the_read_and_search_prompts() {
-        for mode in [ApprovalMode::Ask, ApprovalMode::Auto] {
-            let (prompted, _) = drive(mode, Locality::Cloud, read("src/notes.txt")).await;
-            assert!(
-                matches!(prompted, Some(ApprovalAsk::Read { .. })),
-                "{mode:?}: {prompted:?}"
-            );
-            let (prompted, _) = drive(mode, Locality::Cloud, grep("inside the")).await;
-            assert!(
-                matches!(prompted, Some(ApprovalAsk::Search { .. })),
-                "{mode:?}: {prompted:?}"
-            );
-            let (prompted, out) = drive(mode, Locality::Local, read("~/outside.txt")).await;
-            assert_eq!(prompted, None, "{mode:?}");
-            assert!(out.text.contains("outside the root"), "{out:?}");
-        }
+        let mode = ApprovalMode::Ask;
+        let (prompted, _) = drive(mode, Locality::Cloud, read("src/notes.txt")).await;
+        assert!(
+            matches!(prompted, Some(ApprovalAsk::Read { .. })),
+            "{mode:?}: {prompted:?}"
+        );
+        let (prompted, _) = drive(mode, Locality::Cloud, grep("inside the")).await;
+        assert!(
+            matches!(prompted, Some(ApprovalAsk::Search { .. })),
+            "{mode:?}: {prompted:?}"
+        );
+        let (prompted, out) = drive(mode, Locality::Local, read("~/outside.txt")).await;
+        assert_eq!(prompted, None, "{mode:?}");
+        assert!(out.text.contains("outside the root"), "{out:?}");
     }
 }
 
@@ -2191,7 +2187,7 @@ mod root_reads {
 #[test]
 fn a_git_diff_prompts_in_every_approval_mode_and_shows_what_is_sent() {
     use crate::core::ai::config::ApprovalMode;
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         let (mut a, turn) = live();
         super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
         let ask = ApprovalAsk::GitDiff {
@@ -2212,7 +2208,7 @@ fn a_git_diff_prompts_in_every_approval_mode_and_shows_what_is_sent() {
 #[test]
 fn a_git_add_prompts_in_every_approval_mode_with_the_paths_and_the_count() {
     use crate::core::ai::config::ApprovalMode;
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         let (mut a, turn) = live();
         super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
         let ask = ApprovalAsk::GitAdd {
@@ -2247,7 +2243,6 @@ fn a_github_read_prompts_in_every_mode_and_only_a_lowercase_y_accepts() {
     use crate::core::ai::config::ApprovalMode;
     for (mode, ollama_cloud, engine) in [
         (ApprovalMode::Ask, false, "the engine"),
-        (ApprovalMode::Auto, false, "the engine"),
         (ApprovalMode::Run, true, "an Ollama cloud model"),
     ] {
         let (mut a, turn) = live();
@@ -2370,7 +2365,7 @@ fn worker_exec(worker: u32) -> ApprovalAsk {
 #[test]
 fn no_approval_mode_answers_a_workers_command_ask() {
     use crate::core::ai::{chat::approval::answers_itself, config::ApprovalMode};
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         for blocked in [false, true] {
             assert_eq!(
                 answers_itself(&worker_exec(2), mode, blocked),

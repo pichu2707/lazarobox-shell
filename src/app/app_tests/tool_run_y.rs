@@ -60,7 +60,6 @@ fn y_runs_an_asked_command_with_one_enter_in_every_mode() {
         (ApprovalMode::Run, "mkdir x"),
         (ApprovalMode::Ask, "python3 test.py"),
         (ApprovalMode::Ask, "npm test"),
-        (ApprovalMode::Auto, "cargo build"),
     ] {
         let (mut a, turn) = run_live();
         chat_mut(&mut a).set_approval_mode(mode);
@@ -255,7 +254,6 @@ fn y_types_into_a_pane_that_still_runs_a_command() {
 fn the_mode_at_y_does_not_change_that_it_runs() {
     for (from, to) in [
         (ApprovalMode::Run, ApprovalMode::Ask),
-        (ApprovalMode::Run, ApprovalMode::Auto),
         (ApprovalMode::Ask, ApprovalMode::Run),
     ] {
         let (mut a, turn) = run_live();
@@ -375,7 +373,7 @@ fn the_prefix_e_confirm_still_types_in_run_mode() {
 // S4: the hint says what `y` does, in every mode.
 #[test]
 fn the_hint_of_a_model_run_says_y_runs_it() {
-    for mode in [ApprovalMode::Run, ApprovalMode::Ask, ApprovalMode::Auto] {
+    for mode in [ApprovalMode::Run, ApprovalMode::Ask] {
         let (mut a, turn) = run_live();
         chat_mut(&mut a).set_approval_mode(mode);
         announce(&mut a, turn, 1, run("cargo build"));

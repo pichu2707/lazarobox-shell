@@ -81,7 +81,7 @@ pub enum PrefixAction {
     /// Opens the confirm to type the last shell block of the focused chat's
     /// last answer into a shell pane. Never runs it.
     RunInPane,
-    /// Flips the focused chat between `ask` and `auto` for its conversation.
+    /// Flips the focused chat between `ask` and `run` for its conversation.
     ToggleApproval,
     /// Opens the `/exec` dialog of the focused chat. Never grants.
     OpenExecGrant,

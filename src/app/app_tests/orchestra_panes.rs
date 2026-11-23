@@ -64,7 +64,7 @@ fn an_orchestrator_turn_offers_the_pane_reads_but_not_run_in_pane() {
 // as a chat's does, in every approval mode: no mode answers it.
 #[test]
 fn the_coordinators_list_panes_ask_is_answered_by_no_mode() {
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         let (mut a, turn) = running();
         set_mode(&mut a, mode);
         let ask = ApprovalAsk::Panes {
@@ -87,7 +87,7 @@ fn the_coordinators_list_panes_ask_is_answered_by_no_mode() {
 // its review in every mode; the chat's own pane is never read.
 #[test]
 fn the_coordinator_reads_another_pane_only_through_the_review() {
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         let (mut a, turn) = running();
         set_mode(&mut a, mode);
         shell_output(&mut a, b"$ nvim prueba.rs\r\n");

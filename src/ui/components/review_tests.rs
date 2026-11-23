@@ -398,7 +398,7 @@ fn the_keys_row_keeps_n_first_then_y_then_the_scroll_hints() {
 fn the_mode_badge_does_not_cover_the_counter_in_auto_mode() {
     use crate::core::ai::config::ApprovalMode;
     let mut chat = reviewing(numbered(3), 36, 6);
-    chat.set_approval_mode(ApprovalMode::Auto);
+    chat.set_approval_mode(ApprovalMode::Run);
     chat.set_run_hint(true);
     assert!(chat.mode_badge().is_some());
     page_to_the_end(&mut chat, (36, 6));

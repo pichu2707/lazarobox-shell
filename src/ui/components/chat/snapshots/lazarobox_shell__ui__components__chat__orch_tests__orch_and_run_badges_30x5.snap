@@ -2,6 +2,6 @@
 source: src/ui/components/chat/orch_tests.rs
 expression: shot_of(&buf)
 ---
-› question         ORCH  AUTO
+› question          ORCH  RUN
 
 an answer

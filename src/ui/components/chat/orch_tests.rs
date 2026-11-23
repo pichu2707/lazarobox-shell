@@ -96,11 +96,11 @@ fn the_orch_badge_is_drawn_only_while_the_pane_orchestrates() {
 fn the_orch_badge_sits_left_of_the_mode_badge() {
     let mut chat = answered();
     chat.set_run_hint(true);
-    chat.set_approval_mode(ApprovalMode::Auto);
+    chat.set_approval_mode(ApprovalMode::Run);
     let buf = draw(&chat, true, 30, 5);
-    assert_badge_at(&buf, 24, " AUTO ", theme().warning_orange);
-    assert_badge_at(&buf, 18, " ORCH ", theme().ai_purple);
-    insta::assert_snapshot!("orch_and_auto_badges_30x5", shot_of(&buf));
+    assert_badge_at(&buf, 25, " RUN ", theme().error_red);
+    assert_badge_at(&buf, 19, " ORCH ", theme().ai_purple);
+    insta::assert_snapshot!("orch_and_run_badges_30x5", shot_of(&buf));
 }
 
 #[test]
@@ -136,12 +136,12 @@ fn on_a_narrow_pane_the_orch_badge_is_one_letter_then_gone() {
 fn the_batch_badge_leaves_room_for_the_orch_badge() {
     let mut chat = answered();
     chat.set_run_hint(true);
-    chat.set_approval_mode(ApprovalMode::Auto);
+    chat.set_approval_mode(ApprovalMode::Run);
     chat.set_batch_badge(Some(Badge::Orphan(2)));
     let buf = draw(&chat, true, 30, 5);
     let top = row(&buf, 0);
     assert!(top.starts_with(" orphan 2 "), "{top:?}");
-    assert!(top.ends_with(" ORCH  AUTO "), "{top:?}");
+    assert!(top.ends_with(" ORCH  RUN "), "{top:?}");
 }
 
 // Worker rows (chat-pane, Row rendered) -----------------------------------

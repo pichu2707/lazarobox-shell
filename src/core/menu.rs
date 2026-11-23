@@ -671,7 +671,7 @@ pub static TOOLS_SECTION: Section = Section {
                 value: DraftValue::List(Choice {
                     table: TOOLS_TABLE,
                     key: "approval",
-                    values: &["ask", "auto", "run"],
+                    values: &["ask", "run"],
                     get: |c| c.approval() as usize,
                     set: |c, i| c.set_approval(ApprovalMode::ALL[i]),
                 }),
@@ -891,7 +891,7 @@ const CAUTION: &str = "Can change files or run code";
 const GITHUB_HINT: &str = "Reads issues and PRs; locks auto-run in that chat";
 /// The line of the Approval row: the mode is per chat and `run` runs only
 /// these verbs, those of `exec::SPECS` (a test keeps them equal). ASCII.
-pub(crate) const APPROVAL_HINT: &str = "per chat; run runs only cd pwd ls tree find grep rg";
+pub(crate) const APPROVAL_HINT: &str = "ask: y runs; run: safe reads alone, rest y; per chat";
 /// Lines of the caution, reserved at the foot of the Tools tab so the popup
 /// does not change size when it appears.
 pub const CAUTION_ROWS: usize = 1;

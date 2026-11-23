@@ -813,20 +813,12 @@ fn grammar_refuses_the_adversarial_list() {
     }
 }
 
-// One list of verbs: the hint of the Approval row and the README paragraph
+// One list of verbs: the READMEs quote the hint of the Approval row and
 // name every verb of `SPECS`, and nothing else.
 #[test]
 fn the_run_verbs_are_the_same_in_the_hint_and_the_readmes() {
     let hint = crate::core::menu::APPROVAL_HINT;
     let verbs: Vec<&str> = SPECS.iter().map(|spec| spec.name).collect();
-    for verb in &verbs {
-        assert!(
-            hint.split(' ').any(|w| w == *verb),
-            "hint lacks {verb}: {hint}"
-        );
-    }
-    let list = hint.strip_prefix("per chat; run runs only ").expect(hint);
-    assert_eq!(list.split(' ').count(), verbs.len(), "{list}");
     for readme in [
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")),
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.es.md")),

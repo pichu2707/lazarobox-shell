@@ -186,9 +186,6 @@ pub enum ApprovalMode {
     /// The user confirms each command with `y`. The default.
     #[default]
     Ask,
-    /// Asks like `Ask`: every command opens the prompt and `y` runs a model's
-    /// command. Nothing is typed without a prompt any more.
-    Auto,
     /// Reads, searches and the navigation commands of the safe list run at
     /// once inside the chat's folder and their output goes to the model;
     /// every other command, and any path outside the folder, asks.
@@ -280,16 +277,20 @@ impl ToolToggle {
 }
 
 /// The exact problem of an unreadable `ai.tools.approval`.
-pub const APPROVAL_PROBLEM: &str = "ai.tools.approval: expected \"ask\", \"auto\" or \"run\"";
+pub const APPROVAL_PROBLEM: &str = "ai.tools.approval: expected \"ask\" or \"run\"";
+
+/// The problem of a file that still holds `approval = "auto"`: the mode was
+/// removed and reads as `ask`. The parser only reports it; the start-up load
+/// rewrites the file (design D13).
+pub const AUTO_REMOVED_PROBLEM: &str = "ai.tools.approval: \"auto\" was removed; using \"ask\"";
 
 impl ApprovalMode {
-    pub const ALL: [Self; 3] = [Self::Ask, Self::Auto, Self::Run];
+    pub const ALL: [Self; 2] = [Self::Ask, Self::Run];
 
     /// The lowercase id: the value of `[ai.tools] approval`.
     pub fn id(self) -> &'static str {
         match self {
             Self::Ask => "ask",
-            Self::Auto => "auto",
             Self::Run => "run",
         }
     }
@@ -1166,8 +1167,8 @@ fn read_tools(table: &Table, problems: &mut Vec<String>) -> bool {
 }
 
 /// Reads `[ai.tools] approval`. A missing table or key is `ask`; a value that
-/// is not exactly `"ask"`, `"auto"` or `"run"` falls back to `ask` with a problem. A
-/// table that is not a table was already reported by `read_tools`.
+/// is not exactly `"ask"` or `"run"` falls back to `ask` with a problem (the
+/// removed `"auto"` has its own, [`AUTO_REMOVED_PROBLEM`]). A table that is not a table was already reported by `read_tools`.
 fn read_approval(table: &Table, problems: &mut Vec<String>) -> ApprovalMode {
     let section = table
         .get("ai")
@@ -1178,6 +1179,10 @@ fn read_approval(table: &Table, problems: &mut Vec<String>) -> ApprovalMode {
         None => ApprovalMode::Ask,
         Some(Value::String(id)) if ApprovalMode::from_id(id).is_some() => {
             ApprovalMode::from_id(id).unwrap_or_default()
+        }
+        Some(Value::String(id)) if id == "auto" => {
+            problems.push(AUTO_REMOVED_PROBLEM.to_owned());
+            ApprovalMode::Ask
         }
         Some(_) => {
             problems.push(APPROVAL_PROBLEM.to_owned());
@@ -3169,16 +3174,25 @@ mod tests {
     }
 
     #[test]
-    fn approval_reads_its_three_ids() {
-        for (id, want) in [
-            ("ask", ApprovalMode::Ask),
-            ("auto", ApprovalMode::Auto),
-            ("run", ApprovalMode::Run),
-        ] {
+    fn approval_reads_its_two_ids() {
+        for (id, want) in [("ask", ApprovalMode::Ask), ("run", ApprovalMode::Run)] {
             let (config, problems) = read_text(&format!("[ai.tools]\napproval = \"{id}\"\n"));
             assert_eq!(config.approval(), want, "{id}");
             assert!(problems.is_empty(), "{id}");
         }
+    }
+
+    // Spec (configuration): `auto` was removed; the parser maps it to `ask`
+    // with its own problem and never writes.
+    #[test]
+    fn auto_reads_as_ask_with_the_removed_problem() {
+        let (config, problems) = read_text("[ai.tools]\napproval = \"auto\"\n");
+        assert_eq!(config.approval(), ApprovalMode::Ask);
+        assert_eq!(
+            problems,
+            vec!["ai.tools.approval: \"auto\" was removed; using \"ask\"".to_owned()]
+        );
+        assert_eq!(problems, vec![AUTO_REMOVED_PROBLEM.to_owned()]);
     }
 
     #[test]
@@ -3430,35 +3444,33 @@ mod tests {
     }
 
     #[test]
-    fn the_approval_problem_names_all_three_values() {
+    fn the_approval_problem_names_both_values() {
         assert_eq!(
             APPROVAL_PROBLEM,
-            "ai.tools.approval: expected \"ask\", \"auto\" or \"run\""
+            "ai.tools.approval: expected \"ask\" or \"run\""
         );
     }
 
     #[test]
     fn the_approval_mode_names_itself_and_round_trips() {
-        assert_eq!(
-            ApprovalMode::ALL,
-            [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run]
-        );
+        assert_eq!(ApprovalMode::ALL, [ApprovalMode::Ask, ApprovalMode::Run]);
         for mode in ApprovalMode::ALL {
             assert_eq!(ApprovalMode::from_id(mode.id()), Some(mode));
         }
+        assert_eq!(ApprovalMode::from_id("auto"), None);
         assert_eq!(ApprovalMode::from_id("Auto"), None);
         assert_eq!(ApprovalMode::from_id("RUN"), None);
         assert_eq!(ApprovalMode::from_id(" run"), None);
     }
 
     #[test]
-    fn the_approval_mode_cycles_ask_auto_run_both_ways() {
+    fn the_approval_mode_cycles_ask_run_both_ways() {
         let mut mode = ApprovalMode::Ask;
-        for want in [ApprovalMode::Auto, ApprovalMode::Run, ApprovalMode::Ask] {
+        for want in [ApprovalMode::Run, ApprovalMode::Ask] {
             mode = mode.cycled(true);
             assert_eq!(mode, want);
         }
-        for want in [ApprovalMode::Run, ApprovalMode::Auto, ApprovalMode::Ask] {
+        for want in [ApprovalMode::Run, ApprovalMode::Ask] {
             mode = mode.cycled(false);
             assert_eq!(mode, want);
         }

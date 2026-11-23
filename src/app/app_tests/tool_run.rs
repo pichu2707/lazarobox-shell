@@ -492,12 +492,11 @@ fn a_full_screen_pane_at_the_write_denies_the_call_and_writes_nothing() {
 // prompts (`y` runs it: see `tool_run_y`).
 #[test]
 fn ask_and_auto_write_nothing_before_y() {
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto] {
-        let (mut a, turn) = live();
-        chat_mut(&mut a).set_approval_mode(mode);
-        assert_eq!(announce(&mut a, turn, 1, run("cd x")), vec![], "{mode:?}");
-        assert_eq!(checked(&mut a, 1), vec![], "{mode:?}: no check ever comes");
-    }
+    let mode = ApprovalMode::Ask;
+    let (mut a, turn) = live();
+    chat_mut(&mut a).set_approval_mode(mode);
+    assert_eq!(announce(&mut a, turn, 1, run("cd x")), vec![], "{mode:?}");
+    assert_eq!(checked(&mut a, 1), vec![], "{mode:?}: no check ever comes");
 }
 
 // A run that could not be written asks the user instead.
@@ -904,18 +903,17 @@ fn a_run_that_was_not_written_does_not_reset_the_pause() {
 // S5: whatever changes between the check and the recheck is seen by the route.
 #[test]
 fn a_mode_switched_back_between_the_check_and_the_write_prompts() {
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto] {
-        let (mut a, turn) = run_live();
-        announce(&mut a, turn, 1, run("pwd"));
-        chat_mut(&mut a).set_approval_mode(mode);
-        assert_eq!(checked(&mut a, 1), vec![], "{mode:?}");
-        assert_eq!(
-            pending(&a).map(|(ask, _)| ask),
-            Some(run("pwd")),
-            "{mode:?}"
-        );
-        assert_eq!(slot(&a), None);
-    }
+    let mode = ApprovalMode::Ask;
+    let (mut a, turn) = run_live();
+    announce(&mut a, turn, 1, run("pwd"));
+    chat_mut(&mut a).set_approval_mode(mode);
+    assert_eq!(checked(&mut a, 1), vec![], "{mode:?}");
+    assert_eq!(
+        pending(&a).map(|(ask, _)| ask),
+        Some(run("pwd")),
+        "{mode:?}"
+    );
+    assert_eq!(slot(&a), None);
 }
 
 #[test]

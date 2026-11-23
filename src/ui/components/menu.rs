@@ -1753,7 +1753,7 @@ mod tests {
 
     #[test]
     fn the_approval_row_shows_its_hint_at_62_and_80_columns() {
-        let hint = "per chat; run runs only cd pwd ls tree find grep rg";
+        let hint = "ask: y runs; run: safe reads alone, rest y; per chat";
         for width in [62, 80] {
             let mut menu = ai_tab();
             goto(&mut menu, "Approval");
@@ -2401,7 +2401,7 @@ mod tests {
         ask.goto("Approval");
         let mut run = ai_tab();
         run.goto("Approval");
-        press(&mut run, &[KeyCode::Char('l'), KeyCode::Char('l')]);
+        press(&mut run, &[KeyCode::Char('l')]);
         let (ask, run) = (
             lines(&draw(62, POPUP_H, &ask)),
             lines(&draw(62, POPUP_H, &run)),

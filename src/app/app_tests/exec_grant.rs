@@ -194,7 +194,7 @@ fn a_dialog_already_open_keeps_the_command_in_the_composer() {
 // denied in every approval mode and opens nothing.
 #[test]
 fn a_tool_call_carrying_the_grant_is_denied_in_every_mode() {
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         let (mut a, turn) = super::tool_approval::live();
         a.ai.set_tools_enabled(true);
         a.ai.set_approval(mode);

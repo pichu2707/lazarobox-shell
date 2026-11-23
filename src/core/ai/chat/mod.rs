@@ -116,7 +116,7 @@ pub enum OrchNote {
 }
 
 /// Columns the batch badge leaves free on the right of the pane: the widest
-/// mode badge (` AUTO `) and a gap.
+/// mode badge (` RUN `) and a gap.
 pub const BATCH_BADGE_ROOM: usize = 8;
 
 /// The longest answer kept, in bytes. Past it the answer is cut.

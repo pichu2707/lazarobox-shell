@@ -205,7 +205,7 @@ fn a_new_conversation_is_not_blocked() {
 // Spec (agent-tools): a cloud read asks in every mode while blocked.
 #[test]
 fn a_blocked_conversation_asks_for_each_cloud_read_and_search() {
-    for mode in [ApprovalMode::Run, ApprovalMode::Ask, ApprovalMode::Auto] {
+    for mode in [ApprovalMode::Run, ApprovalMode::Ask] {
         let (mut a, turn) = run_live();
         chat_mut(&mut a).set_approval_mode(mode);
         started(&mut a, turn);
@@ -314,7 +314,7 @@ fn a_resumed_conversation_opens_blocked_only_with_its_marker() {
 fn the_mode_toggle_does_not_promise_a_run_while_blocked() {
     let (mut a, turn) = run_live();
     started(&mut a, turn);
-    for _ in 0..3 {
+    for _ in 0..2 {
         press(&mut a, "a");
     }
     assert_eq!(chat_of(&a).approval_mode(), ApprovalMode::Run);
@@ -403,7 +403,7 @@ fn a_newer_rows_block_never_claims_github_text_was_read() {
     let (mut a, turn) = run_live();
     chat_mut(&mut a).adopt_github_read(newer);
     // The mode line.
-    for _ in 0..3 {
+    for _ in 0..2 {
         press(&mut a, "a");
     }
     assert_eq!(chat_of(&a).approval_mode(), ApprovalMode::Run);
@@ -462,7 +462,7 @@ fn user_tool(level: crate::core::ai::config::McpApproval) -> ApprovalAsk {
 #[test]
 fn a_blocked_conversation_asks_for_a_user_tool_at_reads_and_at_all() {
     use crate::core::ai::config::McpApproval::{All, Reads};
-    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+    for mode in [ApprovalMode::Ask, ApprovalMode::Run] {
         for (index, level) in [Reads, All].into_iter().enumerate() {
             let call = index as u64 + 1;
             let (mut a, turn) = run_live();
