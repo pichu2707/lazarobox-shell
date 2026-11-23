@@ -24,6 +24,8 @@ pub struct FakePty {
     pub pid: Option<u32>,
     /// What `shell_in_foreground` answers; `None` is "cannot tell".
     pub foreground: Option<bool>,
+    /// What `echo_off` answers; `None` is "cannot tell".
+    pub echo_off: Option<bool>,
     /// What `cwd` answers; `None` is "cannot read".
     pub cwd: Option<std::path::PathBuf>,
     /// What `foreground` answers; `None` is "cannot read".
@@ -49,6 +51,10 @@ impl PtyHandle for FakePty {
 
     fn shell_in_foreground(&self) -> Option<bool> {
         self.foreground
+    }
+
+    fn echo_off(&self) -> Option<bool> {
+        self.echo_off
     }
 
     fn cwd(&self) -> Option<std::path::PathBuf> {
@@ -99,5 +105,16 @@ mod tests {
         let log = pty.log.lock().unwrap();
         assert_eq!(log.resizes, vec![size]);
         assert_eq!(log.kills, 1);
+    }
+
+    #[test]
+    fn echo_off_answers_what_was_scripted() {
+        for scripted in [None, Some(false), Some(true)] {
+            let pty = FakePty {
+                echo_off: scripted,
+                ..FakePty::default()
+            };
+            assert_eq!(pty.echo_off(), scripted);
+        }
     }
 }

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use super::{
     exec::{Verb, parse},
     label,
-    settle::End,
+    settle::{CUT_OFF, End, Limits, TIMEOUT},
 };
 use crate::core::ai::{memory::redact::redact, sanitize::clean};
 
@@ -32,6 +32,13 @@ pub struct RunReport {
     /// The visible output. `None` when it cannot be read back (the line
     /// generation changed); an empty string is a run that printed nothing.
     pub output: Option<String>,
+    /// The user typed into the pane while the run went on with the cursor
+    /// hidden, so no row of the screen may be told (design D10, fail closed).
+    /// `output` is ignored when this is set.
+    pub withheld: bool,
+    /// The end rules the run followed; they say after how long it ended as
+    /// `Unconfirmed`.
+    pub limits: Limits,
 }
 
 /// The real cwd when the system gives it, else the OSC 7 one, labelled.
@@ -127,17 +134,45 @@ pub fn words(command: &str, report: &RunReport, nonce: Option<&str>) -> Words {
             )
         }
     });
-    let body = report.output.as_deref().and_then(|out| {
-        let text = redact(&clean(out)).text;
-        if text.trim().is_empty() {
-            return Some(("(no output)".to_owned(), 0));
-        }
-        let lines = text.trim_end().lines().count();
-        nonce.map(|nonce| (label::wrap(nonce, &text), lines))
-    });
+    // Fail closed: when the user typed with the cursor hidden, not one row of
+    // the screen is told, whatever `output` holds.
+    let withheld = report.withheld
+        && matches!(
+            report.end,
+            End::Settled | End::StillRunning | End::NoInput | End::TimedOut | End::Unconfirmed
+        );
+    let body = report
+        .output
+        .as_deref()
+        .filter(|_| !withheld)
+        .and_then(|out| {
+            let text = redact(&clean(out)).text;
+            if text.trim().is_empty() {
+                return Some(("(no output)".to_owned(), 0));
+            }
+            let lines = text.trim_end().lines().count();
+            nonce.map(|nonce| (label::wrap(nonce, &text), lines))
+        });
     let ran = format!("ran in pane {n}");
+    let cut = CUT_OFF.as_secs();
+    let limit = match report.limits {
+        Limits::Follow => TIMEOUT,
+        Limits::Run | Limits::Continue => CUT_OFF,
+    }
+    .as_secs();
     let lost_row = "ran \u{2014} output not available".to_owned();
     let (text, row) = match (report.end, body) {
+        _ if withheld => {
+            let tail = if report.cd_target.is_some() {
+                format!(" cwd: {cwd_text}.{mismatch}")
+            } else {
+                String::new()
+            };
+            (
+                format!("Ran in pane {n}; output not available: you typed in the pane.{tail}"),
+                "ran \u{2014} output not available: you typed in the pane".to_owned(),
+            )
+        }
         (End::Settled, Some((body, lines))) => {
             let unverified = if verified { "" } else { "unverified, " };
             let row = match differs {
@@ -179,13 +214,13 @@ pub fn words(command: &str, report: &RunReport, nonce: Option<&str>) -> Words {
         ),
         (End::Unconfirmed, Some((body, _))) => (
             format!(
-                "Ran in pane {n}; could not confirm it finished after 10 s. Output so far:\n{body}"
+                "Ran in pane {n}; could not confirm it finished after {limit} s. Output so far:\n{body}"
             ),
             format!("{ran} \u{2014} could not confirm it finished"),
         ),
         (End::Unconfirmed, None) => (
             format!(
-                "Ran in pane {n}; could not confirm it finished after 10 s; its output is not available."
+                "Ran in pane {n}; could not confirm it finished after {limit} s; its output is not available."
             ),
             lost_row,
         ),
@@ -201,10 +236,33 @@ pub fn words(command: &str, report: &RunReport, nonce: Option<&str>) -> Words {
             format!("Ran in pane {n}; the user typed in the pane, so no output was read."),
             format!("{ran} \u{2014} the user typed"),
         ),
-        // Worded for real in S1b of chat-runs-commands; no run ends this way yet.
-        (End::StillRunning | End::NoInput, _) => (
-            format!("Ran in pane {n}; it did not finish, so no output was read."),
+        (End::StillRunning, Some((body, _))) => (
+            format!(
+                "Ran in pane {n}; still running after {cut} s; the command keeps running in pane {n} \
+                 (Ctrl+C in the pane stops it); this is the output so far:\n{body}"
+            ),
             format!("{ran} \u{2014} still running"),
+        ),
+        (End::StillRunning, None) => (
+            format!(
+                "Ran in pane {n}; still running after {cut} s; the command keeps running in pane {n} \
+                 (Ctrl+C in the pane stops it); its output is not available."
+            ),
+            lost_row,
+        ),
+        (End::NoInput, Some((body, _))) => (
+            format!(
+                "Ran in pane {n}; it waits for input the user has not typed, after 5 min. \
+                 It still waits in the pane. Output so far:\n{body}"
+            ),
+            format!("{ran} \u{2014} waiting for input"),
+        ),
+        (End::NoInput, None) => (
+            format!(
+                "Ran in pane {n}; it waits for input the user has not typed, after 5 min. \
+                 It still waits in the pane; its output is not available."
+            ),
+            lost_row,
         ),
         (End::PaneGone, _) => (
             format!("Ran in pane {n}; the pane closed, so no output was read."),
@@ -251,6 +309,8 @@ mod tests {
             cwd: Some(("/home/u".into(), CwdSource::Proc)),
             cd_target: None,
             output: output.map(str::to_owned),
+            withheld: false,
+            limits: Limits::Follow,
         }
     }
 
@@ -544,5 +604,112 @@ mod tests {
         );
         assert_eq!(system_line("ls", &r), None, "not a cd");
         assert_eq!(system_line("cd x && ls", &r), None, "not one cd");
+    }
+
+    #[test]
+    fn a_run_cut_off_at_thirty_seconds_gives_the_output_so_far() {
+        let w = words_of(&report(End::StillRunning, Some("so far")));
+        assert!(w.text.contains("\nso far\n"), "{}", w.text);
+        assert_eq!(w.row, "ran in pane 2 \u{2014} still running");
+        assert_eq!(w.system, None);
+    }
+
+    #[test]
+    fn a_cut_off_run_with_nothing_read_says_the_output_is_not_available() {
+        let w = words_of(&report(End::StillRunning, None));
+        assert!(w.text.contains("still running after 30 s"), "{}", w.text);
+        assert!(w.text.contains("its output is not available"), "{}", w.text);
+        assert_eq!(w.row, "ran \u{2014} output not available");
+    }
+
+    #[test]
+    fn a_run_that_waits_for_input_says_the_user_has_not_typed_it() {
+        let w = words_of(&report(End::NoInput, Some("Password:")));
+        assert!(
+            w.text.starts_with("Ran in pane 2; it waits for input"),
+            "{}",
+            w.text
+        );
+        assert!(w.text.contains("5 min"), "{}", w.text);
+        assert!(w.text.contains("still waits in the pane"), "{}", w.text);
+        assert!(w.text.contains("\nPassword:\n"), "{}", w.text);
+        assert_eq!(w.row, "ran in pane 2 \u{2014} waiting for input");
+        let w = words_of(&report(End::NoInput, None));
+        assert!(w.text.contains("output is not available"), "{}", w.text);
+    }
+
+    #[test]
+    fn a_withheld_run_sends_nothing_of_the_screen() {
+        for end in [
+            End::Settled,
+            End::StillRunning,
+            End::NoInput,
+            End::TimedOut,
+            End::Unconfirmed,
+        ] {
+            let mut r = report(end, Some("hunter2 is the secret"));
+            r.withheld = true;
+            let w = words_of(&r);
+            assert!(!w.text.contains("hunter2"), "{end:?}: {}", w.text);
+            assert!(!w.row.contains("hunter2"), "{end:?}: {}", w.row);
+            assert!(
+                w.text
+                    .contains("output not available: you typed in the pane"),
+                "{end:?}: {}",
+                w.text
+            );
+            assert_eq!(
+                w.row,
+                "ran \u{2014} output not available: you typed in the pane"
+            );
+        }
+    }
+
+    #[test]
+    fn a_withheld_run_still_gives_the_cwd_of_a_cd() {
+        let mut r = report(End::Settled, Some("x"));
+        r.withheld = true;
+        r.cd_target = Some("/home/u".into());
+        let w = words("cd ~", &r, Some(NONCE));
+        assert!(w.text.contains("cwd: /home/u"), "{}", w.text);
+        assert_eq!(w.system.as_deref(), Some("pane 2: cd ~ \u{2192} /home/u"));
+    }
+
+    #[test]
+    fn a_withheld_run_that_was_aborted_keeps_the_abort_words() {
+        for end in [End::FullScreen, End::UserTyped, End::PaneGone] {
+            let plain = words_of(&report(end, None));
+            let mut r = report(end, None);
+            r.withheld = true;
+            assert_eq!(words_of(&r), plain, "{end:?}");
+        }
+    }
+
+    #[test]
+    fn the_cut_off_words_follow_the_spec() {
+        let w = words_of(&report(End::StillRunning, Some("so far")));
+        assert!(
+            w.text.starts_with(
+                "Ran in pane 2; still running after 30 s; the command keeps running in pane 2 \
+                 (Ctrl+C in the pane stops it); this is the output so far:\n"
+            ),
+            "{}",
+            w.text
+        );
+    }
+
+    #[test]
+    fn an_unconfirmed_run_names_the_limit_it_ran_under() {
+        for (limits, secs) in [
+            (Limits::Follow, TIMEOUT.as_secs()),
+            (Limits::Run, CUT_OFF.as_secs()),
+        ] {
+            let mut r = report(End::Unconfirmed, Some("x"));
+            r.limits = limits;
+            let said = format!("after {secs} s");
+            assert!(words_of(&r).text.contains(&said), "{limits:?}");
+            r.output = None;
+            assert!(words_of(&r).text.contains(&said), "{limits:?} lost");
+        }
     }
 }

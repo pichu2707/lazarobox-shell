@@ -63,10 +63,10 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 
 ## S1b: Echo probe and capture (base: main after S1a)
 
-- [ ] 1b.1 RED `core/pty` tests: `FakePty::echo_off()` scripted; real pty (tempfile-free) reports `Some(false)` for a shell, `None` where unsupported.
-- [ ] 1b.2 RED `capture.rs`: hidden ranges drop rows before `shape`; one `[input typed in the pane: hidden]` row per block; echo-row collision returns `None`; head, tail and wrapped-echo cases.
-- [ ] 1b.3 RED `report.rs`: words for `StillRunning`, `NoInput`, `output not available: you typed in the pane`.
-- [ ] 1b.4 GREEN `core/pty/{mod,portable,fake}.rs` (`echo_off` via termios on the master), `capture(.., hidden)`, `report.rs`. CHANGELOG. Exit gate.
+- [x] 1b.1 RED `core/pty` tests: `FakePty::echo_off()` scripted; real pty (tempfile-free) reports `Some(false)` for a shell, `None` where unsupported.
+- [x] 1b.2 RED `capture.rs`: hidden ranges drop rows before `shape`; one `[input typed in the pane: hidden]` row per block; echo-row collision returns `None`; head, tail and wrapped-echo cases.
+- [x] 1b.3 RED `report.rs`: words for `StillRunning`, `NoInput`, `output not available: you typed in the pane`.
+- [x] 1b.4 GREEN `core/pty/{mod,portable,fake}.rs` (`PtyHandle::echo_off` via `MasterPty::get_termios` on the master, `libc::ECHO`; the `FakePty.echo_off` field), `capture(.., hidden)`, `report.rs` (`RunReport.withheld`, the `StillRunning`/`NoInput` words and `output not available: you typed in the pane`). No CHANGELOG entry: no user-visible change. Not wired: `Probe.echo_off` is still filled in S1c (the probe closure is untouched) and `auto_run` passes `&[]` and `withheld: false` until then. Exit gate.
 
 ## S1c: Wire settle into model runs (base: main after S1b)
 

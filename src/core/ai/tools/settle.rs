@@ -152,6 +152,11 @@ impl Settle {
         Self::new(anchor, written).limits(Limits::Run)
     }
 
+    /// The end rules this run follows now.
+    pub fn rules(&self) -> Limits {
+        self.limits
+    }
+
     /// The end rules this run follows.
     #[allow(dead_code)] // S1c/S2c
     pub fn limits(mut self, limits: Limits) -> Self {

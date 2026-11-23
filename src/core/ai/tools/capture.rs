@@ -15,6 +15,8 @@
 //! the screen text: `clean` and `redact` run later and can change its length
 //! by a few bytes (the wrapper's own cap is 32 KiB).
 
+use std::ops::RangeInclusive;
+
 use super::settle::Anchor;
 use crate::core::{
     copy::{LineSpan, LineText, join},
@@ -29,6 +31,8 @@ pub const TAIL: usize = 100;
 pub const CAP: usize = 8 * 1024;
 /// Rows of command echo read past the head.
 const ECHO: usize = 8;
+/// What stands for the rows the user typed on.
+pub const HIDDEN: &str = "[input typed in the pane: hidden]";
 /// Bytes kept free for the marker when one row has to be cut.
 const MARKER_ROOM: usize = 64;
 
@@ -44,6 +48,7 @@ pub fn capture(
     anchor: &Anchor,
     command: &str,
     prompt_below: bool,
+    hidden: &[RangeInclusive<usize>],
 ) -> Option<String> {
     if pane.line_generation() != anchor.generation || anchor.line < pane.first_line() {
         return None;
@@ -61,7 +66,7 @@ pub fn capture(
         last_col: u16::MAX,
     };
     let rows = last - anchor.line + 1;
-    let (mut head, mut tail, mut gap) = if rows <= HEAD + TAIL + ECHO {
+    let (mut head, tail, mut gap) = if rows <= HEAD + TAIL + ECHO {
         (pane.read_lines(span(anchor.line, last)), Vec::new(), 0)
     } else {
         let head_to = anchor.line + HEAD + ECHO - 1;
@@ -77,10 +82,21 @@ pub fn capture(
     if !squeeze(&join(&head[..echo])).contains(&squeeze(command)) {
         return None;
     }
+    // Typed input must never reach the text: a range on the echo rows means
+    // the anchor row cannot be told from it (design D10).
+    let echo_to = anchor.line + echo - 1;
+    if hidden
+        .iter()
+        .any(|r| *r.start() <= echo_to && *r.end() >= anchor.line)
+    {
+        return None;
+    }
     head.drain(..echo);
+    let read = tail.len();
+    let mut head = mask(head, anchor.line + echo, hidden);
+    let mut tail = mask(tail, (last + 1).saturating_sub(read), hidden);
     let leading = head.iter().take_while(|row| blank(row)).count();
     head.drain(..leading);
-    let read = tail.len();
     let end = if tail.is_empty() {
         &mut head
     } else {
@@ -94,6 +110,35 @@ pub fn capture(
         gap += read;
     }
     Some(shape(head, tail, gap))
+}
+
+/// `rows`, which start at absolute line `first`, with each block of hidden
+/// lines replaced by one [`HIDDEN`] row. The row before a block stops being
+/// soft-wrapped so the marker is never glued to it.
+fn mask(rows: Vec<LineText>, first: usize, hidden: &[RangeInclusive<usize>]) -> Vec<LineText> {
+    if hidden.is_empty() {
+        return rows;
+    }
+    let mut out: Vec<LineText> = Vec::with_capacity(rows.len());
+    let mut in_block = false;
+    for (line, row) in (first..).zip(rows) {
+        if hidden.iter().any(|r| r.contains(&line)) {
+            if !in_block {
+                if let Some(prev) = out.last_mut() {
+                    prev.wrapped = false;
+                }
+                out.push(LineText {
+                    text: HIDDEN.to_owned(),
+                    wrapped: false,
+                });
+            }
+            in_block = true;
+        } else {
+            in_block = false;
+            out.push(row);
+        }
+    }
+    out
 }
 
 /// `text` with every run of whitespace as one space and none at the ends.
@@ -191,7 +236,7 @@ mod tests {
     fn simple(command: &str, output: &str) -> Option<String> {
         let mut p = pane(24, 80, 2000);
         let anchor = ran(&mut p, OLD, command, output, OLD);
-        capture(&mut p, &anchor, command, true)
+        capture(&mut p, &anchor, command, true, &[])
     }
 
     fn numbered(count: usize, width: usize) -> String {
@@ -224,7 +269,7 @@ mod tests {
         let mut p = pane(24, 10, 2000);
         let anchor = ran(&mut p, OLD, command, "x\n", OLD);
         assert_eq!(
-            capture(&mut p, &anchor, command, true).as_deref(),
+            capture(&mut p, &anchor, command, true, &[]).as_deref(),
             Some("x")
         );
     }
@@ -233,7 +278,7 @@ mod tests {
     fn output_that_wraps_is_joined_back() {
         let mut p = pane(24, 10, 2000);
         let anchor = ran(&mut p, OLD, "ls", "0123456789abcdef\n", OLD);
-        let got = capture(&mut p, &anchor, "ls", true);
+        let got = capture(&mut p, &anchor, "ls", true, &[]);
         assert_eq!(got.as_deref(), Some("0123456789abcdef"));
     }
 
@@ -241,14 +286,14 @@ mod tests {
     fn a_screen_that_does_not_echo_the_command_is_not_read() {
         let mut p = pane(24, 80, 2000);
         let anchor = ran(&mut p, OLD, "pwd", "/x\n", OLD);
-        assert_eq!(capture(&mut p, &anchor, "ls", true), None);
+        assert_eq!(capture(&mut p, &anchor, "ls", true, &[]), None);
     }
 
     #[test]
     fn a_thousand_lines_keep_the_head_and_the_tail_with_a_marker() {
         let mut p = pane(24, 80, 5000);
         let anchor = ran(&mut p, OLD, "ls", &numbered(1000, 4), OLD);
-        let got = capture(&mut p, &anchor, "ls", true).unwrap();
+        let got = capture(&mut p, &anchor, "ls", true, &[]).unwrap();
         let lines: Vec<&str> = got.lines().collect();
         assert_eq!(lines.len(), 201, "{got}");
         assert_eq!(lines[0], "0001");
@@ -262,7 +307,7 @@ mod tests {
     fn exactly_the_most_that_fits_has_no_marker() {
         let mut p = pane(24, 80, 5000);
         let anchor = ran(&mut p, OLD, "ls", &numbered(200, 4), OLD);
-        let got = capture(&mut p, &anchor, "ls", true).unwrap();
+        let got = capture(&mut p, &anchor, "ls", true, &[]).unwrap();
         assert_eq!(got.lines().count(), 200);
         assert!(!got.contains("not shown"), "{got}");
     }
@@ -271,7 +316,7 @@ mod tests {
     fn long_lines_are_cut_to_eight_kib_by_dropping_rows_next_to_the_marker() {
         let mut p = pane(24, 120, 5000);
         let anchor = ran(&mut p, OLD, "ls", &numbered(300, 100), OLD);
-        let got = capture(&mut p, &anchor, "ls", true).unwrap();
+        let got = capture(&mut p, &anchor, "ls", true, &[]).unwrap();
         assert!(got.len() <= CAP, "{}", got.len());
         assert!(got.starts_with(&"0".repeat(97)), "{got}");
         assert!(got.ends_with("300"), "the tail's last row stays");
@@ -283,7 +328,7 @@ mod tests {
         let mut p = pane(5, 5000, 100);
         let line = "\u{20ac}".repeat(4000);
         let anchor = ran(&mut p, OLD, "ls", &format!("{line}\n"), OLD);
-        let got = capture(&mut p, &anchor, "ls", true).unwrap();
+        let got = capture(&mut p, &anchor, "ls", true, &[]).unwrap();
         assert!(got.len() <= CAP, "{}", got.len());
         assert!(got.chars().all(|c| c == '\u{20ac}'), "{got:?}");
         assert!(got.len() > CAP - 2 * MARKER_ROOM);
@@ -294,7 +339,7 @@ mod tests {
         let mut p = pane(24, 80, 2000);
         let anchor = ran(&mut p, OLD, "ls", "a\n", OLD);
         p.resize(PaneSize { rows: 24, cols: 60 });
-        assert_eq!(capture(&mut p, &anchor, "ls", true), None);
+        assert_eq!(capture(&mut p, &anchor, "ls", true, &[]), None);
     }
 
     #[test]
@@ -307,14 +352,14 @@ mod tests {
         p.feed(OLD.as_bytes());
         assert_eq!(p.line_generation(), anchor.generation);
         assert!(p.first_line() > anchor.line, "{}", p.first_line());
-        assert_eq!(capture(&mut p, &anchor, "ls", true), None);
+        assert_eq!(capture(&mut p, &anchor, "ls", true, &[]), None);
     }
 
     #[test]
     fn a_hidden_cursor_makes_the_output_unavailable() {
         let mut p = pane(24, 80, 2000);
         let anchor = ran(&mut p, OLD, "ls", "a\n", "\x1b[?25l");
-        assert_eq!(capture(&mut p, &anchor, "ls", true), None);
+        assert_eq!(capture(&mut p, &anchor, "ls", true, &[]), None);
     }
 
     const TWO: &str = "\u{256d}\u{2500} user ~/dir\n\u{2570}\u{2500} $ ";
@@ -325,7 +370,7 @@ mod tests {
     fn a_two_line_prompt_never_costs_an_output_line() {
         let mut p = pane(24, 80, 2000);
         let anchor = ran(&mut p, TWO, "ls", "a\nb\n", &format!("\n{TWO}"));
-        let got = capture(&mut p, &anchor, "ls", true).unwrap();
+        let got = capture(&mut p, &anchor, "ls", true, &[]).unwrap();
         assert!(got.starts_with("a\nb"), "{got}");
     }
 
@@ -333,7 +378,7 @@ mod tests {
     fn a_two_line_prompt_over_the_two_span_threshold_keeps_both_ends() {
         let mut p = pane(24, 80, 5000);
         let anchor = ran(&mut p, TWO, "ls", &numbered(300, 3), TWO);
-        let got = capture(&mut p, &anchor, "ls", true).unwrap();
+        let got = capture(&mut p, &anchor, "ls", true, &[]).unwrap();
         let lines: Vec<&str> = got.lines().collect();
         assert_eq!(lines[0], "001");
         assert_eq!(lines[100], "[\u{2026} 101 lines not shown \u{2026}]");
@@ -346,7 +391,7 @@ mod tests {
         let mut p = pane(24, 80, 2000);
         p.feed(crlf(&format!("$ ls\n{prior}")).as_bytes());
         let anchor = ran(&mut p, OLD, "ls", output, OLD);
-        capture(&mut p, &anchor, "ls", true)
+        capture(&mut p, &anchor, "ls", true, &[])
     }
 
     #[test]
@@ -380,7 +425,7 @@ mod tests {
         let mut p = pane(24, 80, 2000);
         let anchor = ran(&mut p, OLD, "ls", "a\npart", "");
         assert_eq!(
-            capture(&mut p, &anchor, "ls", false).as_deref(),
+            capture(&mut p, &anchor, "ls", false, &[]).as_deref(),
             Some("a\npart")
         );
     }
@@ -389,15 +434,18 @@ mod tests {
     fn spaces_around_and_inside_the_command_do_not_fail_the_echo_check() {
         let mut p = pane(24, 80, 2000);
         let anchor = ran(&mut p, OLD, "ls", "a\n", OLD);
-        assert_eq!(capture(&mut p, &anchor, "ls ", true).as_deref(), Some("a"));
+        assert_eq!(
+            capture(&mut p, &anchor, "ls ", true, &[]).as_deref(),
+            Some("a")
+        );
         let mut p = pane(24, 80, 2000);
         let anchor = ran(&mut p, OLD, "ls -la", "a\n", OLD);
         assert_eq!(
-            capture(&mut p, &anchor, "ls  -la", true).as_deref(),
+            capture(&mut p, &anchor, "ls  -la", true, &[]).as_deref(),
             Some("a")
         );
         assert_eq!(
-            capture(&mut p, &anchor, "ls\t-la", true).as_deref(),
+            capture(&mut p, &anchor, "ls\t-la", true, &[]).as_deref(),
             Some("a")
         );
     }
@@ -415,7 +463,7 @@ mod tests {
             };
             p.feed(typed.as_bytes());
             for below in [true, false] {
-                let got = capture(&mut p, &anchor, "ls", below);
+                let got = capture(&mut p, &anchor, "ls", below, &[]);
                 assert_eq!(got.as_deref(), want, "{typed:?} {below}");
             }
         }
@@ -426,7 +474,7 @@ mod tests {
         for (lines, hidden) in [(209, 9), (210, 10), (211, 11)] {
             let mut p = pane(24, 80, 5000);
             let anchor = ran(&mut p, OLD, "ls", &numbered(lines, 3), OLD);
-            let got = capture(&mut p, &anchor, "ls", true).unwrap();
+            let got = capture(&mut p, &anchor, "ls", true, &[]).unwrap();
             let rows: Vec<&str> = got.lines().collect();
             let marker = format!("[\u{2026} {hidden} lines not shown \u{2026}]");
             assert_eq!(rows.len(), 201, "{lines}");
@@ -440,7 +488,7 @@ mod tests {
     fn a_run_going_over_the_two_span_threshold_includes_the_cursor_line() {
         let mut p = pane(24, 80, 5000);
         let anchor = ran(&mut p, OLD, "ls", &numbered(300, 3), "tail");
-        let got = capture(&mut p, &anchor, "ls", false).unwrap();
+        let got = capture(&mut p, &anchor, "ls", false, &[]).unwrap();
         let rows: Vec<&str> = got.lines().collect();
         assert_eq!(rows[100], "[\u{2026} 101 lines not shown \u{2026}]");
         assert_eq!(rows[200], "tail");
@@ -451,7 +499,7 @@ mod tests {
         let command = "ls aaaaaaaaaaaaaaaa";
         let mut p = pane(24, 10, 5000);
         let anchor = ran(&mut p, OLD, command, &numbered(300, 3), OLD);
-        let got = capture(&mut p, &anchor, command, true).unwrap();
+        let got = capture(&mut p, &anchor, command, true, &[]).unwrap();
         let rows: Vec<&str> = got.lines().collect();
         assert_eq!(rows[0], "001");
         assert_eq!(rows[100], "[\u{2026} 100 lines not shown \u{2026}]");
@@ -463,7 +511,10 @@ mod tests {
         let mut p = pane(24, 80, 2000);
         let echoed = format!("ls{}12:00", " ".repeat(60));
         let anchor = ran(&mut p, OLD, &echoed, "a\n", OLD);
-        assert_eq!(capture(&mut p, &anchor, "ls", true).as_deref(), Some("a"));
+        assert_eq!(
+            capture(&mut p, &anchor, "ls", true, &[]).as_deref(),
+            Some("a")
+        );
     }
 
     #[test]
@@ -471,9 +522,157 @@ mod tests {
         let mut p = pane(24, 80, 5000);
         let output = format!("{}{}", numbered(150, 3), "\n".repeat(150));
         let anchor = ran(&mut p, OLD, "ls", &output, OLD);
-        let got = capture(&mut p, &anchor, "ls", true).unwrap();
+        let got = capture(&mut p, &anchor, "ls", true, &[]).unwrap();
         let last = got.lines().last().unwrap();
         assert!(last.contains("lines not shown"), "{got}");
         assert!(last.contains("193"), "{last}");
+    }
+
+    // Password safety (design D10): rows the user typed on are replaced before
+    // `shape`, so their text never leaves this function.
+
+    /// The anchor line plus `n`: the absolute line of output row `n` (0 is
+    /// the first row below the one-row echo).
+    fn row(anchor: &Anchor, n: usize) -> usize {
+        anchor.line + 1 + n
+    }
+
+    #[test]
+    fn a_typed_row_in_the_output_is_replaced_by_the_marker() {
+        let mut p = pane(24, 80, 2000);
+        let anchor = ran(
+            &mut p,
+            OLD,
+            "sudo ls",
+            "Password:
+hunter2
+ok
+",
+            OLD,
+        );
+        let hidden = [row(&anchor, 1)..=row(&anchor, 1)];
+        let got = capture(&mut p, &anchor, "sudo ls", true, &hidden).unwrap();
+        assert_eq!(got, format!("Password:\n{HIDDEN}\nok"));
+        assert!(!got.contains("hunter2"));
+    }
+
+    #[test]
+    fn no_hidden_ranges_read_the_screen_as_before() {
+        let mut p = pane(24, 80, 2000);
+        let anchor = ran(&mut p, OLD, "ls", "a\nb\n", OLD);
+        assert_eq!(
+            capture(&mut p, &anchor, "ls", true, &[]).as_deref(),
+            Some("a\nb")
+        );
+    }
+
+    #[test]
+    fn one_block_of_hidden_rows_is_one_marker_row() {
+        let mut p = pane(24, 80, 2000);
+        let anchor = ran(&mut p, OLD, "ls", "a\nsecret1\nsecret2\nsecret3\nz\n", OLD);
+        let hidden = [row(&anchor, 1)..=row(&anchor, 3)];
+        let got = capture(&mut p, &anchor, "ls", true, &hidden).unwrap();
+        assert_eq!(got, format!("a\n{HIDDEN}\nz"));
+    }
+
+    #[test]
+    fn two_blocks_give_two_markers() {
+        let mut p = pane(24, 80, 2000);
+        let anchor = ran(&mut p, OLD, "ls", "s1\na\ns2\n", OLD);
+        let hidden = [
+            row(&anchor, 0)..=row(&anchor, 0),
+            row(&anchor, 2)..=row(&anchor, 2),
+        ];
+        let got = capture(&mut p, &anchor, "ls", true, &hidden).unwrap();
+        assert_eq!(got, format!("{HIDDEN}\na\n{HIDDEN}"));
+    }
+
+    #[test]
+    fn typed_input_that_wrapped_over_two_rows_is_one_marker() {
+        let mut p = pane(24, 10, 2000);
+        let anchor = ran(&mut p, OLD, "ls", "Pw:\n0123456789abcdef\nok\n", OLD);
+        // The 16-character line wraps onto rows 1 and 2.
+        let hidden = [row(&anchor, 1)..=row(&anchor, 2)];
+        let got = capture(&mut p, &anchor, "ls", true, &hidden).unwrap();
+        assert_eq!(got, format!("Pw:\n{HIDDEN}\nok"));
+        assert!(!got.contains("0123") && !got.contains("abcdef"));
+    }
+
+    #[test]
+    fn a_hidden_row_after_a_soft_wrapped_row_does_not_glue_to_it() {
+        let mut p = pane(24, 10, 2000);
+        let anchor = ran(&mut p, OLD, "ls", "0123456789abc\nsecret\n", OLD);
+        // Rows 0 and 1 hold the wrapped first line, row 2 the secret.
+        let hidden = [row(&anchor, 2)..=row(&anchor, 2)];
+        let got = capture(&mut p, &anchor, "ls", true, &hidden).unwrap();
+        assert_eq!(got, format!("0123456789abc\n{HIDDEN}"));
+    }
+
+    #[test]
+    fn a_hidden_row_in_the_unread_middle_leaks_nothing() {
+        let mut p = pane(24, 80, 5000);
+        let anchor = ran(&mut p, OLD, "ls", &numbered(300, 3), OLD);
+        let hidden = [row(&anchor, 150)..=row(&anchor, 150)];
+        let got = capture(&mut p, &anchor, "ls", true, &hidden).unwrap();
+        assert!(!got.contains("151"), "{got}");
+        assert!(got.contains("lines not shown"), "{got}");
+        assert!(!got.contains(HIDDEN), "{got}");
+    }
+
+    #[test]
+    fn a_hidden_row_in_the_head_or_the_tail_of_a_long_output_is_replaced() {
+        let mut p = pane(24, 80, 5000);
+        let anchor = ran(&mut p, OLD, "ls", &numbered(300, 3), OLD);
+        let hidden = [
+            row(&anchor, 4)..=row(&anchor, 4),
+            row(&anchor, 290)..=row(&anchor, 290),
+        ];
+        let got = capture(&mut p, &anchor, "ls", true, &hidden).unwrap();
+        let rows: Vec<&str> = got.lines().collect();
+        assert_eq!(rows[4], HIDDEN, "{got}");
+        assert!(!got.contains("005") && !got.contains("291"), "{got}");
+        assert_eq!(rows.iter().filter(|r| **r == HIDDEN).count(), 2);
+    }
+
+    #[test]
+    fn ranges_above_the_anchor_are_ignored() {
+        let mut p = pane(5, 80, 100);
+        let before = format!("{}{OLD}", numbered(10, 2));
+        let anchor = ran(&mut p, &before, "ls", "a\n", OLD);
+        assert!(anchor.line >= 10, "{}", anchor.line);
+        let hidden = [0..=3, 7..=anchor.line - 1];
+        let got = capture(&mut p, &anchor, "ls", true, &hidden);
+        assert_eq!(got.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn a_range_that_touches_the_echo_row_makes_the_output_unavailable() {
+        let mut p = pane(24, 80, 2000);
+        let anchor = ran(&mut p, OLD, "ls", "a\n", OLD);
+        for hidden in [
+            [anchor.line..=anchor.line],
+            [anchor.line.saturating_sub(2)..=anchor.line],
+        ] {
+            assert_eq!(capture(&mut p, &anchor, "ls", true, &hidden), None);
+        }
+    }
+
+    #[test]
+    fn a_range_over_a_wrapped_echo_row_makes_the_output_unavailable() {
+        let command = "ls aaaaaaaaaaaaaaaaaaaaaaaa";
+        let mut p = pane(24, 10, 2000);
+        let anchor = ran(&mut p, OLD, command, "x\n", OLD);
+        // The echo spans three rows; the last one is hidden.
+        let hidden = [anchor.line + 2..=anchor.line + 2];
+        assert_eq!(capture(&mut p, &anchor, command, true, &hidden), None);
+    }
+
+    #[test]
+    fn a_range_that_reaches_past_the_end_hides_the_rest() {
+        let mut p = pane(24, 80, 2000);
+        let anchor = ran(&mut p, OLD, "ls", "a\nsecret\n", "secret2");
+        let hidden = [row(&anchor, 1)..=row(&anchor, 40)];
+        let got = capture(&mut p, &anchor, "ls", false, &hidden).unwrap();
+        assert_eq!(got, format!("a\n{HIDDEN}"));
     }
 }
