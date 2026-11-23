@@ -393,3 +393,14 @@ fn the_hint_of_a_model_run_says_y_runs_it() {
     press(&mut a, "e");
     assert_eq!(a.approval_prompt(id2()).unwrap().keys, TYPE_KEYS);
 }
+
+// With the target pane gone `y` only shows the notice, so the hint must not
+// say it runs the command.
+#[test]
+fn the_hint_does_not_advertise_running_when_the_target_is_gone() {
+    let (mut a, turn) = run_live();
+    announce(&mut a, turn, 1, run("cargo build"));
+    assert_eq!(a.approval_prompt(id2()).unwrap().keys, RUN_KEYS);
+    chat_mut(&mut a).set_run_target(None);
+    assert_eq!(a.approval_prompt(id2()).unwrap().keys, TYPE_KEYS);
+}

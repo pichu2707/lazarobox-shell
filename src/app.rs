@@ -872,8 +872,9 @@ struct PtyPane {
     proc_cwd: Option<PathBuf>,
     /// Set when the pane runs `cargo install` for an update, not a shell.
     update: Option<UpdateRun>,
-    /// The auto-typed command of a chat that sits unsent on this pane's line
-    /// (design D18): a later auto call to this pane prompts instead.
+    /// The command a `y` typed, not run, for a chat that sits unsent on this
+    /// pane's line (design D18): a later unprompted run to this pane prompts
+    /// instead.
     line_pending: Option<CallId>,
     /// The run routed to this pane that is still in flight (design D21); its
     /// presence is the pane's `executing` mark.
@@ -9419,6 +9420,8 @@ mod app_tests {
 
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;
+    /// The line-pending mark a `y`-typed command sets.
+    mod tool_line_mark;
 
     /// Selecting a worker row and the escalating Ctrl+C (S3).
     mod orchestra_cancel;
