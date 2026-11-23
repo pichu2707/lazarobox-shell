@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.39.0] - 2026-11-22
+
 ### Added
 
 - **A chat reads the local project memory when it opens.** A dedicated thread reads `.lzr/memory/notes/` at the git root and keeps only the notes this machine wrote and nobody changed. Notes from others (a clone or a pull) or edited outside lazarobox are ignored and counted: `memory: N notes from others ignored (not created on this machine)`. Unreadable, truncated, oversized or merge-conflicted files are skipped and counted without touching them (`memory: skipped N unreadable notes in .lzr/`), and notes made by a newer lazarobox are skipped too. A damaged or newer private ledger is reported, trusts no note and is never written over. A folder outside git, or the home folder itself, says `memory: no git repository here; nothing is remembered for this folder`. If the memory thread cannot start, the chat says so. The writing side exists but nothing calls it yet: it will create `.lzr/`, add it to `.gitignore` and write the note atomically, with a line for each outcome. At most 5000 notes are read per load: `memory: only the first 5000 notes in .lzr/ were read; N more were left out`. A save notice, a write failure and a memory thread that stopped each show a line in the chat as well. `[ai.memory] local = false` sends nothing to the thread.
@@ -3229,7 +3231,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.38.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.39.0...HEAD
+[1.39.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.38.0...v1.39.0
 [1.38.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.37.0...v1.38.0
 [1.37.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.36.0...v1.37.0
 [1.36.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.35.0...v1.36.0
