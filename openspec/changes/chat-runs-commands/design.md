@@ -51,10 +51,10 @@ Invariants kept:
 5. `WAIT_CAP` ends as `NoInput`
 6. `CUT_OFF` ends as `StillRunning` or `Unconfirmed`
 
-`take_waiting()` returns `true` once, on entry to the waiting phase. The app then pushes `pane N: waiting for your input; type it in the pane (the chat does not see it)`.
+`take_waiting()` returns `true` once, on entry to the waiting phase. The app then pushes `pane N: waiting for your input in the pane; type it there (it is never sent to the chat)`.
 
 Lines:
-- Cut-off: `pane N: still running after 30 s; the chat goes on with the output so far (Ctrl+C in the pane stops it)`
+- Cut-off: `pane N: <exact command> is still running after 30 s; the chat goes on with the output so far`
 - `NoInput`: `pane N: no input after 5 min; the chat goes on (the command still waits in the pane)`
 
 ### Bypass table (all must route to `Prompt`)
