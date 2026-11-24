@@ -122,7 +122,16 @@ impl RunSlot {
     /// The user wrote to the pane: the run is no longer the only thing in it.
     pub(super) fn user_key(&mut self, key: Key) {
         if let Stage::Running(run) = &mut self.stage {
-            run.interrupted |= key.interrupt && run.settle.rules() == Limits::Continue;
+            if run.settle.rules() == Limits::Continue && key.interrupt {
+                // A Ctrl+C or Ctrl+D with the shell already in the foreground
+                // reached the shell, not the command: the follow goes on and
+                // the command's end is reported as it is.
+                match run.settle.foreground() {
+                    Some(true) => return,
+                    Some(false) => run.interrupted = true,
+                    None => {}
+                }
+            }
             run.settle.user_key(key);
         }
     }
@@ -632,7 +641,6 @@ impl App {
             pty.typed.take_if(|t| t.chat == id);
         }
         self.held_resumes.retain(|(chat, ..)| *chat != id);
-        self.continued.retain(|(chat, _)| *chat != id);
     }
 
     /// Drops every run slot that `stale` names, which frees the pane's
