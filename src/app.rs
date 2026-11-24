@@ -3610,6 +3610,7 @@ impl App {
         let Some(&(_, old)) = tiling.panes.iter().find(|(pane, _)| *pane == id) else {
             return Vec::new();
         };
+        let number = self.tabs[t].tree.leaves().iter().position(|p| *p == id);
         let effects = match self.tabs[t].tree.remove(id) {
             Removal::NotFound => return Vec::new(),
             Removal::WasLast if self.tabs.len() == 1 => return self.quit_effects(),
@@ -3618,6 +3619,10 @@ impl App {
                 let mut ends = self.end_effects(&[id]);
                 ends.extend(self.close_run_effects(&[id]));
                 ends.extend(self.deny_closing_runs(&[id]));
+                // The output the pane's last command left is not sent.
+                if let Some(index) = number {
+                    self.drop_held_of_pane(t, index + 1);
+                }
                 self.panes.remove(&id);
                 self.drop_pane_stores(id);
                 ends.extend(self.keep_pane_closed(id));

@@ -16,7 +16,7 @@
 //! local attacker who can write a path component).
 
 use super::{
-    typed_run::{Typed, closed_line, interrupted_line},
+    typed_run::{NOT_SENT, Typed, closed_line, interrupted_line},
     *,
 };
 use crate::core::ai::{
@@ -128,8 +128,7 @@ impl RunSlot {
                 // the command's end is reported as it is.
                 match run.settle.foreground() {
                     Some(true) => return,
-                    Some(false) => run.interrupted = true,
-                    None => {}
+                    Some(false) | None => run.interrupted = true,
                 }
             }
             run.settle.user_key(key);
@@ -632,6 +631,19 @@ impl App {
                 }),
         );
         effects
+    }
+
+    /// The pane numbered `number` of tab `tab` has closed: the final output
+    /// of a command it ran, held until its chat is free, is dropped, with a
+    /// line. A chat that closed with it is gone and says nothing.
+    pub(super) fn drop_held_of_pane(&mut self, tab: usize, number: usize) {
+        let leaves = self.tabs[tab].tree.leaves();
+        let dropped: Vec<_> = (self.held_resumes)
+            .extract_if(.., |h| h.1 == number && leaves.contains(&h.0))
+            .collect();
+        for (chat, number, ..) in dropped {
+            self.say_in_chat(chat, format!("pane {number}: {NOT_SENT}"));
+        }
     }
 
     /// Chat `id` is gone: its runs go too, the ones the user ran included.

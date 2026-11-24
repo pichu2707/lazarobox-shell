@@ -31,7 +31,7 @@ const STALE: &str = "typed command is from an earlier turn; send a message to go
 const NOT_FOLLOWED: &str = "could not follow the command: send a message to go on";
 
 /// Why an output of a finished command did not reach the model.
-const NOT_SENT: &str =
+pub(super) const NOT_SENT: &str =
     "the command finished but its output was not sent; send a message to continue";
 
 /// Said to the chat when the pane of the command it waits for closes.
@@ -214,7 +214,7 @@ impl App {
     /// must be idle with no draft (a send would clear it). An output of a
     /// command the user ran is dropped, with a line, when the chat cannot take
     /// it; the output of a command followed on after the cut-off is held until
-    /// it can, and only a new message, Esc or a closing chat or pane drops it.
+    /// it can, and only a new message, Esc, Ctrl+C or a closing chat or pane drops it.
     pub(super) fn flush_resumes(&mut self, chat: PaneId) -> Vec<Effect> {
         // Another command of the chat is followed, or its report is on its way.
         let waiting = (self.panes.values().filter_map(PaneState::pty))
@@ -225,8 +225,11 @@ impl App {
         }
         let ready = (self.panes.get(&chat).and_then(PaneState::chat_state))
             .is_some_and(|c| c.phase() == Phase::Idle && c.composer().is_empty());
-        let availability = self.turn_availability(chat);
-        let can_send = ready && availability != Availability::Checking;
+        // Only a ready chat needs to know its engine.
+        let availability = ready.then(|| self.turn_availability(chat));
+        let can_send = availability
+            .as_ref()
+            .is_some_and(|a| *a != Availability::Checking);
         let holds = (self.held_resumes.iter()).any(|h| h.0 == chat && h.3);
         if holds && !can_send && self.panes.contains_key(&chat) {
             return Vec::new();
@@ -247,9 +250,9 @@ impl App {
             .collect::<Vec<_>>()
             .join("\n\n");
         let mut effects = Vec::new();
-        if can_send && !numbers.is_empty() {
+        if let (Some(availability), true) = (&availability, can_send && !numbers.is_empty()) {
             self.resume_sending = true;
-            effects = self.send_with(chat, &note, &availability, None);
+            effects = self.send_with(chat, &note, availability, None);
             self.resume_sending = false;
         }
         if effects.is_empty() {

@@ -1145,3 +1145,46 @@ fn ctrl_c_at_the_prompt_after_the_command_ended_keeps_the_final_output() {
     assert!(!says(&a, "you interrupted"));
     assert!(says(&a, "pane 1: the command finished"));
 }
+
+// Follow-up of #857, 1: closing the pane drops the output it holds.
+#[test]
+fn closing_the_pane_drops_the_output_it_holds() {
+    let (mut a, second) = two_followed();
+    a.held_resumes
+        .push((id2(), 1, Some("OUT-ONE".to_owned()), true));
+    let effects = a.remove_pane(SHELL);
+    assert!(
+        !effects.iter().any(|e| matches!(e, Effect::ChatSend { .. })),
+        "{effects:?}"
+    );
+    assert!(a.held_resumes.is_empty(), "{:?}", a.held_resumes);
+    assert!(says(&a, &format!("pane 1: {NOT_SENT}")));
+    assert!(a.pane_number(second).is_some());
+}
+
+// Follow-up of #857, 2: an unknown foreground is not the shell.
+#[test]
+fn ctrl_c_with_an_unknown_foreground_is_an_interruption() {
+    let (mut a, t0, _) = cut_run();
+    at(t0 + 30_500);
+    a.update(AppEvent::Run(
+        SHELL,
+        RunEvent::Probe {
+            foreground: None,
+            cwd: None,
+            echo_off: None,
+        },
+    ));
+    in_shell(
+        &mut a,
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+    shell_output(&mut a, b"^C\r\n$ ");
+    let effects = probe_fg(&mut a, t0 + 31_000, true);
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(says(
+        &a,
+        "pane 1: you interrupted the command; send a message to go on"
+    ));
+    assert!(!says(&a, "you typed while the command ran"));
+}
