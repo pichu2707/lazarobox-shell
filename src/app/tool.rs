@@ -9,6 +9,7 @@
 //! typed at once (`auto`, D18) or run after a check (`run`, D21). A user tool
 //! and the other commands always wait for `y`.
 
+use super::auto_run::run_scope;
 use super::*;
 use crate::core::ai::chat::{
     approval::{
@@ -480,6 +481,7 @@ impl App {
             dirty: pty.is_some_and(|pty| pty.user_dirty),
             utf8: self.utf8_locale,
             github_read: chat.block_why(),
+            local: !run_scope(chat.origin_cwd(), chat.stream_engine()).cloud,
         };
         route(ask, Origin::Tool, chat.approval_mode(), ctx)
     }

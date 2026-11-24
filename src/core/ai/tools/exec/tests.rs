@@ -836,3 +836,121 @@ fn the_run_verbs_are_the_same_in_the_hint_and_the_readmes() {
         }
     }
 }
+
+// S3a: the grammar is keyed by the leading words of the command (the head),
+// and every entry has a tier.
+const SEVEN: [&str; 7] = ["cd", "pwd", "ls", "tree", "grep", "rg", "find"];
+
+#[test]
+fn the_seven_verbs_are_the_base_tier() {
+    let names: Vec<&str> = SPECS.iter().map(|spec| spec.name).collect();
+    assert_eq!(names, SEVEN);
+    assert!(SPECS.iter().all(|spec| spec.tier == Tier::Base));
+}
+
+#[test]
+fn a_local_engine_runs_exactly_the_seven_verbs_as_a_cloud_engine_does() {
+    for text in [
+        "cd ~/dev",
+        "pwd",
+        "ls -la src",
+        "tree -L 2",
+        "grep -rn a src",
+        "rg -n a src",
+        "find . -name a",
+    ] {
+        assert!(parse_for(text, true).is_ok(), "{text:?} runs on local");
+        assert_eq!(parse_for(text, true), parse_for(text, false), "{text:?}");
+        assert_eq!(parse(text), parse_for(text, false), "{text:?}");
+    }
+    for text in ["cat README.md", "git status", "head a", "rg --version"] {
+        assert!(parse_for(text, true).is_err(), "{text:?} asks on local");
+        assert!(
+            parse_for(text, false).is_err(),
+            "{text:?} is not listed yet"
+        );
+    }
+}
+
+fn table() -> [Spec; 3] {
+    [
+        Spec {
+            name: "git",
+            verb: Verb::Ls,
+            ..BASE
+        },
+        Spec {
+            name: "git status",
+            verb: Verb::Pwd,
+            paths: 0..1,
+            ..BASE
+        },
+        Spec {
+            name: "cat",
+            verb: Verb::Ls,
+            tier: Tier::Extended,
+            paths: 1..2,
+            ..BASE
+        },
+    ]
+}
+
+#[test]
+fn the_longest_head_wins() {
+    let specs = table();
+    let short = parse_in("git log", &specs, false).expect("the short head runs");
+    assert_eq!(short.verb(), Verb::Ls);
+    let long = parse_in("git status", &specs, false).expect("the long head runs");
+    assert_eq!(long.verb(), Verb::Pwd);
+    // The long head's own limits apply: it takes no path, so it does not
+    // fall back to the short head that would take `x`.
+    assert_eq!(
+        parse_in("git status x", &specs, false).unwrap_err().why,
+        "too many arguments"
+    );
+    // A head matches whole words only.
+    assert_eq!(
+        parse_in("git statusx", &specs, false).unwrap().verb(),
+        Verb::Ls
+    );
+    assert_eq!(parse_in("gitx", &specs, false).unwrap_err().why, NOT_SAFE);
+}
+
+#[test]
+fn an_extended_entry_runs_on_cloud_and_asks_on_local() {
+    let specs = table();
+    assert!(parse_in("cat a", &specs, false).is_ok());
+    let err = parse_in("cat a", &specs, true).unwrap_err();
+    assert_eq!(err.why, LOCAL_ASKS);
+    assert_eq!(err.at, 0..3);
+    // A base entry of the same table runs on both.
+    assert!(parse_in("git log", &specs, true).is_ok());
+}
+
+#[test]
+fn one_segment_only_every_metacharacter_falls_back_on_both_tiers() {
+    let specs = table();
+    for meta in [
+        ";", "&", "|", "<", ">", "$", "`", "(", ")", "{", "}", "\\", "!", "*", "?", "[", "]", "#",
+    ] {
+        for text in [
+            format!("ls {meta} x"),
+            format!("ls a{meta}b"),
+            format!("cat a{meta}"),
+            format!("git status{meta}"),
+        ] {
+            for local in [false, true] {
+                assert!(parse_in(&text, &specs, local).is_err(), "{text:?} {local}");
+            }
+        }
+    }
+    for text in [
+        "ls && rm x",
+        "ls || rm x",
+        "ls | sh",
+        "ls\nrm x",
+        "ls; rm x",
+    ] {
+        assert!(parse(text).is_err(), "{text:?}");
+    }
+}
