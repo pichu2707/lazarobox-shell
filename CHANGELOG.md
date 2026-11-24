@@ -14,7 +14,7 @@ baseline.
 
 - **A command the model runs can wait for your input, and runs for up to 30 s.** When a command asks for something with the terminal echo off (a `sudo` password), the chat shows `pane N: waiting for your input in the pane; type it there (it is never sent to the chat)`, pauses the clock and resumes by itself when the command ends. What you type in the pane never reaches the model: typed rows become `[input typed in the pane: hidden]`, and a key typed with the cursor hidden withholds the output. A command still running after 30 s returns `still running` with the output so far and goes on in the pane; after 5 min without input the chat goes on with `no input after 5 min`. Keys typed while a program (not the shell) owns the pane no longer end the run.
 
-- **A command cut at 30 s is followed until it ends (#845).** After the `still running` result the chat goes on, and when the command finally ends in the pane the chat resumes again by itself with its final output, starting with `lazarobox: the command you approved in pane N finished.`. `Ctrl+C` in the pane, a new message or closing the pane ends the follow with a line in the chat.
+- **A command cut at 30 s is followed until it ends (#845).** After the `still running` result the chat goes on, and when the command finally ends in the pane the chat resumes again by itself with its final output, starting with `lazarobox: the command you approved in pane N finished.`. If the chat is still answering or has a draft when the command ends, the output waits until the chat is idle with an empty message box. `Ctrl+C` in the pane, `Esc` in the chat, a new message or closing the pane ends the follow, or drops the output it holds, with a line in the chat.
 
 ### Changed
 
