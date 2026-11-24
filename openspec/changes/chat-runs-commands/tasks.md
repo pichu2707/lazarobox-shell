@@ -99,8 +99,8 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 
 ## S3a: Head-keyed grammar and tiers (base: main after S2c)
 
-- [ ] 3a.1 RED `exec/tests.rs`: all existing 400+ grammar tests unchanged; longest head wins; one segment only; every metacharacter falls back; local engine runs exactly `cd pwd ls tree grep rg find`, cloud tier machinery in place.
-- [ ] 3a.2 GREEN `exec.rs` (`head`, `tier`, one-pass parser), `exec/specs.rs` (seven verbs as `Tier::Base`), `AutoCtx.local` from `run_scope(..).cloud`. CHANGELOG. Exit gate.
+- [x] 3a.1 RED `exec/tests.rs`: all existing 400+ grammar tests unchanged; longest head wins; one segment only; every metacharacter falls back; local engine runs exactly `cd pwd ls tree grep rg find`, cloud tier machinery in place.
+- [x] 3a.2 GREEN `exec.rs` (`head`, `tier`, one-pass parser), `exec/specs.rs` (seven verbs as `Tier::Base`), `AutoCtx.local` from `run_scope(..).cloud`. CHANGELOG. Exit gate.
 
 ## S3b: New read verbs (base: main after S3a)
 

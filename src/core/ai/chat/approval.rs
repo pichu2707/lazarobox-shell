@@ -848,6 +848,8 @@ pub struct AutoCtx {
     pub utf8: bool,
     /// The conversation is blocked and why: no command of it is run.
     pub github_read: Option<BlockWhy>,
+    /// The turn runs on a local engine: only the base tier runs alone.
+    pub local: bool,
 }
 
 /// `AutoRun` only in `run` mode for a command the grammar accepts, with fewer than
@@ -900,7 +902,7 @@ fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
     if ctx.paused {
         return because(PAUSED);
     }
-    match exec::parse(command) {
+    match exec::parse_for(command, ctx.local) {
         // A non-UTF-8 locale or readline's `convert-meta` could read the
         // bytes as something else than what was checked.
         Ok(safe) if !ctx.utf8 && !safe.as_str().is_ascii() => because(NON_UTF8),
@@ -1442,6 +1444,7 @@ mod tests {
         dirty: false,
         utf8: true,
         github_read: None,
+        local: false,
     };
 
     // 22.2 (W9b, D14): no mode routes the limit ask of a worker: it prompts.
@@ -1564,6 +1567,30 @@ mod tests {
             route(&run_ask(), Origin::Block, ApprovalMode::Ask, FREE),
             Route::Prompt(None)
         );
+    }
+
+    // S3a: the engine's locality reaches the grammar; the seven verbs run
+    // unprompted on both kinds of engine.
+    #[test]
+    fn the_seven_verbs_run_alone_on_a_local_and_a_cloud_engine() {
+        for local in [false, true] {
+            let ctx = AutoCtx { local, ..FREE };
+            for text in [
+                "cd x",
+                "pwd",
+                "ls -la",
+                "tree -L 2",
+                "rg a",
+                "find . -name a",
+            ] {
+                let ask = ask_of(text);
+                let routed = route(&ask, Origin::Tool, ApprovalMode::Run, ctx);
+                assert_eq!(runs(&routed), Some(text), "{text:?} local={local}");
+            }
+            let ask = ask_of("cat README.md");
+            let routed = route(&ask, Origin::Tool, ApprovalMode::Run, ctx);
+            assert_eq!(runs(&routed), None, "local={local}");
+        }
     }
 
     #[test]

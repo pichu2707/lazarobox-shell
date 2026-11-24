@@ -22,6 +22,11 @@
 
 use std::ops::Range;
 
+mod specs;
+#[cfg(test)]
+use specs::BASE;
+use specs::{SPECS, Spec, Tier, Value};
+
 use super::command::{MAX_COMMAND_BYTES, is_invisible};
 use super::paths::Want;
 use crate::core::ai::sanitize::is_format;
@@ -69,140 +74,6 @@ pub enum Verb {
     Rg,
     Find,
 }
-
-/// What the word after a flag of [`Spec::valued`] must be.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Value {
-    /// One or two digits (`tree -L`).
-    Depth,
-    /// One to three digits.
-    Number,
-    /// Any word that does not start with a dash.
-    Name,
-    /// `f`, `d` or `l` (`find -type`).
-    Kind,
-}
-
-/// What a verb accepts.
-struct Spec {
-    name: &'static str,
-    verb: Verb,
-    /// Short flags that may be bundled (`-la`).
-    flags: &'static [u8],
-    /// Whole flag words (`--line-number`).
-    long: &'static [&'static str],
-    /// Flags that take the next word as their value.
-    valued: &'static [(&'static str, Value)],
-    /// The first word that is not a flag is a pattern, not a path.
-    pattern: bool,
-    /// How many path arguments.
-    paths: Range<usize>,
-}
-
-/// The defaults every spec in [`SPECS`] starts from and overrides: no flag,
-/// no pattern, and up to [`MAX_WORDS`] paths. `name` and `verb` are
-/// placeholders; every spec sets its own.
-const BASE: Spec = Spec {
-    name: "",
-    verb: Verb::Pwd,
-    flags: b"",
-    long: &[],
-    valued: &[],
-    pattern: false,
-    paths: 0..MAX_WORDS,
-};
-
-/// The context flags of `grep` and `rg`, and the match cap.
-const CONTEXT: [(&str, Value); 4] = [
-    ("-A", Value::Number),
-    ("-B", Value::Number),
-    ("-C", Value::Number),
-    ("-m", Value::Number),
-];
-
-const SPECS: [Spec; 7] = [
-    Spec {
-        name: "cd",
-        verb: Verb::Cd,
-        paths: 0..2,
-        ..BASE
-    },
-    Spec {
-        name: "pwd",
-        verb: Verb::Pwd,
-        paths: 0..1,
-        ..BASE
-    },
-    Spec {
-        name: "ls",
-        verb: Verb::Ls,
-        flags: b"lahtr1",
-        paths: 0..5,
-        ..BASE
-    },
-    Spec {
-        name: "tree",
-        verb: Verb::Tree,
-        flags: b"d",
-        valued: &[("-L", Value::Depth)],
-        paths: 0..2,
-        ..BASE
-    },
-    // No `-R` (it follows links below) and no `-f` (patterns from a file).
-    // A path is required: without one, grep reads the terminal and waits.
-    Spec {
-        name: "grep",
-        verb: Verb::Grep,
-        flags: b"inlcwvFEHhsoxr",
-        valued: &CONTEXT,
-        pattern: true,
-        paths: 1..MAX_WORDS,
-        ..BASE
-    },
-    // No `--pre`, `-z` (both run programs), `-L`, `-u`, `--hidden` or
-    // `--no-ignore` (they widen what is read), `-f` or `-r`.
-    Spec {
-        name: "rg",
-        verb: Verb::Rg,
-        flags: b"isSnNlcwvFxHo",
-        long: &[
-            "--ignore-case",
-            "--smart-case",
-            "--line-number",
-            "--count",
-            "--files-with-matches",
-            "--fixed-strings",
-            "--word-regexp",
-            "--no-heading",
-        ],
-        valued: &[
-            CONTEXT[0],
-            CONTEXT[1],
-            CONTEXT[2],
-            CONTEXT[3],
-            ("-t", Value::Name),
-            ("-T", Value::Name),
-            ("--max-depth", Value::Number),
-        ],
-        pattern: true,
-        paths: 0..MAX_WORDS,
-    },
-    // Tests and depth only: no action (`-exec`, `-delete`, `-fprint`, `-ok`)
-    // and no `-L`.
-    Spec {
-        name: "find",
-        verb: Verb::Find,
-        valued: &[
-            ("-name", Value::Name),
-            ("-iname", Value::Name),
-            ("-type", Value::Kind),
-            ("-maxdepth", Value::Number),
-            ("-mindepth", Value::Number),
-        ],
-        paths: 0..MAX_WORDS,
-        ..BASE
-    },
-];
 
 /// What a word of an accepted command is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -307,8 +178,19 @@ impl<'a> Target<'a> {
     }
 }
 
-/// Decides whether `text` may run without a prompt, in one pass.
+/// Decides whether `text` may run without a prompt on a cloud engine (every
+/// tier), in one pass.
 pub fn parse(text: &str) -> Result<SafeCommand<'_>, Fallback> {
+    parse_for(text, false)
+}
+
+/// [`parse`] for an engine that is `local` or not: a local engine runs only
+/// the [`Tier::Base`] entries, and every other command is a [`Fallback`].
+pub fn parse_for(text: &str, local: bool) -> Result<SafeCommand<'_>, Fallback> {
+    parse_in(text, &SPECS, local)
+}
+
+fn parse_in<'a>(text: &'a str, specs: &[Spec], local: bool) -> Result<SafeCommand<'a>, Fallback> {
     let bytes = text.as_bytes();
     if bytes.len() > MAX_COMMAND_BYTES {
         return Err(fallback(MAX_COMMAND_BYTES..bytes.len(), "command too long"));
@@ -366,14 +248,28 @@ pub fn parse(text: &str) -> Result<SafeCommand<'_>, Fallback> {
         }
         len += 1;
         if i >= bytes.len() {
-            return finish(text, words, len);
+            return finish(text, words, len, (specs, local));
         }
         i += 1;
     }
 }
 
-/// The reason of a first word that is not one of the seven verbs.
+/// The reason of a first word that is not the head of any entry.
 pub const NOT_SAFE: &str = "not a safe command";
+
+/// The reason of a command that only a cloud engine runs without a prompt.
+pub const LOCAL_ASKS: &str = "not run alone on a local engine";
+
+/// How many leading words of `words` are the head of `spec`; `None` when they
+/// are not all there.
+fn head_words(spec: &Spec, words: &[&str]) -> Option<usize> {
+    let mut n = 0;
+    for head in spec.name.split(' ') {
+        (words.get(n) == Some(&head)).then_some(())?;
+        n += 1;
+    }
+    Some(n)
+}
 
 fn fallback(at: Range<usize>, why: &'static str) -> Fallback {
     Fallback { at, why }
@@ -458,13 +354,18 @@ fn finish<'a>(
     text: &'a str,
     words: [&'a str; MAX_WORDS],
     len: usize,
+    (specs, local): (&[Spec], bool),
 ) -> Result<SafeCommand<'a>, Fallback> {
     let at = |w: &str| {
         let start = w.as_ptr() as usize - text.as_ptr() as usize;
         start..start + w.len()
     };
     let mut roles = [Role::Verb; MAX_WORDS];
-    let Some(spec) = SPECS.iter().find(|spec| spec.name == words[0]) else {
+    // The longest head wins: `git status` over `git`.
+    let found = (specs.iter())
+        .filter_map(|spec| Some((spec, head_words(spec, &words[..len])?)))
+        .max_by_key(|&(_, n)| n);
+    let Some((spec, heads)) = found else {
         let why = if words[0].contains('=') {
             "environment assignment"
         } else {
@@ -472,7 +373,10 @@ fn finish<'a>(
         };
         return Err(fallback(at(words[0]), why));
     };
-    let mut k = 1;
+    if local && spec.tier != Tier::Base {
+        return Err(fallback(at(words[0]), LOCAL_ASKS));
+    }
+    let mut k = heads;
     let (mut paths, mut pattern) = (0, false);
     while k < len {
         let word = words[k];
