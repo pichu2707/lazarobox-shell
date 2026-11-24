@@ -8,6 +8,7 @@ use super::tool_approval::{live, result, run, shell_output};
 use super::tool_run::{chat_of, in_shell, slot};
 use super::*;
 use crate::app::RunEvent;
+use crate::core::ai::chat::Phase;
 use crate::core::ai::{
     chat::{
         approval::{ApprovalAsk, RunPolicy},
@@ -124,7 +125,7 @@ fn a_settled_command_resumes_the_chat_with_its_report() {
 #[test]
 fn the_resume_event_starts_a_turn_with_the_fixed_note_and_the_text() {
     let mut a = typed_live();
-    a.held_resumes.push((id2(), 1, None));
+    a.held_resumes.push((id2(), 1, None, false));
     let effects = a.update(AppEvent::Run(
         id2(),
         RunEvent::Resume {
@@ -150,7 +151,7 @@ fn a_resume_the_chat_cannot_take_is_said() {
         .unwrap()
         .composer_mut()
         .insert('x');
-    a.held_resumes.push((id2(), 1, None));
+    a.held_resumes.push((id2(), 1, None, false));
     let effects = a.update(AppEvent::Run(
         id2(),
         RunEvent::Resume {
@@ -293,7 +294,7 @@ fn a_command_typed_with_y_in_ask_mode_is_followed_too() {
 }
 
 fn resume(a: &mut App, number: usize) -> Vec<Effect> {
-    a.held_resumes.push((id2(), number, None));
+    a.held_resumes.push((id2(), number, None, false));
     a.update(AppEvent::Run(
         id2(),
         RunEvent::Resume {
@@ -860,6 +861,13 @@ fn probe_fg(a: &mut App, t: u64, foreground: bool) -> Vec<Effect> {
 /// The chat has taken the partial result and is idle. Returns the app, the
 /// write time and the effects of the cut.
 fn cut_run() -> (App, u64, Vec<Effect>) {
+    let (a, t0, effects, _) = cut_run_turn(true);
+    (a, t0, effects)
+}
+
+/// The same, also returning the turn; with `done` false the chat is still
+/// streaming its answer to the partial result.
+fn cut_run_turn(done: bool) -> (App, u64, Vec<Effect>, u64) {
     let (mut a, turn) = super::tool_run::run_live();
     super::tool_approval::announce(&mut a, turn, 1, run("npm run dev"));
     let effects = a.update(key('y'));
@@ -871,8 +879,10 @@ fn cut_run() -> (App, u64, Vec<Effect>) {
     shell_output(&mut a, b"npm run dev\r\nready on :3000\r\n");
     let cut = probe_fg(&mut a, t0 + 30_000, false);
     result(&mut a, turn, 1, ToolStatus::Ok);
-    a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
-    (a, t0, cut)
+    if done {
+        a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
+    }
+    (a, t0, cut, turn)
 }
 
 #[test]
@@ -973,4 +983,208 @@ fn a_run_that_cannot_be_confirmed_at_the_cut_is_not_followed_on() {
         other => panic!("expected one RunDone, got {other:?}"),
     }
     assert_eq!(slot(&a), None);
+}
+
+// Follow-up of #856, 1: a chat that is busy when the command ends keeps the
+// output and takes it once it is free.
+
+const PANE_NOT_SENT: &str =
+    "pane 1: the command finished but its output was not sent; send a message to continue";
+
+/// The cut command ends while the chat is busy: its report is worded and held.
+fn end_cut_command(a: &mut App, t0: u64) {
+    shell_output(a, b"compiled\r\n$ ");
+    let effects = probe_fg(a, t0 + 45_000, true);
+    assert!(
+        matches!(effects[..], [Effect::ResumeNote { .. }]),
+        "{effects:?}"
+    );
+}
+
+fn composer_text(a: &mut App, text: &str) {
+    let chat = a
+        .panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap();
+    chat.composer_mut().clear();
+    for c in text.chars() {
+        chat.composer_mut().insert(c);
+    }
+}
+
+#[test]
+fn an_answer_still_streaming_holds_the_final_output_until_it_ends() {
+    let (mut a, t0, _, turn) = cut_run_turn(false);
+    assert_ne!(
+        chat_of(&a).phase(),
+        Phase::Idle,
+        "the model is still answering"
+    );
+    end_cut_command(&mut a, t0);
+    let held = resume_event(&mut a, 1, "Ran in pane 1. compiled");
+    assert!(held.is_empty(), "{held:?}");
+    assert!(!says(&a, PANE_NOT_SENT));
+    let sent = a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
+    assert!(matches!(sent[..], [Effect::ChatSend { .. }]), "{sent:?}");
+    let last = chat_of(&a).messages().last().unwrap().text.clone();
+    assert!(last.starts_with(APPROVED_LEAD), "{last}");
+    assert!(last.contains("compiled"), "{last}");
+    assert!(a.held_resumes.is_empty());
+}
+
+#[test]
+fn a_draft_in_the_composer_is_kept_and_the_output_waits_for_it() {
+    let (mut a, t0, _) = cut_run();
+    composer_text(&mut a, "x");
+    end_cut_command(&mut a, t0);
+    let held = resume_event(&mut a, 1, "Ran in pane 1. compiled");
+    assert!(held.is_empty(), "{held:?}");
+    assert!(!says(&a, PANE_NOT_SENT));
+    assert_eq!(
+        chat_of(&a).composer().text(),
+        "x",
+        "the draft is never overwritten"
+    );
+    // The user empties the composer: the held output goes.
+    a.tab_mut().focus = id2();
+    let sent = a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Backspace,
+        KeyModifiers::NONE,
+    )));
+    assert!(matches!(sent[..], [Effect::ChatSend { .. }]), "{sent:?}");
+    let last = chat_of(&a).messages().last().unwrap().text.clone();
+    assert!(last.starts_with(APPROVED_LEAD), "{last}");
+}
+
+#[test]
+fn sending_the_draft_drops_the_held_output_with_the_line() {
+    let (mut a, t0, _) = cut_run();
+    composer_text(&mut a, "x");
+    end_cut_command(&mut a, t0);
+    resume_event(&mut a, 1, "Ran in pane 1. compiled");
+    let availability = a.turn_availability(id2());
+    a.send_text(id2(), "my own message", &availability);
+    assert!(says(&a, PANE_NOT_SENT));
+    assert!(a.held_resumes.is_empty());
+}
+
+#[test]
+fn esc_while_the_output_is_held_drops_it_with_the_line() {
+    let (mut a, t0, _, _) = cut_run_turn(false);
+    end_cut_command(&mut a, t0);
+    resume_event(&mut a, 1, "Ran in pane 1. compiled");
+    a.tab_mut().focus = id2();
+    a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(says(&a, PANE_NOT_SENT));
+    assert!(a.held_resumes.is_empty());
+}
+
+// Follow-up of #856, 2: the lead line belongs to each held output.
+
+#[test]
+fn a_typed_command_in_the_pane_of_a_held_continuation_keeps_its_own_lead() {
+    let (mut a, t0, _, turn) = cut_run_turn(true);
+    // A second pane keeps the chat waiting for another command.
+    a.tab_mut().focus = SHELL;
+    press(&mut a, "wv");
+    let second = a.focused();
+    a.update(AppEvent::Cwd(second, LAUNCH.into()));
+    a.track_typed(id2(), second, (turn, CallId(9)), "sleep 5");
+    a.tab_mut().focus = second;
+    a.update(enter());
+    assert!(a.run_probes().contains(&second));
+    // The continuation of pane 1 ends: its output is held for pane 2.
+    end_cut_command(&mut a, t0);
+    assert!(resume_event(&mut a, 1, "final of one").is_empty());
+    // The user runs a command the model typed in pane 1.
+    a.track_typed(id2(), SHELL, (turn, CallId(10)), "echo hi");
+    a.tab_mut().focus = SHELL;
+    a.update(enter());
+    shell_output(&mut a, b"\r\nhi\r\n$ ");
+    let effects = probe_fg(&mut a, t0 + 46_000, true);
+    assert!(
+        matches!(effects[..], [Effect::ResumeNote { .. }]),
+        "{effects:?}"
+    );
+    assert!(resume_event(&mut a, 1, "typed out of one").is_empty());
+    // Pane 2 ends with nothing to report: one note carries the other two.
+    let sent = settle_pane(&mut a, second);
+    assert!(matches!(sent[..], [Effect::ChatSend { .. }]), "{sent:?}");
+    let last = chat_of(&a).messages().last().unwrap().text.clone();
+    let approved = last.find(APPROVED_LEAD).expect(&last);
+    let typed = last
+        .find("lazarobox: the user ran the command you typed in pane 1")
+        .expect(&last);
+    assert!(approved < typed, "{last}");
+    assert!(last.find("final of one").unwrap() < typed, "{last}");
+    assert!(last.find("typed out of one").unwrap() > typed, "{last}");
+}
+
+// Follow-up of #856, 3: a Ctrl+C at the fresh prompt is not an interruption.
+
+#[test]
+fn ctrl_c_at_the_prompt_after_the_command_ended_keeps_the_final_output() {
+    let (mut a, t0, _) = cut_run();
+    at(t0 + 31_000);
+    shell_output(&mut a, b"compiled\r\n$ ");
+    // The shell is back but the output has not been quiet long enough.
+    assert!(probe_fg(&mut a, t0 + 31_050, true).is_empty());
+    in_shell(
+        &mut a,
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+    let effects = probe_fg(&mut a, t0 + 32_000, true);
+    let [Effect::ResumeNote { report, .. }] = &effects[..] else {
+        panic!("expected one ResumeNote, got {effects:?}");
+    };
+    assert_eq!(report.end, End::Settled);
+    assert!(!says(&a, "you interrupted"));
+    assert!(says(&a, "pane 1: the command finished"));
+}
+
+// Follow-up of #857, 1: closing the pane drops the output it holds.
+#[test]
+fn closing_the_pane_drops_the_output_it_holds() {
+    let (mut a, second) = two_followed();
+    a.held_resumes
+        .push((id2(), 1, Some("OUT-ONE".to_owned()), true));
+    let effects = a.remove_pane(SHELL);
+    assert!(
+        !effects.iter().any(|e| matches!(e, Effect::ChatSend { .. })),
+        "{effects:?}"
+    );
+    assert!(a.held_resumes.is_empty(), "{:?}", a.held_resumes);
+    assert!(says(&a, &format!("pane 1: {NOT_SENT}")));
+    assert!(a.pane_number(second).is_some());
+}
+
+// Follow-up of #857, 2: an unknown foreground is not the shell.
+#[test]
+fn ctrl_c_with_an_unknown_foreground_is_an_interruption() {
+    let (mut a, t0, _) = cut_run();
+    at(t0 + 30_500);
+    a.update(AppEvent::Run(
+        SHELL,
+        RunEvent::Probe {
+            foreground: None,
+            cwd: None,
+            echo_off: None,
+        },
+    ));
+    in_shell(
+        &mut a,
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+    shell_output(&mut a, b"^C\r\n$ ");
+    let effects = probe_fg(&mut a, t0 + 31_000, true);
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(says(
+        &a,
+        "pane 1: you interrupted the command; send a message to go on"
+    ));
+    assert!(!says(&a, "you typed while the command ran"));
 }

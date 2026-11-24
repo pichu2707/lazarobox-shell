@@ -31,7 +31,7 @@ const STALE: &str = "typed command is from an earlier turn; send a message to go
 const NOT_FOLLOWED: &str = "could not follow the command: send a message to go on";
 
 /// Why an output of a finished command did not reach the model.
-const NOT_SENT: &str =
+pub(super) const NOT_SENT: &str =
     "the command finished but its output was not sent; send a message to continue";
 
 /// Said to the chat when the pane of the command it waits for closes.
@@ -177,10 +177,8 @@ impl App {
         };
         self.say_in_chat(chat, line);
         if report.end == End::Settled {
-            self.held_resumes.push((chat, n, None));
-            if report.limits == Limits::Continue {
-                self.continued.push((chat, n));
-            }
+            self.held_resumes
+                .push((chat, n, None, report.limits == Limits::Continue));
             return vec![Effect::ResumeNote {
                 chat,
                 command,
@@ -212,23 +210,36 @@ impl App {
         }
     }
 
-    /// Sends the held outputs of `chat` when it follows nothing else: the
-    /// chat must be idle with no draft (a send would clear it).
+    /// Sends the held outputs of `chat` when it follows nothing else. The chat
+    /// must be idle with no draft (a send would clear it). An output of a
+    /// command the user ran is dropped, with a line, when the chat cannot take
+    /// it; the output of a command followed on after the cut-off is held until
+    /// it can, and only a new message, Esc, Ctrl+C or a closing chat or pane drops it.
     pub(super) fn flush_resumes(&mut self, chat: PaneId) -> Vec<Effect> {
         // Another command of the chat is followed, or its report is on its way.
         let waiting = (self.panes.values().filter_map(PaneState::pty))
             .any(|pty| pty.run.as_ref().is_some_and(|s| s.resume && s.chat == chat))
-            || (self.held_resumes.iter()).any(|(c, _, text)| *c == chat && text.is_none());
+            || (self.held_resumes.iter()).any(|(c, _, text, _)| *c == chat && text.is_none());
         if waiting {
+            return Vec::new();
+        }
+        let ready = (self.panes.get(&chat).and_then(PaneState::chat_state))
+            .is_some_and(|c| c.phase() == Phase::Idle && c.composer().is_empty());
+        // Only a ready chat needs to know its engine.
+        let availability = ready.then(|| self.turn_availability(chat));
+        let can_send = availability
+            .as_ref()
+            .is_some_and(|a| *a != Availability::Checking);
+        let holds = (self.held_resumes.iter()).any(|h| h.0 == chat && h.3);
+        if holds && !can_send && self.panes.contains_key(&chat) {
             return Vec::new();
         }
         let mine: Vec<_> = self.held_resumes.extract_if(.., |h| h.0 == chat).collect();
         let numbers: Vec<usize> = mine.iter().map(|h| h.1).collect();
-        let continued: Vec<_> = self.continued.extract_if(.., |c| c.0 == chat).collect();
         let note = (mine.iter())
-            .filter_map(|(_, n, text)| Some((n, text.as_ref()?)))
-            .map(|(n, text)| {
-                if continued.contains(&(chat, *n)) {
+            .filter_map(|(_, n, text, continued)| Some((n, text.as_ref()?, continued)))
+            .map(|(n, text, continued)| {
+                if *continued {
                     format!("lazarobox: the command you approved in pane {n} finished.\n{text}")
                 } else {
                     format!(
@@ -238,13 +249,10 @@ impl App {
             })
             .collect::<Vec<_>>()
             .join("\n\n");
-        let ready = (self.panes.get(&chat).and_then(PaneState::chat_state))
-            .is_some_and(|c| c.phase() == Phase::Idle && c.composer().is_empty());
-        let availability = self.turn_availability(chat);
         let mut effects = Vec::new();
-        if ready && availability != Availability::Checking && !numbers.is_empty() {
+        if let (Some(availability), true) = (&availability, can_send && !numbers.is_empty()) {
             self.resume_sending = true;
-            effects = self.send_with(chat, &note, &availability, None);
+            effects = self.send_with(chat, &note, availability, None);
             self.resume_sending = false;
         }
         if effects.is_empty() {
@@ -255,6 +263,21 @@ impl App {
             self.say_in_chat(chat, format!("going on with the output of pane {shown}"));
         }
         effects
+    }
+
+    /// An event may have freed a chat that holds the output of a command
+    /// followed on after the cut-off: its streaming ended, its composer was
+    /// emptied or its engine was detected.
+    pub(super) fn release_held(&mut self) -> Vec<Effect> {
+        let mut chats: Vec<PaneId> = (self.held_resumes.iter())
+            .filter(|h| h.3)
+            .map(|h| h.0)
+            .collect();
+        chats.dedup();
+        chats
+            .into_iter()
+            .flat_map(|chat| self.flush_resumes(chat))
+            .collect()
     }
 
     /// Chat `chat` sent a message or was cancelled: the command it waits for
@@ -278,7 +301,6 @@ impl App {
         }
         // What was held for the commands it stopped following is not sent.
         let held: Vec<_> = self.held_resumes.extract_if(.., |h| h.0 == chat).collect();
-        self.continued.retain(|c| c.0 != chat);
         self.say_not_sent(chat, held.into_iter().map(|h| h.1));
     }
 

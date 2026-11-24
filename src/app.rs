@@ -1098,11 +1098,10 @@ pub struct App {
     /// The runs saved to the local store, and what is said about it (S9).
     run_keep: run_store::RunKeep,
     /// Commands the user ran that wait for the others of their chat (#819):
-    /// chat, pane number and the worded report, `None` until the runtime sends it.
-    held_resumes: Vec<(PaneId, usize, Option<String>)>,
-    /// The held outputs that come from a command cut at the cut-off, by chat
-    /// and pane number: they resume the chat with another lead line.
-    continued: Vec<(PaneId, usize)>,
+    /// chat, pane number, the worded report (`None` until the runtime sends
+    /// it) and whether the command was cut at the cut-off and followed on: such
+    /// an output takes another lead line and waits for a busy chat.
+    held_resumes: Vec<(PaneId, usize, Option<String>, bool)>,
     /// The send in flight is the resume of a followed command: it forgets no
     /// other typed line.
     resume_sending: bool,
@@ -1318,7 +1317,6 @@ impl App {
             ended_runs: HashSet::new(),
             run_keep: run_store::RunKeep::default(),
             held_resumes: Vec::new(),
-            continued: Vec::new(),
             resume_sending: false,
             lost_saves: HashSet::new(),
             still_running: Vec::new(),
@@ -2511,6 +2509,7 @@ impl App {
         );
         self.debug_assert_copy_on_shell();
         effects.extend(self.usage_read_effects());
+        effects.extend(self.release_held());
         effects
     }
 
@@ -3611,6 +3610,7 @@ impl App {
         let Some(&(_, old)) = tiling.panes.iter().find(|(pane, _)| *pane == id) else {
             return Vec::new();
         };
+        let number = self.tabs[t].tree.leaves().iter().position(|p| *p == id);
         let effects = match self.tabs[t].tree.remove(id) {
             Removal::NotFound => return Vec::new(),
             Removal::WasLast if self.tabs.len() == 1 => return self.quit_effects(),
@@ -3619,6 +3619,10 @@ impl App {
                 let mut ends = self.end_effects(&[id]);
                 ends.extend(self.close_run_effects(&[id]));
                 ends.extend(self.deny_closing_runs(&[id]));
+                // The output the pane's last command left is not sent.
+                if let Some(index) = number {
+                    self.drop_held_of_pane(t, index + 1);
+                }
                 self.panes.remove(&id);
                 self.drop_pane_stores(id);
                 ends.extend(self.keep_pane_closed(id));

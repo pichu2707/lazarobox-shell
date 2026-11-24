@@ -194,6 +194,12 @@ impl Settle {
         }
     }
 
+    /// The foreground at the last step: `None` until the first one or when
+    /// the system could not say.
+    pub fn foreground(&self) -> Option<bool> {
+        self.foreground
+    }
+
     /// The user sent a key to the pane during the run. In a model run a key
     /// to a program is recorded for redaction and does not end the run; a key
     /// while the shell (or an unknown foreground) owns the pane does.
