@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [1.40.0] - 2026-11-25
+
 ### Added
 
 - **Your own colors with `[theme]` (#544).** Each color of lazarobox's interface can be set by role in `config.toml` as `#RRGGBB`: `background`, `panel`, `primary`, `info`, `ai`, `success`, `warning`, `error`, `muted` and `neutral`. A role left out keeps its default, so the current palette stays the default. A value that is not `#RRGGBB` keeps that role's default and shows a startup notice such as `config: theme.primary: expected a color like "#00E5FF"`, and a misspelled key warns like the other tables (`config: unknown key: theme.primry`). The colors are read at start; colors that programs print inside a pane stay theirs.
@@ -3245,7 +3247,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.39.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v1.40.0...HEAD
+[1.40.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.39.0...v1.40.0
 [1.39.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.38.0...v1.39.0
 [1.38.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.37.0...v1.38.0
 [1.37.0]: https://github.com/pichu2707/lazarobox-shell/compare/v1.36.0...v1.37.0
