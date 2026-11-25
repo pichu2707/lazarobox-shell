@@ -1196,7 +1196,7 @@ async fn run_loop(
         hub: mut hub_rx,
         orchestra: mut orchestra_rx,
     } = inbox;
-    let theme = LazaroboxTheme::default();
+    let theme = LazaroboxTheme::with_colors(&app.config().theme);
     let mut events = EventStream::new();
     let mut tick = interval(TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);

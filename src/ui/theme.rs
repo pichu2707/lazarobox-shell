@@ -2,8 +2,9 @@ use ratatui::style::{Color, Style};
 
 use crate::app::{AppMode, InputMode};
 use crate::core::ai::chat::provider::Provider;
+use crate::core::colors::{Rgb, Role, ThemeColors};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LazaroboxTheme {
     pub bg_base: Color,
     pub bg_panel: Color,
@@ -37,6 +38,33 @@ impl Default for LazaroboxTheme {
 }
 
 impl LazaroboxTheme {
+    /// The default palette with the colors of `[theme]` over it.
+    pub fn with_colors(colors: &ThemeColors) -> Self {
+        let mut theme = Self::default();
+        for role in Role::ALL {
+            if let Some(Rgb(r, g, b)) = colors.get(role) {
+                *theme.slot(role) = Color::Rgb(r, g, b);
+            }
+        }
+        theme
+    }
+
+    /// The color that plays `role`.
+    fn slot(&mut self, role: Role) -> &mut Color {
+        match role {
+            Role::Background => &mut self.bg_base,
+            Role::Panel => &mut self.bg_panel,
+            Role::Primary => &mut self.primary_cyan,
+            Role::Info => &mut self.info_blue,
+            Role::Ai => &mut self.ai_purple,
+            Role::Success => &mut self.success_green,
+            Role::Warning => &mut self.warning_orange,
+            Role::Error => &mut self.error_red,
+            Role::Muted => &mut self.text_muted,
+            Role::Neutral => &mut self.neutral,
+        }
+    }
+
     /// Accent color of the status bar block for a view mode.
     pub fn accent(&self, mode: AppMode) -> Color {
         match mode {
@@ -227,6 +255,55 @@ mod tests {
         for mode in others {
             assert_ne!(t.input_accent(mode), t.info_blue, "{mode:?}");
         }
+    }
+
+    // Spec (#544): `[theme]` colors apply over the default palette.
+    #[test]
+    fn no_theme_colors_is_the_default_palette() {
+        assert_eq!(
+            LazaroboxTheme::with_colors(&ThemeColors::default()),
+            LazaroboxTheme::default()
+        );
+    }
+
+    #[test]
+    fn each_role_changes_its_own_color_only() {
+        type Field = fn(&LazaroboxTheme) -> Color;
+        let roles: [(Role, Field); 10] = [
+            (Role::Background, |t: &LazaroboxTheme| t.bg_base),
+            (Role::Panel, |t: &LazaroboxTheme| t.bg_panel),
+            (Role::Primary, |t: &LazaroboxTheme| t.primary_cyan),
+            (Role::Info, |t: &LazaroboxTheme| t.info_blue),
+            (Role::Ai, |t: &LazaroboxTheme| t.ai_purple),
+            (Role::Success, |t: &LazaroboxTheme| t.success_green),
+            (Role::Warning, |t: &LazaroboxTheme| t.warning_orange),
+            (Role::Error, |t: &LazaroboxTheme| t.error_red),
+            (Role::Muted, |t: &LazaroboxTheme| t.text_muted),
+            (Role::Neutral, |t: &LazaroboxTheme| t.neutral),
+        ];
+        assert_eq!(roles.len(), Role::ALL.len());
+        let default = LazaroboxTheme::default();
+        for (role, field) in roles {
+            let mut colors = ThemeColors::default();
+            colors.set(role, Rgb(1, 2, 3));
+            let t = LazaroboxTheme::with_colors(&colors);
+            assert_eq!(field(&t), Color::Rgb(1, 2, 3), "{role:?}");
+            let mut back = t.clone();
+            *back.slot(role) = field(&default);
+            assert_eq!(back, default, "{role:?} changed another color");
+        }
+    }
+
+    #[test]
+    fn a_theme_color_reaches_what_is_drawn_with_it() {
+        let mut colors = ThemeColors::default();
+        colors.set(Role::Primary, Rgb(1, 2, 3));
+        colors.set(Role::Background, Rgb(4, 5, 6));
+        let t = LazaroboxTheme::with_colors(&colors);
+        let style = t.mode_style(AppMode::Normal);
+        assert_eq!(style.bg, Some(Color::Rgb(1, 2, 3)));
+        assert_eq!(style.fg, Some(Color::Rgb(4, 5, 6)));
+        assert_eq!(t.palette()[2].1, "#010203");
     }
 
     #[test]
