@@ -68,6 +68,31 @@ Inspired by the lazarobox color palette (softened dark tones with cyan/turquoise
 | **Metrics: Alert / Warning**   | `#FAB387`             | Warm orange for performance or maintenance alerts             |
 | **Metrics: Error / Drop**      | `#F38BA8`             | Sober coral / red for SERP drops or build errors              |
 
+### Your own colors (`[theme]`)
+
+The palette above is the default. To change a color, set its role in `config.toml` as `#RRGGBB`; a role you leave out keeps its default:
+
+```toml
+[theme]
+primary = "#00E5FF"
+error = "#F38BA8"
+```
+
+| Key          | Default   | What uses it                                         |
+| :----------- | :-------- | :--------------------------------------------------- |
+| `background` | `#181E24` | Background of the bars and text on accent blocks     |
+| `panel`      | `#202831` | Menus and panels                                     |
+| `primary`    | `#00E5FF` | Main accent: normal view and COPY mode               |
+| `info`       | `#89B4FA` | Menu and link list                                   |
+| `ai`         | `#CBA6F7` | AI chat, models and tools, RESIZE mode               |
+| `success`    | `#A6E3A1` | TERMINAL mode and metrics                            |
+| `warning`    | `#FAB387` | PREFIX mode, settings and warnings                   |
+| `error`      | `#F38BA8` | Confirmations and errors                             |
+| `muted`      | `#6C7086` | Secondary text                                       |
+| `neutral`    | `#CDD6F4` | Text with no accent of its own                       |
+
+The colors are read when lazarobox starts, so a change applies on the next start. A value that is not `#RRGGBB` keeps that role's default and shows a startup notice, for example `config: theme.primary: expected a color like "#00E5FF"`. `[theme]` only changes lazarobox's own interface: the colors that programs print inside a pane stay theirs.
+
 ---
 
 ## 📦 Installation
@@ -168,7 +193,7 @@ Each shell pane sets `LAZAROBOX=<pid>` (the pid of the instance that opened it),
 
 All the configuration lives in a single file: `~/.config/lazarobox/config.toml` (or `$XDG_CONFIG_HOME/lazarobox/config.toml` if you have that variable). It does not exist until you save something from the menu (`Ctrl+Space m`, `s`); without it the defaults are used. When saving, the status bar says where it wrote it, for example `saved to ~/.config/lazarobox/config.toml`. The menu only changes the keys it edits and preserves the rest of the file, comments included, so you can also edit it by hand; what you change by hand is read when lazarobox starts.
 
-A key that lazarobox does not know inside one of its tables (`[notices]`, `[statusline]`, `[tabbar]`, `[updates]`, `[workspace]` and `[ai]` with all the ones hanging from it) is ignored and a warning is shown on startup with its full path, for example `config: unknown key: ai.tols`; that way typos are visible. The rest of the file is loaded anyway and the menu keeps the key when saving. Root-level keys and tables that are not lazarobox's (for example a `[custom]` table of yours) do not warn.
+A key that lazarobox does not know inside one of its tables (`[notices]`, `[statusline]`, `[tabbar]`, `[theme]`, `[updates]`, `[workspace]` and `[ai]` with all the ones hanging from it) is ignored and a warning is shown on startup with its full path, for example `config: unknown key: ai.tols`; that way typos are visible. The rest of the file is loaded anyway and the menu keeps the key when saving. Root-level keys and tables that are not lazarobox's (for example a `[custom]` table of yours) do not warn.
 
 ### When you close lazarobox
 

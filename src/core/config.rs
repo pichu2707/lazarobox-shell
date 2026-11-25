@@ -17,6 +17,7 @@ use super::ai::{
     config::{AiConfig, ApprovalMode, Task, ToolToggle},
 };
 pub use super::build_jobs::BuildJobs;
+use super::colors::{self, THEME_KEYS, THEME_TABLE, ThemeColors};
 
 /// Which edge of the screen a bar sits on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -57,6 +58,8 @@ pub struct Config {
     /// How many compile jobs a new pane shell is told to run (`[build]
     /// jobs`, default `auto`).
     pub build_jobs: BuildJobs,
+    /// The colors set in `[theme]`; a role left out keeps its default.
+    pub theme: ThemeColors,
 }
 
 impl Default for Config {
@@ -67,6 +70,7 @@ impl Default for Config {
             update_check: true,
             star_notice: true,
             build_jobs: BuildJobs::Auto,
+            theme: ThemeColors::default(),
         }
     }
 }
@@ -281,6 +285,7 @@ impl Config {
         let star_notice = read_section_bool(&table, "notices", "star", &mut problems)
             .unwrap_or(defaults.star_notice);
         let build_jobs = read_build_jobs(&table, &mut problems).unwrap_or(defaults.build_jobs);
+        let theme = colors::read_theme(&table, &mut problems);
         let ai = ai::config::read_with_port_env(&table, &mut problems, port_env);
         let workspace_dir = read_workspace(&table, &mut problems, home);
         // Last, so a wrong value stays the first problem of the notice.
@@ -297,6 +302,7 @@ impl Config {
                 update_check,
                 star_notice,
                 build_jobs,
+                theme,
             },
             ai,
             workspace_dir,
@@ -381,11 +387,12 @@ impl Config {
 /// [`ai::config::note_unknown_ai_keys`]), with the keys each one holds. The
 /// root of the file is not checked: other top-level keys and tables are the
 /// user's own.
-const OWNED_SECTIONS: [(&str, &[&str]); 6] = [
+const OWNED_SECTIONS: [(&str, &[&str]); 7] = [
     ("build", &["jobs"]),
     ("notices", &["star"]),
     ("statusline", &["position"]),
     ("tabbar", &["position"]),
+    (THEME_TABLE, THEME_KEYS),
     ("updates", &["check"]),
     ("workspace", &["dir"]),
 ];
@@ -561,6 +568,7 @@ mod tests {
             update_check: true,
             star_notice: true,
             build_jobs: BuildJobs::Auto,
+            theme: ThemeColors::default(),
         };
         assert_eq!(Config::default(), expected);
         assert_eq!(parse(""), expected);
@@ -657,9 +665,65 @@ mod tests {
     // an owned table is reported.
     #[test]
     fn unknown_keys_and_tables_are_ignored() {
-        let text = "theme = \"x\"\n[statusline]\nposition = \"top\"\ncolor = 1\n[other]\na = 1";
+        let text = "custom = \"x\"\n[statusline]\nposition = \"top\"\ncolor = 1\n[other]\na = 1";
         assert_eq!(parse(text).bars.statusline, Top);
         assert_eq!(problems(text), ["unknown key: statusline.color"]);
+    }
+
+    // Spec (#544): `[theme]` colors, by role.
+    #[test]
+    fn theme_colors_are_read_and_a_missing_key_keeps_its_default() {
+        use colors::{Rgb, Role};
+        let text = "[theme]\nprimary = \"#112233\"\nerror = \"#aAbBcC\"";
+        let theme = parse(text).theme;
+        assert_eq!(theme.get(Role::Primary), Some(Rgb(0x11, 0x22, 0x33)));
+        assert_eq!(theme.get(Role::Error), Some(Rgb(0xAA, 0xBB, 0xCC)));
+        for role in Role::ALL {
+            if !matches!(role, Role::Primary | Role::Error) {
+                assert_eq!(theme.get(role), None, "{role:?}");
+            }
+        }
+        assert!(problems(text).is_empty());
+        assert_eq!(Config::load(Ok(text.into())).1, None);
+    }
+
+    #[test]
+    fn every_theme_key_is_read() {
+        use colors::{Rgb, Role};
+        for role in Role::ALL {
+            let text = format!("[theme]\n{} = \"#010203\"", role.key());
+            assert_eq!(parse(&text).theme.get(role), Some(Rgb(1, 2, 3)), "{role:?}");
+            assert!(problems(&text).is_empty(), "{role:?}");
+        }
+    }
+
+    #[test]
+    fn a_bad_theme_color_keeps_its_default_and_the_notice_names_it() {
+        use colors::{Rgb, Role};
+        let text = "[theme]\nprimary = \"cyan\"\nerror = \"#F38BA8\"\nai = 3";
+        let (config, notice) = Config::load(Ok(text.into()));
+        assert_eq!(config.theme.get(Role::Primary), None);
+        assert_eq!(config.theme.get(Role::Ai), None);
+        assert_eq!(config.theme.get(Role::Error), Some(Rgb(0xF3, 0x8B, 0xA8)));
+        assert_eq!(
+            notice.as_deref(),
+            Some(r##"config (2 problems): theme.primary: expected a color like "#00E5FF""##)
+        );
+        assert_eq!(
+            problems(text),
+            [
+                r##"theme.primary: expected a color like "#00E5FF""##,
+                r##"theme.ai: expected a color like "#00E5FF""##,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_theme_that_is_not_a_table_gives_one_notice_and_the_defaults() {
+        let text = "theme = \"dark\"";
+        let (config, notice) = Config::load(Ok(text.into()));
+        assert_eq!(config, Config::default());
+        assert_eq!(notice.as_deref(), Some("config: theme: expected a table"));
     }
 
     // Spec: Missing file, unreadable file, invalid file, mouse notice.
@@ -1226,6 +1290,7 @@ mod tests {
             ("", "[ai.tool]\nenabled = false", "ai.tool"),
             ("[statusline]", "postion = \"top\"", "statusline.postion"),
             ("[tabbar]", "side = \"top\"", "tabbar.side"),
+            ("[theme]", "primry = \"#00E5FF\"", "theme.primry"),
             ("[updates]", "chek = false", "updates.chek"),
             ("[workspace]", "colour = \"red\"", "workspace.colour"),
             ("", "[ai.tasks.cod]\nengine = \"x\"", "ai.tasks.cod"),
@@ -1316,7 +1381,7 @@ mod tests {
     // user's own and are not reported.
     #[test]
     fn keys_outside_the_owned_tables_are_not_reported() {
-        let text = "theme = \"x\"\n[custom]\nother = 1\n[custom.deep]\ny = 2\n[[plugins]]\nz = 3\n";
+        let text = "mine = \"x\"\n[custom]\nother = 1\n[custom.deep]\ny = 2\n[[plugins]]\nz = 3\n";
         assert_eq!(problems(text), Vec::<String>::new());
     }
 
@@ -1324,7 +1389,7 @@ mod tests {
     // `mouse` and llamacpp's `model` included, loads without a problem.
     #[test]
     fn every_known_key_loads_without_a_problem() {
-        let text = r#"
+        let text = r##"
 mouse = false
 
 [statusline]
@@ -1332,6 +1397,18 @@ position = "top"
 
 [tabbar]
 position = "bottom"
+
+[theme]
+background = "#181E24"
+panel = "#202831"
+primary = "#00E5FF"
+info = "#89B4FA"
+ai = "#CBA6F7"
+success = "#A6E3A1"
+warning = "#FAB387"
+error = "#F38BA8"
+muted = "#6C7086"
+neutral = "#CDD6F4"
 
 [updates]
 check = false
@@ -1434,7 +1511,7 @@ max_parallel = 2
 max_workers = 8
 run_timeout_mins = 30
 max_turns = 6
-"#;
+"##;
         let parsed = Config::parse(text).unwrap();
         assert_eq!(parsed.problems, Vec::<String>::new());
         assert!(!parsed.config.mouse);

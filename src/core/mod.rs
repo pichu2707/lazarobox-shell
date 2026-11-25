@@ -4,6 +4,7 @@ pub mod ai;
 pub mod build_jobs;
 pub mod cli;
 pub mod clipboard;
+pub mod colors;
 pub mod config;
 pub mod config_append;
 pub mod config_edit;

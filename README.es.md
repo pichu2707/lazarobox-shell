@@ -68,6 +68,31 @@ Inspirado en la paleta de colores de lazarobox (tonos oscuros suavizados con ace
 | **Métricas: Alerta / Warning** | `#FAB387`             | Naranja cálido para alertas de rendimiento o mantenimiento    |
 | **Métricas: Error / Caída**    | `#F38BA8`             | Coral / Rojo sobrio para caídas SERP o errores de compilación |
 
+### Tus propios colores (`[theme]`)
+
+La paleta de arriba es la de por defecto. Para cambiar un color, pon su papel en `config.toml` como `#RRGGBB`; un papel que no pongas conserva su valor por defecto:
+
+```toml
+[theme]
+primary = "#00E5FF"
+error = "#F38BA8"
+```
+
+| Clave        | Por defecto | Dónde se usa                                        |
+| :----------- | :---------- | :-------------------------------------------------- |
+| `background` | `#181E24`   | Fondo de las barras y texto sobre bloques de acento |
+| `panel`      | `#202831`   | Menús y paneles                                     |
+| `primary`    | `#00E5FF`   | Acento principal: vista normal y modo COPY          |
+| `info`       | `#89B4FA`   | Menú y lista de enlaces                             |
+| `ai`         | `#CBA6F7`   | Chat de IA, modelos y herramientas, modo RESIZE     |
+| `success`    | `#A6E3A1`   | Modo TERMINAL y métricas                            |
+| `warning`    | `#FAB387`   | Modo PREFIX, ajustes y avisos                       |
+| `error`      | `#F38BA8`   | Confirmaciones y errores                            |
+| `muted`      | `#6C7086`   | Texto secundario                                    |
+| `neutral`    | `#CDD6F4`   | Texto sin acento propio                             |
+
+Los colores se leen al arrancar lazarobox, así que un cambio se aplica en el siguiente arranque. Un valor que no sea `#RRGGBB` deja ese papel con su color por defecto y muestra un aviso al arrancar, por ejemplo `config: theme.primary: expected a color like "#00E5FF"`. `[theme]` solo cambia la interfaz de lazarobox: los colores que imprimen los programas dentro de un panel siguen siendo los suyos.
+
 ---
 
 ## 📦 Instalación
@@ -168,7 +193,7 @@ Cada panel de shell define `LAZAROBOX=<pid>` (el pid de la instancia que lo abri
 
 Toda la configuración vive en un solo fichero: `~/.config/lazarobox/config.toml` (o `$XDG_CONFIG_HOME/lazarobox/config.toml` si tienes esa variable). No existe hasta que guardas algo desde el menú (`Ctrl+Espacio m`, `s`); sin él se usan los valores por defecto. Al guardar, la barra de estado dice dónde lo escribió, por ejemplo `saved to ~/.config/lazarobox/config.toml`. El menú solo cambia las claves que edita y conserva el resto del fichero, comentarios incluidos, así que puedes editarlo también a mano; lo que cambies a mano se lee al arrancar lazarobox.
 
-Una clave que lazarobox no conoce dentro de una de sus tablas (`[notices]`, `[statusline]`, `[tabbar]`, `[updates]`, `[workspace]` y `[ai]` con todas las que cuelgan de ella) se ignora y avisa al arrancar con su ruta completa, por ejemplo `config: unknown key: ai.tols`; así se ven las erratas. El resto del fichero se carga igual y el menú conserva la clave al guardar. Las claves y tablas de la raíz que no son de lazarobox (por ejemplo una tabla `[custom]` tuya) no avisan.
+Una clave que lazarobox no conoce dentro de una de sus tablas (`[notices]`, `[statusline]`, `[tabbar]`, `[theme]`, `[updates]`, `[workspace]` y `[ai]` con todas las que cuelgan de ella) se ignora y avisa al arrancar con su ruta completa, por ejemplo `config: unknown key: ai.tols`; así se ven las erratas. El resto del fichero se carga igual y el menú conserva la clave al guardar. Las claves y tablas de la raíz que no son de lazarobox (por ejemplo una tabla `[custom]` tuya) no avisan.
 
 ### Al cerrar lazarobox
 
