@@ -1,6 +1,6 @@
 # Proposal: Run auto-apply for the chat
 
-Status: proposal, not started. Refs: #432. Finishes the write part (S4) of `chat-auto-permissions`. That feature is tracked in the owner's `odd/tasks/chat-auto-permissions.md`, not in git (`mcp-connectors` cites it the same way), and its other parts (search, in-root reads, pane commands) are merged (#386, #387).
+Status: proposal, owner decisions recorded (2026-11-27), not started. Refs: #432. Finishes the write part (S4) of `chat-auto-permissions`. That feature is tracked in the owner's `odd/tasks/chat-auto-permissions.md`, not in git (`mcp-connectors` cites it the same way), and its other parts (search, in-root reads, pane commands) are merged (#386, #387).
 
 Name: the folder keeps its name, `chat-write-grant`, but the concept is called **auto-apply** everywhere in this change, so it is not mistaken for the `/write` grant (`/write` and `/exec` turn a tool family on for a conversation, `src/app/write.rs`; they are unrelated and unchanged).
 
@@ -21,17 +21,19 @@ So a write asks; when the user accepts it with the auto-apply key, later writes 
 - **Applying under auto-apply:** while it is held, a `propose_batch` of that chat pane applies without opening the review, when every condition of code-write, Batch review and coverage gate holds (below). The checks that run at staging and at apply stay as they are: the caps (50 entries, 1 MiB; `MAX_ENTRIES`, `MAX_BYTES`, `src/core/ai/tools/stage.rs:19-21`), the path rules of `resolve_write` (a root inside HOME, no env, secret (`SECRET_FILES` and `SECRET_PATTERNS`, so `token.json`, `*.pem`, `*.key`, `client_secret*.json` and `service-account*.json` too), `.git` or `node_modules` name; the chain is `judge_write` `:476`, `judge_real` `:463`, `check_path` `:200`, `judge_rest` `:187`, `is_excluded_name` `:145`; `src/core/ai/tools/paths.rs:759`, `WRITE_DENIED_DIRS` at `:669`) and the apply step (drift check, atomic writes, rollback; `Stages::apply`, `src/runtime/tools/stage.rs:197`). The chat shows one line per applied batch with its paths and line counts.
 - **Batches that still open the review under auto-apply** (auto-apply stays held; it is not ended):
   - a batch with an **environment template** row (`.env.example`, `.env.local.sample`...): see decision A. Not provisional.
-  - a batch with a **build-file row** (the classes of open question 2; provisional).
+  - a batch with a **build-file row** (the classes of decision 2), or a row that matches a pattern the user added in `[ai.tools] review_always`.
   - a batch that is **not reviewable** (a truncated diff, shown as too large today; `ReviewDoc::reviewable`, `src/core/ai/chat/review.rs:186`): it can only be rejected there.
-  - a batch with a **coarse diff** row (provisional, open question 4).
+  - a batch with a **coarse diff** row (decision 4).
   - any batch of a chat whose folder is a **granted Windows drive folder** (`ChatState::drive_grant()` is `Some`; `src/core/ai/chat/mod.rs:1156`, `src/app/review.rs:273-277`): there `a` is not offered either.
-  - a batch of a conversation that read GitHub text (`ChatState::block_why()` is `Some`; provisional, open question 4).
+  - a batch of a conversation that read GitHub text (`ChatState::block_why()` is `Some`; decision 4).
   - a batch that arrives while another approval is pending: it is denied with `another approval is pending`, as every pane ask is today (`open`, `src/core/ai/chat/approval.rs:1220`; and the comment of `auto_route`, `src/app/tool.rs:445-447`: a pending approval is not the mode's to answer). It is not queued and not applied.
 - **One pane:** auto-apply belongs to the chat pane that gave it. Another chat pane never inherits it and asks as usual.
 - **End of auto-apply:** a new conversation, a resumed saved conversation, any change of the pane's approval mode (leaving `run` included), a change of the chat's folder (`/cd`), tools turned off, the Write family no longer offered to the chat (the saved `write` toggle changed, or its `/write` grant ended), the pane closing and quitting the app. Also a batch applied under it that does not apply in full (drift, refusal, failure, partial): the next batch asks again. It fails closed: a turn that is cancelled or ends, or a pane that closes, while an auto-applied batch has no result (`Over(call, status)`) ends it, because the app cannot know whether that batch applied. It is never stored, never sent to an engine, and only a user key can give it. It has its own end hook; it does not use `end_grants` (see Approach 1).
 - **Marker:** while it is held, the chat's ` RUN ` marker reads ` RUN+A ` in red.
 - **Host check:** the host applies a batch only on the user's `y`, or on the new auto-apply decision that it accepts for a pane's own batch and never for a worker's batch. A forged `Unprompted` still writes nothing.
 - **Guard:** no runtime code may name the auto-apply flag, as for the approval mode (`MODE_NAMES`, `src/runtime/tools/audit.rs:436`, design D19).
+- **Enter in the review:** Enter approves a batch like `y`, with the same gate and delay, in every batch review (decision 1).
+- **Applied batches stay readable:** each auto-applied batch keeps its review document for the conversation, in memory; `/applied` lists them and opens one read-only (decision 3).
 - **Docs:** README `#### Modo run`, the review footer text, the `[ai.tools] approval` help, CHANGELOG, and a GIF of auto-apply.
 
 ### Out of Scope
@@ -84,11 +86,11 @@ None.
 
 **Size:** estimate 300-420 production lines (not measured; the accessors and the end hook are new since the first estimate). **Risk:** high (security: it adds the first approval that lasts beyond one call, and touches the host's apply guard). Independent verifier and native review per PR.
 
-**Slicing (2 PRs):** (1) host decision, state and end points, review accessors, guard and route, with tests, `a` not yet shown; (2) `a` key, footer, marker, lines, README, CHANGELOG, GIF and spec sync.
+**Slicing (3 PRs):** (1) host decision, state and end points, review accessors, guard and route, with tests, `a` not yet shown; (2) `a` and Enter keys, footer, marker, lines, README, CHANGELOG, GIF; (3) `/applied` and `[ai.tools] review_always`, their docs, and spec sync.
 
 ## Residual risk
 
-- The build-file rule (open question 2) is a denylist of names and folders (`is_build_file`, `src/core/ai/tools/paths.rs:721-740`). A file outside it can still change behaviour on the next run, for example `.vscode/settings.json` or `.yarnrc.yml`, and an auto-applied batch can write it without a review.
+- The build-file rule (decision 2) is a denylist of names and folders (`is_build_file`, `src/core/ai/tools/paths.rs:721-740`). A file outside it can still change behaviour on the next run, for example `.vscode/settings.json` or `.yarnrc.yml`, and an auto-applied batch can write it without a review unless the user lists it in `[ai.tools] review_always`. `/applied` lets the user read afterwards what was written.
 - Prompt injection can come from any file the model reads (a README, a source comment, a dependency, a tool result), not only from GitHub text, so the `block_why()` rule covers one source of many.
 
 ## Coordination
@@ -97,15 +99,11 @@ None.
 
 `admin-policy-lock` (open PR #672) lists "the full write grant of run mode" as a future lock key in its `tasks.md`. This change is compatible: a lock would only stop `a` from being offered and from setting auto-apply, and the rest stays as written here.
 
-## Open Questions
+## Owner decisions (2026-11-27)
 
-1. **Enter in the review.** The owner said "que lo deje listo para que den al intro". Today the review confirms with `y`, not Enter. Should Enter also approve the batch (same gate and delay), or is `y` enough?
-2. **Build files under auto-apply (provisional rule).** Proposed: a batch with a row that carries the build-file warning still opens the review, because a build can run it. The classes that carry it today (`resolve_write` and `is_build_file`, `src/core/ai/tools/paths.rs:674-708`, `:721-740`, `:785-795`):
-   - the names in `BUILD_FILES` (`Makefile`, `build.rs`, `Cargo.toml`, `package.json`, `pyproject.toml`, `setup.py`, `conftest.py`, `go.mod`, `justfile`, `Rakefile`, `tox.ini`, `noxfile.py`, `CMakeLists.txt`, `build.gradle(.kts)`, `pom.xml`, `Dockerfile`, the docker-compose and compose files, `.pre-commit-config.yaml`, `.gitlab-ci.yml`, `.gitattributes`, `.gitmodules`, `.bashrc`, `.zshrc`, `.profile`, `.bash_profile`), at any depth;
-   - `Dockerfile.*`, `settings.gradle*`, and every `*.sh`, `*.ps1`, `*.bat`, `*.cmd`;
-   - any file below `.husky`, `.githooks` or `.devcontainer`; `.vscode/tasks.json` and `launch.json`; `.cargo/config*`; `.github/workflows/*`;
-   - **any file at all** when the first folder below HOME starts with `.` or is `dotfiles` (`dotfiles || is_build_file`, `paths.rs:785-795`): a project that lives in `~/.dev/app` never auto-applies.
+The four open questions were answered by the owner; the answers are quoted from `odd/tasks/chat-auto-permissions.md` L59-L62.
 
-   Accept this list, or apply some of those too? There is no accessor today for "the batch has a build row" (task 1.3).
-3. **Audit of auto-applied batches.** Under auto-apply a batch applies without a review, so its diff is no longer shown. Should an auto-applied batch keep its diff reachable, for example in the history, besides the one chat line with paths and counts? Today an auto-applied batch keeps no diff, it can overwrite existing files, and nothing caps how many batches apply in a conversation (only the per-batch caps of 50 entries and 1 MiB). Left OPEN on purpose; PR1 is gated on it (task 0.1).
-4. **Other batches that could still open the review (provisional rules).** A batch with a coarse diff row (`WARN_COARSE`, `review.rs:361`): the chat line counts would say "whole file replaced" and nothing more. A conversation that read GitHub text (`block_why()`): in `run` a cloud read already asks there; should writes also ask? Proposed: yes to both. Accept?
+1. **Enter in the review.** "si, el enter lo podemos usar para aceptar": Enter approves a batch like `y`, with the same coverage gate and arm delay, in every batch review.
+2. **Build files under auto-apply.** "acéptalo así y que pueda ampliarse si es necesario por parte del usuario": the classes listed in the code-write delta keep opening the review under auto-apply, and the user can add patterns with `[ai.tools] review_always` (extend only; the built-in classes cannot be removed). The key name and its glob syntax are this change's proposal.
+3. **Audit of auto-applied batches.** "dale, vamos con el diff": an auto-applied batch keeps its review document for the conversation, in memory only, and `/applied` opens it read-only. Nothing caps the number of batches; the per-batch caps stay.
+4. **Coarse diff and GitHub text.** "si, leer es menos restrictivo que la escritura": both open the review under auto-apply.

@@ -6,7 +6,7 @@ Change `chat-write-grant` (the concept is called run auto-apply; the folder keep
 
 ## MODIFIED Requirements
 
-What changes in `Batch review and coverage gate`: the "Auto-apply" and "Environment templates" paragraphs are added after the base paragraph, and the scenarios below the base scenarios.
+What changes in `Batch review and coverage gate`: one sentence on Enter is added to the base paragraph, the "Auto-apply", "Batches that always ask", "Applied batches stay readable" and "Environment templates" paragraphs are added after it, and the scenarios below the base scenarios.
 
 <details>
 <summary>Current text on origin/main, <code>openspec/specs/code-write/spec.md</code> lines 189-225</summary>
@@ -52,13 +52,17 @@ What changes in `Batch review and coverage gate`: the "Auto-apply" and "Environm
 </details>
 
 ### Requirement: Batch review and coverage gate
-A proposed batch MUST open a full-pane review view in the chat pane. It shows every change: a create shows the new text, an overwrite or edit shows a diff, a `create_dir` shows its path. The approving key MUST stay disabled until every row of the whole batch has been drawn on screen (the coverage gate; a row in a hidden pane does not count), and it MUST stay disabled for the arm delay after the view is first drawn (longer than the delay of other approvals, value pinned by design). The review is all-or-nothing: the user approves the whole batch or rejects the whole batch. A change to a build file (for example `Makefile`, `build.rs`, `package.json`) MUST carry a visible warning. A rejected or timed-out review MUST end as `denied`, MUST write nothing, and MUST discard the batch. A review cancelled with Ctrl+C MUST also end as `denied` and write nothing, but MUST leave the batch as an orphan (see Orphan, close and quit); a propose call dropped after the batch was sealed and before its ask shows MUST NOT discard the batch either. A pending approval of another kind MUST make the propose tool return `denied` (`another approval is pending`).
+A proposed batch MUST open a full-pane review view in the chat pane. It shows every change: a create shows the new text, an overwrite or edit shows a diff, a `create_dir` shows its path. The approving key MUST stay disabled until every row of the whole batch has been drawn on screen (the coverage gate; a row in a hidden pane does not count), and it MUST stay disabled for the arm delay after the view is first drawn (longer than the delay of other approvals, value pinned by design). Enter MUST approve the batch exactly like `y`, under the same coverage gate and arm delay, in every batch review. The review is all-or-nothing: the user approves the whole batch or rejects the whole batch. A change to a build file (for example `Makefile`, `build.rs`, `package.json`) MUST carry a visible warning. A rejected or timed-out review MUST end as `denied`, MUST write nothing, and MUST discard the batch. A review cancelled with Ctrl+C MUST also end as `denied` and write nothing, but MUST leave the batch as an orphan (see Orphan, close and quit); a propose call dropped after the batch was sealed and before its ask shows MUST NOT discard the batch either. A pending approval of another kind MUST make the propose tool return `denied` (`another approval is pending`).
 
 **Auto-apply.** In the review of a batch staged by a plain chat (not a worker, not an orphan) whose approval mode is `run`, with tools on, on a folder below HOME that is not a granted Windows drive folder, the footer MUST offer `a` beside `y`: `a` approves the whole batch exactly like `y`, under the same coverage gate and arm delay, and gives the chat auto-apply (see agent-tools, Chat approval mode) only once the host reports that batch applied in full; if the apply refuses it or ends partial (drift, rollback, any failure), no auto-apply MUST be held. In any other review `a` MUST do nothing and MUST NOT be offered.
 
-While the chat holds auto-apply, a batch it proposes MUST be applied without opening the review only when all of these hold: it is the chat pane's own batch (staged under `StageKey::Pane` of that pane, never `StageKey::Worker`); the mode is `run` and tools are on; no other approval is pending; the batch is reviewable; no row is an environment template; no row carries the build-file warning (provisional: classes and rule depend on open question 2 of the proposal); no row has a coarse diff and the conversation has not read GitHub text (both provisional, open question 4); and the chat folder is not a granted Windows drive folder. A batch that fails any of them MUST open the review as without auto-apply, and auto-apply MUST stay held (a batch that is not reviewable can then only be rejected, as today, with the too-large reason). A batch that arrives while another approval is pending MUST be denied with `another approval is pending`, not queued and not applied.
+While the chat holds auto-apply, a batch it proposes MUST be applied without opening the review only when all of these hold: it is the chat pane's own batch (staged under `StageKey::Pane` of that pane, never `StageKey::Worker`); the mode is `run` and tools are on; no other approval is pending; the batch is reviewable; no row is an environment template; no row carries the build-file warning and no row matches a pattern of `[ai.tools] review_always` (see "Batches that always ask"); no row has a coarse diff and the conversation has not read GitHub text; and the chat folder is not a granted Windows drive folder. A batch that fails any of them MUST open the review as without auto-apply, and auto-apply MUST stay held (a batch that is not reviewable can then only be rejected, as today, with the too-large reason). A batch that arrives while another approval is pending MUST be denied with `another approval is pending`, not queued and not applied.
 
 An applied batch goes through the same checks as one the user approves: the caps (50 entries, 1 MiB) and the path rules (a root inside HOME, no env, secret (`SECRET_FILES`, `SECRET_PATTERNS`), `.git` or `node_modules` name) at staging, and the same apply step (drift check, atomic writes, rollback). Under auto-apply none of them MAY be relaxed. The app MUST learn that a batch applied from the call's tool result (status `Ok` only for an applied batch); a batch that does not apply in full under auto-apply MUST end auto-apply, with one chat line giving the first line of the result. Each batch applied under auto-apply MUST add one chat line naming every path with its kind and added and removed lines. A worker's batch MUST always go through the approval queue (see Worker batches).
+
+**Batches that always ask.** The build-file warning keeps its classes: the names of `BUILD_FILES` at any depth; `Dockerfile.*`, `settings.gradle*` and every `*.sh`, `*.ps1`, `*.bat`, `*.cmd`; any file below `.husky`, `.githooks` or `.devcontainer`; `.vscode/tasks.json` and `launch.json`; `.cargo/config*`; `.github/workflows/*`; and any file of a project whose first folder below HOME starts with `.` or is `dotfiles`. The user MAY extend it, never shorten it, with `[ai.tools] review_always`, a list of glob patterns matched against each row's path relative to the chat folder (`*` within one folder, `**` across folders): a row that matches one opens the review under auto-apply like a build file, and auto-apply stays held. A pattern that is not valid MUST be reported as a config problem and ignored; the built-in classes still apply.
+
+**Applied batches stay readable.** Each batch applied under auto-apply MUST keep its review document (every row with its diff) for the conversation, in memory only: it is never stored in `chat.db`, never sent to an engine, and it is dropped with the conversation (a new or resumed conversation, the pane closing, quit). `/applied` typed in the composer and sent with Enter MUST open a read-only list of the conversation's auto-applied batches, newest first, each with its chat line; Enter on one MUST open its review document read-only (scroll keys only; no approving key, `y`, `a` and Enter do nothing), and Esc goes back. Like the other slash commands it does not create a message and does not reach the model. A conversation with none MUST show `no batch was applied without review in this conversation`.
 
 **Environment templates.** A batch with an environment template row (an env name ending in `.example`, `.sample`, `.template` or `.dist`) MUST always open the batch review, under auto-apply too, and auto-apply MUST stay held. The Deny rules requirement is unchanged: a template reaches the disk only through the user's approval of the batch review, in every approval mode. The ask that `write_file` makes before staging over a template that already exists is not that review and MUST NOT stand in for it.
 
@@ -157,20 +161,40 @@ An applied batch goes through the same checks as one the user approves: the caps
 - WHEN the batch is proposed
 - THEN the review still opens and nothing is written until the user's key on it
 
-#### Scenario: A build file still opens the review (provisional, open question 2) [auto]
+#### Scenario: A build file still opens the review [auto]
 - GIVEN a chat holding auto-apply
 - WHEN the model proposes a batch that changes one file of each class in turn: `build.rs`, `scripts/run.sh`, `.github/workflows/ci.yml`, `.husky/pre-commit`, and a file of a project below a dot folder of HOME
 - THEN for each the review opens with the build-file warning and waits for `y` or `a`, and auto-apply stays held
 
-#### Scenario: A coarse diff opens the review (provisional, open question 4) [auto]
+#### Scenario: A coarse diff opens the review [auto]
 - GIVEN a chat holding auto-apply
 - WHEN the model proposes a batch with a row whose diff is coarse
 - THEN the review opens with the coarse-diff warning
 
-#### Scenario: A conversation that read GitHub text asks (provisional, open question 4) [auto]
+#### Scenario: A conversation that read GitHub text asks [auto]
 - GIVEN a chat holding auto-apply whose conversation read GitHub text
 - WHEN the model proposes a batch
 - THEN the review opens
+
+#### Scenario: Enter approves like y [auto]
+- GIVEN a batch review with every row shown, once before and once after the arm delay (fake clock)
+- WHEN Enter is pressed
+- THEN before the delay nothing is applied, and after it the apply step starts as with `y`
+
+#### Scenario: A user pattern opens the review [auto]
+- GIVEN `[ai.tools] review_always = ["infra/**/*.tf"]` and a chat holding auto-apply
+- WHEN the model proposes a batch that changes `infra/net/main.tf`, and then one that changes only `src/lib.rs`
+- THEN the first opens the review and auto-apply stays held, and the second applies without a review
+
+#### Scenario: A bad pattern is reported and ignored [auto]
+- GIVEN `[ai.tools] review_always = ["["]`
+- WHEN the config is read
+- THEN a config problem names the pattern, and a batch that changes `build.rs` still opens the review under auto-apply
+
+#### Scenario: An applied batch can be read again [auto]
+- GIVEN a chat holding auto-apply where two batches applied without a review
+- WHEN `/applied` is sent and Enter is pressed on the older one
+- THEN the list shows both, newest first, with their chat lines; the older one opens read-only with every row and its diff; `y`, `a` and Enter write nothing; and after a new conversation `/applied` says `no batch was applied without review in this conversation`
 
 #### Scenario: A Windows drive folder opens the review [auto]
 - GIVEN a chat whose folder is a granted Windows drive folder, in `run` mode
