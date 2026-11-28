@@ -530,15 +530,64 @@ pub fn inert_key(key: &str) -> bool {
 /// wrong (no repository, a broken file, git missing, too long a listing) is
 /// `false`: the command asks.
 pub fn config_is_inert(dir: &Path, path: Option<std::ffi::OsString>) -> bool {
-    let spawned = Command::new("git")
-        .args([
+    let Some(out) = hardened_git(
+        dir,
+        path.clone(),
+        &[
             "config",
             "--local",
             "--no-includes",
             "--name-only",
             "-z",
             "--list",
-        ])
+        ],
+        CONFIG_CAP,
+    ) else {
+        return false;
+    };
+    let keys_inert = out
+        .split(|&b| b == 0)
+        .filter(|key| !key.is_empty())
+        .all(|key| std::str::from_utf8(key).is_ok_and(inert_key));
+    keys_inert && !has_submodules(dir, path)
+}
+
+/// The most bytes of the index listing the gate reads (about 100 000 files).
+const INDEX_CAP: u64 = 8 * 1024 * 1024;
+
+/// Whether the repository holding `dir` has a gitlink in its index (mode
+/// 160000) or a `.gitmodules` at its top. `git status` and `git diff --stat`
+/// start a child git in each submodule worktree, and that child reads the
+/// submodule's own config, which this gate does not list. So any gitlink asks.
+/// Fails closed: an index listing that cannot be read whole counts as one.
+fn has_submodules(dir: &Path, path: Option<std::ffi::OsString>) -> bool {
+    let top = dir.ancestors().find(|up| up.join(".git").exists());
+    if top.is_none_or(|top| top.join(".gitmodules").exists()) {
+        return true;
+    }
+    let Some(out) = hardened_git(
+        dir,
+        path,
+        &["ls-files", "--stage", "-z", "--", ":/"],
+        INDEX_CAP,
+    ) else {
+        return true;
+    };
+    out.split(|&b| b == 0)
+        .any(|record| record.starts_with(b"160000 "))
+}
+
+/// Runs `git args` in `dir` with a cleared environment (the global and the
+/// system config off) and returns its whole stdout. `None` when git cannot
+/// start, fails, or prints more than `cap` bytes.
+fn hardened_git(
+    dir: &Path,
+    path: Option<std::ffi::OsString>,
+    args: &[&str],
+    cap: u64,
+) -> Option<Vec<u8>> {
+    let mut child = Command::new("git")
+        .args(args)
         .current_dir(dir)
         .env_clear()
         .envs(path.map(|path| ("PATH", path)))
@@ -550,26 +599,19 @@ pub fn config_is_inert(dir: &Path, path: Option<std::ffi::OsString>) -> bool {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn();
-    let Ok(mut child) = spawned else {
-        return false;
-    };
+        .spawn()
+        .ok()?;
     let mut out = Vec::new();
     let read = child
         .stdout
         .take()
-        .map(|pipe| pipe.take(CONFIG_CAP + 1).read_to_end(&mut out));
-    let whole = read.is_some_and(|read| read.is_ok()) && out.len() as u64 <= CONFIG_CAP;
+        .map(|pipe| pipe.take(cap + 1).read_to_end(&mut out));
+    let whole = read.is_some_and(|read| read.is_ok()) && out.len() as u64 <= cap;
     if !whole {
         let _ = child.kill();
     }
     let done = child.wait().is_ok_and(|status| status.success());
-    whole
-        && done
-        && out
-            .split(|&b| b == 0)
-            .filter(|key| !key.is_empty())
-            .all(|key| std::str::from_utf8(key).is_ok_and(inert_key))
+    (whole && done).then_some(out)
 }
 
 /// Runs `work` on the blocking pool for at most `bound`. A check that is too
@@ -1053,6 +1095,7 @@ mod tests {
         for risky in [
             "[core]\n\tfsmonitor = /tmp/x\n",
             "[core]\n\tfsmonitor = true\n",
+            "[Core]\n\tFsMonitor = /tmp/x\n",
             "[core]\n\tpager = sh\n",
             "[core]\n\thookspath = /x\n",
             "[core]\n\tsshcommand = sh\n",
@@ -1129,12 +1172,76 @@ mod tests {
     fn a_config_that_cannot_be_listed_asks() {
         let f = fixture();
         project(&f);
-        fs::create_dir_all(f.home.join("dev/proj/plain")).unwrap();
         fs::write(f.home.join("dev/proj/.git/config"), "[core\n\t= =\n").unwrap();
         assert_eq!(reason(&git_status(&f)), Some(GIT_CONFIG_RISK));
         let f = fixture();
         fs::create_dir_all(f.home.join("dev/proj")).unwrap();
         assert_eq!(reason(&git_status(&f)), Some(GIT_CONFIG_RISK));
+    }
+
+    // The listing is read up to a cap; one over it asks even when every key
+    // in it is inert.
+    #[test]
+    fn a_config_listing_over_the_cap_asks() {
+        let mut config = PLAIN_CONFIG.to_owned();
+        let mut n = 0;
+        while (config.len() as u64) <= 3 * CONFIG_CAP {
+            config.push_str(&format!("[remote \"r{n}\"]\n\turl = x\n"));
+            n += 1;
+        }
+        let f = fixture();
+        repo_with(&f, &config);
+        assert_eq!(reason(&git_status(&f)), Some(GIT_CONFIG_RISK));
+        // The same keys under the cap pass.
+        let f = fixture();
+        repo_with(&f, &format!("{PLAIN_CONFIG}[remote \"r\"]\n\turl = x\n"));
+        assert!(checked(&git_status(&f)));
+    }
+
+    /// Records a gitlink named `sub` in the index of `dir/.git`.
+    fn add_gitlink(dir: &Path) {
+        let out = Command::new("git")
+            .args([
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "160000,1111111111111111111111111111111111111111,sub",
+            ])
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+
+    // A child git runs in every submodule worktree and reads that
+    // submodule's own config, which the gate does not list: any gitlink or
+    // `.gitmodules` asks, for the three git verbs.
+    #[test]
+    fn a_repository_with_a_gitlink_or_gitmodules_asks() {
+        let commands = [
+            "git status",
+            "git --no-pager log -n 3 --stat",
+            "git --no-pager diff --name-only",
+            "git --no-pager diff --stat",
+        ];
+        let f = fixture();
+        repo_with(&f, PLAIN_CONFIG);
+        add_gitlink(&f.home.join("dev/proj"));
+        for cmd in commands {
+            let got = run_in(&f, "dev/proj", true, "dev/proj", cmd);
+            assert_eq!(reason(&got), Some(GIT_CONFIG_RISK), "gitlink {cmd}");
+        }
+        // From a folder below the top the whole repository still counts.
+        let got = run_in(&f, "dev/proj", true, "dev/proj/src", "git status");
+        assert_eq!(reason(&got), Some(GIT_CONFIG_RISK));
+        let f = fixture();
+        repo_with(&f, PLAIN_CONFIG);
+        fs::write(f.home.join("dev/proj/.gitmodules"), "").unwrap();
+        for cmd in commands {
+            let got = run_in(&f, "dev/proj", true, "dev/proj", cmd);
+            assert_eq!(reason(&got), Some(GIT_CONFIG_RISK), ".gitmodules {cmd}");
+        }
     }
 
     #[test]
