@@ -89,13 +89,13 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 - [x] 2b.2 RED load rewrite (tempfile): `auto` becomes `"ask"` only, comments and other bytes intact; one notice; second start silent; read-only file shows the failure notice with reason at each start; other problems present means no rewrite.
 - [x] 2b.3 RED toggle lines (`approval: ask (...)`, `approval: run (...)`), no ` AUTO ` badge, menu cycles `ask`, `run` and never shows `auto`; hint `ask: y runs; run: safe reads alone, rest y; per chat`.
 - [x] 2b.4 GREEN `core/ai/config.rs`, startup load via `core/config_edit.rs`, `app/tool.rs`, `core/ai/chat/mod.rs`, `ui/components/chat.rs`. CHANGELOG; README pair (`auto` removed, mapped once). Exit gate.
-- [ ] 2b.5 `[manual]` isolated home with `approval = "auto"`: notice once, file now `ask`, second launch silent; read-only config shows the failure notice.
+- [x] 2b.5 `[manual]` isolated home with `approval = "auto"`: notice once, file now `ask`, second launch silent; read-only config shows the failure notice. Evidence: manual run 2026-11-28, ollama qwen3:14b: notice once, file says `ask`, second launch silent, read-only config shows the failure notice.
 
 ## S2c: Continuation after the cut-off (base: main after S2b)
 
 - [x] 2c.1 RED `typed_resume.rs`: server cut at 30 s resumes the chat with partial output; when it later ends the chat resumes again with final output and `lazarobox: the command you approved in pane N finished.`; Ctrl+C in the pane, a new message or closing the pane ends it with a visible line; #819/#824/#841 unchanged.
 - [x] 2c.2 GREEN `app/auto_run.rs`, `app/typed_run.rs` (`resume` slot with `Limits::Continue`, `held_resumes`/`flush_resumes`). CHANGELOG; README pair. Exit gate.
-- [ ] 2c.3 `[manual]` `npm run dev` (or `sleep 45; echo done`): partial output and notice at 30 s, resume when it ends.
+- [x] 2c.3 `[manual]` `npm run dev` (or `sleep 45; echo done`): partial output and notice at 30 s, resume when it ends. Evidence: manual run 2026-11-28, `sleep 45; echo done`: still running notice at 30 s, chat resumed when it ended.
 
 ## S3a: Head-keyed grammar and tiers (base: main after S2c)
 
@@ -114,14 +114,15 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 - [x] 3c.2 RED gate (tempfile repo): plain config passes; `core.fsmonitor`, `include.path`, `diff.external` ask with `GIT_CONFIG_RISK` (not counted toward the pause); allow-list keys pass.
 - [x] 3c.3 GREEN `exec/specs.rs` git heads, `Value::Rev` (moved here from 3b.3) and `needs_one_of`, `runtime/run_check.rs`, `runtime/tools/git.rs` (hardened config listing), `approval.rs` reason. CHANGELOG; README pair (what runs unprompted, local vs cloud, plain `git diff` asks). Exit gate.
   - Notes (S3c): `Value::Rev` NOT added: no spec row takes a revision word (`log`/`diff` take paths only), so it would be dead code; revisit only if a row needs it. `git config` is run with `--local` alone: git rejects `--local --worktree` together (`only one config file at a time`); a `config.worktree` only matters with `extensions.worktreeConfig`, which is not on the allow-list. The gate (`config_is_inert`, `inert_key`) lives in `runtime/run_check.rs`, not `runtime/tools/git.rs`: the tools audit forbids starting a process in `tools/*`. It runs `git` from the process PATH with a cleared env (`GIT_CONFIG_GLOBAL/SYSTEM=/dev/null`, `NOSYSTEM`), `-z --name-only --no-includes`, 64 KiB cap, any failure asks. Submodules: `git status`/`diff --stat` start a child git per gitlink worktree that reads the submodule's own config, so `config_is_inert` also asks (fail closed) when `git ls-files --stage -z -- :/` (same hardened spawn, 8 MiB cap, overflow or failure asks, early scan for mode `160000`) shows a gitlink or a `.gitmodules` sits at the worktree top (found by walking up to `.git`, no spawn). The index listing is the cheapest fail-closed form: git cannot filter by mode, and `--format=%(objectmode)` needs git 2.38+. One extra spawn inside the 2 s check timeout. `git status`/`diff --stat` list the whole repo, not only the chat folder (names and counts). Known gaps: `GIT_*` set in the pane's own shell, `--separate-git-dir`/bare repos, and `git status` may refresh `.git/index`.
-- [ ] 3c.4 `[manual]` `run` mode: `ls` runs on a local engine, `cat README.md` asks; on a cloud-class setup `git diff --stat` runs and `git diff` asks.
+- [ ] 3c.4 `[manual]` `run` mode: `ls` runs on a local engine, `cat README.md` asks; on a cloud-class setup `git diff --stat` runs and `git diff` asks. Note: local half passed 2026-11-28 (`ls` runs, `cat README.md` asks); cloud half pending.
 
 ## S4: Guidance and docs (base: main after S3c)
 
 - [x] 4.1 RED tests: `run_in_pane` description exact and identical in both modes and engine kinds; `tools.md`, description and `RUN_HINT` contain none of `press Enter`, `type it`, `auto`, `you run`; `RUN_HINT` = `Ctrl+Space e  type in pane`; printed bash block runs nothing.
 - [x] 4.2 GREEN `prompts/tools.md`, `tools/mod.rs`, `chat/transcript.rs`. (Also `NO_CHANGES` in `prompts.rs`, the golden JSON and the `run_pane`/snapshot hint tests; the tools block cap in `prompts/tests.rs` went from 1209 to 1400 bytes.)
 - [x] 4.3 Docs: README.md + README.es.md same sections and order (flow, modes, unprompted list, sudo, 30 s, macOS `y` only types); CHANGELOG. Exit gate.
-- [ ] 4.4 `[manual]` end to end: ask the chat to install a small tool in an isolated home; one `y`, chat reports the result.
+- [x] 4.4 `[manual]` end to end: ask the chat to install a small tool in an isolated home; one `y`, chat reports the result. Evidence: manual run 2026-11-28, one `y` installed `~/.local/bin/hello-tool`, the chat reported the result.
+- [x] 4.5 Fixes after review and the manual run (S4): `tools.md` says it overrides the fenced-block rule of `chat.md` (cap 1430 bytes); README Tools row and `run` intro no longer list only the seven commands; the `e` key and its confirmation read `type in pane` (a model run that `y` runs keeps `run in pane`); flow step 2 and the sudo bullet say when `y` only types and the 5 min no-input cap; the prompt shows the blocker (`y` only types) next to the risk reason before `y`.
 
 ## Close-out
 
