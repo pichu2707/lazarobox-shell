@@ -13,7 +13,7 @@ use std::{
 };
 
 use crate::core::ai::tools::{
-    paths::{SecretRoots, display_target, is_git_config, real_target},
+    paths::{SecretRoots, display_target, is_git_secret, real_target},
     stage::{Batch, Entry, State},
 };
 
@@ -81,7 +81,7 @@ impl StagedView {
     /// The staged text of the file `input` names. A git setting is never one.
     pub(super) fn file(&self, roots: &SecretRoots, origin: &Path, input: &str) -> Option<&str> {
         let path = Self::locate(roots, origin, input)?;
-        (!is_git_config(&path))
+        (!is_git_secret(&path))
             .then(|| self.files.get(&path).map(String::as_str))
             .flatten()
     }
@@ -326,6 +326,10 @@ mod tests {
         for rel in [".env", ".git/config", ".npmrc", temp.as_str()] {
             assert_eq!(f.read(rel, &view), Err(Failure::Refused), "{rel}");
         }
+        f.create(".git/FETCH_HEAD", "fn staged() {}\n");
+        let view = f.view();
+        assert_eq!(f.read(".git/FETCH_HEAD", &view), Err(Failure::Refused));
+        assert!(!f.grep("fn staged", &view).contains("FETCH_HEAD"));
         let globbed = f.glob("**", &view);
         let grepped = f.grep("fn staged", &view);
         assert!(globbed.contains(&format!("ok.rs {MARK}")), "{globbed}");

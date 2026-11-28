@@ -22,8 +22,7 @@ use crate::{
             tools::{
                 exec::{Verb, parse_for},
                 paths::{
-                    PathVerdict, SecretRoots, Want, is_excluded_name, is_git_config,
-                    is_git_fetch_head, resolve_exec,
+                    PathVerdict, SecretRoots, Want, is_excluded_name, is_git_secret, resolve_exec,
                 },
             },
         },
@@ -39,9 +38,11 @@ const NO_ROOTS: &str = "the secret locations cannot be read";
 /// Why a search does not run on its own: its folder holds more entries than
 /// the check looks at.
 pub const TOO_LARGE: &str = "the folder is too large to check";
-/// Why a read verb does not run on its own: the path is not a regular file (a
-/// FIFO would block the pane, a device or a socket is no file, a folder is an
-/// error).
+/// Why a read or search verb does not run on its own: an explicit path is not
+/// a regular file (a FIFO would block the pane, a device or a socket is no
+/// file; a folder is an error for the read verbs and fine for a search). It is
+/// a test at check time, not a guarantee: the file can be swapped before the
+/// command runs (the same window as the `.git/config` and symlink checks).
 pub const NOT_A_FILE: &str = "a path in the command is not a regular file";
 /// The most entries the check of a `grep -r` or an `rg` looks at.
 pub const MAX_SEARCHED: usize = 5_000;
@@ -149,15 +150,17 @@ pub fn check(
             safe.verb(),
             Verb::Grep | Verb::Rg | Verb::Cat | Verb::Head | Verb::Tail | Verb::Wc
         );
-        if reads && (git_secret(Path::new(target.input)) || git_secret(&real)) {
+        if reads && (is_git_secret(Path::new(target.input)) || is_git_secret(&real)) {
             return refused(NOT_ALLOWED);
         }
-        // These read the file itself, never a folder: a FIFO, a device or a
-        // socket may block the pane or never end. A missing path never gets here:
-        // it does not resolve.
-        if matches!(safe.verb(), Verb::Cat | Verb::Head | Verb::Tail | Verb::Wc)
+        // A FIFO, a device or a socket may block the pane or never end. The
+        // read verbs take files only; a search also takes a folder to walk.
+        // A missing path never gets here: it does not resolve.
+        let walks = matches!(safe.verb(), Verb::Grep | Verb::Rg);
+        if (walks || matches!(safe.verb(), Verb::Cat | Verb::Head | Verb::Tail | Verb::Wc))
             && target.want == Want::Home
-            && std::fs::metadata(&real).is_ok_and(|meta| !meta.is_file())
+            && std::fs::metadata(&real)
+                .is_ok_and(|meta| !(meta.is_file() || (walks && meta.is_dir())))
         {
             return refused(NOT_A_FILE);
         }
@@ -180,11 +183,6 @@ pub fn check(
         cwd,
         cd_target,
     }
-}
-
-/// A git file that can hold the URL of a remote with a credential.
-fn git_secret(path: &Path) -> bool {
-    is_git_config(path) || is_git_fetch_head(path)
 }
 
 /// Whether `verb` may walk `real`, a resolved path, on its own. No secret
@@ -228,7 +226,7 @@ fn searchable(
 /// Whether a search would read something it must not: an entry that is
 /// sensitive by name, by position or as a git setting.
 fn sensitive(roots: &SecretRoots, path: &Path, name: &OsStr) -> bool {
-    is_excluded_name(&name.to_string_lossy()) || git_secret(path) || !roots.judge_real(path)
+    is_excluded_name(&name.to_string_lossy()) || is_git_secret(path) || !roots.judge_real(path)
 }
 
 /// The walk of `grep -r`: every entry below `real`, hidden ones too, as
@@ -1570,6 +1568,19 @@ mod tests {
                 assert_eq!(reason(&event), Some(NOT_A_FILE), "{command}: {event:?}");
             }
         }
+        // A search never opens a FIFO either; a folder is fine for it.
+        for verb in ["grep x", "rg x"] {
+            for target in ["pipe", "./pipe", "link"] {
+                let command = format!("{verb} {target}");
+                for cloud in [false, true] {
+                    let event = run_in(&f, "dev/proj", cloud, "dev/proj", &command);
+                    assert_eq!(reason(&event), Some(NOT_A_FILE), "{command}: {event:?}");
+                }
+            }
+            let command = format!("{verb} src");
+            let event = run_in(&f, "dev/proj", true, "dev/proj", &command);
+            assert!(checked(&event), "{command}: {event:?}");
+        }
     }
 
     // `.git/FETCH_HEAD` can hold the URL of a remote with a token, like
@@ -1600,7 +1611,8 @@ mod tests {
                 let command = format!("{verb} {target}");
                 for cloud in [false, true] {
                     let event = run_in(&f, "dev/proj", cloud, "dev/proj", &command);
-                    let want = if cloud || !verb.starts_with(['c', 'h', 't', 'w']) {
+                    let extended = ["cat", "head -n 5", "tail -n 5", "wc -l"].contains(&verb);
+                    let want = if cloud || !extended {
                         Some(NOT_ALLOWED)
                     } else {
                         Some(LOCAL_ASKS)

@@ -28,7 +28,7 @@ use crate::core::ai::{
     tools::{
         glob::{BOUND_MARKER, Glob, MAX_MATCHES, MAX_PATTERN_BYTES, NO_MATCH, render},
         paths::{
-            PathVerdict, SecretRoots, is_excluded_name, is_git_config, plain_relative, resolve,
+            PathVerdict, SecretRoots, is_excluded_name, is_git_secret, plain_relative, resolve,
         },
     },
 };
@@ -245,7 +245,7 @@ fn walk(
             }
             let path = folder.join(&name);
             // Git settings can hold a credential: never read, wherever they sit.
-            if kind.is_file() && is_git_config(&path) {
+            if kind.is_file() && is_git_secret(&path) {
                 continue;
             }
             let rel = path.strip_prefix(&root).unwrap_or(&path).to_path_buf();
@@ -297,7 +297,7 @@ fn staged_only(roots: &SecretRoots, path: &Path, rel: &Path) -> Option<bool> {
     if folders
         .iter()
         .any(|name| skipped_dir(&name.to_string_lossy()))
-        || is_git_config(path)
+        || is_git_secret(path)
     {
         return None;
     }
@@ -626,6 +626,30 @@ mod tests {
         assert_eq!(
             run(&f, "url", None).unwrap(),
             format!("src/config:1:{secret}")
+        );
+    }
+
+    #[test]
+    fn fetch_head_is_never_read_by_a_search() {
+        let f = fixture();
+        let secret = "url = https://host/x";
+        fs::create_dir_all(f.root.join(".git/modules/x")).unwrap();
+        fs::write(f.root.join(".git/modules/x/FETCH_HEAD"), secret).unwrap();
+        fs::create_dir_all(f.root.join("src/wt/.git")).unwrap();
+        fs::write(f.root.join("src/wt/.git/FETCH_HEAD"), secret).unwrap();
+        for start in [".git/modules/x", "src/wt/.git"] {
+            assert_eq!(
+                run(&f, "url", Some(start)),
+                Err(Failure::Refused),
+                "{start}"
+            );
+        }
+        assert_eq!(run(&f, "url", None).unwrap(), NO_MATCH);
+        // A stray `FETCH_HEAD` outside a git folder is plain text.
+        fs::write(f.root.join("src/FETCH_HEAD"), secret).unwrap();
+        assert_eq!(
+            run(&f, "url", None).unwrap(),
+            format!("src/FETCH_HEAD:1:{secret}")
         );
     }
 

@@ -340,18 +340,19 @@ fn run_live_on(engine: &'static str) -> (App, u64) {
 fn an_extended_command_runs_on_a_cloud_engine_and_asks_on_a_local_one() {
     use crate::core::ai::chat::approval::Route;
     let (cat, ls) = (run("cat README.md"), run("ls"));
-    let (mut cloud, _) = run_live_on("claude");
+    let (cloud, _) = run_live_on("claude");
     let routed = cloud.auto_route(id2(), PaneId::FIRST, &cat, false);
     assert!(matches!(routed, Route::AutoRun(_)), "cloud: {routed:?}");
-    let (mut local, _) = run_live();
+    let (local, _) = run_live();
     assert_eq!(chat_of(&local).stream_engine(), "ollama");
     let routed = local.auto_route(id2(), PaneId::FIRST, &cat, false);
     let Route::Prompt(Some(fallback)) = routed else {
         panic!("a local engine must ask: {routed:?}")
     };
     assert_eq!(fallback.why, crate::core::ai::tools::exec::LOCAL_ASKS);
-    // The base tier runs on both.
-    for a in [&mut cloud, &mut local] {
+    // The base tier runs on both, each in a fresh app so the route of `cat`
+    // leaves no state behind.
+    for (a, _) in [run_live_on("claude"), run_live()] {
         let base = a.auto_route(id2(), PaneId::FIRST, &ls, false);
         assert!(matches!(base, Route::AutoRun(_)), "{base:?}");
     }

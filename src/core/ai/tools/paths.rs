@@ -194,6 +194,13 @@ pub fn is_git_fetch_head(real: &Path) -> bool {
         })
 }
 
+/// Whether `real` is a git file that can hold the URL of a remote with a
+/// credential: the configuration ([`is_git_config`]) or `FETCH_HEAD`
+/// ([`is_git_fetch_head`]). Reads refuse it. Pure: it reads no file.
+pub fn is_git_secret(real: &Path) -> bool {
+    is_git_config(real) || is_git_fetch_head(real)
+}
+
 /// Judges what follows `$HOME` in a path: refused when it holds a `.` or `..`
 /// part, starts with an excluded folder, or has an excluded name anywhere.
 fn judge_rest(rest: &Path) -> bool {

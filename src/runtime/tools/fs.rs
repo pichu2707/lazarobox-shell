@@ -29,7 +29,7 @@ use crate::{
             tools::{
                 Call, Lines,
                 paths::{
-                    PathVerdict, REFUSED, SecretRoots, is_excluded_name, is_git_config,
+                    PathVerdict, REFUSED, SecretRoots, is_excluded_name, is_git_secret,
                     real_target, resolve,
                 },
             },
@@ -465,7 +465,7 @@ pub(crate) fn read_real(
     limits: &Limits,
 ) -> Result<String, Failure> {
     // Judged on the real path, so a link to it is refused too.
-    if is_git_config(real) {
+    if is_git_secret(real) {
         return Err(Failure::Refused);
     }
     let file = std::fs::File::from(open_checked(roots, real, false)?);
@@ -1384,6 +1384,22 @@ mod tests {
             "ref: refs/heads/main\n"
         );
         assert_eq!(read(&e, "~/dev/app/src/config").unwrap(), "ok\n");
+    }
+
+    // `.git/FETCH_HEAD` lists the remote URLs a fetch used: refused like the
+    // git configuration, also through a link.
+    #[test]
+    fn fetch_head_is_refused_like_the_git_config() {
+        let f = fixture();
+        let git = f.home.join("dev/app/.git");
+        fs::create_dir_all(&git).unwrap();
+        fs::write(git.join("FETCH_HEAD"), "abc\t\thttps://u:tok@host/r\n").unwrap();
+        symlink(git.join("FETCH_HEAD"), f.home.join("dev/app/alias")).unwrap();
+        let e = env(&f.home);
+        for path in ["~/dev/app/.git/FETCH_HEAD", "~/dev/app/alias"] {
+            let err = read(&e, path).unwrap_err();
+            assert_eq!((err, err.message()), (Failure::Refused, REFUSED), "{path}");
+        }
     }
 
     // A read kept within the root is judged on the file it opens: a link in

@@ -846,6 +846,23 @@ fn the_run_verbs_are_the_same_in_the_hint_and_the_readmes() {
             let head = spec.name.split(' ').next().unwrap();
             assert!(extended.contains(&format!("`{head}`")), "{}", spec.name);
         }
+        // The programs the README lists for `--version` are exactly the ones
+        // of the grammar: the words in backticks after `for` (the clause that
+        // names them) and before the end of the line.
+        // English says `for`, Spanish `para`.
+        let tail = ["for `", "para `"]
+            .iter()
+            .find_map(|marker| extended.rsplit_once(marker))
+            .expect("the --version clause")
+            .1;
+        let mut listed: Vec<&str> = tail.split('`').step_by(2).collect();
+        listed.sort_unstable();
+        let mut want: Vec<&str> = (SPECS.iter())
+            .filter(|spec| spec.tier == Tier::Extended)
+            .filter_map(|spec| spec.name.strip_suffix(" --version"))
+            .collect();
+        want.sort_unstable();
+        assert_eq!(listed, want, "the README lists the --version programs");
     }
 }
 
