@@ -664,7 +664,7 @@ const BUILT_INS: [ToolDef; 32] = [
     },
     ToolDef {
         name: "run_in_pane",
-        description: "Type a shell command into the user's pane. The result says whether it was only typed or typed and run, and carries the output of a command that ran, which may be \"not available\". A single cd, pwd, ls, tree, find, grep or rg with plain or quoted paths (no &&, ;, |, $, * or redirections) can run directly inside the chat's folder when the user allows it. Anything else, git and mkdir included, waits for the user to approve it, and their y runs it. Prefer one simple command per call.",
+        description: "Run a shell command in the user's visible terminal pane. The user approves it with one key (a read-only command may run at once) and you receive its output. Never print a command for the user to copy or run: call this tool instead. If a command asks for a password, the user types it in the pane and you never see it.",
         access: Access::Write,
         family: Family::Pane,
         args: &[text("command")],
@@ -1402,29 +1402,21 @@ mod tests {
         }
     }
 
-    // The model reads this before it reads the prompt: what runs directly, and
-    // that the result says what happened. The same text in every mode (D18).
+    /// The text the spec pins (agent-tools, Model guidance).
+    const RUN_DESCRIPTION: &str = "Run a shell command in the user's visible terminal pane. The user approves it with one key (a read-only command may run at once) and you receive its output. Never print a command for the user to copy or run: call this tool instead. If a command asks for a password, the user types it in the pane and you never see it.";
+
+    // The model reads this before it reads the prompt: it runs commands
+    // itself. The same text in every mode and on every engine (D18, S4).
     #[test]
-    fn run_in_pane_says_what_runs_directly_and_what_waits() {
-        let tools = registry(&[]);
-        let run = tools.iter().find(|t| t.name == "run_in_pane").unwrap();
-        for needle in [
-            "only typed or typed and run",
-            "carries the output of a command that ran, which may be \"not available\"",
-            "cd, pwd, ls, tree, find, grep or rg with",
-            "plain or quoted paths",
-            "no &&, ;, |, $, * or redirections",
-            "can run directly inside the chat's folder when the user allows it",
-            "Anything else, git and mkdir included, waits for the user to approve it, and their y runs it",
-            "one simple command per call",
-        ] {
-            assert!(run.description.contains(needle), "{needle}");
+    fn run_in_pane_description_is_the_pinned_text_in_every_tool_set() {
+        let mut sets = vec![registry(&[])];
+        sets.push(registry_with(&[], FamilySet::LEGACY.with(Family::Write)));
+        sets.push(registry_with(&[], FamilySet::LEGACY.with(Family::Exec)));
+        for tools in sets {
+            let run = tools.iter().find(|t| t.name == "run_in_pane").unwrap();
+            assert_eq!(run.description, RUN_DESCRIPTION);
         }
-        // #439: what the model may change is the system prompt's to say: a
-        // turn with the write tools must not read "cannot change files" here.
-        assert!(!run.description.contains("cannot change files"));
-        assert!(run.description.len() < 640, "{}", run.description.len());
-        assert!(run.description.is_ascii());
+        assert!(RUN_DESCRIPTION.is_ascii());
     }
 
     #[test]

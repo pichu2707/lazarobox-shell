@@ -168,8 +168,7 @@ const TOOLS: &str = include_str!("prompts/tools.md");
 const COORDINATOR_TOOLS: &str = include_str!("prompts/coordinator_tools.md");
 
 /// The sentence of [`TOOLS`] that says the model cannot change files.
-const NO_CHANGES: &str =
-    "You cannot change files yourself; any change needs a command the user reviews and runs.";
+const NO_CHANGES: &str = "You cannot change files yourself; any change is a command you send with the tool, which the user approves.";
 
 /// What a turn that offers the write, exec or git write tools says instead of
 /// [`NO_CHANGES`]: it can do the work, and must finish every step (#439).

@@ -392,6 +392,21 @@ fn the_hint_of_a_model_run_says_y_runs_it() {
     assert_eq!(a.approval_prompt(id2()).unwrap().keys, TYPE_KEYS);
 }
 
+// A risk reason must not hide why `y` only types: both are on screen before
+// the key (manual run, S4).
+#[test]
+fn the_prompt_shows_the_blocker_next_to_the_risk_reason() {
+    let (mut a, turn) = run_live();
+    chat_mut(&mut a).set_approval_mode(ApprovalMode::Run);
+    shell_pty(&mut a).user_dirty = true;
+    announce(&mut a, turn, 1, run("cd a && ls"));
+    let prompt = a.approval_prompt(id2()).unwrap();
+    assert_eq!(prompt.keys, TYPE_KEYS);
+    let why = prompt.why.unwrap();
+    assert!(why.contains(HALF_TYPED), "{why}");
+    assert!(why.contains("shell metacharacter: `&&`"), "{why}");
+}
+
 // With the target pane gone `y` only shows the notice, so the hint must not
 // say it runs the command.
 #[test]
@@ -401,4 +416,20 @@ fn the_hint_does_not_advertise_running_when_the_target_is_gone() {
     assert_eq!(a.approval_prompt(id2()).unwrap().keys, RUN_KEYS);
     chat_mut(&mut a).set_run_target(None);
     assert_eq!(a.approval_prompt(id2()).unwrap().keys, TYPE_KEYS);
+}
+
+// Spec (agent-tools, Model guidance): a fenced shell block the model prints
+// is plain text; nothing is written to any pane.
+#[test]
+fn a_printed_bash_block_runs_nothing() {
+    use super::chat_live::{delta, finish};
+    let (mut a, turn) = super::tool_approval::live();
+    let mut effects = a.update(delta(turn, "Run this:\n```bash\nrm -rf ~\n```\n"));
+    effects.extend(a.update(finish(turn)));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::WritePty(..) | Effect::AutoRun { .. })),
+        "{effects:?}"
+    );
 }

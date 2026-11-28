@@ -249,7 +249,7 @@ Todo lo que no es escribir en un panel empieza por el prefijo `Ctrl+Espacio`; lu
 | `m`                       | Abre el menú                                                        |
 | `c`                       | Abre un chat de IA                                                  |
 | `n` / `o` / `s` / `T`     | En un chat: nota, bloque de memoria, resumen, etiquetas             |
-| `e` / `a`                 | En un chat: ejecutar su bloque de código en un panel, modo de aprobación |
+| `e` / `a`                 | En un chat: escribir su bloque de código en un panel, modo de aprobación |
 | `q`                       | Sale de lazarobox (pide confirmación)                               |
 | `W`                       | En un chat con el orquestador: abre la transcripción del worker seleccionado |
 | `r` `r` / `r` `d`         | En un chat con el orquestador: retoma / descarta la ejecución interrumpida (ver [Orquestador de agentes](#orquestador-de-agentes-experimental)) |
@@ -811,9 +811,21 @@ Límites de esta versión:
 
 ### Ejecutar un comando desde el chat
 
-Cuando la última respuesta de un chat termina con un bloque de código de shell (` ```bash `, `sh`, `shell` o `zsh`), una pista bajo el bloque nombra la combinación de teclas: `Ctrl+Space`, y después `e`. Funciona con cualquier motor, porque lee el bloque de la respuesta y no necesita nada del modelo.
+El modelo ejecuta los comandos él mismo: se le indica que llame a una herramienta para cada comando, que nunca imprima uno para que lo copies, y el flujo es el mismo en cualquier modo de aprobación y con cualquier motor.
 
-`e` abre una confirmación sobre el compositor: `run in pane N (<cwd>)`, el comando exacto y las teclas. El destino es el panel de shell de la pestaña actual que usaste por última vez; un chat o un panel de otra pestaña nunca es destino.
+1. El modelo pide ejecutar un comando. Por defecto (`ask`) se abre una confirmación sobre el compositor con el comando exacto, el panel de destino y las teclas `y run it · n cancel · p next pane`.
+2. Pulsas `y`. lazarobox escribe el comando en el panel, pulsa Enter una vez, espera a que termine y devuelve su salida al modelo, que sigue solo: nunca envías la salida ni un mensaje para continuar. Algunos motivos hacen que `y` solo la escriba, sin Enter (ver [modo `run`](#modo-run) para la lista, y macOS más abajo); entonces las teclas dicen `y type it (no Enter)` y el motivo se muestra antes de que pulses `y`.
+3. En modo `run` una lista corta de comandos de solo lectura se salta la confirmación y se ejecuta al instante (ver [Corre solo](#modo-run)); cualquier otro comando sigue pidiendo confirmación.
+
+Tres casos de ese flujo:
+
+- **Un comando que pide una contraseña (`sudo`).** El chat muestra `pane N: waiting for your input in the pane; type it there (it is never sent to the chat)`. Escribes la contraseña en el panel; nunca llega al modelo, y el chat sigue cuando el comando termina. Si pasan 5 minutos sin que escribas nada, la espera termina (ver «Salida que ve el modelo»).
+- **Un comando que sigue en marcha tras 30 s.** El modelo recibe `still running` con la salida hasta ese momento, el chat continúa, el comando sigue corriendo en el panel y, cuando termina, su salida final llega sola al modelo. No se vuelve a lanzar.
+- **macOS.** Allí `y` solo escribe el comando, sin Enter, y dice por qué antes de que pulses: `the pane's directory cannot be read on this system`. La carpeta del panel se lee mediante `/proc`, que macOS no tiene, así que lazarobox no puede comprobar que el panel sigue donde estaba; pulsas Enter tú.
+
+Un bloque de shell que el modelo imprima igualmente es texto normal: no se ejecuta nada. Cuando la última respuesta de un chat termina con uno (` ```bash `, `sh`, `shell` o `zsh`), una pista bajo el bloque, `Ctrl+Space e  type in pane`, ofrece tu propia combinación: `Ctrl+Space` y después `e`, que solo escribe el comando del bloque en un panel y nunca pulsa Enter. Funciona con cualquier motor, porque lee el bloque de la respuesta y no necesita nada del modelo.
+
+`e` abre una confirmación sobre el compositor: `type in pane N (<cwd>)`, el comando exacto y las teclas. El destino es el panel de shell de la pestaña actual que usaste por última vez; un chat o un panel de otra pestaña nunca es destino.
 
 | Tecla     | Acción                                                                 |
 | :-------- | :--------------------------------------------------------------------- |
@@ -822,7 +834,7 @@ Cuando la última respuesta de un chat termina con un bloque de código de shell
 | `p`       | Pasa el destino al siguiente panel de shell de la pestaña (da la vuelta al llegar al último). |
 | `Ctrl+C`  | Cancela la respuesta en curso y rechaza.                               |
 
-Cualquier otra tecla se descarta mientras la confirmación está abierta, y una tecla mantenida o un pegado nunca la responden. Revisas la línea escrita en tu propia shell y la ejecutas tú con Enter. Un comando de varias líneas se envía como un único pegado entre marcadores (_bracketed paste_), de modo que la shell lo muestra como un búfer editable; si la shell no pidió _bracketed paste_, un comando de varias líneas se rechaza. Un panel que ejecuta una aplicación a pantalla completa (un editor, un paginador) se rechaza, y el comando se vuelve a comprobar al pulsar `y`: los caracteres de control y las secuencias de escape hacen que se rechace, nunca se limpian.
+Cualquier otra tecla se descarta mientras la confirmación está abierta, y una tecla mantenida o un pegado nunca la responden. Con `e`, o cuando `y` solo puede escribirlo, revisas la línea escrita en tu propia shell y la ejecutas tú con Enter. Un comando de varias líneas se envía como un único pegado entre marcadores (_bracketed paste_), de modo que la shell lo muestra como un búfer editable; si la shell no pidió _bracketed paste_, un comando de varias líneas se rechaza. Un panel que ejecuta una aplicación a pantalla completa (un editor, un paginador) se rechaza, y el comando se vuelve a comprobar al pulsar `y`: los caracteres de control y las secuencias de escape hacen que se rechace, nunca se limpian.
 
 No existe «permitir siempre». Para desactivar la función, pon `enabled = false` en `[ai.tools]` de `config.toml`, o cambia la fila **Tools** del menú de IA (activada por defecto); la pista y la combinación de teclas desaparecen entonces. El menú solo escribe `ai.tools.enabled` y `ai.tools.approval`; nunca toca `[ai.mcp.*]`.
 
@@ -840,7 +852,7 @@ approval = "ask"
 
 #### Modo de aprobación
 
-Por defecto, cada comando que un modelo pide ejecutar necesita tu `y` (`approval = "ask"`). Con `y`, lazarobox escribe el comando, pulsa Enter, espera a que termine y devuelve su salida al modelo, en todos los modos: nunca lo envías a mano, y las teclas dicen `y run it · n cancel · p next pane`. Cuando `y` solo puede escribirlo (los casos, en el [modo `run`](#modo-run)), las teclas dicen `y type it (no Enter) · n cancel · p next pane` y el motivo se muestra antes de pulsar `y`. `auto` se eliminó: un `config.toml` que aún lo dice se lee como `ask` y se reescribe una vez (ver la clave `approval` más abajo). Las lecturas y todo lo demás conservan su aprobación habitual.
+Por defecto, cada comando que un modelo pide ejecutar necesita tu `y` (`approval = "ask"`), y `y` lo ejecuta en todos los modos (ver el flujo de arriba); las teclas dicen `y run it · n cancel · p next pane`. Cuando `y` solo puede escribirlo (los casos, en el [modo `run`](#modo-run)), las teclas dicen `y type it (no Enter) · n cancel · p next pane` y el motivo se muestra antes de pulsar `y`. `auto` se eliminó: un `config.toml` que aún lo dice se lee como `ask` y se reescribe una vez (ver la clave `approval` más abajo). Las lecturas y todo lo demás conservan su aprobación habitual.
 
 - Cambia entre `ask` y `run` en el chat enfocado con `Ctrl+Space` y después `a` (también funciona mientras hay una aprobación esperando, que sigue esperando). Una línea de sistema en el chat indica qué modo está activo.
 - Un chat en modo run lleva una insignia roja ` RUN `, arriba a la derecha de su panel, tenga el foco o no. En modo `ask`, o con las herramientas apagadas, no se dibuja nada.
@@ -858,13 +870,13 @@ Riesgos residuales de un comando que solo se escribe, sin Enter (diseño D18):
 
 #### Modo `run`
 
-En modo **run** un comando de búsqueda o navegación dentro de la carpeta del chat se escribe **y se ejecuta con Enter** sin preguntar, lazarobox espera a que termine y devuelve su salida al modelo. Cualquier otro comando pide confirmación (`y run it · n cancel · p next pane`), y con `y` lazarobox lo escribe, pulsa Enter, espera a que termine y devuelve su salida al modelo, igual que un comando que corre solo: `y` es tu permiso, también en `ask`. `run` es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
+En modo **run** un comando de solo lectura de la lista de «Corre solo» más abajo (búsqueda, navegación y, con un motor en la nube, más) se escribe **y se ejecuta con Enter** sin preguntar, lazarobox espera a que termine y devuelve su salida al modelo. Cualquier otro comando pide confirmación (`y run it · n cancel · p next pane`), y con `y` lazarobox lo escribe, pulsa Enter, espera a que termine y devuelve su salida al modelo, igual que un comando que corre solo: `y` es tu permiso, también en `ask`. `run` es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
 
 ![rg se ejecuta solo dentro de la carpeta del chat y su salida vuelve al modelo](docs/assets/run-search.gif)
 
 ![cd .. sale de la carpeta del chat, así que pide confirmación; con n se rechaza](docs/assets/run-outside.gif)
 
-**Con `y` se ejecuta.** El comando corre como uno que va solo: un Enter, como mucho 30 s de ejecución y la salida recortada a 8 KiB (las 100 primeras y las 100 últimas líneas). No cuenta para el límite de cinco comandos sin confirmar por turno. `y` solo lo escribe, sin Enter (la confirmación lo dice con `y type it (no Enter)` y muestra el motivo antes de pulsar `y`), y la línea del chat dice por qué (`not run: …`), cuando:
+**Con `y` se ejecuta.** El comando corre como uno que va solo: un Enter, la salida recortada a 8 KiB (las 100 primeras y las 100 últimas líneas), y un comando que sigue en marcha tras 30 s deja de esperarse y se sigue hasta que termina (ver las reglas de salida más abajo). No cuenta para el límite de cinco comandos sin confirmar por turno. `y` solo lo escribe, sin Enter (la confirmación lo dice con `y type it (no Enter)` y muestra el motivo antes de pulsar `y`), y la línea del chat dice por qué (`not run: …`), cuando:
 
 - la conversación leyó texto de GitHub (`auto-run is off: this conversation read GitHub text`);
 - el comando ocupa varias líneas (`a multi-line command is typed, not run`);
@@ -1096,7 +1108,7 @@ github = false     # gh_issue_list, gh_issue_view y gh_pr_view (solo lectura; ve
 issue_draft = true # gh_issue_draft: abre el formulario de Feedback con un borrador (ver Borrador de issue)
 ```
 
-La pestaña **Tools** del menú muestra las filas **Search**, **Write**, **Exec**, **Git**, **Git write**, **GitHub** e **Issue draft** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`); **GitHub** lleva la suya (`Reads issues and PRs; locks auto-run in that chat`), porque solo lee; **Approval** lleva `ask: y runs; run: safe reads alone, rest y; per chat` (`ask`: cada comando espera tu `y`, que lo ejecuta; `run` también pulsa Enter en los comandos de búsqueda y navegación `cd`, `pwd`, `ls`, `tree`, `find`, `grep` y `rg`, y todo lo demás, `git` y `gh` incluidos, pregunta; una conversación que leyó texto de GitHub nunca se ejecuta sola; el modo vale por chat). Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
+La pestaña **Tools** del menú muestra las filas **Search**, **Write**, **Exec**, **Git**, **Git write**, **GitHub** e **Issue draft** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`); **GitHub** lleva la suya (`Reads issues and PRs; locks auto-run in that chat`), porque solo lee; **Approval** lleva `ask: y runs; run: safe reads alone, rest y; per chat` (`ask`: cada comando espera tu `y`, que lo ejecuta; `run` también pulsa Enter en los comandos de solo lectura `cd`, `pwd`, `ls`, `tree`, `find`, `grep` y `rg` y, con un motor en la nube, también `cat`, `head`, `tail`, `wc`, `<programa> --version` y tres lecturas de `git` (ver la [lista del modo `run`](#modo-run)), y todo lo demás pregunta; una conversación que leyó texto de GitHub nunca se ejecuta sola; el modo vale por chat). Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
 
 #### Búsqueda: `glob` y `grep`
 

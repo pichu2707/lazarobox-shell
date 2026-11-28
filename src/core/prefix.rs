@@ -254,7 +254,7 @@ pub const PREFIX_TREE: &[Binding] = &[
     unhinted(act('o', "memory", PrefixAction::ToggleMemory)),
     unhinted(act('s', "summary", PrefixAction::Summarize)),
     // Left out of the hint for the same reason: the root hint is full.
-    unhinted(act('e', "run in pane", PrefixAction::RunInPane)),
+    unhinted(act('e', "type in pane", PrefixAction::RunInPane)),
     // Left out of the hint for the same reason: the root hint is full.
     unhinted(act('a', "approval: ask/run", PrefixAction::ToggleApproval)),
     // `w` is the window group, so Write takes `f` (files). Both only open the
@@ -679,7 +679,7 @@ mod tests {
             );
         }
         assert!(Line::from(hint(PREFIX_TREE, 80)).width() <= 80);
-        assert!(!hint(PREFIX_TREE, 80).contains("run in pane"));
+        assert!(!hint(PREFIX_TREE, 80).contains("type in pane"));
     }
 
     // Spec (modal-input, approval toggle): `a` is an unhinted root leaf with a
