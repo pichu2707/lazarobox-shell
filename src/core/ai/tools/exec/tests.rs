@@ -837,6 +837,15 @@ fn the_run_verbs_are_the_same_in_the_hint_and_the_readmes() {
         for verb in &verbs {
             assert!(line.contains(&format!("`{verb}`")), "{verb}");
         }
+        // The Extended tier is in the grammar section too.
+        let extended = readme
+            .lines()
+            .find(|l| l.starts_with("- ") && l.contains("`cat`") && l.contains("`--version`"))
+            .expect("the README documents the Extended grammar");
+        for spec in SPECS.iter().filter(|spec| spec.tier == Tier::Extended) {
+            let head = spec.name.split(' ').next().unwrap();
+            assert!(extended.contains(&format!("`{head}`")), "{}", spec.name);
+        }
     }
 }
 
@@ -974,6 +983,10 @@ fn the_new_verbs_ask_for_every_bypass_row() {
         "./evil --version",
         "a.b --version",
         "evil --version x",
+        "/bin/cat a",
+        "'cat' a",
+        "\"head\" a",
+        "tail -5 -f a",
     ] {
         for local in [false, true] {
             assert!(parse_for(text, local).is_err(), "{text:?} local={local}");

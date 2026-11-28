@@ -21,7 +21,10 @@ use crate::{
             },
             tools::{
                 exec::{Verb, parse_for},
-                paths::{PathVerdict, SecretRoots, is_excluded_name, is_git_config, resolve_exec},
+                paths::{
+                    PathVerdict, SecretRoots, Want, is_excluded_name, is_git_config,
+                    is_git_fetch_head, resolve_exec,
+                },
             },
         },
         layout::PaneId,
@@ -36,6 +39,10 @@ const NO_ROOTS: &str = "the secret locations cannot be read";
 /// Why a search does not run on its own: its folder holds more entries than
 /// the check looks at.
 pub const TOO_LARGE: &str = "the folder is too large to check";
+/// Why a read verb does not run on its own: the path is not a regular file (a
+/// FIFO would block the pane, a device or a socket is no file, a folder is an
+/// error).
+pub const NOT_A_FILE: &str = "a path in the command is not a regular file";
 /// The most entries the check of a `grep -r` or an `rg` looks at.
 pub const MAX_SEARCHED: usize = 5_000;
 /// Why an `rg` does not run on its own: a folder or an ignore file below
@@ -115,7 +122,7 @@ pub fn check(
     scope: &RunScope,
 ) -> RunEvent {
     let refused = |reason| RunEvent::Refused { call, reason };
-    let safe = match parse_for(command, !scope.cloud) {
+    let safe = match parse_for(command, scope.local) {
         Ok(safe) => safe,
         Err(fallback) => return refused(fallback.why),
     };
@@ -142,8 +149,17 @@ pub fn check(
             safe.verb(),
             Verb::Grep | Verb::Rg | Verb::Cat | Verb::Head | Verb::Tail | Verb::Wc
         );
-        if reads && (is_git_config(Path::new(target.input)) || is_git_config(&real)) {
+        if reads && (git_secret(Path::new(target.input)) || git_secret(&real)) {
             return refused(NOT_ALLOWED);
+        }
+        // These read the file itself, never a folder: a FIFO, a device or a
+        // socket may block the pane or never end. A missing path never gets here:
+        // it does not resolve.
+        if matches!(safe.verb(), Verb::Cat | Verb::Head | Verb::Tail | Verb::Wc)
+            && target.want == Want::Home
+            && std::fs::metadata(&real).is_ok_and(|meta| !meta.is_file())
+        {
+            return refused(NOT_A_FILE);
         }
         if target.confined && !real.starts_with(&root) {
             outside = true;
@@ -164,6 +180,11 @@ pub fn check(
         cwd,
         cd_target,
     }
+}
+
+/// A git file that can hold the URL of a remote with a credential.
+fn git_secret(path: &Path) -> bool {
+    is_git_config(path) || is_git_fetch_head(path)
 }
 
 /// Whether `verb` may walk `real`, a resolved path, on its own. No secret
@@ -207,7 +228,7 @@ fn searchable(
 /// Whether a search would read something it must not: an entry that is
 /// sensitive by name, by position or as a git setting.
 fn sensitive(roots: &SecretRoots, path: &Path, name: &OsStr) -> bool {
-    is_excluded_name(&name.to_string_lossy()) || is_git_config(path) || !roots.judge_real(path)
+    is_excluded_name(&name.to_string_lossy()) || git_secret(path) || !roots.judge_real(path)
 }
 
 /// The walk of `grep -r`: every entry below `real`, hidden ones too, as
@@ -494,6 +515,7 @@ mod tests {
         RunScope {
             root: PathBuf::from("/"),
             cloud: false,
+            local: true,
         }
     }
 
@@ -707,6 +729,7 @@ mod tests {
         RunScope {
             root: root.to_path_buf(),
             cloud,
+            local: !cloud,
         }
     }
 
@@ -1507,6 +1530,85 @@ mod tests {
         assert!(checked(&run_in(
             &f, "dev/proj", false, "dev/proj", "ls src"
         )));
+    }
+
+    // One definition of locality: an engine outside the catalog has strict
+    // paths (`cloud`) and the base tier (`local`), as `local_tier` says.
+    #[test]
+    fn an_unknown_engine_parses_as_local_in_the_check() {
+        let f = fixture();
+        project(&f);
+        let unknown = RunScope {
+            root: f.home.join("dev/proj"),
+            cloud: true,
+            local: true,
+        };
+        let event = check(
+            &env(Some(&f.home)),
+            CallId(4),
+            f.home.join("dev/proj"),
+            "cat src/main.rs",
+            &unknown,
+        );
+        assert_eq!(reason(&event), Some(LOCAL_ASKS));
+    }
+
+    // S3b: the read verbs read regular files only: a FIFO would block the
+    // pane, a device or a socket is no file, a folder is an error.
+    #[test]
+    fn the_read_verbs_refuse_what_is_not_a_regular_file() {
+        let f = fixture();
+        project(&f);
+        let fifo = f.home.join("dev/proj/pipe");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        assert!(made.is_ok_and(|s| s.success()), "mkfifo");
+        std::os::unix::fs::symlink(&fifo, f.home.join("dev/proj/link")).unwrap();
+        for verb in ["cat", "head -n 5", "tail -n 5", "wc -l"] {
+            for target in ["pipe", "link", "src"] {
+                let command = format!("{verb} {target}");
+                let event = run_in(&f, "dev/proj", true, "dev/proj", &command);
+                assert_eq!(reason(&event), Some(NOT_A_FILE), "{command}: {event:?}");
+            }
+        }
+    }
+
+    // `.git/FETCH_HEAD` can hold the URL of a remote with a token, like
+    // `.git/config`.
+    #[test]
+    fn fetch_head_is_refused_like_the_git_config() {
+        let f = fixture();
+        project(&f);
+        fs::write(
+            f.home.join("dev/proj/.git/FETCH_HEAD"),
+            "abc\t\thttps://user:token@host/r\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            f.home.join("dev/proj/.git/FETCH_HEAD"),
+            f.home.join("dev/proj/fh"),
+        )
+        .unwrap();
+        for verb in [
+            "cat",
+            "head -n 5",
+            "tail -n 5",
+            "wc -l",
+            "grep foo",
+            "rg foo",
+        ] {
+            for target in [".git/FETCH_HEAD", "./.git/../.git/FETCH_HEAD", "fh"] {
+                let command = format!("{verb} {target}");
+                for cloud in [false, true] {
+                    let event = run_in(&f, "dev/proj", cloud, "dev/proj", &command);
+                    let want = if cloud || !verb.starts_with(['c', 'h', 't', 'w']) {
+                        Some(NOT_ALLOWED)
+                    } else {
+                        Some(LOCAL_ASKS)
+                    };
+                    assert_eq!(reason(&event), want, "{command} cloud={cloud}");
+                }
+            }
+        }
     }
 
     // The disk work is bounded: a slow answer becomes a refusal.

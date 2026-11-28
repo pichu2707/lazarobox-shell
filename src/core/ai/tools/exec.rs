@@ -1,8 +1,11 @@
 //! The grammar of the commands that `run` mode may type AND execute.
 //!
 //! Allow-list, no deny-list: navigation (`cd`, `pwd`, `ls`, `tree`) and
-//! search (`grep`, `rg`, `find`), each with only the flags of [`SPECS`], and
-//! at most [`MAX_WORDS`] words. No verb writes, and no allowed flag runs
+//! search (`grep`, `rg`, `find`), each with only the flags of `SPECS`, and
+//! at most [`MAX_WORDS`] words. These seven are the base tier. The Extended
+//! tier (`cat`, `head`, `tail`, `wc` and `<program> --version` for a fixed
+//! list of ten) is for cloud engines only: [`parse_for`] with `local` set
+//! refuses it with [`LOCAL_ASKS`]. No verb writes, and no allowed flag runs
 //! another program or writes a file (`find -exec`/`-delete`/`-fprint` and
 //! `rg --pre`/`-z` are not in the lists). `git` is not a safe command: its
 //! repository can make it run a program (L32). A word is unquoted
@@ -15,7 +18,7 @@
 //! Anything else, shell metacharacters, controls, format characters, other
 //! whitespace and combining marks included, is a [`Fallback`] to the prompt.
 //!
-//! Invariant: checked bytes == written bytes. [`parse`] never rewrites, it
+//! Invariant: checked bytes == written bytes. [`parse_for`] never rewrites, it
 //! borrows slices of its input, and every accepted text is a fixed point of
 //! [`validate`](super::command::validate). The decision is pure: it reads no
 //! environment, and the parser allocates nothing.
@@ -193,7 +196,7 @@ pub fn parse(text: &str) -> Result<SafeCommand<'_>, Fallback> {
 }
 
 /// Decides in one pass whether `text` may run without a prompt on an engine
-/// that is `local` or not: a local engine runs only the [`Tier::Base`]
+/// that is `local` or not: a local engine runs only the `Tier::Base`
 /// entries, and every other command is a [`Fallback`].
 pub fn parse_for(text: &str, local: bool) -> Result<SafeCommand<'_>, Fallback> {
     parse_in(text, &SPECS, local)

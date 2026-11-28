@@ -243,16 +243,16 @@ Per-program allow-list (any flag not listed makes the command ask; short flags m
 | `tree` | `-d`, optional `-L <1-2 digits>`, zero or one path | never `-o` |
 | `cat` | `-n`, 1 to 4 paths | no `-` (stdin) |
 | `head`, `tail` | `-n <N>` or `-<N>` (N up to 4 digits), 1 to 4 paths | never `-f`, `-F`, `--follow` (they never end) |
-| `wc` | `-l -w -c`, up to 4 paths | |
+| `wc` | `-l -w -c`, 1 to 4 paths | no stdin: a read verb without a path asks |
 | `rg`, `grep` | `-n -i -l -c -w -F`, plus `-r` for `grep`; one pattern word, up to 4 paths | never `--pre`, `-z`, `--search-zip`, `--hostname-bin`, `-f`, `-e` |
 | `which`, `whoami`, `uname` | `uname -a`, `uname -r`; the others none | |
 | `file`, `stat` | 1 to 4 paths, no flags | |
 | `git status` | `-s -b --short --branch`, up to 4 paths | |
 | `git --no-pager diff` | one of `--stat --name-only --name-status` is required; plus `--cached --staged`, up to 4 paths | plain `git --no-pager diff` (content) asks, as do `log -p` and `show`; never `--output`, `--ext-diff`, `--textconv` (owner decision 2026-11-22) |
 | `git --no-pager log` | `-n <N>` is required; plus `--oneline --stat`, up to 4 paths | never `--output`; `log` without `-n` asks |
-| any bare program name | exactly one argument, `--version` or `-V` | for example `node --version`; the name matches `[a-z0-9_-]+` |
+| `git`, `rg`, `fd`, `bat`, `jq`, `gh`, `docker`, `make`, `tmux`, `curl` | exactly one argument, `--version` | a fixed list of ten (design D6), `--version` only, never `-V`; any other program (`node`, `python3`, `cargo`, `npm`…) asks, as these are often shims |
 
-For `git`, `status` is the second word; `log` and `diff` MUST be written `git --no-pager log` and `git --no-pager diff` (a pager in a pty waits for keys). `--no-pager` is the only global option allowed before the subcommand: any other (`-c`, `-C`, `--git-dir`, `--work-tree`, `--exec-path`) makes the command ask. There are no pipes: a pipe is a shell metacharacter and the command asks. Path arguments MUST pass the path policy of pane-execution, Path policy against the real cwd, for the verbs it names, and for `cat`, `head`, `tail`, `wc`, `rg`, `grep`, `file`, `stat`, `git` paths with the same secret and credential rules (a secret path makes the command ask). `sudo`, `su`, `doas`, `env`, `xargs`, `sh`, `bash`, `zsh`, `eval`, `exec`, `time`, `nohup`, `find`, `sed`, `awk`, `tee`, `dd`, `rm`, `mv`, `cp`, `mkdir`, `touch`, `chmod`, `curl`, `wget`, `npm`, `pip`, `cargo`, `apt`, `brew` and every program not in the table MUST be ask. `sudo` MUST be ask wherever it appears, as the first word. `mkdir` is no longer read-only: it asks, inside the project too.
+For `git`, `status` is the second word; `log` and `diff` MUST be written `git --no-pager log` and `git --no-pager diff` (a pager in a pty waits for keys). `--no-pager` is the only global option allowed before the subcommand: any other (`-c`, `-C`, `--git-dir`, `--work-tree`, `--exec-path`) makes the command ask. There are no pipes: a pipe is a shell metacharacter and the command asks. Path arguments MUST pass the path policy of pane-execution, Path policy against the real cwd, for the verbs it names, and for `cat`, `head`, `tail`, `wc`, `rg`, `grep`, `file`, `stat`, `git` paths with the same secret and credential rules (a secret path makes the command ask). `sudo`, `su`, `doas`, `env`, `xargs`, `sh`, `bash`, `zsh`, `eval`, `exec`, `time`, `nohup`, `find`, `sed`, `awk`, `tee`, `dd`, `rm`, `mv`, `cp`, `mkdir`, `touch`, `chmod`, `wget`, `npm`, `pip`, `cargo`, `apt`, `brew` and every program not in the table MUST be ask. `sudo` MUST be ask wherever it appears, as the first word. `mkdir` is no longer read-only: it asks, inside the project too.
 
 | Command | Result | Why |
 |---|---|---|
