@@ -118,9 +118,9 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 
 ## S4: Guidance and docs (base: main after S3c)
 
-- [ ] 4.1 RED tests: `run_in_pane` description exact and identical in both modes and engine kinds; `tools.md`, description and `RUN_HINT` contain none of `press Enter`, `type it`, `auto`, `you run`; `RUN_HINT` = `Ctrl+Space e  type in pane`; printed bash block runs nothing.
-- [ ] 4.2 GREEN `prompts/tools.md`, `tools/mod.rs`, `chat/transcript.rs`.
-- [ ] 4.3 Docs: README.md + README.es.md same sections and order (flow, modes, unprompted list, sudo, 30 s, macOS `y` only types); CHANGELOG. Exit gate.
+- [x] 4.1 RED tests: `run_in_pane` description exact and identical in both modes and engine kinds; `tools.md`, description and `RUN_HINT` contain none of `press Enter`, `type it`, `auto`, `you run`; `RUN_HINT` = `Ctrl+Space e  type in pane`; printed bash block runs nothing.
+- [x] 4.2 GREEN `prompts/tools.md`, `tools/mod.rs`, `chat/transcript.rs`. (Also `NO_CHANGES` in `prompts.rs`, the golden JSON and the `run_pane`/snapshot hint tests; the tools block cap in `prompts/tests.rs` went from 1209 to 1400 bytes.)
+- [x] 4.3 Docs: README.md + README.es.md same sections and order (flow, modes, unprompted list, sudo, 30 s, macOS `y` only types); CHANGELOG. Exit gate.
 - [ ] 4.4 `[manual]` end to end: ask the chat to install a small tool in an isolated home; one `y`, chat reports the result.
 
 ## Close-out

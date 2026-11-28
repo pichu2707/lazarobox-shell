@@ -811,7 +811,19 @@ Limits of this version:
 
 ### Run a command from the chat
 
-When the last answer of a chat ends with a shell code block (` ```bash `, `sh`, `shell` or `zsh`), a hint under the block names the binding: `Ctrl+Space`, then `e`. It works with every engine, because it reads the block of the answer and needs nothing from the model.
+The model runs commands itself: it is told to call a tool for every command, never to print one for you to copy, and the flow is the same in every approval mode and with every engine.
+
+1. The model asks to run one command. By default (`ask`) a confirmation opens over the composer with the exact command, the target pane and the keys `y run it · n cancel · p next pane`.
+2. You press `y`. lazarobox types the command in the pane, presses Enter once, waits for it to end and returns its output to the model, which goes on by itself: you never send the output or a message to continue.
+3. In `run` mode a short list of read-only commands skips the confirmation and runs at once (see [Runs on its own](#run-mode)); every other command still asks.
+
+Three cases of that flow:
+
+- **A command that asks for a password (`sudo`).** The chat shows `pane N: waiting for your input in the pane; type it there (it is never sent to the chat)`. You type the password in the pane; it never reaches the model, and the chat goes on when the command ends.
+- **A command that is still running after 30 s.** The model receives `still running` with the output so far, the chat goes on, the command keeps running in the pane, and when it ends its final output reaches the model by itself. It is not started again.
+- **macOS.** There `y` only types the command, without Enter, and says why before you press it: `the pane's directory cannot be read on this system`. The pane's folder is read through `/proc`, which macOS does not have, so lazarobox cannot check that the pane is where it was; you press Enter yourself.
+
+A shell block that the model prints anyway is plain text: nothing runs. When the last answer of a chat ends with one (` ```bash `, `sh`, `shell` or `zsh`), a hint under the block, `Ctrl+Space e  type in pane`, offers your own binding: `Ctrl+Space`, then `e`, which only types the block's command in a pane and never presses Enter. It works with every engine, because it reads the block of the answer and needs nothing from the model.
 
 `e` opens a confirmation over the composer: `run in pane N (<cwd>)`, the exact command and the keys. The target is the shell pane of the current tab that you used last; a chat or a pane of another tab is never a target.
 
@@ -822,7 +834,7 @@ When the last answer of a chat ends with a shell code block (` ```bash `, `sh`, 
 | `p`       | Moves the target to the next shell pane of the tab (with wrap).        |
 | `Ctrl+C`  | Cancels the answer in progress and declines.                           |
 
-Every other key is swallowed while the confirmation is open, and a held key or a paste never answers it. You review the typed line in your own shell and run it yourself with Enter. A multi-line command is sent as one bracketed paste, so the shell shows it as an editable buffer; if the shell did not ask for bracketed paste, a multi-line command is refused. A pane that runs a full-screen app (an editor, a pager) is refused, and the command is checked again when you press `y`: control characters and escape sequences make it be refused, never cleaned.
+Every other key is swallowed while the confirmation is open, and a held key or a paste never answers it. With `e`, or when `y` can only type, you review the typed line in your own shell and run it yourself with Enter. A multi-line command is sent as one bracketed paste, so the shell shows it as an editable buffer; if the shell did not ask for bracketed paste, a multi-line command is refused. A pane that runs a full-screen app (an editor, a pager) is refused, and the command is checked again when you press `y`: control characters and escape sequences make it be refused, never cleaned.
 
 There is no "always allow". To turn the feature off, set `enabled = false` in `[ai.tools]` of `config.toml`, or flip the **Tools** row of the AI menu (on by default); the hint and the binding then disappear. The menu writes only `ai.tools.enabled` and `ai.tools.approval`; it never touches `[ai.mcp.*]`.
 
@@ -840,7 +852,7 @@ approval = "ask"
 
 #### Approval mode
 
-By default every command a model asks to run needs your `y` (`approval = "ask"`). With `y`, lazarobox types the command, presses Enter, waits for it to finish and returns its output to the model, in every mode: you never send it by hand, and the keys read `y run it · n cancel · p next pane`. When `y` can only type it (see [`run` mode](#run-mode) for the cases), the keys read `y type it (no Enter) · n cancel · p next pane` and the reason is shown before you press `y`. `auto` was removed: a `config.toml` that still says it reads as `ask` and is rewritten once (see the `approval` key below). Reads and everything else keep their usual approval.
+By default every command a model asks to run needs your `y` (`approval = "ask"`), and `y` runs it in every mode (see the flow above); the keys read `y run it · n cancel · p next pane`. When `y` can only type it (see [`run` mode](#run-mode) for the cases), the keys read `y type it (no Enter) · n cancel · p next pane` and the reason is shown before you press `y`. `auto` was removed: a `config.toml` that still says it reads as `ask` and is rewritten once (see the `approval` key below). Reads and everything else keep their usual approval.
 
 - Cycle `ask` and `run` for the focused chat with `Ctrl+Space`, then `a` (it also works while an approval is waiting, which stays waiting). A system line in the chat says which mode is on.
 - A chat in run mode wears a red ` RUN ` badge, at the top right of its pane, focused or not. Nothing is drawn in `ask` mode, or with tools off.
@@ -864,7 +876,7 @@ In **run** mode a search or navigation command inside the chat folder is typed *
 
 ![cd .. leaves the chat folder, so it asks for confirmation; with n it is rejected](docs/assets/run-outside.gif)
 
-**With `y` it runs.** The command runs like one that goes on its own: one Enter, at most 30 s of running time and the output trimmed to 8 KiB (the first 100 and last 100 lines). It does not count toward the limit of five unconfirmed commands per turn. `y` only types it, without Enter (the confirmation says so with `y type it (no Enter)` and shows the reason before you press `y`), and the chat line says why (`not run: …`), when:
+**With `y` it runs.** The command runs like one that goes on its own: one Enter, the output trimmed to 8 KiB (the first 100 and last 100 lines), and a command that is still running after 30 s is cut from the wait and followed until it ends (see the output rules below). It does not count toward the limit of five unconfirmed commands per turn. `y` only types it, without Enter (the confirmation says so with `y type it (no Enter)` and shows the reason before you press `y`), and the chat line says why (`not run: …`), when:
 
 - the conversation read GitHub text (`auto-run is off: this conversation read GitHub text`);
 - the command spans several lines (`a multi-line command is typed, not run`);

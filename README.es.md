@@ -811,7 +811,19 @@ Límites de esta versión:
 
 ### Ejecutar un comando desde el chat
 
-Cuando la última respuesta de un chat termina con un bloque de código de shell (` ```bash `, `sh`, `shell` o `zsh`), una pista bajo el bloque nombra la combinación de teclas: `Ctrl+Space`, y después `e`. Funciona con cualquier motor, porque lee el bloque de la respuesta y no necesita nada del modelo.
+El modelo ejecuta los comandos él mismo: se le indica que llame a una herramienta para cada comando, que nunca imprima uno para que lo copies, y el flujo es el mismo en cualquier modo de aprobación y con cualquier motor.
+
+1. El modelo pide ejecutar un comando. Por defecto (`ask`) se abre una confirmación sobre el compositor con el comando exacto, el panel de destino y las teclas `y run it · n cancel · p next pane`.
+2. Pulsas `y`. lazarobox escribe el comando en el panel, pulsa Enter una vez, espera a que termine y devuelve su salida al modelo, que sigue solo: nunca envías la salida ni un mensaje para continuar.
+3. En modo `run` una lista corta de comandos de solo lectura se salta la confirmación y se ejecuta al instante (ver [Corre solo](#modo-run)); cualquier otro comando sigue pidiendo confirmación.
+
+Tres casos de ese flujo:
+
+- **Un comando que pide una contraseña (`sudo`).** El chat muestra `pane N: waiting for your input in the pane; type it there (it is never sent to the chat)`. Escribes la contraseña en el panel; nunca llega al modelo, y el chat sigue cuando el comando termina.
+- **Un comando que sigue en marcha tras 30 s.** El modelo recibe `still running` con la salida hasta ese momento, el chat continúa, el comando sigue corriendo en el panel y, cuando termina, su salida final llega sola al modelo. No se vuelve a lanzar.
+- **macOS.** Allí `y` solo escribe el comando, sin Enter, y dice por qué antes de que pulses: `the pane's directory cannot be read on this system`. La carpeta del panel se lee mediante `/proc`, que macOS no tiene, así que lazarobox no puede comprobar que el panel sigue donde estaba; pulsas Enter tú.
+
+Un bloque de shell que el modelo imprima igualmente es texto normal: no se ejecuta nada. Cuando la última respuesta de un chat termina con uno (` ```bash `, `sh`, `shell` o `zsh`), una pista bajo el bloque, `Ctrl+Space e  type in pane`, ofrece tu propia combinación: `Ctrl+Space` y después `e`, que solo escribe el comando del bloque en un panel y nunca pulsa Enter. Funciona con cualquier motor, porque lee el bloque de la respuesta y no necesita nada del modelo.
 
 `e` abre una confirmación sobre el compositor: `run in pane N (<cwd>)`, el comando exacto y las teclas. El destino es el panel de shell de la pestaña actual que usaste por última vez; un chat o un panel de otra pestaña nunca es destino.
 
@@ -822,7 +834,7 @@ Cuando la última respuesta de un chat termina con un bloque de código de shell
 | `p`       | Pasa el destino al siguiente panel de shell de la pestaña (da la vuelta al llegar al último). |
 | `Ctrl+C`  | Cancela la respuesta en curso y rechaza.                               |
 
-Cualquier otra tecla se descarta mientras la confirmación está abierta, y una tecla mantenida o un pegado nunca la responden. Revisas la línea escrita en tu propia shell y la ejecutas tú con Enter. Un comando de varias líneas se envía como un único pegado entre marcadores (_bracketed paste_), de modo que la shell lo muestra como un búfer editable; si la shell no pidió _bracketed paste_, un comando de varias líneas se rechaza. Un panel que ejecuta una aplicación a pantalla completa (un editor, un paginador) se rechaza, y el comando se vuelve a comprobar al pulsar `y`: los caracteres de control y las secuencias de escape hacen que se rechace, nunca se limpian.
+Cualquier otra tecla se descarta mientras la confirmación está abierta, y una tecla mantenida o un pegado nunca la responden. Con `e`, o cuando `y` solo puede escribirlo, revisas la línea escrita en tu propia shell y la ejecutas tú con Enter. Un comando de varias líneas se envía como un único pegado entre marcadores (_bracketed paste_), de modo que la shell lo muestra como un búfer editable; si la shell no pidió _bracketed paste_, un comando de varias líneas se rechaza. Un panel que ejecuta una aplicación a pantalla completa (un editor, un paginador) se rechaza, y el comando se vuelve a comprobar al pulsar `y`: los caracteres de control y las secuencias de escape hacen que se rechace, nunca se limpian.
 
 No existe «permitir siempre». Para desactivar la función, pon `enabled = false` en `[ai.tools]` de `config.toml`, o cambia la fila **Tools** del menú de IA (activada por defecto); la pista y la combinación de teclas desaparecen entonces. El menú solo escribe `ai.tools.enabled` y `ai.tools.approval`; nunca toca `[ai.mcp.*]`.
 
@@ -840,7 +852,7 @@ approval = "ask"
 
 #### Modo de aprobación
 
-Por defecto, cada comando que un modelo pide ejecutar necesita tu `y` (`approval = "ask"`). Con `y`, lazarobox escribe el comando, pulsa Enter, espera a que termine y devuelve su salida al modelo, en todos los modos: nunca lo envías a mano, y las teclas dicen `y run it · n cancel · p next pane`. Cuando `y` solo puede escribirlo (los casos, en el [modo `run`](#modo-run)), las teclas dicen `y type it (no Enter) · n cancel · p next pane` y el motivo se muestra antes de pulsar `y`. `auto` se eliminó: un `config.toml` que aún lo dice se lee como `ask` y se reescribe una vez (ver la clave `approval` más abajo). Las lecturas y todo lo demás conservan su aprobación habitual.
+Por defecto, cada comando que un modelo pide ejecutar necesita tu `y` (`approval = "ask"`), y `y` lo ejecuta en todos los modos (ver el flujo de arriba); las teclas dicen `y run it · n cancel · p next pane`. Cuando `y` solo puede escribirlo (los casos, en el [modo `run`](#modo-run)), las teclas dicen `y type it (no Enter) · n cancel · p next pane` y el motivo se muestra antes de pulsar `y`. `auto` se eliminó: un `config.toml` que aún lo dice se lee como `ask` y se reescribe una vez (ver la clave `approval` más abajo). Las lecturas y todo lo demás conservan su aprobación habitual.
 
 - Cambia entre `ask` y `run` en el chat enfocado con `Ctrl+Space` y después `a` (también funciona mientras hay una aprobación esperando, que sigue esperando). Una línea de sistema en el chat indica qué modo está activo.
 - Un chat en modo run lleva una insignia roja ` RUN `, arriba a la derecha de su panel, tenga el foco o no. En modo `ask`, o con las herramientas apagadas, no se dibuja nada.
@@ -864,7 +876,7 @@ En modo **run** un comando de búsqueda o navegación dentro de la carpeta del c
 
 ![cd .. sale de la carpeta del chat, así que pide confirmación; con n se rechaza](docs/assets/run-outside.gif)
 
-**Con `y` se ejecuta.** El comando corre como uno que va solo: un Enter, como mucho 30 s de ejecución y la salida recortada a 8 KiB (las 100 primeras y las 100 últimas líneas). No cuenta para el límite de cinco comandos sin confirmar por turno. `y` solo lo escribe, sin Enter (la confirmación lo dice con `y type it (no Enter)` y muestra el motivo antes de pulsar `y`), y la línea del chat dice por qué (`not run: …`), cuando:
+**Con `y` se ejecuta.** El comando corre como uno que va solo: un Enter, la salida recortada a 8 KiB (las 100 primeras y las 100 últimas líneas), y un comando que sigue en marcha tras 30 s deja de esperarse y se sigue hasta que termina (ver las reglas de salida más abajo). No cuenta para el límite de cinco comandos sin confirmar por turno. `y` solo lo escribe, sin Enter (la confirmación lo dice con `y type it (no Enter)` y muestra el motivo antes de pulsar `y`), y la línea del chat dice por qué (`not run: …`), cuando:
 
 - la conversación leyó texto de GitHub (`auto-run is off: this conversation read GitHub text`);
 - el comando ocupa varias líneas (`a multi-line command is typed, not run`);
