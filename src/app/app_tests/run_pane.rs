@@ -285,7 +285,7 @@ fn the_label_names_the_pane_number_and_a_tilde_cwd() {
     press(&mut a, "c");
     answer(&mut a, id2(), BLOCK);
     press(&mut a, "e");
-    assert_eq!(label(&a, id2()), "run in pane 1 (~/dev)");
+    assert_eq!(label(&a, id2()), "type in pane 1 (~/dev)");
 }
 
 #[test]
@@ -301,7 +301,7 @@ fn the_label_has_no_control_characters() {
     answer(&mut a, id2(), BLOCK);
     press(&mut a, "e");
     let text = label(&a, id2());
-    assert!(text.starts_with("run in pane 1 (/tmp/"), "{text:?}");
+    assert!(text.starts_with("type in pane 1 (/tmp/"), "{text:?}");
     assert!(
         !text.chars().any(|c| c.is_control() || c == '\u{202e}'),
         "{text:?}"
@@ -335,7 +335,7 @@ fn the_screen_shows_the_hint_then_the_prompt_and_then_neither() {
     assert!(screen(&a).contains("Ctrl+Space e  type in pane"));
     press(&mut a, "e");
     let shot = screen(&a);
-    assert!(shot.contains("run in pane 1 (/launch)"), "{shot}");
+    assert!(shot.contains("type in pane 1 (/launch)"), "{shot}");
     assert!(shot.contains("y type it (no Enter)"), "{shot}");
     a.update(key('n'));
     let shot = screen(&a);

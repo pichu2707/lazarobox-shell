@@ -613,10 +613,17 @@ impl App {
                 let runs = approval.call().is_some() && blocker.is_none() && live_target.is_some();
                 if let Some(block) = chat.block_why().filter(|_| approval.call().is_some()) {
                     why = Some(block.reason().to_owned());
-                } else if why.is_none() {
-                    why = blocker.map(str::to_owned);
+                } else if let Some(blocker) = blocker {
+                    // The risk reason stays; the blocker says why `y` types.
+                    why = Some(match why {
+                        Some(risk) => format!("{blocker}; {risk}"),
+                        None => blocker.to_owned(),
+                    });
                 }
-                let target = chat.run_target().and_then(|pane| self.pane_label(pane));
+                let verb = if runs { "run" } else { "type" };
+                let target = chat
+                    .run_target()
+                    .and_then(|pane| self.pane_label(pane, verb));
                 Some(ApprovalPrompt {
                     target: target.unwrap_or_else(|| "target pane is gone".to_owned()),
                     command: command.clone(),
@@ -885,17 +892,18 @@ impl App {
         }
     }
 
-    /// `run in pane N (<cwd>)` for a shell pane of the active tab; `None`
+    /// `<verb> in pane N (<cwd>)` for a shell pane of the active tab, with
+    /// `run` when `y` presses Enter and `type` when it only types; `None`
     /// when it is not one. The cwd is cleaned: it is text from the shell.
-    fn pane_label(&self, pane: PaneId) -> Option<String> {
+    fn pane_label(&self, pane: PaneId, verb: &str) -> Option<String> {
         let number = self.pane_number(pane)?;
         let state = self.panes.get(&pane).filter(|s| s.pty().is_some())?;
         Some(match state.effective_cwd() {
             Some(cwd) => format!(
-                "run in pane {number} ({})",
+                "{verb} in pane {number} ({})",
                 sanitize::clean(&self.home_label(cwd))
             ),
-            None => format!("run in pane {number}"),
+            None => format!("{verb} in pane {number}"),
         })
     }
 }
