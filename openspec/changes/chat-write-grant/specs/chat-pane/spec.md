@@ -1,5 +1,7 @@
 # Delta for chat-pane
 
+> **Rebase note (refreshed 2026-11-28).** The BASE text below is stale: the base cites `openspec/specs/chat-pane/spec.md:824-850` (now about `:836`), still has the ` AUTO ` badge, its narrow-pane rule and scenarios, and the old `run` system line, and lacks the ` RUN OFF ` badge that #845 added (`draw_mode_badge`, `src/ui/components/chat.rs:300-313`). Main's spec is not yet synced with #845, so the base is not rewritten here. Rebase on `openspec/specs/chat-pane/spec.md` after chat-runs-commands archives; tracked by task 3.5. The scenarios added at the end of this delta (` RUN+A ` and ` RUN OFF ` precedence) are current and name no `auto` mode.
+
 Change `chat-write-grant` (the concept is called run auto-apply; the folder keeps its name). Base: `openspec/specs/chat-pane/spec.md` on origin/main (99106097), Requirement `Approval mode badge and system lines`. The requirement is given as its full current text (collapsed), then its full changed text, which is the one that replaces it. Nothing else of the base changes.
 
 ## MODIFIED Requirements
@@ -71,4 +73,9 @@ A chat pane with tools on in `auto` mode MUST show the badge ` AUTO ` in amber, 
 - GIVEN a chat in `run` with tools on and auto-apply held, and a chat in `run` without it
 - WHEN rendered, focused or not
 - THEN the first reads ` RUN+A ` in the red high-contrast style, the second ` RUN `, and a pane of 6 columns shows `R` for the first and nothing panics
+
+#### Scenario: A blocked chat shows RUN OFF, not RUN+A [auto, TestBackend + insta]
+- GIVEN a chat in `run` with tools on that holds auto-apply and is blocked (` RUN OFF `, `block_why()` is `Some`)
+- WHEN rendered, focused or not
+- THEN the badge reads ` RUN OFF `, never ` RUN+A ` (precedence: ` RUN OFF `, then ` RUN+A `, then ` RUN `), and the next batch opens the review
 
