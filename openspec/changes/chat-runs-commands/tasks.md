@@ -104,9 +104,9 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 
 ## S3b: New read verbs (base: main after S3a)
 
-- [ ] 3b.1 RED bypass table rows: `cat`/`cat -`, `tail -f`, `cat x > y`, `cat $(..)`, `sudo cat`, `env cat`, `FOO=1 cat`, `cargo --version`, `node --version`; Extended entries run on cloud and ask on local (`cat README.md` local asks).
-- [ ] 3b.2 RED `run_check` targets: `cat .env`, `cat ../../etc/passwd`, `cat ~/.ssh/id_rsa` give `NOT_ALLOWED`/`OUTSIDE_ROOT`.
-- [ ] 3b.3 GREEN `exec/specs.rs` (`cat head tail wc`, `<p> --version` for the D6 list, `Value::Rev`), `runtime/run_check.rs`. CHANGELOG. Exit gate.
+- [x] 3b.1 RED bypass table rows: `cat`/`cat -`, `tail -f`, `cat x > y`, `cat $(..)`, `sudo cat`, `env cat`, `FOO=1 cat`, `cargo --version`, `node --version`; Extended entries run on cloud and ask on local (`cat README.md` local asks).
+- [x] 3b.2 RED `run_check` targets: `cat .env`, `cat ../../etc/passwd`, `cat ~/.ssh/id_rsa` give `NOT_ALLOWED`/`OUTSIDE_ROOT`.
+- [x] 3b.3 GREEN `exec/specs.rs` (`cat head tail wc`, `<p> --version` for the D6 list, `Value::Rev`), `runtime/run_check.rs`. CHANGELOG. Exit gate.
 
 ## S3c: git and the config gate (base: main after S3b)
 

@@ -1580,6 +1580,7 @@ mod tests {
                 "pwd",
                 "ls -la",
                 "tree -L 2",
+                "grep -rn a src",
                 "rg a",
                 "find . -name a",
             ] {
@@ -1587,9 +1588,33 @@ mod tests {
                 let routed = route(&ask, Origin::Tool, ApprovalMode::Run, ctx);
                 assert_eq!(runs(&routed), Some(text), "{text:?} local={local}");
             }
-            let ask = ask_of("cat README.md");
-            let routed = route(&ask, Origin::Tool, ApprovalMode::Run, ctx);
-            assert_eq!(runs(&routed), None, "local={local}");
+        }
+    }
+
+    // S3b: the Extended entries run alone on a cloud engine and ask on a
+    // local one, with the reason.
+    #[test]
+    fn the_extended_verbs_run_alone_on_a_cloud_engine_and_ask_on_a_local_one() {
+        for text in [
+            "cat README.md",
+            "head -n 5 a",
+            "tail -3 a",
+            "wc -l a",
+            "git --version",
+        ] {
+            let ask = ask_of(text);
+            let cloud = AutoCtx {
+                local: false,
+                ..FREE
+            };
+            let routed = route(&ask, Origin::Tool, ApprovalMode::Run, cloud);
+            assert_eq!(runs(&routed), Some(text), "{text:?} cloud");
+            let local = AutoCtx {
+                local: true,
+                ..FREE
+            };
+            let routed = route(&ask, Origin::Tool, ApprovalMode::Run, local);
+            assert_eq!(why(&routed), Some(exec::LOCAL_ASKS), "{text:?} local");
         }
     }
 

@@ -818,7 +818,10 @@ fn grammar_refuses_the_adversarial_list() {
 #[test]
 fn the_run_verbs_are_the_same_in_the_hint_and_the_readmes() {
     let hint = crate::core::menu::APPROVAL_HINT;
-    let verbs: Vec<&str> = SPECS.iter().map(|spec| spec.name).collect();
+    let verbs: Vec<&str> = (SPECS.iter())
+        .filter(|spec| spec.tier == Tier::Base)
+        .map(|spec| spec.name)
+        .collect();
     for readme in [
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")),
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.es.md")),
@@ -841,11 +844,34 @@ fn the_run_verbs_are_the_same_in_the_hint_and_the_readmes() {
 // and every entry has a tier.
 const SEVEN: [&str; 7] = ["cd", "pwd", "ls", "tree", "grep", "rg", "find"];
 
+// S3b: the new read verbs and the `--version` of the D6 list.
+const EXTENDED: [&str; 14] = [
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "git --version",
+    "rg --version",
+    "fd --version",
+    "bat --version",
+    "jq --version",
+    "gh --version",
+    "docker --version",
+    "make --version",
+    "tmux --version",
+    "curl --version",
+];
+
 #[test]
 fn the_seven_verbs_are_the_base_tier() {
-    let names: Vec<&str> = SPECS.iter().map(|spec| spec.name).collect();
-    assert_eq!(names, SEVEN);
-    assert!(SPECS.iter().all(|spec| spec.tier == Tier::Base));
+    let tier = |wanted| -> Vec<&str> {
+        (SPECS.iter())
+            .filter(|spec| spec.tier == wanted)
+            .map(|spec| spec.name)
+            .collect()
+    };
+    assert_eq!(tier(Tier::Base), SEVEN);
+    assert_eq!(tier(Tier::Extended), EXTENDED);
 }
 
 #[test]
@@ -863,13 +889,153 @@ fn a_local_engine_runs_exactly_the_seven_verbs_as_a_cloud_engine_does() {
         assert_eq!(parse_for(text, true), parse_for(text, false), "{text:?}");
         assert_eq!(parse(text), parse_for(text, false), "{text:?}");
     }
-    for text in ["cat README.md", "git status", "head a", "rg --version"] {
+    for text in ["cat README.md", "head a", "rg --version"] {
         assert!(parse_for(text, true).is_err(), "{text:?} asks on local");
-        assert!(
-            parse_for(text, false).is_err(),
-            "{text:?} is not listed yet"
-        );
+        assert!(parse_for(text, false).is_ok(), "{text:?} runs on cloud");
     }
+    // `git status` comes with the git slice.
+    assert!(parse_for("git status", false).is_err());
+}
+
+const EXTENDED_RUNS: [&str; 18] = [
+    "cat README.md",
+    "cat -n a b c d",
+    "cat 'my file'",
+    "head a",
+    "head -n 20 a b",
+    "head -20 a",
+    "head -n 9999 a",
+    "tail -n 100 a",
+    "tail -5 a",
+    "wc a",
+    "wc -l a",
+    "wc -lwc a b",
+    "git --version",
+    "rg --version",
+    "fd --version",
+    "docker --version",
+    "make --version",
+    "curl --version",
+];
+
+#[test]
+fn the_extended_rows_run_on_cloud_and_ask_on_local() {
+    for text in EXTENDED_RUNS {
+        assert!(parse_for(text, false).is_ok(), "{text:?} runs on cloud");
+        assert_eq!(parse_for(text, true).unwrap_err().why, LOCAL_ASKS, "{text}");
+    }
+}
+
+// Spec (agent-tools, bypass table): these ask on every engine.
+#[test]
+fn the_new_verbs_ask_for_every_bypass_row() {
+    for text in [
+        "cat",
+        "cat -",
+        "cat -n",
+        "cat a b c d e",
+        "cat -A a",
+        "cat --number a",
+        "cat x > y",
+        "cat x >> y",
+        "cat $(id)",
+        "cat `id`",
+        "cat <(id)",
+        "cat *.txt",
+        "cat [a]",
+        "cat x | bash",
+        "head -n 1 < f",
+        "head",
+        "head -n 5",
+        "head -n 12345 a",
+        "head -12345 a",
+        "head -n -5 a",
+        "head -n +5 a",
+        "head -c 5 a",
+        "tail -f app.log",
+        "tail -F app.log",
+        "tail --follow app.log",
+        "tail -nf a",
+        "wc",
+        "wc -m a",
+        "wc -L a",
+        "sudo cat a",
+        "env cat a",
+        "FOO=1 cat a",
+        "xargs cat",
+        "cargo --version",
+        "node --version",
+        "python3 --version",
+        "npm --version",
+        "git --version x",
+        "rg --version x",
+        "make -V",
+        "tmux -V",
+        "./evil --version",
+        "a.b --version",
+        "evil --version x",
+    ] {
+        for local in [false, true] {
+            assert!(parse_for(text, local).is_err(), "{text:?} local={local}");
+        }
+    }
+}
+
+#[test]
+fn a_word_that_is_a_head_does_not_open_the_other_heads() {
+    // `rg --version` is a head of its own: it takes no path and no flag.
+    assert!(parse_for("rg --version", false).is_ok());
+    assert_eq!(why_for("rg --version x"), "too many arguments");
+    assert_eq!(why_for("rg --version -n"), "flag not allowed");
+    // The plain `rg` keeps its grammar.
+    assert!(parse_for("rg -n a src", false).is_ok());
+}
+
+fn why_for(text: &str) -> &'static str {
+    parse_for(text, false).expect_err(text).why
+}
+
+#[test]
+fn the_targets_of_the_new_verbs_are_files_inside_home() {
+    use Want::{Existing, Home};
+    let of = |text| -> Vec<_> {
+        (parse_for(text, false).unwrap().targets())
+            .map(|t| (t.input, t.want, t.confined, t.searched))
+            .collect()
+    };
+    assert_eq!(
+        of("cat -n a b"),
+        [
+            (".", Existing, false, false),
+            ("a", Home, true, false),
+            ("b", Home, true, false)
+        ]
+    );
+    assert_eq!(
+        of("head -n 5 a"),
+        [(".", Existing, false, false), ("a", Home, true, false)]
+    );
+    assert_eq!(
+        of("wc -l ../x"),
+        [(".", Existing, false, false), ("../x", Home, true, false)]
+    );
+    // `--version` reads no file: the pane's directory is what it acts in.
+    assert_eq!(of("git --version"), [(".", Existing, true, false)]);
+}
+
+// A quoted word never completes a head: the tokenizer strips the quotes, so
+// `git "status"` would read as `git status` (S3c relies on it).
+#[test]
+fn a_quoted_head_word_falls_back_to_asking() {
+    let specs = table();
+    assert!(parse_in("git status", &specs, false).is_ok());
+    for text in ["git \"status\"", "git 'status'"] {
+        let err = parse_in(text, &specs, false).unwrap_err();
+        assert_eq!(err.why, QUOTED_HEAD);
+        assert_eq!(&text[err.at], "status");
+    }
+    // A quoted argument is still fine.
+    assert!(parse_in("git 'a b'", &specs, false).is_ok());
 }
 
 fn table() -> [Spec; 3] {

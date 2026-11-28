@@ -239,6 +239,38 @@ fn git_asks_like_any_command_off_the_list_and_counts_toward_the_pause() {
     assert!(chat_of(&a).run_paused());
 }
 
+// S3b: an Extended command runs alone on a cloud engine only, and an engine
+// that is not known to be cloud counts as local: a chat that is idle (the turn
+// ended or was cancelled, so no engine is on record) asks, it never runs.
+#[test]
+fn the_tier_of_an_engine_is_local_unless_the_catalog_says_cloud() {
+    use crate::app::auto_run::local_tier;
+    assert!(local_tier("ollama"));
+    assert!(!local_tier("claude"));
+    assert!(local_tier(""), "idle: no engine on record");
+    assert!(local_tier("not-in-the-catalog"));
+}
+
+#[test]
+fn an_idle_chat_asks_for_an_extended_command() {
+    use crate::core::ai::chat::{approval::Route, engine::Finish};
+    let (mut a, turn) = run_live();
+    let ask = run("cat README.md");
+    let first = a.auto_route(id2(), PaneId::FIRST, &ask, false);
+    assert!(matches!(first, Route::Prompt(Some(_))), "{first:?}");
+    a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
+    assert_eq!(chat_of(&a).stream_engine(), "", "idle");
+    let again = a.auto_route(id2(), PaneId::FIRST, &ask, true);
+    let Route::Prompt(Some(fallback)) = again else {
+        panic!("an idle chat must ask: {again:?}")
+    };
+    assert_eq!(fallback.why, crate::core::ai::tools::exec::LOCAL_ASKS);
+    // The base tier is unaffected.
+    let base = run("ls");
+    let routed = a.auto_route(id2(), PaneId::FIRST, &base, true);
+    assert!(matches!(routed, Route::AutoRun(_)), "{routed:?}");
+}
+
 // The scope of the check: the chat's origin folder (or `/`), and cloud
 // unless the catalog knows the engine as local.
 #[test]

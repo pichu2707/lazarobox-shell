@@ -155,6 +155,15 @@ pub(super) fn run_scope(origin: Option<&Path>, engine: &str) -> RunScope {
     }
 }
 
+/// Whether a turn on `engine` gets the base tier of the grammar only (design
+/// D3). Only an engine the catalog knows as cloud gets the wide list: an
+/// idle chat (no engine on record once the turn ended or was cancelled) and an
+/// engine outside the catalog count as local, the narrow side. This is the
+/// opposite of [`RunScope::cloud`], whose strict side for paths is cloud.
+pub(super) fn local_tier(engine: &str) -> bool {
+    locality(engine) != Some(Locality::Cloud)
+}
+
 /// What the runtime says about the check of a run.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum RunEvent {
@@ -211,7 +220,8 @@ impl App {
         command: &str,
     ) -> Vec<Effect> {
         // Without the chat's state, fail closed: a cloud chat rooted at `/`
-        // makes every check ask (BROAD_ROOT).
+        // makes every check ask (BROAD_ROOT). The route that follows the check
+        // asks too, as it finds no chat.
         let mut scope = RunScope {
             root: PathBuf::from("/"),
             cloud: true,

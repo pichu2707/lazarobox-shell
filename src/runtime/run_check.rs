@@ -20,7 +20,7 @@ use crate::{
                 engine::CallId,
             },
             tools::{
-                exec::{Verb, parse},
+                exec::{Verb, parse_for},
                 paths::{PathVerdict, SecretRoots, is_excluded_name, is_git_config, resolve_exec},
             },
         },
@@ -90,7 +90,8 @@ impl Checker {
     }
 }
 
-/// Parses `command` again (the same bytes the app routed) and judges every
+/// Parses `command` again (the same bytes the app routed, for the engine of
+/// `scope`: a local one gets the base tier only) and judges every
 /// path it touches against `cwd`, the shell's real directory, and against
 /// the chat's root in `scope`. The answer carries `cwd` and, for a `cd`, the
 /// real directory it goes to.
@@ -114,7 +115,7 @@ pub fn check(
     scope: &RunScope,
 ) -> RunEvent {
     let refused = |reason| RunEvent::Refused { call, reason };
-    let safe = match parse(command) {
+    let safe = match parse_for(command, !scope.cloud) {
         Ok(safe) => safe,
         Err(fallback) => return refused(fallback.why),
     };
@@ -137,7 +138,10 @@ pub fn check(
         };
         // A search reads a file it is given like a read does: a git setting
         // is refused, by the name it is given or the file it reaches.
-        let reads = matches!(safe.verb(), Verb::Grep | Verb::Rg);
+        let reads = matches!(
+            safe.verb(),
+            Verb::Grep | Verb::Rg | Verb::Cat | Verb::Head | Verb::Tail | Verb::Wc
+        );
         if reads && (is_git_config(Path::new(target.input)) || is_git_config(&real)) {
             return refused(NOT_ALLOWED);
         }
@@ -186,7 +190,17 @@ fn searchable(
     match verb {
         Verb::Grep => grep_walk(roots, real),
         Verb::Rg => rg_walk(roots, real, rg),
-        Verb::Cd | Verb::Pwd | Verb::Ls | Verb::Tree | Verb::Find => Ok(()),
+        // These name files, never a folder to walk (`cat dir` is an error).
+        Verb::Cd
+        | Verb::Pwd
+        | Verb::Ls
+        | Verb::Tree
+        | Verb::Find
+        | Verb::Cat
+        | Verb::Head
+        | Verb::Tail
+        | Verb::Wc
+        | Verb::Version => Ok(()),
     }
 }
 
@@ -443,6 +457,7 @@ pub async fn within(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ai::tools::exec::LOCAL_ASKS;
     use std::fs;
 
     struct Fixture {
@@ -1430,6 +1445,68 @@ mod tests {
                 "{command}"
             );
         }
+    }
+
+    // S3b: `cat head tail wc` read files like a search does: the paths are
+    // judged for secrets and for the chat's root.
+    #[test]
+    fn the_read_verbs_judge_every_path_they_are_given() {
+        let f = fixture();
+        project(&f);
+        fs::write(f.home.join(".ssh/id_rsa"), "key").unwrap();
+        for verb in ["cat", "head -n 5", "tail -n 5", "wc -l"] {
+            for command in [
+                format!("{verb} web/.env"),
+                format!("{verb} ../../../../etc/passwd"),
+                format!("{verb} ~/.ssh/id_rsa"),
+                format!("{verb} .git/config"),
+            ] {
+                let event = run_in(&f, "dev/proj", true, "dev/proj", &command);
+                assert!(
+                    matches!(reason(&event), Some(NOT_ALLOWED | OUTSIDE_ROOT)),
+                    "{command}: {event:?}"
+                );
+            }
+            let ok = format!("{verb} src/main.rs");
+            let event = run_in(&f, "dev/proj", true, "dev/proj", &ok);
+            assert!(checked(&event), "{ok}: {event:?}");
+            // A file of the project below the root, outside the pane's folder.
+            let up = format!("{verb} ../src/main.rs");
+            assert!(checked(&run_in(&f, "dev/proj", true, "dev/proj/src", &up)));
+        }
+        // A file inside HOME but outside the chat's root asks.
+        fs::write(f.home.join("dev/other.txt"), "x").unwrap();
+        let outside = run_in(&f, "dev/proj", true, "dev/proj", "cat ../other.txt");
+        assert_eq!(reason(&outside), Some(OUTSIDE_ROOT));
+    }
+
+    // S3b: `<program> --version` acts in the pane's folder only.
+    #[test]
+    fn a_version_check_runs_in_the_root_and_asks_outside_it() {
+        let f = fixture();
+        project(&f);
+        assert!(checked(&run_in(
+            &f,
+            "dev/proj",
+            true,
+            "dev/proj",
+            "git --version"
+        )));
+        let outside = run_in(&f, "dev/proj", true, "dev/app", "git --version");
+        assert_eq!(reason(&outside), Some(OUTSIDE_ROOT));
+    }
+
+    // The check judges the command for the engine of the chat: a local one
+    // gets the base tier only, so an Extended command never passes there.
+    #[test]
+    fn the_check_parses_for_the_engine_of_the_scope() {
+        let f = fixture();
+        project(&f);
+        let local = run_in(&f, "dev/proj", false, "dev/proj", "cat src/main.rs");
+        assert_eq!(reason(&local), Some(LOCAL_ASKS));
+        assert!(checked(&run_in(
+            &f, "dev/proj", false, "dev/proj", "ls src"
+        )));
     }
 
     // The disk work is bounded: a slow answer becomes a refusal.

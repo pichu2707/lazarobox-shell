@@ -881,7 +881,9 @@ La confirmación de `Ctrl+Space`, `e` (un bloque de la respuesta, no una llamada
 
 **Corre solo.** `cd`, `pwd`, `ls`, `tree`, `find`, `grep` y `rg`, cuando todas sus rutas, y el directorio del panel si no se da ninguna, quedan dentro de la carpeta del chat. `pwd` corre en cualquier sitio y un `cd` sin ruta va a `~`. `tree`, `grep` y `rg` además solo actúan dentro de `$HOME`.
 
-El comando tiene que ser uno solo: sin `&&`, `;`, `|`, `$`, `*`, comillas invertidas ni redirecciones, solo con las opciones que lista la gramática de abajo, como máximo 8 palabras simples y con sus rutas dentro de la carpeta del chat. Cualquier otro pregunta, y `git` y `gh` siempre preguntan, sean cuales sean sus argumentos. `ask` tampoco ejecuta ninguno de estos por su cuenta: cada comando pregunta.
+Con un motor en la nube, `cat`, `head`, `tail` y `wc` también corren solos (de uno a cuatro archivos; `head` y `tail` aceptan `-n N` o `-N`, nunca `-f`), y también `git`, `rg`, `fd`, `bat`, `jq`, `gh`, `docker`, `make`, `tmux` y `curl` con exactamente `--version`; sus archivos siguen las mismas reglas de rutas, y una ruta secreta pregunta. Un motor local pregunta por ellos (`not run alone on a local engine: `cat`) y tu `y` los ejecuta.
+
+El comando tiene que ser uno solo: sin `&&`, `;`, `|`, `$`, `*`, comillas invertidas ni redirecciones, solo con las opciones que lista la gramática de abajo, como máximo 8 palabras simples y con sus rutas dentro de la carpeta del chat. Cualquier otro pregunta, y `git` y `gh` siempre preguntan, sean cuales sean sus argumentos (salvo `--version`). `ask` tampoco ejecuta ninguno de estos por su cuenta: cada comando pregunta.
 
 **Pregunta.** La confirmación dice el motivo:
 

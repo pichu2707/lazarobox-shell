@@ -73,6 +73,12 @@ pub enum Verb {
     Grep,
     Rg,
     Find,
+    Cat,
+    Head,
+    Tail,
+    Wc,
+    /// `<program> --version`.
+    Version,
 }
 
 /// What a word of an accepted command is.
@@ -133,9 +139,9 @@ impl<'a> SafeCommand<'a> {
         // What the arguments are for: names only, or the text of files. find
         // walks too: it lists the names below what it is given.
         let (want, searched) = match self.verb {
-            Verb::Cd | Verb::Pwd | Verb::Ls => (Want::Existing, false),
+            Verb::Cd | Verb::Pwd | Verb::Ls | Verb::Version => (Want::Existing, false),
             Verb::Find => (Want::Existing, true),
-            Verb::Tree => (Want::Home, false),
+            Verb::Tree | Verb::Cat | Verb::Head | Verb::Tail | Verb::Wc => (Want::Home, false),
             Verb::Grep => (Want::Home, recursive),
             Verb::Rg => (Want::Home, true),
         };
@@ -179,13 +185,16 @@ impl<'a> Target<'a> {
 }
 
 /// Decides whether `text` may run without a prompt on a cloud engine (every
-/// tier), in one pass.
+/// tier). Tests only: a production caller says what the engine is with
+/// [`parse_for`], so none accepts a command of a tier the engine may not run.
+#[cfg(test)]
 pub fn parse(text: &str) -> Result<SafeCommand<'_>, Fallback> {
     parse_for(text, false)
 }
 
-/// [`parse`] for an engine that is `local` or not: a local engine runs only
-/// the [`Tier::Base`] entries, and every other command is a [`Fallback`].
+/// Decides in one pass whether `text` may run without a prompt on an engine
+/// that is `local` or not: a local engine runs only the [`Tier::Base`]
+/// entries, and every other command is a [`Fallback`].
 pub fn parse_for(text: &str, local: bool) -> Result<SafeCommand<'_>, Fallback> {
     parse_in(text, &SPECS, local)
 }
@@ -197,6 +206,8 @@ fn parse_in<'a>(text: &'a str, specs: &[Spec], local: bool) -> Result<SafeComman
     }
     let mut words = [""; MAX_WORDS];
     let (mut len, mut i) = (0, 0);
+    // Bit `k` is set when word `k` was quoted.
+    let mut quotes = 0u8;
     loop {
         let start = i;
         match bytes.get(i) {
@@ -246,9 +257,10 @@ fn parse_in<'a>(text: &'a str, specs: &[Spec], local: bool) -> Result<SafeComman
             };
             return Err(fallback(start..end, why));
         }
+        quotes |= u8::from(quoted) << len;
         len += 1;
         if i >= bytes.len() {
-            return finish(text, words, len, (specs, local));
+            return finish(text, words, len, (specs, local, quotes));
         }
         i += 1;
     }
@@ -256,6 +268,10 @@ fn parse_in<'a>(text: &'a str, specs: &[Spec], local: bool) -> Result<SafeComman
 
 /// The reason of a first word that is not the head of any entry.
 pub const NOT_SAFE: &str = "not a safe command";
+
+/// The reason of a quoted word that would complete the head of a command: the
+/// quotes are stripped, so `git "status"` would otherwise read as `git status`.
+pub const QUOTED_HEAD: &str = "a quoted word cannot be part of a command's head";
 
 /// The reason of a command that only a cloud engine runs without a prompt.
 pub const LOCAL_ASKS: &str = "not run alone on a local engine";
@@ -354,7 +370,7 @@ fn finish<'a>(
     text: &'a str,
     words: [&'a str; MAX_WORDS],
     len: usize,
-    (specs, local): (&[Spec], bool),
+    (specs, local, quotes): (&[Spec], bool, u8),
 ) -> Result<SafeCommand<'a>, Fallback> {
     let at = |w: &str| {
         let start = w.as_ptr() as usize - text.as_ptr() as usize;
@@ -373,6 +389,9 @@ fn finish<'a>(
         };
         return Err(fallback(at(words[0]), why));
     };
+    if let Some(k) = (1..heads).find(|k| (quotes >> k) & 1 == 1) {
+        return Err(fallback(at(words[k]), QUOTED_HEAD));
+    }
     if local && spec.tier != Tier::Base {
         return Err(fallback(at(words[0]), LOCAL_ASKS));
     }
@@ -399,7 +418,11 @@ fn finish<'a>(
             if flags.is_empty() {
                 return Err(fallback(at(word), "a bare dash is not a path"));
             }
-            if !flags.bytes().all(|b| spec.flags.contains(&b)) {
+            let count = spec.count && flags.bytes().all(|b| b.is_ascii_digit());
+            if count && flags.len() > 4 {
+                return Err(fallback(at(word), "the flag needs a number"));
+            }
+            if !count && !flags.bytes().all(|b| spec.flags.contains(&b)) {
                 return Err(fallback(at(word), "flag not allowed"));
             }
         } else if spec.pattern && !pattern {
@@ -433,6 +456,7 @@ fn bad_value(value: Value, next: Option<&str>) -> Option<&'static str> {
     match value {
         Value::Depth if !digits(next, 2) => Some("-L needs a depth of 1 or 2 digits"),
         Value::Number if !digits(next, 3) => Some("the flag needs a number"),
+        Value::Lines if !digits(next, 4) => Some("the flag needs a number"),
         Value::Name if next.is_empty() || next.starts_with('-') => Some("the flag needs a value"),
         Value::Kind if !matches!(next, "f" | "d" | "l") => Some("-type needs f, d or l"),
         _ => None,
