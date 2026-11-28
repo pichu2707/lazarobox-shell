@@ -681,6 +681,10 @@ pub const NOT_ALLOWED: &str = "a path in the command is not allowed to run direc
 pub const OUTSIDE_ROOT: &str = "the command reaches outside the chat's folder";
 /// Why every command of a cloud chat asks when its folder is HOME or `/`.
 pub const BROAD_ROOT: &str = "the chat's folder is your home or /";
+/// Why a git command asks: the repository's own config may make git run a
+/// program (`core.fsmonitor`, `include.path`, `diff.external`, ...), or it
+/// could not be read. Asking is no fault of the model.
+pub const GIT_CONFIG_RISK: &str = "the git config here may run a program";
 pub const PAUSED: &str = "auto-run paused for this turn";
 pub const NON_UTF8: &str = "the pane's locale is not UTF-8";
 /// Why a command that the grammar accepts still takes the prompt: the pane
@@ -770,6 +774,7 @@ pub fn counts_toward_pause(fallback: &Fallback) -> bool {
             | FOCUSED
             | HIDDEN
             | TOO_MANY
+            | GIT_CONFIG_RISK
             | GITHUB_READ
             | NEWER_READ
     )
@@ -2038,6 +2043,16 @@ mod tests {
         let ask = run_ask();
         let got = route(&ask, Origin::Tool, ApprovalMode::Run, every);
         assert_eq!(why(&got), Some(GITHUB_READ));
+    }
+
+    // S3c: a git config that may run a program is nobody's fault either.
+    #[test]
+    fn a_risky_git_config_never_counts_toward_the_pause() {
+        let risk = Fallback {
+            at: 0..0,
+            why: GIT_CONFIG_RISK,
+        };
+        assert!(!counts_toward_pause(&risk));
     }
 
     // Rows of a newer version block too, with a reason that is true.

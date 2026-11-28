@@ -48,6 +48,9 @@ pub(super) struct Spec {
     pub(super) pattern: bool,
     /// A flag of one to four digits is a count (`head -20`).
     pub(super) count: bool,
+    /// When not empty, at least one of these flags must be given
+    /// (`git --no-pager diff` needs a summary flag).
+    pub(super) needs_one_of: &'static [&'static str],
     /// How many path arguments.
     pub(super) paths: Range<usize>,
 }
@@ -64,6 +67,7 @@ pub(super) const BASE: Spec = Spec {
     valued: &[],
     pattern: false,
     count: false,
+    needs_one_of: &[],
     paths: 0..MAX_WORDS,
 };
 
@@ -75,7 +79,7 @@ pub(super) const CONTEXT: [(&str, Value); 4] = [
     ("-m", Value::Number),
 ];
 
-pub(super) const SPECS: [Spec; 20] = [
+pub(super) const SPECS: [Spec; 23] = [
     Spec {
         name: "cd",
         verb: Verb::Cd,
@@ -193,6 +197,43 @@ pub(super) const SPECS: [Spec; 20] = [
         verb: Verb::Wc,
         flags: b"lwc",
         paths: 1..5,
+        ..BASE
+    },
+    // git (design D4): only the three read rows. `--no-pager` is part of the
+    // head, so no other global option reaches the subcommand. Content diffs,
+    // `log -p` and `show` can print tracked secrets and ask.
+    Spec {
+        name: "git status",
+        tier: Tier::Extended,
+        verb: Verb::GitStatus,
+        flags: b"sb",
+        long: &["--short", "--branch"],
+        paths: 0..5,
+        ..BASE
+    },
+    Spec {
+        name: "git --no-pager log",
+        tier: Tier::Extended,
+        verb: Verb::GitLog,
+        long: &["--oneline", "--stat"],
+        valued: &[("-n", Value::Lines)],
+        needs_one_of: &["-n"],
+        paths: 0..5,
+        ..BASE
+    },
+    Spec {
+        name: "git --no-pager diff",
+        tier: Tier::Extended,
+        verb: Verb::GitDiff,
+        long: &[
+            "--stat",
+            "--name-only",
+            "--name-status",
+            "--cached",
+            "--staged",
+        ],
+        needs_one_of: &["--stat", "--name-only", "--name-status"],
+        paths: 0..5,
         ..BASE
     },
     // Only the programs of the list (design D6): `node`, `python3`, `cargo`,

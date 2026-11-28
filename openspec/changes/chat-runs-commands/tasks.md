@@ -110,9 +110,10 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 
 ## S3c: git and the config gate (base: main after S3b)
 
-- [ ] 3c.1 RED git rows: `git status`, `git --no-pager log -n 5`, `git --no-pager diff --stat|--name-only|--name-status` run; plain `git diff`, `log` without `-n`, `log -p`, `show`, `-c`, `-C`, `--git-dir`, `--output`, `--ext-diff`, `--no-index`, `git st` ask.
-- [ ] 3c.2 RED gate (tempfile repo): plain config passes; `core.fsmonitor`, `include.path`, `diff.external` ask with `GIT_CONFIG_RISK` (not counted toward the pause); allow-list keys pass.
-- [ ] 3c.3 GREEN `exec/specs.rs` git heads, `Value::Rev` (moved here from 3b.3) and `needs_one_of`, `runtime/run_check.rs`, `runtime/tools/git.rs` (hardened config listing), `approval.rs` reason. CHANGELOG; README pair (what runs unprompted, local vs cloud, plain `git diff` asks). Exit gate.
+- [x] 3c.1 RED git rows: `git status`, `git --no-pager log -n 5`, `git --no-pager diff --stat|--name-only|--name-status` run; plain `git diff`, `log` without `-n`, `log -p`, `show`, `-c`, `-C`, `--git-dir`, `--output`, `--ext-diff`, `--no-index`, `git st` ask.
+- [x] 3c.2 RED gate (tempfile repo): plain config passes; `core.fsmonitor`, `include.path`, `diff.external` ask with `GIT_CONFIG_RISK` (not counted toward the pause); allow-list keys pass.
+- [x] 3c.3 GREEN `exec/specs.rs` git heads, `Value::Rev` (moved here from 3b.3) and `needs_one_of`, `runtime/run_check.rs`, `runtime/tools/git.rs` (hardened config listing), `approval.rs` reason. CHANGELOG; README pair (what runs unprompted, local vs cloud, plain `git diff` asks). Exit gate.
+  - Notes (S3c): `Value::Rev` NOT added: no spec row takes a revision word (`log`/`diff` take paths only), so it would be dead code; revisit only if a row needs it. `git config` is run with `--local` alone: git rejects `--local --worktree` together (`only one config file at a time`); a `config.worktree` only matters with `extensions.worktreeConfig`, which is not on the allow-list. The gate (`config_is_inert`, `inert_key`) lives in `runtime/run_check.rs`, not `runtime/tools/git.rs`: the tools audit forbids starting a process in `tools/*`. It runs `git` from the process PATH with a cleared env (`GIT_CONFIG_GLOBAL/SYSTEM=/dev/null`, `NOSYSTEM`), `-z --name-only --no-includes`, 64 KiB cap, any failure asks. Known gaps: submodule configs, `GIT_*` set in the pane's own shell, `--separate-git-dir`/bare repos, and `git status` may refresh `.git/index`.
 - [ ] 3c.4 `[manual]` `run` mode: `ls` runs on a local engine, `cat README.md` asks; on a cloud-class setup `git diff --stat` runs and `git diff` asks.
 
 ## S4: Guidance and docs (base: main after S3c)
