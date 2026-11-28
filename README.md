@@ -249,7 +249,7 @@ Everything that is not typing in a pane starts with the `Ctrl+Space` prefix; the
 | `m`                       | Opens the menu                                                      |
 | `c`                       | Opens an AI chat                                                    |
 | `n` / `o` / `s` / `T`     | In a chat: note, memory block, summary, tags                        |
-| `e` / `a`                 | In a chat: run its code block in a pane, approval mode              |
+| `e` / `a`                 | In a chat: type its code block in a pane, approval mode              |
 | `q`                       | Quits lazarobox (asks for confirmation)                             |
 | `W`                       | In a chat with the orchestrator: opens the selected worker's transcript |
 | `r` `r` / `r` `d`         | In a chat with the orchestrator: resumes / discards the interrupted run (see [Agent orchestrator](#agent-orchestrator-experimental)) |
@@ -814,18 +814,18 @@ Limits of this version:
 The model runs commands itself: it is told to call a tool for every command, never to print one for you to copy, and the flow is the same in every approval mode and with every engine.
 
 1. The model asks to run one command. By default (`ask`) a confirmation opens over the composer with the exact command, the target pane and the keys `y run it · n cancel · p next pane`.
-2. You press `y`. lazarobox types the command in the pane, presses Enter once, waits for it to end and returns its output to the model, which goes on by itself: you never send the output or a message to continue.
+2. You press `y`. lazarobox types the command in the pane, presses Enter once, waits for it to end and returns its output to the model, which goes on by itself: you never send the output or a message to continue. Some reasons make `y` only type it, without Enter (see [`run` mode](#run-mode) for the list, and macOS below); the keys then read `y type it (no Enter)` and say why before you press `y`.
 3. In `run` mode a short list of read-only commands skips the confirmation and runs at once (see [Runs on its own](#run-mode)); every other command still asks.
 
 Three cases of that flow:
 
-- **A command that asks for a password (`sudo`).** The chat shows `pane N: waiting for your input in the pane; type it there (it is never sent to the chat)`. You type the password in the pane; it never reaches the model, and the chat goes on when the command ends.
+- **A command that asks for a password (`sudo`).** The chat shows `pane N: waiting for your input in the pane; type it there (it is never sent to the chat)`. You type the password in the pane; it never reaches the model, and the chat goes on when the command ends. If nothing is typed for 5 minutes the wait ends (see "Output the model sees").
 - **A command that is still running after 30 s.** The model receives `still running` with the output so far, the chat goes on, the command keeps running in the pane, and when it ends its final output reaches the model by itself. It is not started again.
 - **macOS.** There `y` only types the command, without Enter, and says why before you press it: `the pane's directory cannot be read on this system`. The pane's folder is read through `/proc`, which macOS does not have, so lazarobox cannot check that the pane is where it was; you press Enter yourself.
 
 A shell block that the model prints anyway is plain text: nothing runs. When the last answer of a chat ends with one (` ```bash `, `sh`, `shell` or `zsh`), a hint under the block, `Ctrl+Space e  type in pane`, offers your own binding: `Ctrl+Space`, then `e`, which only types the block's command in a pane and never presses Enter. It works with every engine, because it reads the block of the answer and needs nothing from the model.
 
-`e` opens a confirmation over the composer: `run in pane N (<cwd>)`, the exact command and the keys. The target is the shell pane of the current tab that you used last; a chat or a pane of another tab is never a target.
+`e` opens a confirmation over the composer: `type in pane N (<cwd>)`, the exact command and the keys. The target is the shell pane of the current tab that you used last; a chat or a pane of another tab is never a target.
 
 | Key       | Action                                                                 |
 | :-------- | :--------------------------------------------------------------------- |
@@ -870,7 +870,7 @@ Residual risks of a command that is only typed, without Enter (design D18):
 
 #### `run` mode
 
-In **run** mode a search or navigation command inside the chat folder is typed **and run with Enter** with no prompt, lazarobox waits for it to finish and returns its output to the model. Any other command asks for confirmation (`y run it · n cancel · p next pane`), and with `y` lazarobox types it, presses Enter, waits for it to finish and returns its output to the model, just like a command that runs on its own: `y` is your permission, in `ask` as well. `run` is opt-in (`approval = "run"` or the `Ctrl+Space`, `a` cycle) and `ask` remains the default.
+In **run** mode a read-only command from the list in "Runs on its own" below (search, navigation and, with a cloud engine, more) is typed **and run with Enter** with no prompt, lazarobox waits for it to finish and returns its output to the model. Any other command asks for confirmation (`y run it · n cancel · p next pane`), and with `y` lazarobox types it, presses Enter, waits for it to finish and returns its output to the model, just like a command that runs on its own: `y` is your permission, in `ask` as well. `run` is opt-in (`approval = "run"` or the `Ctrl+Space`, `a` cycle) and `ask` remains the default.
 
 ![rg runs on its own inside the chat folder and its output goes back to the model](docs/assets/run-search.gif)
 
@@ -1108,7 +1108,7 @@ github = false     # gh_issue_list, gh_issue_view and gh_pr_view (read-only; see
 issue_draft = true # gh_issue_draft: opens the Feedback form with a draft (see Issue draft)
 ```
 
-The **Tools** tab of the menu shows the rows **Search**, **Write**, **Exec**, **Git**, **Git write**, **GitHub** and **Issue draft** (`h`/`l` to change, `s` to save); **Write**, **Exec** and **Git write** carry a warning line (`Can change files or run code`); **GitHub** carries its own (`Reads issues and PRs; locks auto-run in that chat`), because it only reads; **Approval** carries `ask: y runs; run: safe reads alone, rest y; per chat` (`ask`: every command waits for your `y`, which runs it; `run` also presses Enter for the search and navigation commands `cd`, `pwd`, `ls`, `tree`, `find`, `grep` and `rg`, and everything else, `git` and `gh` included, asks; a conversation that read GitHub text never auto-runs; the mode applies per chat). Saving only writes those keys and preserves the rest of `config.toml`. With all switches off, the tools are the usual ones. Ollama admits 24 tool rounds per turn when any of these families is active (8 otherwise).
+The **Tools** tab of the menu shows the rows **Search**, **Write**, **Exec**, **Git**, **Git write**, **GitHub** and **Issue draft** (`h`/`l` to change, `s` to save); **Write**, **Exec** and **Git write** carry a warning line (`Can change files or run code`); **GitHub** carries its own (`Reads issues and PRs; locks auto-run in that chat`), because it only reads; **Approval** carries `ask: y runs; run: safe reads alone, rest y; per chat` (`ask`: every command waits for your `y`, which runs it; `run` also presses Enter for the read-only commands of the [`run` mode list](#run-mode) (more of them on a cloud engine), and everything else asks; a conversation that read GitHub text never auto-runs; the mode applies per chat). Saving only writes those keys and preserves the rest of `config.toml`. With all switches off, the tools are the usual ones. Ollama admits 24 tool rounds per turn when any of these families is active (8 otherwise).
 
 #### Search: `glob` and `grep`
 
