@@ -137,22 +137,38 @@ impl RunSlot {
 }
 
 /// What the check of a run judges the paths against: the chat's root (its
-/// origin folder, `/` when unknown, as the tools read it) and whether the
-/// engine is a cloud one. An engine outside the catalog counts as cloud.
+/// origin folder, `/` when unknown, as the tools read it), whether the engine
+/// is a cloud one for the paths (`cloud`: an engine outside the catalog counts
+/// as cloud, the strict side) and whether it gets the base tier of the grammar
+/// only (`local`, see `local_tier`: an engine outside the catalog counts as
+/// local, the narrow side). The two are not opposites.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RunScope {
     pub root: PathBuf,
     pub cloud: bool,
+    pub local: bool,
 }
 
 /// The scope of a run for a chat opened from `origin` whose turn runs on
 /// `engine`: the root the tools read against (`/` when the origin is
-/// unknown), and cloud unless the catalog says the engine is local.
+/// unknown), cloud unless the catalog says the engine is local, and the tier
+/// of [`local_tier`].
 pub(super) fn run_scope(origin: Option<&Path>, engine: &str) -> RunScope {
     RunScope {
         root: origin.map_or_else(|| PathBuf::from("/"), Path::to_path_buf),
         cloud: locality(engine) != Some(Locality::Local),
+        local: local_tier(engine),
     }
+}
+
+/// Whether a turn on `engine` gets the base tier of the grammar only (design
+/// D3). Only an engine the catalog knows as cloud gets the wide list: an
+/// idle chat (no engine on record once the turn ended or was cancelled) and an
+/// engine outside the catalog count as local, the narrow side. This is the
+/// opposite of [`RunScope::cloud`], whose strict side for paths is cloud; the
+/// scope carries both, so the check never decides locality on its own.
+pub(super) fn local_tier(engine: &str) -> bool {
+    locality(engine) != Some(Locality::Cloud)
 }
 
 /// What the runtime says about the check of a run.
@@ -211,10 +227,12 @@ impl App {
         command: &str,
     ) -> Vec<Effect> {
         // Without the chat's state, fail closed: a cloud chat rooted at `/`
-        // makes every check ask (BROAD_ROOT).
+        // makes every check ask (BROAD_ROOT). The route that follows the check
+        // asks too, as it finds no chat.
         let mut scope = RunScope {
             root: PathBuf::from("/"),
             cloud: true,
+            local: true,
         };
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.note_auto_typed();

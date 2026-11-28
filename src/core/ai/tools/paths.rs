@@ -182,6 +182,25 @@ pub fn is_git_config(real: &Path) -> bool {
         })
 }
 
+/// Whether `real` is `FETCH_HEAD` (ASCII case-insensitive) somewhere below a
+/// `.git` folder. It lists the remotes a fetch used, URL included, so it can
+/// hold a credential like the git configuration does. Pure: it reads no file.
+pub fn is_git_fetch_head(real: &Path) -> bool {
+    real.file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("FETCH_HEAD"))
+        && real.parent().is_some_and(|dir| {
+            dir.components()
+                .any(|c| c.as_os_str().eq_ignore_ascii_case(".git"))
+        })
+}
+
+/// Whether `real` is a git file that can hold the URL of a remote with a
+/// credential: the configuration ([`is_git_config`]) or `FETCH_HEAD`
+/// ([`is_git_fetch_head`]). Reads refuse it. Pure: it reads no file.
+pub fn is_git_secret(real: &Path) -> bool {
+    is_git_config(real) || is_git_fetch_head(real)
+}
+
 /// Judges what follows `$HOME` in a path: refused when it holds a `.` or `..`
 /// part, starts with an excluded folder, or has an excluded name anywhere.
 fn judge_rest(rest: &Path) -> bool {
@@ -868,6 +887,25 @@ mod tests {
             "/h/p/.git/config/x",
         ] {
             assert!(!is_git_config(Path::new(no)), "{no}");
+        }
+    }
+
+    #[test]
+    fn fetch_head_is_a_file_of_that_name_below_a_dot_git_folder() {
+        for yes in [
+            "/h/p/.git/FETCH_HEAD",
+            "/h/p/.GIT/fetch_head",
+            "/h/.git/modules/s/FETCH_HEAD",
+        ] {
+            assert!(is_git_fetch_head(Path::new(yes)), "{yes}");
+        }
+        for no in [
+            "/h/p/FETCH_HEAD",
+            "/h/p/.git/HEAD",
+            "/h/p/.git",
+            "/h/p/.git/FETCH_HEAD/x",
+        ] {
+            assert!(!is_git_fetch_head(Path::new(no)), "{no}");
         }
     }
 

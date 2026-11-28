@@ -11,8 +11,7 @@ use super::{MAX_WORDS, Verb};
 pub(super) enum Tier {
     /// Every engine runs it: `cd pwd ls tree grep rg find`.
     Base,
-    /// Cloud engines only.
-    #[allow(dead_code)] // The first Extended verbs come with the next slice.
+    /// Cloud engines only: `cat head tail wc` and `<program> --version`.
     Extended,
 }
 
@@ -23,6 +22,8 @@ pub(super) enum Value {
     Depth,
     /// One to three digits.
     Number,
+    /// One to four digits (`head -n`).
+    Lines,
     /// Any word that does not start with a dash.
     Name,
     /// `f`, `d` or `l` (`find -type`).
@@ -45,6 +46,8 @@ pub(super) struct Spec {
     pub(super) valued: &'static [(&'static str, Value)],
     /// The first word that is not a flag is a pattern, not a path.
     pub(super) pattern: bool,
+    /// A flag of one to four digits is a count (`head -20`).
+    pub(super) count: bool,
     /// How many path arguments.
     pub(super) paths: Range<usize>,
 }
@@ -60,6 +63,7 @@ pub(super) const BASE: Spec = Spec {
     long: &[],
     valued: &[],
     pattern: false,
+    count: false,
     paths: 0..MAX_WORDS,
 };
 
@@ -71,7 +75,7 @@ pub(super) const CONTEXT: [(&str, Value); 4] = [
     ("-m", Value::Number),
 ];
 
-pub(super) const SPECS: [Spec; 7] = [
+pub(super) const SPECS: [Spec; 20] = [
     Spec {
         name: "cd",
         verb: Verb::Cd,
@@ -154,4 +158,64 @@ pub(super) const SPECS: [Spec; 7] = [
         paths: 0..MAX_WORDS,
         ..BASE
     },
+    // The files they read are judged like a search reads them. No `-` (stdin)
+    // and at least one path: without one they read the terminal and wait.
+    Spec {
+        name: "cat",
+        tier: Tier::Extended,
+        verb: Verb::Cat,
+        flags: b"n",
+        paths: 1..5,
+        ..BASE
+    },
+    // Never `-f`, `-F` or `--follow`: they never end.
+    Spec {
+        name: "head",
+        tier: Tier::Extended,
+        verb: Verb::Head,
+        valued: &[("-n", Value::Lines)],
+        count: true,
+        paths: 1..5,
+        ..BASE
+    },
+    Spec {
+        name: "tail",
+        tier: Tier::Extended,
+        verb: Verb::Tail,
+        valued: &[("-n", Value::Lines)],
+        count: true,
+        paths: 1..5,
+        ..BASE
+    },
+    Spec {
+        name: "wc",
+        tier: Tier::Extended,
+        verb: Verb::Wc,
+        flags: b"lwc",
+        paths: 1..5,
+        ..BASE
+    },
+    // Only the programs of the list (design D6): `node`, `python3`, `cargo`,
+    // `rustc`, `go` and `npm` are often shims that a project file can point
+    // at a binary of its own. The head is the whole command: no path, no flag.
+    version("git --version"),
+    version("rg --version"),
+    version("fd --version"),
+    version("bat --version"),
+    version("jq --version"),
+    version("docker --version"),
+    version("make --version"),
+    version("tmux --version"),
+    version("curl --version"),
 ];
+
+/// `<program> --version`: the head is the whole command.
+const fn version(name: &'static str) -> Spec {
+    Spec {
+        name,
+        tier: Tier::Extended,
+        verb: Verb::Version,
+        paths: 0..1,
+        ..BASE
+    }
+}

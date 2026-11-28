@@ -62,7 +62,7 @@ pub mod star;
 pub(crate) mod test_script;
 /// The check's reasons that never count toward the pause, for the app tests.
 #[cfg(test)]
-pub(crate) use run_check::{TOO_LARGE, UNCHECKED, UNIGNORED};
+pub(crate) use run_check::{NOT_A_FILE, TOO_LARGE, UNCHECKED, UNIGNORED};
 pub mod tools;
 pub mod update;
 pub mod watch;
@@ -5862,6 +5862,7 @@ mod tests {
             scope: crate::app::RunScope {
                 root: root.to_path_buf(),
                 cloud: false,
+                local: true,
             },
         }
     }

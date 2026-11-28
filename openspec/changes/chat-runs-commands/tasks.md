@@ -104,15 +104,15 @@ Slices at 330-360 are tight: measure while applying and move the last work unit 
 
 ## S3b: New read verbs (base: main after S3a)
 
-- [ ] 3b.1 RED bypass table rows: `cat`/`cat -`, `tail -f`, `cat x > y`, `cat $(..)`, `sudo cat`, `env cat`, `FOO=1 cat`, `cargo --version`, `node --version`; Extended entries run on cloud and ask on local (`cat README.md` local asks).
-- [ ] 3b.2 RED `run_check` targets: `cat .env`, `cat ../../etc/passwd`, `cat ~/.ssh/id_rsa` give `NOT_ALLOWED`/`OUTSIDE_ROOT`.
-- [ ] 3b.3 GREEN `exec/specs.rs` (`cat head tail wc`, `<p> --version` for the D6 list, `Value::Rev`), `runtime/run_check.rs`. CHANGELOG. Exit gate.
+- [x] 3b.1 RED bypass table rows: `cat`/`cat -`, `tail -f`, `cat x > y`, `cat $(..)`, `sudo cat`, `env cat`, `FOO=1 cat`, `cargo --version`, `node --version`; Extended entries run on cloud and ask on local (`cat README.md` local asks).
+- [x] 3b.2 RED `run_check` targets: `cat .env`, `cat ../../etc/passwd`, `cat ~/.ssh/id_rsa` give `NOT_ALLOWED`/`OUTSIDE_ROOT`.
+- [x] 3b.3 GREEN `exec/specs.rs` (`cat head tail wc`, `<p> --version` for the D6 list), `runtime/run_check.rs`. CHANGELOG. Exit gate. (`Value::Rev` moved to S3c, task 3c.3.)
 
 ## S3c: git and the config gate (base: main after S3b)
 
 - [ ] 3c.1 RED git rows: `git status`, `git --no-pager log -n 5`, `git --no-pager diff --stat|--name-only|--name-status` run; plain `git diff`, `log` without `-n`, `log -p`, `show`, `-c`, `-C`, `--git-dir`, `--output`, `--ext-diff`, `--no-index`, `git st` ask.
 - [ ] 3c.2 RED gate (tempfile repo): plain config passes; `core.fsmonitor`, `include.path`, `diff.external` ask with `GIT_CONFIG_RISK` (not counted toward the pause); allow-list keys pass.
-- [ ] 3c.3 GREEN `exec/specs.rs` git heads and `needs_one_of`, `runtime/run_check.rs`, `runtime/tools/git.rs` (hardened config listing), `approval.rs` reason. CHANGELOG; README pair (what runs unprompted, local vs cloud, plain `git diff` asks). Exit gate.
+- [ ] 3c.3 GREEN `exec/specs.rs` git heads, `Value::Rev` (moved here from 3b.3) and `needs_one_of`, `runtime/run_check.rs`, `runtime/tools/git.rs` (hardened config listing), `approval.rs` reason. CHANGELOG; README pair (what runs unprompted, local vs cloud, plain `git diff` asks). Exit gate.
 - [ ] 3c.4 `[manual]` `run` mode: `ls` runs on a local engine, `cat README.md` asks; on a cloud-class setup `git diff --stat` runs and `git diff` asks.
 
 ## S4: Guidance and docs (base: main after S3c)

@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use super::{
-    exec::{Verb, parse},
+    exec::{Verb, parse_for},
     label,
     settle::{CUT_OFF, End, Limits, TIMEOUT, WAIT_CAP},
 };
@@ -301,7 +301,8 @@ pub fn system_line(command: &str, report: &RunReport) -> Option<String> {
         }
         _ => {}
     }
-    let cd = report.cd_target.is_some() || parse(command).is_ok_and(|safe| safe.verb() == Verb::Cd);
+    let cd = report.cd_target.is_some()
+        || parse_for(command, true).is_ok_and(|safe| safe.verb() == Verb::Cd);
     match &report.cwd {
         Some((path, CwdSource::Proc)) if cd && report.end == End::Settled => Some(format!(
             "pane {}: {} \u{2192} {}",

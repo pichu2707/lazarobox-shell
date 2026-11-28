@@ -20,8 +20,10 @@ use crate::{
                 engine::CallId,
             },
             tools::{
-                exec::{Verb, parse},
-                paths::{PathVerdict, SecretRoots, is_excluded_name, is_git_config, resolve_exec},
+                exec::{Verb, parse_for},
+                paths::{
+                    PathVerdict, SecretRoots, Want, is_excluded_name, is_git_secret, resolve_exec,
+                },
             },
         },
         layout::PaneId,
@@ -36,6 +38,12 @@ const NO_ROOTS: &str = "the secret locations cannot be read";
 /// Why a search does not run on its own: its folder holds more entries than
 /// the check looks at.
 pub const TOO_LARGE: &str = "the folder is too large to check";
+/// Why a read or search verb does not run on its own: an explicit path is not
+/// a regular file (a FIFO would block the pane, a device or a socket is no
+/// file; a folder is an error for the read verbs and fine for a search). It is
+/// a test at check time, not a guarantee: the file can be swapped before the
+/// command runs (the same window as the `.git/config` and symlink checks).
+pub const NOT_A_FILE: &str = "a path in the command is not a regular file";
 /// The most entries the check of a `grep -r` or an `rg` looks at.
 pub const MAX_SEARCHED: usize = 5_000;
 /// Why an `rg` does not run on its own: a folder or an ignore file below
@@ -90,7 +98,8 @@ impl Checker {
     }
 }
 
-/// Parses `command` again (the same bytes the app routed) and judges every
+/// Parses `command` again (the same bytes the app routed, for the engine of
+/// `scope`: a local one gets the base tier only) and judges every
 /// path it touches against `cwd`, the shell's real directory, and against
 /// the chat's root in `scope`. The answer carries `cwd` and, for a `cd`, the
 /// real directory it goes to.
@@ -114,7 +123,7 @@ pub fn check(
     scope: &RunScope,
 ) -> RunEvent {
     let refused = |reason| RunEvent::Refused { call, reason };
-    let safe = match parse(command) {
+    let safe = match parse_for(command, scope.local) {
         Ok(safe) => safe,
         Err(fallback) => return refused(fallback.why),
     };
@@ -137,9 +146,23 @@ pub fn check(
         };
         // A search reads a file it is given like a read does: a git setting
         // is refused, by the name it is given or the file it reaches.
-        let reads = matches!(safe.verb(), Verb::Grep | Verb::Rg);
-        if reads && (is_git_config(Path::new(target.input)) || is_git_config(&real)) {
+        let reads = matches!(
+            safe.verb(),
+            Verb::Grep | Verb::Rg | Verb::Cat | Verb::Head | Verb::Tail | Verb::Wc
+        );
+        if reads && (is_git_secret(Path::new(target.input)) || is_git_secret(&real)) {
             return refused(NOT_ALLOWED);
+        }
+        // A FIFO, a device or a socket may block the pane or never end. The
+        // read verbs take files only; a search also takes a folder to walk.
+        // A missing path never gets here: it does not resolve.
+        let walks = matches!(safe.verb(), Verb::Grep | Verb::Rg);
+        if (walks || matches!(safe.verb(), Verb::Cat | Verb::Head | Verb::Tail | Verb::Wc))
+            && target.want == Want::Home
+            && std::fs::metadata(&real)
+                .is_ok_and(|meta| !(meta.is_file() || (walks && meta.is_dir())))
+        {
+            return refused(NOT_A_FILE);
         }
         if target.confined && !real.starts_with(&root) {
             outside = true;
@@ -170,7 +193,8 @@ pub fn check(
 /// every entry, hidden ones too; `rg` reads what its own walker yields (see
 /// [`rg_walk`]), as its flags in `rg` bound it. Links are not
 /// followed, as no verb follows them below its arguments. More than
-/// [`MAX_SEARCHED`] entries are not looked through.
+/// [`MAX_SEARCHED`] entries are not looked through. A search refuses a FIFO,
+/// a socket or a device inside the folder, as it does one named as a target.
 fn searchable(
     roots: &SecretRoots,
     real: &Path,
@@ -186,19 +210,30 @@ fn searchable(
     match verb {
         Verb::Grep => grep_walk(roots, real),
         Verb::Rg => rg_walk(roots, real, rg),
-        Verb::Cd | Verb::Pwd | Verb::Ls | Verb::Tree | Verb::Find => Ok(()),
+        // These name files, never a folder to walk (`cat dir` is an error).
+        Verb::Cd
+        | Verb::Pwd
+        | Verb::Ls
+        | Verb::Tree
+        | Verb::Find
+        | Verb::Cat
+        | Verb::Head
+        | Verb::Tail
+        | Verb::Wc
+        | Verb::Version => Ok(()),
     }
 }
 
 /// Whether a search would read something it must not: an entry that is
 /// sensitive by name, by position or as a git setting.
 fn sensitive(roots: &SecretRoots, path: &Path, name: &OsStr) -> bool {
-    is_excluded_name(&name.to_string_lossy()) || is_git_config(path) || !roots.judge_real(path)
+    is_excluded_name(&name.to_string_lossy()) || is_git_secret(path) || !roots.judge_real(path)
 }
 
 /// The walk of `grep -r`: every entry below `real`, hidden ones too, as
 /// grep reads no ignore file. A folder it cannot read is skipped, as grep
-/// cannot read it either.
+/// cannot read it either. A FIFO, a socket or a device among them is
+/// [`NOT_A_FILE`]: grep may open it and block.
 fn grep_walk(roots: &SecretRoots, real: &Path) -> Result<(), &'static str> {
     let (mut queue, mut seen) = (vec![real.to_path_buf()], 0usize);
     while let Some(dir) = queue.pop() {
@@ -214,8 +249,13 @@ fn grep_walk(roots: &SecretRoots, real: &Path) -> Result<(), &'static str> {
             if sensitive(roots, &path, &entry.file_name()) {
                 return Err(NOT_ALLOWED);
             }
-            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
                 queue.push(path);
+            } else if !kind.is_file() && !kind.is_symlink() {
+                return Err(NOT_A_FILE);
             }
         }
     }
@@ -228,7 +268,8 @@ fn grep_walk(roots: &SecretRoots, real: &Path) -> Result<(), &'static str> {
 /// excludes and the ignore files of the folders above all honoured, a
 /// `.gitignore` only inside a git repository; links not followed; down to
 /// the command's `--max-depth`. A folder or an ignore file it cannot read is
-/// [`UNCHECKED`].
+/// [`UNCHECKED`]. A FIFO, a socket or a device it yields is [`NOT_A_FILE`],
+/// as `rg` would open it.
 ///
 /// The installed `rg` may be older than this walker and apply some ignore
 /// patterns apart from it, so the walker is not trusted to know which
@@ -286,6 +327,12 @@ fn rg_walk(roots: &SecretRoots, real: &Path, rg: RgFlags) -> Result<(), &'static
         }
         if sensitive(roots, entry.path(), entry.file_name()) {
             return Err(NOT_ALLOWED);
+        }
+        if entry
+            .file_type()
+            .is_some_and(|kind| !kind.is_file() && !kind.is_dir() && !kind.is_symlink())
+        {
+            return Err(NOT_A_FILE);
         }
     }
     Ok(())
@@ -443,6 +490,7 @@ pub async fn within(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ai::tools::exec::LOCAL_ASKS;
     use std::fs;
 
     struct Fixture {
@@ -479,6 +527,7 @@ mod tests {
         RunScope {
             root: PathBuf::from("/"),
             cloud: false,
+            local: true,
         }
     }
 
@@ -692,6 +741,7 @@ mod tests {
         RunScope {
             root: root.to_path_buf(),
             cloud,
+            local: !cloud,
         }
     }
 
@@ -1429,6 +1479,193 @@ mod tests {
                 Some("not a safe command"),
                 "{command}"
             );
+        }
+    }
+
+    // S3b: `cat head tail wc` read files like a search does: the paths are
+    // judged for secrets and for the chat's root.
+    #[test]
+    fn the_read_verbs_judge_every_path_they_are_given() {
+        let f = fixture();
+        project(&f);
+        fs::write(f.home.join(".ssh/id_rsa"), "key").unwrap();
+        for verb in ["cat", "head -n 5", "tail -n 5", "wc -l"] {
+            for command in [
+                format!("{verb} web/.env"),
+                format!("{verb} ../../../../etc/passwd"),
+                format!("{verb} ~/.ssh/id_rsa"),
+                format!("{verb} .git/config"),
+            ] {
+                let event = run_in(&f, "dev/proj", true, "dev/proj", &command);
+                assert!(
+                    matches!(reason(&event), Some(NOT_ALLOWED | OUTSIDE_ROOT)),
+                    "{command}: {event:?}"
+                );
+            }
+            let ok = format!("{verb} src/main.rs");
+            let event = run_in(&f, "dev/proj", true, "dev/proj", &ok);
+            assert!(checked(&event), "{ok}: {event:?}");
+            // A file of the project below the root, outside the pane's folder.
+            let up = format!("{verb} ../src/main.rs");
+            assert!(checked(&run_in(&f, "dev/proj", true, "dev/proj/src", &up)));
+        }
+        // A file inside HOME but outside the chat's root asks.
+        fs::write(f.home.join("dev/other.txt"), "x").unwrap();
+        let outside = run_in(&f, "dev/proj", true, "dev/proj", "cat ../other.txt");
+        assert_eq!(reason(&outside), Some(OUTSIDE_ROOT));
+    }
+
+    // S3b: `<program> --version` acts in the pane's folder only.
+    #[test]
+    fn a_version_check_runs_in_the_root_and_asks_outside_it() {
+        let f = fixture();
+        project(&f);
+        assert!(checked(&run_in(
+            &f,
+            "dev/proj",
+            true,
+            "dev/proj",
+            "git --version"
+        )));
+        let outside = run_in(&f, "dev/proj", true, "dev/app", "git --version");
+        assert_eq!(reason(&outside), Some(OUTSIDE_ROOT));
+    }
+
+    // The check judges the command for the engine of the chat: a local one
+    // gets the base tier only, so an Extended command never passes there.
+    #[test]
+    fn the_check_parses_for_the_engine_of_the_scope() {
+        let f = fixture();
+        project(&f);
+        let local = run_in(&f, "dev/proj", false, "dev/proj", "cat src/main.rs");
+        assert_eq!(reason(&local), Some(LOCAL_ASKS));
+        assert!(checked(&run_in(
+            &f, "dev/proj", false, "dev/proj", "ls src"
+        )));
+    }
+
+    // One definition of locality: an engine outside the catalog has strict
+    // paths (`cloud`) and the base tier (`local`), as `local_tier` says.
+    #[test]
+    fn an_unknown_engine_parses_as_local_in_the_check() {
+        let f = fixture();
+        project(&f);
+        let unknown = RunScope {
+            root: f.home.join("dev/proj"),
+            cloud: true,
+            local: true,
+        };
+        let event = check(
+            &env(Some(&f.home)),
+            CallId(4),
+            f.home.join("dev/proj"),
+            "cat src/main.rs",
+            &unknown,
+        );
+        assert_eq!(reason(&event), Some(LOCAL_ASKS));
+    }
+
+    // S3b: the read verbs read regular files only: a FIFO would block the
+    // pane, a device or a socket is no file, a folder is an error.
+    #[test]
+    fn the_read_verbs_refuse_what_is_not_a_regular_file() {
+        let f = fixture();
+        project(&f);
+        let fifo = f.home.join("dev/proj/pipe");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        assert!(made.is_ok_and(|s| s.success()), "mkfifo");
+        std::os::unix::fs::symlink(&fifo, f.home.join("dev/proj/link")).unwrap();
+        for verb in ["cat", "head -n 5", "tail -n 5", "wc -l"] {
+            for target in ["pipe", "link", "src"] {
+                let command = format!("{verb} {target}");
+                let event = run_in(&f, "dev/proj", true, "dev/proj", &command);
+                assert_eq!(reason(&event), Some(NOT_A_FILE), "{command}: {event:?}");
+            }
+        }
+        // A search never opens a FIFO either; a folder is fine for it.
+        for verb in ["grep x", "rg x"] {
+            for target in ["pipe", "./pipe", "link"] {
+                let command = format!("{verb} {target}");
+                for cloud in [false, true] {
+                    let event = run_in(&f, "dev/proj", cloud, "dev/proj", &command);
+                    assert_eq!(reason(&event), Some(NOT_A_FILE), "{command}: {event:?}");
+                }
+            }
+            let command = format!("{verb} src");
+            let event = run_in(&f, "dev/proj", true, "dev/proj", &command);
+            assert!(checked(&event), "{command}: {event:?}");
+        }
+    }
+
+    // A FIFO inside a folder a search walks is refused too: BSD `grep -r`
+    // may open it and block the pane.
+    #[test]
+    fn a_search_refuses_a_fifo_inside_a_folder_it_walks() {
+        let f = fixture();
+        project(&f);
+        let mkfifo = |path: std::path::PathBuf| {
+            let made = std::process::Command::new("mkfifo").arg(&path).status();
+            assert!(made.is_ok_and(|s| s.success()), "mkfifo");
+        };
+        fs::create_dir_all(f.home.join("dev/proj/pipes/deep")).unwrap();
+        mkfifo(f.home.join("dev/proj/pipes/pipe"));
+        fs::create_dir_all(f.home.join("dev/proj/nested/deep")).unwrap();
+        mkfifo(f.home.join("dev/proj/nested/deep/pipe"));
+        for command in [
+            "grep -r x pipes",
+            "grep -r x nested",
+            "rg x pipes",
+            "rg x nested",
+        ] {
+            let event = run_in(&f, "dev/proj", true, "dev/proj", command);
+            assert_eq!(reason(&event), Some(NOT_A_FILE), "{command}: {event:?}");
+        }
+        // `rg` does not walk a hidden FIFO, so it has nothing to refuse.
+        fs::create_dir_all(f.home.join("dev/proj/quiet")).unwrap();
+        mkfifo(f.home.join("dev/proj/quiet/.pipe"));
+        let event = run_in(&f, "dev/proj", true, "dev/proj", "rg x quiet");
+        assert!(checked(&event), "{event:?}");
+        let event = run_in(&f, "dev/proj", true, "dev/proj", "grep -r x quiet");
+        assert_eq!(reason(&event), Some(NOT_A_FILE), "{event:?}");
+    }
+
+    // `.git/FETCH_HEAD` can hold the URL of a remote with a token, like
+    // `.git/config`.
+    #[test]
+    fn fetch_head_is_refused_like_the_git_config() {
+        let f = fixture();
+        project(&f);
+        fs::write(
+            f.home.join("dev/proj/.git/FETCH_HEAD"),
+            "abc\t\thttps://user:token@host/r\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            f.home.join("dev/proj/.git/FETCH_HEAD"),
+            f.home.join("dev/proj/fh"),
+        )
+        .unwrap();
+        for verb in [
+            "cat",
+            "head -n 5",
+            "tail -n 5",
+            "wc -l",
+            "grep foo",
+            "rg foo",
+        ] {
+            for target in [".git/FETCH_HEAD", "./.git/../.git/FETCH_HEAD", "fh"] {
+                let command = format!("{verb} {target}");
+                for cloud in [false, true] {
+                    let event = run_in(&f, "dev/proj", cloud, "dev/proj", &command);
+                    let extended = ["cat", "head -n 5", "tail -n 5", "wc -l"].contains(&verb);
+                    let want = if cloud || !extended {
+                        Some(NOT_ALLOWED)
+                    } else {
+                        Some(LOCAL_ASKS)
+                    };
+                    assert_eq!(reason(&event), want, "{command} cloud={cloud}");
+                }
+            }
         }
     }
 

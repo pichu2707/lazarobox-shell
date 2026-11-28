@@ -50,6 +50,7 @@ fn live_scope() -> RunScope {
     RunScope {
         root: LAUNCH.into(),
         cloud: false,
+        local: true,
     }
 }
 
@@ -204,8 +205,15 @@ fn a_search_that_could_write_or_run_a_program_asks() {
 // model's fault: it never pauses the run.
 #[test]
 fn a_check_outside_the_root_or_under_a_broad_root_asks_and_never_pauses() {
-    use crate::runtime::{TOO_LARGE, UNCHECKED, UNIGNORED};
-    for reason in [OUTSIDE_ROOT, BROAD_ROOT, TOO_LARGE, UNCHECKED, UNIGNORED] {
+    use crate::runtime::{NOT_A_FILE, TOO_LARGE, UNCHECKED, UNIGNORED};
+    for reason in [
+        OUTSIDE_ROOT,
+        BROAD_ROOT,
+        TOO_LARGE,
+        UNCHECKED,
+        UNIGNORED,
+        NOT_A_FILE,
+    ] {
         let (mut a, turn) = run_live();
         for call in 1..=MAX_RUN_FALLBACKS as u64 {
             announce(&mut a, turn, call, run("ls /srv"));
@@ -239,8 +247,41 @@ fn git_asks_like_any_command_off_the_list_and_counts_toward_the_pause() {
     assert!(chat_of(&a).run_paused());
 }
 
-// The scope of the check: the chat's origin folder (or `/`), and cloud
-// unless the catalog knows the engine as local.
+// S3b: an Extended command runs alone on a cloud engine only, and an engine
+// that is not known to be cloud counts as local: a chat that is idle (the turn
+// ended or was cancelled, so no engine is on record) asks, it never runs.
+#[test]
+fn the_tier_of_an_engine_is_local_unless_the_catalog_says_cloud() {
+    use crate::app::auto_run::local_tier;
+    assert!(local_tier("ollama"));
+    assert!(!local_tier("claude"));
+    assert!(local_tier(""), "idle: no engine on record");
+    assert!(local_tier("not-in-the-catalog"));
+}
+
+#[test]
+fn an_idle_chat_asks_for_an_extended_command() {
+    use crate::core::ai::chat::{approval::Route, engine::Finish};
+    let (mut a, turn) = run_live();
+    let ask = run("cat README.md");
+    let first = a.auto_route(id2(), PaneId::FIRST, &ask, false);
+    assert!(matches!(first, Route::Prompt(Some(_))), "{first:?}");
+    a.update(AppEvent::Chat(id2(), turn, StreamEvent::Done(Finish::Stop)));
+    assert_eq!(chat_of(&a).stream_engine(), "", "idle");
+    let again = a.auto_route(id2(), PaneId::FIRST, &ask, true);
+    let Route::Prompt(Some(fallback)) = again else {
+        panic!("an idle chat must ask: {again:?}")
+    };
+    assert_eq!(fallback.why, crate::core::ai::tools::exec::LOCAL_ASKS);
+    // The base tier is unaffected.
+    let base = run("ls");
+    let routed = a.auto_route(id2(), PaneId::FIRST, &base, true);
+    assert!(matches!(routed, Route::AutoRun(_)), "{routed:?}");
+}
+
+// The scope of the check: the chat's origin folder (or `/`), cloud for the
+// paths unless the catalog knows the engine as local, and the tier of the
+// grammar from `local_tier`: an unknown engine is cloud and local at once.
 #[test]
 fn the_scope_of_a_check_is_the_chat_root_and_the_engine_locality() {
     use crate::app::auto_run::run_scope;
@@ -249,23 +290,72 @@ fn the_scope_of_a_check_is_the_chat_root_and_the_engine_locality() {
         run_scope(Some(root), "ollama"),
         RunScope {
             root: root.into(),
-            cloud: false
+            cloud: false,
+            local: true
         }
     );
     assert_eq!(
         run_scope(Some(root), "claude"),
         RunScope {
             root: root.into(),
-            cloud: true
+            cloud: true,
+            local: false
         }
     );
     assert_eq!(
         run_scope(None, "no-such-engine"),
         RunScope {
             root: "/".into(),
-            cloud: true
+            cloud: true,
+            local: true
         }
     );
+}
+
+/// A shell (pane 1) and a chat (pane 2) on `engine`, a CLI one, in `run`
+/// mode with a turn in flight.
+fn run_live_on(engine: &'static str) -> (App, u64) {
+    use super::chat_live::{assigned, cli_detected, undetected_chat, working_jail};
+    NOW_MS.with(|n| n.set(0));
+    let mut a = undetected_chat(assigned(engine))
+        .with_jail(working_jail())
+        .with_clock(mock_now);
+    a.update(cli_detected(engine));
+    a.cwd_readable = true;
+    a.panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+        .set_approval_mode(ApprovalMode::Run);
+    a.update(key('q'));
+    let turn = super::run_pane::enter_turn(&mut a);
+    assert_eq!(chat_of(&a).stream_engine(), engine);
+    (a, turn)
+}
+
+// S3b, wired end to end: the route of an Extended command follows the engine
+// of the turn. A cloud engine runs it, a local one asks, so inverting
+// `local_tier` fails here.
+#[test]
+fn an_extended_command_runs_on_a_cloud_engine_and_asks_on_a_local_one() {
+    use crate::core::ai::chat::approval::Route;
+    let (cat, ls) = (run("cat README.md"), run("ls"));
+    let (cloud, _) = run_live_on("claude");
+    let routed = cloud.auto_route(id2(), PaneId::FIRST, &cat, false);
+    assert!(matches!(routed, Route::AutoRun(_)), "cloud: {routed:?}");
+    let (local, _) = run_live();
+    assert_eq!(chat_of(&local).stream_engine(), "ollama");
+    let routed = local.auto_route(id2(), PaneId::FIRST, &cat, false);
+    let Route::Prompt(Some(fallback)) = routed else {
+        panic!("a local engine must ask: {routed:?}")
+    };
+    assert_eq!(fallback.why, crate::core::ai::tools::exec::LOCAL_ASKS);
+    // The base tier runs on both, each in a fresh app so the route of `cat`
+    // leaves no state behind.
+    for (a, _) in [run_live_on("claude"), run_live()] {
+        let base = a.auto_route(id2(), PaneId::FIRST, &ls, false);
+        assert!(matches!(base, Route::AutoRun(_)), "{base:?}");
+    }
 }
 
 // S3.7: no real cwd, no run.

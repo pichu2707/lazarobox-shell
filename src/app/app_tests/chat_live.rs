@@ -860,7 +860,7 @@ fn detection_with(status: Status, models: &[&str]) -> Detection {
 }
 
 /// A chat (pane 2) in an app with `ai`, before any detection result.
-fn undetected_chat(ai: AiConfig) -> App {
+pub(super) fn undetected_chat(ai: AiConfig) -> App {
     let mut a = launched(80, 25).with_ai(ai);
     press(&mut a, "c");
     a.update(prompt_ready(SYSTEM, &[]));
@@ -871,7 +871,7 @@ fn guidance_of(a: &App) -> Option<String> {
     a.chat_guidance(chat_id())
 }
 
-fn assigned(engine: &str) -> AiConfig {
+pub(super) fn assigned(engine: &str) -> AiConfig {
     let mut ai = AiConfig::default();
     ai.set(
         Task::Chat,
@@ -964,7 +964,7 @@ fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
     assert_eq!(composer(&a), "hi");
 }
 
-fn cli_detected(id: &'static str) -> AppEvent {
+pub(super) fn cli_detected(id: &'static str) -> AppEvent {
     AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
             binary: None,
@@ -979,7 +979,7 @@ fn cli_detected(id: &'static str) -> AppEvent {
     })
 }
 
-fn working_jail() -> crate::core::ai::jail::JailSupport {
+pub(super) fn working_jail() -> crate::core::ai::jail::JailSupport {
     crate::core::ai::jail::JailSupport::Available {
         backend: crate::core::ai::jail::Backend::Landlock,
         abi: 7,

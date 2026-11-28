@@ -10,6 +10,16 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- **`cat`, `head`, `tail`, `wc` and `<program> --version` run on their own with a cloud engine (#845).** In `run` mode, `cat` (`-n`), `head` and `tail` (`-n N` or `-N`, never `-f`), `wc` (`-l -w -c`), each with one to four files, and exactly `git`, `rg`, `fd`, `bat`, `jq`, `docker`, `make`, `tmux` or `curl` followed by `--version`, run without a prompt, under the path rules of the other read commands (a secret path, `.git/config` or a file outside the chat folder asks). A local engine keeps its seven commands and asks for these (`not run alone on a local engine`); `y` runs them.
+
+### Fixed
+
+- **`cat`, `head`, `tail`, `wc`, `grep` and `rg` ask before opening a FIFO, a device or a socket (#845).** A path that is not a regular file would block the pane; the confirmation says `a path in the command is not a regular file`. A folder is still fine for `grep -r` and `rg`, but a FIFO, a device or a socket found inside it is refused too (`rg` does not walk hidden or ignored ones).
+- **`.git/FETCH_HEAD` is refused like `.git/config` (#845).** It lists the URLs of the remotes a fetch used, which can hold a token. The commands that run on their own, `read_file` and the searches no longer read it.
+- **A chat with no engine on record no longer counts as a cloud one for what runs on its own (#845).** The wide list of commands is for engines the catalog knows as cloud only; an idle chat, or an engine outside the catalog, asks. A quoted word can no longer complete the head of a command (`git "status"` asks).
+
 ## [1.40.0] - 2026-11-25
 
 ### Added
