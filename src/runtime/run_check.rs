@@ -193,7 +193,8 @@ pub fn check(
 /// every entry, hidden ones too; `rg` reads what its own walker yields (see
 /// [`rg_walk`]), as its flags in `rg` bound it. Links are not
 /// followed, as no verb follows them below its arguments. More than
-/// [`MAX_SEARCHED`] entries are not looked through.
+/// [`MAX_SEARCHED`] entries are not looked through. A search refuses a FIFO,
+/// a socket or a device inside the folder, as it does one named as a target.
 fn searchable(
     roots: &SecretRoots,
     real: &Path,
@@ -231,7 +232,8 @@ fn sensitive(roots: &SecretRoots, path: &Path, name: &OsStr) -> bool {
 
 /// The walk of `grep -r`: every entry below `real`, hidden ones too, as
 /// grep reads no ignore file. A folder it cannot read is skipped, as grep
-/// cannot read it either.
+/// cannot read it either. A FIFO, a socket or a device among them is
+/// [`NOT_A_FILE`]: grep may open it and block.
 fn grep_walk(roots: &SecretRoots, real: &Path) -> Result<(), &'static str> {
     let (mut queue, mut seen) = (vec![real.to_path_buf()], 0usize);
     while let Some(dir) = queue.pop() {
@@ -247,8 +249,13 @@ fn grep_walk(roots: &SecretRoots, real: &Path) -> Result<(), &'static str> {
             if sensitive(roots, &path, &entry.file_name()) {
                 return Err(NOT_ALLOWED);
             }
-            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
                 queue.push(path);
+            } else if !kind.is_file() && !kind.is_symlink() {
+                return Err(NOT_A_FILE);
             }
         }
     }
@@ -261,7 +268,8 @@ fn grep_walk(roots: &SecretRoots, real: &Path) -> Result<(), &'static str> {
 /// excludes and the ignore files of the folders above all honoured, a
 /// `.gitignore` only inside a git repository; links not followed; down to
 /// the command's `--max-depth`. A folder or an ignore file it cannot read is
-/// [`UNCHECKED`].
+/// [`UNCHECKED`]. A FIFO, a socket or a device it yields is [`NOT_A_FILE`],
+/// as `rg` would open it.
 ///
 /// The installed `rg` may be older than this walker and apply some ignore
 /// patterns apart from it, so the walker is not trusted to know which
@@ -319,6 +327,12 @@ fn rg_walk(roots: &SecretRoots, real: &Path, rg: RgFlags) -> Result<(), &'static
         }
         if sensitive(roots, entry.path(), entry.file_name()) {
             return Err(NOT_ALLOWED);
+        }
+        if entry
+            .file_type()
+            .is_some_and(|kind| !kind.is_file() && !kind.is_dir() && !kind.is_symlink())
+        {
+            return Err(NOT_A_FILE);
         }
     }
     Ok(())
@@ -1581,6 +1595,38 @@ mod tests {
             let event = run_in(&f, "dev/proj", true, "dev/proj", &command);
             assert!(checked(&event), "{command}: {event:?}");
         }
+    }
+
+    // A FIFO inside a folder a search walks is refused too: BSD `grep -r`
+    // may open it and block the pane.
+    #[test]
+    fn a_search_refuses_a_fifo_inside_a_folder_it_walks() {
+        let f = fixture();
+        project(&f);
+        let mkfifo = |path: std::path::PathBuf| {
+            let made = std::process::Command::new("mkfifo").arg(&path).status();
+            assert!(made.is_ok_and(|s| s.success()), "mkfifo");
+        };
+        fs::create_dir_all(f.home.join("dev/proj/pipes/deep")).unwrap();
+        mkfifo(f.home.join("dev/proj/pipes/pipe"));
+        fs::create_dir_all(f.home.join("dev/proj/nested/deep")).unwrap();
+        mkfifo(f.home.join("dev/proj/nested/deep/pipe"));
+        for command in [
+            "grep -r x pipes",
+            "grep -r x nested",
+            "rg x pipes",
+            "rg x nested",
+        ] {
+            let event = run_in(&f, "dev/proj", true, "dev/proj", command);
+            assert_eq!(reason(&event), Some(NOT_A_FILE), "{command}: {event:?}");
+        }
+        // `rg` does not walk a hidden FIFO, so it has nothing to refuse.
+        fs::create_dir_all(f.home.join("dev/proj/quiet")).unwrap();
+        mkfifo(f.home.join("dev/proj/quiet/.pipe"));
+        let event = run_in(&f, "dev/proj", true, "dev/proj", "rg x quiet");
+        assert!(checked(&event), "{event:?}");
+        let event = run_in(&f, "dev/proj", true, "dev/proj", "grep -r x quiet");
+        assert_eq!(reason(&event), Some(NOT_A_FILE), "{event:?}");
     }
 
     // `.git/FETCH_HEAD` can hold the URL of a remote with a token, like
