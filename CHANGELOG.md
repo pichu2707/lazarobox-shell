@@ -12,7 +12,7 @@ baseline.
 
 ### Added
 
-- **`cat`, `head`, `tail`, `wc` and `<program> --version` run on their own with a cloud engine (#845).** In `run` mode, `cat` (`-n`), `head` and `tail` (`-n N` or `-N`, never `-f`), `wc` (`-l -w -c`), each with one to four files, and exactly `git`, `rg`, `fd`, `bat`, `jq`, `gh`, `docker`, `make`, `tmux` or `curl` followed by `--version`, run without a prompt, under the path rules of the other read commands (a secret path, `.git/config` or a file outside the chat folder asks). A local engine keeps its seven commands and asks for these (`not run alone on a local engine`); `y` runs them.
+- **`cat`, `head`, `tail`, `wc` and `<program> --version` run on their own with a cloud engine (#845).** In `run` mode, `cat` (`-n`), `head` and `tail` (`-n N` or `-N`, never `-f`), `wc` (`-l -w -c`), each with one to four files, and exactly `git`, `rg`, `fd`, `bat`, `jq`, `docker`, `make`, `tmux` or `curl` followed by `--version`, run without a prompt, under the path rules of the other read commands (a secret path, `.git/config` or a file outside the chat folder asks). A local engine keeps its seven commands and asks for these (`not run alone on a local engine`); `y` runs them.
 
 ### Fixed
 

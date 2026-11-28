@@ -4,7 +4,7 @@
 //! search (`grep`, `rg`, `find`), each with only the flags of `SPECS`, and
 //! at most [`MAX_WORDS`] words. These seven are the base tier. The Extended
 //! tier (`cat`, `head`, `tail`, `wc` and `<program> --version` for a fixed
-//! list of ten) is for cloud engines only: [`parse_for`] with `local` set
+//! list of nine) is for cloud engines only: [`parse_for`] with `local` set
 //! refuses it with [`LOCAL_ASKS`]. No verb writes, and no allowed flag runs
 //! another program or writes a file (`find -exec`/`-delete`/`-fprint` and
 //! `rg --pre`/`-z` are not in the lists). `git` is not a safe command: its

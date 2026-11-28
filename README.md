@@ -881,9 +881,9 @@ The `Ctrl+Space`, `e` confirmation (a block of the response, not a model call) o
 
 **Runs on its own.** `cd`, `pwd`, `ls`, `tree`, `find`, `grep` and `rg`, when all their paths, and the pane's directory if none is given, are inside the chat folder. `pwd` runs anywhere and a `cd` without a path goes to `~`. `tree`, `grep` and `rg` also only act inside `$HOME`.
 
-With a cloud engine, `cat`, `head`, `tail` and `wc` also run on their own (one to four files; `head` and `tail` take `-n N` or `-N`, never `-f`), and so do `git`, `rg`, `fd`, `bat`, `jq`, `gh`, `docker`, `make`, `tmux` and `curl` with exactly `--version`; their files follow the same path rules, and a secret path asks. A local engine asks for them (`not run alone on a local engine`) and your `y` runs them.
+With a cloud engine, `cat`, `head`, `tail` and `wc` also run on their own (one to four files; `head` and `tail` take `-n N` or `-N`, never `-f`), and so do `git`, `rg`, `fd`, `bat`, `jq`, `docker`, `make`, `tmux` and `curl` with exactly `--version`; their files follow the same path rules, and a secret path asks. A local engine asks for them (`not run alone on a local engine`) and your `y` runs them.
 
-The command must be a single one: no `&&`, `;`, `|`, `$`, `*`, backticks or redirections, only the flags the grammar below lists, at most 8 plain words, and its paths inside the chat folder. Anything else asks, and `git` and `gh` always ask, whatever their arguments (`--version` aside). `ask` runs none of these on its own either: every command asks.
+The command must be a single one: no `&&`, `;`, `|`, `$`, `*`, backticks or redirections, only the flags the grammar below lists, at most 8 plain words, and its paths inside the chat folder. Anything else asks, and `git` and `gh` always ask, whatever their arguments (`git --version` aside). `ask` runs none of these on its own either: every command asks.
 
 **Asks.** The confirmation states the reason:
 
@@ -906,7 +906,7 @@ The command must be a single one: no `&&`, `;`, `|`, `$`, `*`, backticks or redi
 - `grep` (flags `i n l c w v F E H h s o x r`, `-A`/`-B`/`-C`/`-m <n>`, a pattern and at least one path; without `-R` or `-f`).
 - `rg` (flags `i s S n N l c w v F x H o`, `-A`/`-B`/`-C`/`-m <n>`, `-t`/`-T <type>`, `--max-depth <n>` and some long options (`--ignore-case`, `--count`, `--no-heading`…); without `--hidden`, `--no-ignore`, `-u`, `-L`, `--pre` or `-z`).
 - `find` (`-name`, `-iname`, `-type f|d|l`, `-maxdepth`, `-mindepth`; without `-exec`, `-delete`, `-fprint`, `-ok` or `-L`).
-- Extended grammar, only with a cloud engine (a local one asks): `cat` (`-n`), `head` and `tail` (`-n N` or `-N` of up to 4 digits, never `-f`) and `wc` (`-l`, `-w`, `-c`), each with one to four files and none from stdin; and `--version` alone, with nothing else, for `git`, `rg`, `fd`, `bat`, `jq`, `gh`, `docker`, `make`, `tmux` and `curl`.
+- Extended grammar, only with a cloud engine (a local one asks): `cat` (`-n`), `head` and `tail` (`-n N` or `-N` of up to 4 digits, never `-f`) and `wc` (`-l`, `-w`, `-c`), each with one to four files and none from stdin; and `--version` alone, with nothing else, for `git`, `rg`, `fd`, `bat`, `jq`, `docker`, `make`, `tmux` and `curl`.
 - Words only admit Latin letters (accented too), digits and `. _ / @ % + : , = ~ -`; a space only goes inside quotes. Anything else asks, for example Cyrillic, CJK, emoji, `*` or `;`.
 - Paths and patterns may be unquoted or in single or double quotes (`ls -la "My Documents"`): a whole word in quotes, without `$`, backtick, `\`, `!` or other quotes. The verb is never in quotes.
 - `&&`, `;`, `|`, `$`, redirections, globs and other long options are not allowed. Paths go through the same policy as the read tools, checked against the pane's real directory.

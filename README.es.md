@@ -881,9 +881,9 @@ La confirmación de `Ctrl+Space`, `e` (un bloque de la respuesta, no una llamada
 
 **Corre solo.** `cd`, `pwd`, `ls`, `tree`, `find`, `grep` y `rg`, cuando todas sus rutas, y el directorio del panel si no se da ninguna, quedan dentro de la carpeta del chat. `pwd` corre en cualquier sitio y un `cd` sin ruta va a `~`. `tree`, `grep` y `rg` además solo actúan dentro de `$HOME`.
 
-Con un motor en la nube, `cat`, `head`, `tail` y `wc` también corren solos (de uno a cuatro archivos; `head` y `tail` aceptan `-n N` o `-N`, nunca `-f`), y también `git`, `rg`, `fd`, `bat`, `jq`, `gh`, `docker`, `make`, `tmux` y `curl` con exactamente `--version`; sus archivos siguen las mismas reglas de rutas, y una ruta secreta pregunta. Un motor local pregunta por ellos (`not run alone on a local engine`) y tu `y` los ejecuta.
+Con un motor en la nube, `cat`, `head`, `tail` y `wc` también corren solos (de uno a cuatro archivos; `head` y `tail` aceptan `-n N` o `-N`, nunca `-f`), y también `git`, `rg`, `fd`, `bat`, `jq`, `docker`, `make`, `tmux` y `curl` con exactamente `--version`; sus archivos siguen las mismas reglas de rutas, y una ruta secreta pregunta. Un motor local pregunta por ellos (`not run alone on a local engine`) y tu `y` los ejecuta.
 
-El comando tiene que ser uno solo: sin `&&`, `;`, `|`, `$`, `*`, comillas invertidas ni redirecciones, solo con las opciones que lista la gramática de abajo, como máximo 8 palabras simples y con sus rutas dentro de la carpeta del chat. Cualquier otro pregunta, y `git` y `gh` siempre preguntan, sean cuales sean sus argumentos (salvo `--version`). `ask` tampoco ejecuta ninguno de estos por su cuenta: cada comando pregunta.
+El comando tiene que ser uno solo: sin `&&`, `;`, `|`, `$`, `*`, comillas invertidas ni redirecciones, solo con las opciones que lista la gramática de abajo, como máximo 8 palabras simples y con sus rutas dentro de la carpeta del chat. Cualquier otro pregunta, y `git` y `gh` siempre preguntan, sean cuales sean sus argumentos (salvo `git --version`). `ask` tampoco ejecuta ninguno de estos por su cuenta: cada comando pregunta.
 
 **Pregunta.** La confirmación dice el motivo:
 
@@ -906,7 +906,7 @@ El comando tiene que ser uno solo: sin `&&`, `;`, `|`, `$`, `*`, comillas invert
 - `grep` (flags `i n l c w v F E H h s o x r`, `-A`/`-B`/`-C`/`-m <n>`, un patrón y al menos una ruta; sin `-R` ni `-f`).
 - `rg` (flags `i s S n N l c w v F x H o`, `-A`/`-B`/`-C`/`-m <n>`, `-t`/`-T <tipo>`, `--max-depth <n>` y algunas opciones largas (`--ignore-case`, `--count`, `--no-heading`…); sin `--hidden`, `--no-ignore`, `-u`, `-L`, `--pre` ni `-z`).
 - `find` (`-name`, `-iname`, `-type f|d|l`, `-maxdepth`, `-mindepth`; sin `-exec`, `-delete`, `-fprint`, `-ok` ni `-L`).
-- Gramática extendida, solo con un motor en la nube (uno local pregunta): `cat` (`-n`), `head` y `tail` (`-n N` o `-N` de hasta 4 dígitos, nunca `-f`) y `wc` (`-l`, `-w`, `-c`), cada uno con uno a cuatro archivos y ninguno desde stdin; y `--version` solo, sin nada más, para `git`, `rg`, `fd`, `bat`, `jq`, `gh`, `docker`, `make`, `tmux` y `curl`.
+- Gramática extendida, solo con un motor en la nube (uno local pregunta): `cat` (`-n`), `head` y `tail` (`-n N` o `-N` de hasta 4 dígitos, nunca `-f`) y `wc` (`-l`, `-w`, `-c`), cada uno con uno a cuatro archivos y ninguno desde stdin; y `--version` solo, sin nada más, para `git`, `rg`, `fd`, `bat`, `jq`, `docker`, `make`, `tmux` y `curl`.
 - Las palabras solo admiten letras latinas (también acentuadas), dígitos y `. _ / @ % + : , = ~ -`; el espacio solo va dentro de comillas. Cualquier otra cosa pregunta, por ejemplo cirílico, CJK, emoji, `*` o `;`.
 - Las rutas y los patrones pueden ir sin comillas o entre comillas simples o dobles (`ls -la "Mis Documentos"`): una palabra entera entre comillas, sin `$`, comilla invertida, `\`, `!` ni otras comillas. El verbo nunca va entre comillas.
 - No entran `&&`, `;`, `|`, `$`, redirecciones, globs ni otras opciones largas. Las rutas pasan la misma política que las herramientas de lectura, comprobada sobre el directorio real del panel.

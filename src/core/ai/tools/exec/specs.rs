@@ -75,7 +75,7 @@ pub(super) const CONTEXT: [(&str, Value); 4] = [
     ("-m", Value::Number),
 ];
 
-pub(super) const SPECS: [Spec; 21] = [
+pub(super) const SPECS: [Spec; 20] = [
     Spec {
         name: "cd",
         verb: Verb::Cd,
@@ -203,7 +203,6 @@ pub(super) const SPECS: [Spec; 21] = [
     version("fd --version"),
     version("bat --version"),
     version("jq --version"),
-    version("gh --version"),
     version("docker --version"),
     version("make --version"),
     version("tmux --version"),

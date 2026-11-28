@@ -854,7 +854,7 @@ fn the_run_verbs_are_the_same_in_the_hint_and_the_readmes() {
 const SEVEN: [&str; 7] = ["cd", "pwd", "ls", "tree", "grep", "rg", "find"];
 
 // S3b: the new read verbs and the `--version` of the D6 list.
-const EXTENDED: [&str; 14] = [
+const EXTENDED: [&str; 13] = [
     "cat",
     "head",
     "tail",
@@ -864,7 +864,6 @@ const EXTENDED: [&str; 14] = [
     "fd --version",
     "bat --version",
     "jq --version",
-    "gh --version",
     "docker --version",
     "make --version",
     "tmux --version",
@@ -987,6 +986,7 @@ fn the_new_verbs_ask_for_every_bypass_row() {
         "'cat' a",
         "\"head\" a",
         "tail -5 -f a",
+        "gh --version",
     ] {
         for local in [false, true] {
             assert!(parse_for(text, local).is_err(), "{text:?} local={local}");
