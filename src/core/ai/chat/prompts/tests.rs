@@ -458,6 +458,7 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
         "instead of asking the user to run find, ls or cat",
         "cannot change files",
         "which program and file they have open",
+        "This rule overrides any earlier instruction to put commands in fenced blocks",
     ] {
         assert!(text.contains(needle), "{needle}");
     }
@@ -478,7 +479,7 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
         assert!(!text.contains(mode), "{mode}");
     }
     assert!(
-        text.lines().count() == 1 && text.len() <= 1400,
+        text.lines().count() == 1 && text.len() <= 1430,
         "{}",
         text.len()
     );
