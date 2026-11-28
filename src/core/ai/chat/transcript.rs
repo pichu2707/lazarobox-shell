@@ -66,7 +66,7 @@ pub enum Wrap {
 }
 
 /// The hint under the last shell block of the last answer (tools on).
-pub const RUN_HINT: &str = "Ctrl+Space e  run in pane";
+pub const RUN_HINT: &str = "Ctrl+Space e  type in pane";
 
 /// The gutter in front of every reasoning row.
 pub const GUTTER: &str = "┊ ";

@@ -332,7 +332,7 @@ fn screen(a: &App) -> String {
 fn the_screen_shows_the_hint_then_the_prompt_and_then_neither() {
     let mut a = one_shell_and_a_chat(BLOCK);
     assert!(chat(&a, id2()).run_hint(), "tools are on by default");
-    assert!(screen(&a).contains("Ctrl+Space e  run in pane"));
+    assert!(screen(&a).contains("Ctrl+Space e  type in pane"));
     press(&mut a, "e");
     let shot = screen(&a);
     assert!(shot.contains("run in pane 1 (/launch)"), "{shot}");

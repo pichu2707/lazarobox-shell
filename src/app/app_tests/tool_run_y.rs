@@ -402,3 +402,19 @@ fn the_hint_does_not_advertise_running_when_the_target_is_gone() {
     chat_mut(&mut a).set_run_target(None);
     assert_eq!(a.approval_prompt(id2()).unwrap().keys, TYPE_KEYS);
 }
+
+// Spec (agent-tools, Model guidance): a fenced shell block the model prints
+// is plain text; nothing is written to any pane.
+#[test]
+fn a_printed_bash_block_runs_nothing() {
+    use super::chat_live::{delta, finish};
+    let (mut a, turn) = super::tool_approval::live();
+    let mut effects = a.update(delta(turn, "Run this:\n```bash\nrm -rf ~\n```\n"));
+    effects.extend(a.update(finish(turn)));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::WritePty(..) | Effect::AutoRun { .. })),
+        "{effects:?}"
+    );
+}

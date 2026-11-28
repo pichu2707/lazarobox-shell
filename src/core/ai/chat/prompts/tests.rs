@@ -452,13 +452,8 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
         "read a file",
         "run a command in the user's shell pane",
         "only typed or typed and run",
-        "cd, pwd, ls, tree, find, grep and rg,",
-        "one command with plain or quoted paths",
-        "without &&, ;, |, $, * or redirections",
-        "can run directly in the chat's folder when the user allows it",
-        "Anything else, git and mkdir included, waits for the user to review it and press Enter",
         "carries the output of a command that ran, which may be \"not available\"",
-        "You cannot change files yourself; any change needs a command the user reviews and runs.",
+        "You cannot change files yourself; any change is a command you send with the tool, which the user approves.",
         "one simple command per call",
         "instead of asking the user to run find, ls or cat",
         "cannot change files",
@@ -941,7 +936,7 @@ fn the_coordinator_tools_block_sends_changes_to_workers_not_to_the_user() {
         assert!(!got.contains(NO_CHANGES), "{profile:?}");
         assert!(!got.contains("You are a text assistant"), "{profile:?}");
         assert!(
-            !got.contains("needs a command the user reviews and runs"),
+            !got.contains("is a command you send with the tool"),
             "{profile:?}"
         );
         assert!(
@@ -997,5 +992,42 @@ fn both_judge_tasks_use_the_judge_prompt() {
         for task in [Task::JudgeA, Task::JudgeB] {
             assert_eq!(builtin(profile, task), judge_builtin(profile));
         }
+    }
+}
+
+// Spec (agent-tools, Model guidance): the model is told it runs commands
+// itself, and never that the user presses Enter or runs them.
+#[test]
+fn the_guidance_never_says_the_user_runs_it() {
+    use crate::core::ai::chat::transcript::RUN_HINT;
+    let description = crate::core::ai::tools::registry(&[])
+        .into_iter()
+        .find(|t| t.name == "run_in_pane")
+        .unwrap()
+        .description;
+    for (name, text) in [
+        ("tools.md", TOOLS.to_owned()),
+        ("description", description.to_string()),
+        ("RUN_HINT", RUN_HINT.to_owned()),
+    ] {
+        let lower = text.to_lowercase();
+        for banned in ["press enter", "type it", "auto", "you run"] {
+            assert!(!lower.contains(banned), "{name} says {banned:?}");
+        }
+    }
+    assert_eq!(RUN_HINT, "Ctrl+Space e  type in pane");
+}
+
+#[test]
+fn the_tools_block_says_call_the_tool_password_and_thirty_seconds() {
+    for needle in [
+        "Call the tool for every command",
+        "do not write shell blocks for the user to run",
+        "types it in the pane and it never reaches you",
+        "about 30 s",
+        "with the output so far and keeps running",
+        "do not start it again",
+    ] {
+        assert!(TOOLS.contains(needle), "{needle}");
     }
 }
