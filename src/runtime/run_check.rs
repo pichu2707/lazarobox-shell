@@ -4,7 +4,9 @@
 
 use std::{
     ffi::OsStr,
+    io::Read as _,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
     time::Duration,
 };
 
@@ -16,7 +18,7 @@ use crate::{
     core::{
         ai::{
             chat::{
-                approval::{BROAD_ROOT, NOT_ALLOWED, OUTSIDE_ROOT},
+                approval::{BROAD_ROOT, GIT_CONFIG_RISK, NOT_ALLOWED, OUTSIDE_ROOT},
                 engine::CallId,
             },
             tools::{
@@ -112,7 +114,8 @@ impl Checker {
 /// entries is [`TOO_LARGE`], an `rg` whose walk meets a folder or an ignore
 /// file it cannot read is [`UNCHECKED`], and an `rg` that may read an
 /// ignore file with a `!` line is [`UNIGNORED`]; last, a path the command
-/// acts on outside the root is [`OUTSIDE_ROOT`]. Each one opens the prompt;
+/// acts on outside the root is [`OUTSIDE_ROOT`]; a git command in a
+/// repository whose config can run a program is [`GIT_CONFIG_RISK`]. Each one opens the prompt;
 /// only [`NOT_ALLOWED`] counts toward the pause, [`TOO_LARGE`],
 /// [`UNCHECKED`] and [`UNIGNORED`] do not.
 pub fn check(
@@ -148,7 +151,15 @@ pub fn check(
         // is refused, by the name it is given or the file it reaches.
         let reads = matches!(
             safe.verb(),
-            Verb::Grep | Verb::Rg | Verb::Cat | Verb::Head | Verb::Tail | Verb::Wc
+            Verb::Grep
+                | Verb::Rg
+                | Verb::Cat
+                | Verb::Head
+                | Verb::Tail
+                | Verb::Wc
+                | Verb::GitStatus
+                | Verb::GitLog
+                | Verb::GitDiff
         );
         if reads && (is_git_secret(Path::new(target.input)) || is_git_secret(&real)) {
             return refused(NOT_ALLOWED);
@@ -177,6 +188,11 @@ pub fn check(
     }
     if outside {
         return refused(OUTSIDE_ROOT);
+    }
+    // The repository's own config can make git run a program (design D5).
+    let git = matches!(safe.verb(), Verb::GitStatus | Verb::GitLog | Verb::GitDiff);
+    if git && !config_is_inert(&cwd, std::env::var_os("PATH")) {
+        return refused(GIT_CONFIG_RISK);
     }
     RunEvent::Checked {
         call,
@@ -220,6 +236,9 @@ fn searchable(
         | Verb::Head
         | Verb::Tail
         | Verb::Wc
+        | Verb::GitStatus
+        | Verb::GitLog
+        | Verb::GitDiff
         | Verb::Version => Ok(()),
     }
 }
@@ -468,6 +487,131 @@ fn words(command: &str) -> Vec<&str> {
         i = end + 1;
     }
     words
+}
+
+/// The most bytes of the config listing the gate reads.
+const CONFIG_CAP: u64 = 64 * 1024;
+
+/// Whether a config key is inert: git never runs a program because of it
+/// (design D5). An allow-list: `core.*` only for the plain repository keys,
+/// the URLs and refs of a remote, the tracking of a branch, the identity and
+/// the object format. Git lowercases the section and the variable.
+pub fn inert_key(key: &str) -> bool {
+    let Some((section, rest)) = key.split_once('.') else {
+        return false;
+    };
+    match (section, rest.rsplit_once('.')) {
+        ("core", None) => matches!(
+            rest,
+            "repositoryformatversion"
+                | "filemode"
+                | "bare"
+                | "logallrefupdates"
+                | "ignorecase"
+                | "precomposeunicode"
+                | "symlinks"
+        ),
+        ("user", None) => matches!(rest, "name" | "email"),
+        ("extensions", None) => rest == "objectformat",
+        ("remote", Some((name, var))) => {
+            !name.is_empty() && matches!(var, "url" | "fetch" | "pushurl")
+        }
+        ("branch", Some((name, var))) => {
+            !name.is_empty() && matches!(var, "remote" | "merge" | "rebase")
+        }
+        _ => false,
+    }
+}
+
+/// Whether every key of the config of the repository holding `dir` is
+/// [`inert_key`]. Git lists only that repository's own file (`--local`, no
+/// includes, so `include.path` shows up as a key); the user's global and the
+/// system config are never read, so they stay trusted. Anything that goes
+/// wrong (no repository, a broken file, git missing, too long a listing) is
+/// `false`: the command asks.
+pub fn config_is_inert(dir: &Path, path: Option<std::ffi::OsString>) -> bool {
+    let Some(out) = hardened_git(
+        dir,
+        path.clone(),
+        &[
+            "config",
+            "--local",
+            "--no-includes",
+            "--name-only",
+            "-z",
+            "--list",
+        ],
+        CONFIG_CAP,
+    ) else {
+        return false;
+    };
+    let keys_inert = out
+        .split(|&b| b == 0)
+        .filter(|key| !key.is_empty())
+        .all(|key| std::str::from_utf8(key).is_ok_and(inert_key));
+    keys_inert && !has_submodules(dir, path)
+}
+
+/// The most bytes of the index listing the gate reads (about 100 000 files).
+const INDEX_CAP: u64 = 8 * 1024 * 1024;
+
+/// Whether the repository holding `dir` has a gitlink in its index (mode
+/// 160000) or a `.gitmodules` at its top. `git status` and `git diff --stat`
+/// start a child git in each submodule worktree, and that child reads the
+/// submodule's own config, which this gate does not list. So any gitlink asks.
+/// Fails closed: an index listing that cannot be read whole counts as one.
+fn has_submodules(dir: &Path, path: Option<std::ffi::OsString>) -> bool {
+    let top = dir.ancestors().find(|up| up.join(".git").exists());
+    if top.is_none_or(|top| top.join(".gitmodules").exists()) {
+        return true;
+    }
+    let Some(out) = hardened_git(
+        dir,
+        path,
+        &["ls-files", "--stage", "-z", "--", ":/"],
+        INDEX_CAP,
+    ) else {
+        return true;
+    };
+    out.split(|&b| b == 0)
+        .any(|record| record.starts_with(b"160000 "))
+}
+
+/// Runs `git args` in `dir` with a cleared environment (the global and the
+/// system config off) and returns its whole stdout. `None` when git cannot
+/// start, fails, or prints more than `cap` bytes.
+fn hardened_git(
+    dir: &Path,
+    path: Option<std::ffi::OsString>,
+    args: &[&str],
+    cap: u64,
+) -> Option<Vec<u8>> {
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env_clear()
+        .envs(path.map(|path| ("PATH", path)))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut out = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .map(|pipe| pipe.take(cap + 1).read_to_end(&mut out));
+    let whole = read.is_some_and(|read| read.is_ok()) && out.len() as u64 <= cap;
+    if !whole {
+        let _ = child.kill();
+    }
+    let done = child.wait().is_ok_and(|status| status.success());
+    (whole && done).then_some(out)
 }
 
 /// Runs `work` on the blocking pool for at most `bound`. A check that is too
@@ -903,21 +1047,226 @@ mod tests {
         );
     }
 
-    // L32: git always asks, even in a plain repository inside the root: the
-    // check refuses it with the grammar's reason, as at the baseline.
+    // L32: a git command runs only when the repository's own config is inert
+    // (design D5). A plain repository passes; the other git words are not
+    // in the grammar and keep the grammar's reason.
     #[test]
-    fn git_never_passes_the_check_even_in_a_plain_repository() {
+    fn only_the_git_rows_run_and_only_in_a_plain_repository() {
         let f = fixture();
         project(&f);
-        for command in ["git status", "git log --oneline", "git diff"] {
-            for cloud in [false, true] {
-                assert_eq!(
-                    reason(&run_in(&f, "dev/proj", cloud, "dev/proj", command)),
-                    Some("not a safe command"),
-                    "{command}"
-                );
+        for command in [
+            "git status",
+            "git status -s src",
+            "git --no-pager log -n 5",
+            "git --no-pager diff --stat",
+            "git --no-pager diff --name-only --cached",
+        ] {
+            let got = run_in(&f, "dev/proj", true, "dev/proj", command);
+            assert!(checked(&got), "{command}: {got:?}");
+            // A local engine asks for every git row.
+            let got = run_in(&f, "dev/proj", false, "dev/proj", command);
+            assert_eq!(reason(&got), Some(LOCAL_ASKS), "{command}");
+        }
+        // From a folder below the repository's root the config is the same.
+        let got = run_in(&f, "dev/proj", true, "dev/proj/src", "git status");
+        assert!(checked(&got), "{got:?}");
+        for command in ["git log --oneline", "git diff", "git show", "git push"] {
+            assert_eq!(
+                reason(&run_in(&f, "dev/proj", true, "dev/proj", command)),
+                Some("not a safe command"),
+                "{command}"
+            );
+        }
+    }
+
+    /// A project below HOME whose git config is `config`.
+    fn repo_with(f: &Fixture, config: &str) {
+        project(f);
+        fs::write(f.home.join("dev/proj/.git/config"), config).unwrap();
+    }
+
+    fn git_status(f: &Fixture) -> RunEvent {
+        run_in(f, "dev/proj", true, "dev/proj", "git status")
+    }
+
+    // D5: a key that can make git run a program asks, with its own reason.
+    #[test]
+    fn a_config_key_that_can_run_a_program_asks() {
+        for risky in [
+            "[core]\n\tfsmonitor = /tmp/x\n",
+            "[core]\n\tfsmonitor = true\n",
+            "[Core]\n\tFsMonitor = /tmp/x\n",
+            "[core]\n\tpager = sh\n",
+            "[core]\n\thookspath = /x\n",
+            "[core]\n\tsshcommand = sh\n",
+            "[core]\n\teditor = sh\n",
+            "[core]\n\tattributesfile = /x\n",
+            "[include]\n\tpath = ../x\n",
+            "[includeIf \"gitdir:/\"]\n\tpath = ../x\n",
+            "[diff]\n\texternal = /x\n",
+            "[diff \"d\"]\n\ttextconv = sh\n",
+            "[filter \"f\"]\n\tclean = sh\n",
+            "[alias]\n\tstatus = !sh\n",
+            "[extensions]\n\tworktreeConfig = true\n",
+            "[remote \"o\"]\n\tvcs = x\n",
+            "[remote \"o\"]\n\tproxy = x\n",
+            "[branch \"m\"]\n\tpushremote = x\n",
+            "[user]\n\tsigningkey = x\n",
+            "[gpg]\n\tprogram = sh\n",
+            "[credential]\n\thelper = sh\n",
+            "[url \"x\"]\n\tinsteadOf = y\n",
+            "[status]\n\tsubmoduleSummary = true\n",
+        ] {
+            let f = fixture();
+            repo_with(&f, &format!("{PLAIN_CONFIG}{risky}"));
+            for cmd in [
+                "git status",
+                "git --no-pager log -n 5",
+                "git --no-pager diff --stat",
+            ] {
+                let got = run_in(&f, "dev/proj", true, "dev/proj", cmd);
+                assert_eq!(reason(&got), Some(GIT_CONFIG_RISK), "{risky:?} {cmd}");
             }
         }
+    }
+
+    #[test]
+    fn plain_and_allow_listed_config_keys_pass() {
+        for config in [
+            PLAIN_CONFIG.to_owned(),
+            format!(
+                "{PLAIN_CONFIG}[core]\n\tignorecase = true\n\tprecomposeunicode = true\n\tsymlinks = true\n"
+            ),
+            format!(
+                "{PLAIN_CONFIG}[remote \"origin\"]\n\turl = git@github.com:a/b.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n\tpushurl = x\n"
+            ),
+            format!("{PLAIN_CONFIG}[remote \"a.b\"]\n\turl = x\n"),
+            format!(
+                "{PLAIN_CONFIG}[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n\trebase = true\n"
+            ),
+            format!("{PLAIN_CONFIG}[user]\n\tname = A\n\temail = a@b.c\n"),
+            // `extensions.*` needs repository format 1.
+            PLAIN_CONFIG.replace("= 0", "= 1") + "[extensions]\n\tobjectformat = sha1\n",
+        ] {
+            let f = fixture();
+            repo_with(&f, &config);
+            let got = git_status(&f);
+            assert!(checked(&got), "{config:?}: {got:?}");
+        }
+    }
+
+    // The user's own global and system config stay out of the listing, so
+    // they are trusted: only the repository's can ask.
+    #[test]
+    fn the_users_global_config_is_not_judged() {
+        let f = fixture();
+        repo_with(&f, PLAIN_CONFIG);
+        fs::write(f.home.join(".gitconfig"), "[core]\n\tfsmonitor = true\n").unwrap();
+        let got = git_status(&f);
+        assert!(checked(&got), "{got:?}");
+    }
+
+    // A config that cannot be read (no repository here, a broken file) is a
+    // refusal, never a pass.
+    #[test]
+    fn a_config_that_cannot_be_listed_asks() {
+        let f = fixture();
+        project(&f);
+        fs::write(f.home.join("dev/proj/.git/config"), "[core\n\t= =\n").unwrap();
+        assert_eq!(reason(&git_status(&f)), Some(GIT_CONFIG_RISK));
+        let f = fixture();
+        fs::create_dir_all(f.home.join("dev/proj")).unwrap();
+        assert_eq!(reason(&git_status(&f)), Some(GIT_CONFIG_RISK));
+    }
+
+    // The listing is read up to a cap; one over it asks even when every key
+    // in it is inert.
+    #[test]
+    fn a_config_listing_over_the_cap_asks() {
+        let mut config = PLAIN_CONFIG.to_owned();
+        let mut n = 0;
+        while (config.len() as u64) <= 3 * CONFIG_CAP {
+            config.push_str(&format!("[remote \"r{n}\"]\n\turl = x\n"));
+            n += 1;
+        }
+        let f = fixture();
+        repo_with(&f, &config);
+        assert_eq!(reason(&git_status(&f)), Some(GIT_CONFIG_RISK));
+        // The same keys under the cap pass.
+        let f = fixture();
+        repo_with(&f, &format!("{PLAIN_CONFIG}[remote \"r\"]\n\turl = x\n"));
+        assert!(checked(&git_status(&f)));
+    }
+
+    /// Records a gitlink named `sub` in the index of `dir/.git`.
+    fn add_gitlink(dir: &Path) {
+        let out = Command::new("git")
+            .args([
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "160000,1111111111111111111111111111111111111111,sub",
+            ])
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+
+    // A child git runs in every submodule worktree and reads that
+    // submodule's own config, which the gate does not list: any gitlink or
+    // `.gitmodules` asks, for the three git verbs.
+    #[test]
+    fn a_repository_with_a_gitlink_or_gitmodules_asks() {
+        let commands = [
+            "git status",
+            "git --no-pager log -n 3 --stat",
+            "git --no-pager diff --name-only",
+            "git --no-pager diff --stat",
+        ];
+        let f = fixture();
+        repo_with(&f, PLAIN_CONFIG);
+        add_gitlink(&f.home.join("dev/proj"));
+        for cmd in commands {
+            let got = run_in(&f, "dev/proj", true, "dev/proj", cmd);
+            assert_eq!(reason(&got), Some(GIT_CONFIG_RISK), "gitlink {cmd}");
+        }
+        // From a folder below the top the whole repository still counts.
+        let got = run_in(&f, "dev/proj", true, "dev/proj/src", "git status");
+        assert_eq!(reason(&got), Some(GIT_CONFIG_RISK));
+        let f = fixture();
+        repo_with(&f, PLAIN_CONFIG);
+        fs::write(f.home.join("dev/proj/.gitmodules"), "").unwrap();
+        for cmd in commands {
+            let got = run_in(&f, "dev/proj", true, "dev/proj", cmd);
+            assert_eq!(reason(&got), Some(GIT_CONFIG_RISK), ".gitmodules {cmd}");
+        }
+    }
+
+    #[test]
+    fn a_version_check_needs_no_repository() {
+        let f = fixture();
+        fs::create_dir_all(f.home.join("dev/proj")).unwrap();
+        let got = run_in(&f, "dev/proj", true, "dev/proj", "git --version");
+        assert!(checked(&got), "{got:?}");
+    }
+
+    #[test]
+    fn the_git_paths_are_judged_like_the_read_verbs() {
+        let f = fixture();
+        repo_with(&f, PLAIN_CONFIG);
+        for (command, why) in [
+            ("git status web/.env", NOT_ALLOWED),
+            ("git --no-pager log -n 5 web/.env", NOT_ALLOWED),
+            ("git --no-pager diff --stat .git/config", NOT_ALLOWED),
+            ("git status ..", OUTSIDE_ROOT),
+        ] {
+            let got = run_in(&f, "dev/proj", true, "dev/proj", command);
+            assert_eq!(reason(&got), Some(why), "{command}");
+        }
+        let got = run_in(&f, "dev/proj", true, "dev/proj", "git status src");
+        assert!(checked(&got), "{got:?}");
     }
 
     // S2: a sensitive path stays refused, and a search that would read one

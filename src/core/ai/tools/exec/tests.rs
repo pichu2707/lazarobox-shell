@@ -220,8 +220,8 @@ fn the_fallback_names_the_token_and_the_reason() {
     assert_eq!(why(""), "empty command");
     assert_eq!(why("mkdir"), "not a safe command");
     assert_eq!(why("grep foo"), "missing argument");
-    // L32: git is no safe command; its words fall back as at the baseline.
-    assert_eq!(why("git status"), "not a safe command");
+    // Only the heads of the git rows run; any other git word falls back.
+    assert_eq!(why("git push"), "not a safe command");
     assert_eq!(why("git log HEAD~1"), "~ only starts a word");
     assert_eq!(why("ls a~b"), "~ only starts a word");
     assert_eq!(why("ls a^b"), "character not allowed");
@@ -426,7 +426,6 @@ fn writes_executions_and_other_commands_never_parse_as_safe() {
         ("grep -f list x", "flag not allowed"),
         ("grep --include=x foo .", "flag not allowed"),
         ("git", "not a safe command"),
-        ("git status", "not a safe command"),
         ("git log --oneline", "not a safe command"),
         ("git diff", "not a safe command"),
         ("git push", "not a safe command"),
@@ -788,7 +787,6 @@ fn grammar_refuses_the_adversarial_list() {
         "grep -R foo .",
         "grep -f list .",
         "grep -e foo .",
-        "git status",
         "git log --oneline",
         "git diff",
         "git -C x status",
@@ -871,11 +869,14 @@ fn the_run_verbs_are_the_same_in_the_hint_and_the_readmes() {
 const SEVEN: [&str; 7] = ["cd", "pwd", "ls", "tree", "grep", "rg", "find"];
 
 // S3b: the new read verbs and the `--version` of the D6 list.
-const EXTENDED: [&str; 13] = [
+const EXTENDED: [&str; 16] = [
     "cat",
     "head",
     "tail",
     "wc",
+    "git status",
+    "git --no-pager log",
+    "git --no-pager diff",
     "git --version",
     "rg --version",
     "fd --version",
@@ -918,8 +919,6 @@ fn a_local_engine_runs_exactly_the_seven_verbs_as_a_cloud_engine_does() {
         assert!(parse_for(text, true).is_err(), "{text:?} asks on local");
         assert!(parse_for(text, false).is_ok(), "{text:?} runs on cloud");
     }
-    // `git status` comes with the git slice.
-    assert!(parse_for("git status", false).is_err());
 }
 
 const EXTENDED_RUNS: [&str; 18] = [
@@ -1149,4 +1148,145 @@ fn one_segment_only_every_metacharacter_falls_back_on_both_tiers() {
     ] {
         assert!(parse(text).is_err(), "{text:?}");
     }
+}
+
+// S3c: the git rows. Only `git status`, `git --no-pager log -n N` and
+// `git --no-pager diff` with a summary flag run, on cloud engines only.
+const GIT_RUNS: [&str; 15] = [
+    "git status",
+    "git status -s",
+    "git status -s -b",
+    "git status --short --branch",
+    "git status a b c d",
+    "git --no-pager log -n 5",
+    "git --no-pager log -n 5 --oneline",
+    "git --no-pager log -n 5 --stat src",
+    "git --no-pager diff --stat",
+    "git --no-pager diff --name-only",
+    "git --no-pager diff --name-status",
+    "git --no-pager diff --stat --cached",
+    "git --no-pager diff --name-only --staged src a",
+    "git --no-pager diff --stat a b c d",
+    "git --no-pager log -n 9999 a",
+];
+
+#[test]
+fn the_git_rows_run_on_cloud_and_ask_on_local() {
+    for text in GIT_RUNS {
+        let safe = parse_for(text, false).expect(text);
+        assert_eq!(safe.as_str(), text);
+        assert_eq!(parse_for(text, true).unwrap_err().why, LOCAL_ASKS, "{text}");
+    }
+    let tier = |name: &str| SPECS.iter().find(|s| s.name == name).map(|s| s.tier);
+    for head in ["git status", "git --no-pager log", "git --no-pager diff"] {
+        assert_eq!(tier(head), Some(Tier::Extended), "{head}");
+    }
+}
+
+// Spec (agent-tools, bypass table): these ask on every engine.
+#[test]
+fn the_git_bypass_rows_ask() {
+    for text in [
+        "git diff",
+        "git diff --stat",
+        "git --no-pager diff",
+        "git --no-pager diff src/main.rs",
+        "git --no-pager diff --cached",
+        "git --no-pager log",
+        "git --no-pager log --oneline",
+        "git --no-pager log -n",
+        "git --no-pager log -n x",
+        "git --no-pager log -n 12345",
+        "git --no-pager log -5",
+        "git --no-pager log -n5",
+        "git --no-pager log -p -n 5",
+        "git --no-pager log -n 5 -p",
+        "git --no-pager log -n 5 --patch",
+        "git --no-pager log -n 5 --all",
+        "git --no-pager log -n 5 --follow a",
+        "git log -n 5",
+        "git --no-pager show",
+        "git show",
+        "git show HEAD",
+        "git --no-pager status",
+        "git status --porcelain",
+        "git status -uall",
+        "git status a b c d e",
+        "git -c core.pager=sh status",
+        "git -c alias.status=x status",
+        "git -C .. status",
+        "git -C / status",
+        "git --git-dir=/x status",
+        "git --git-dir x status",
+        "git --work-tree=x status",
+        "git --exec-path status",
+        "git --config-env=a=b status",
+        "git --no-pager -c a=b log -n 5",
+        "git -p log -n 5",
+        "git --paginate log -n 5",
+        "git --no-pager log -n 5 --output=x",
+        "git --no-pager log -n 5 --ext-diff",
+        "git --no-pager log -n 5 --textconv",
+        "git --no-pager diff --stat --output=x",
+        "git --no-pager diff --stat --ext-diff",
+        "git --no-pager diff --stat --textconv",
+        "git --no-pager diff --stat --no-index a b",
+        "git --no-pager diff --no-index a b",
+        "git --no-pager diff --stat a b c d e",
+        "git st",
+        "git push",
+        "git add .",
+        "git commit -m x",
+        "git checkout x",
+        "git fetch",
+        "git status > x",
+        "git status; rm x",
+        "git status | cat",
+        "git status $(id)",
+        "git 'status'",
+        "git \"status\"",
+        "git --no-pager 'log' -n 5",
+        "git --no-pager log -n '5' --pre",
+        "git status ~root",
+        "git status -",
+        "git status --",
+        "git --no-pager diff --stat --",
+    ] {
+        assert!(
+            parse_for(text, false).is_err(),
+            "{text:?} must ask on cloud"
+        );
+        assert!(parse_for(text, true).is_err(), "{text:?} must ask on local");
+    }
+}
+
+#[test]
+fn a_missing_required_flag_is_named() {
+    for text in [
+        "git --no-pager diff",
+        "git --no-pager log",
+        "git --no-pager log --oneline",
+    ] {
+        assert_eq!(why(text), NEEDS_ONE, "{text}");
+    }
+}
+
+#[test]
+fn the_git_targets_are_the_cwd_and_the_paths_inside_home() {
+    use Want::{Existing, Home};
+    let of = roles;
+    assert_eq!(of("git status"), [(".", Home, true, false)]);
+    assert_eq!(
+        of("git status -s src a"),
+        [
+            (".", Existing, false, false),
+            ("src", Home, true, false),
+            ("a", Home, true, false)
+        ]
+    );
+    assert_eq!(
+        of("git --no-pager log -n 5 src"),
+        [(".", Existing, false, false), ("src", Home, true, false)]
+    );
+    assert_eq!(of("git --no-pager diff --stat"), [(".", Home, true, false)]);
 }

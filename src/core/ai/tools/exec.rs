@@ -3,12 +3,15 @@
 //! Allow-list, no deny-list: navigation (`cd`, `pwd`, `ls`, `tree`) and
 //! search (`grep`, `rg`, `find`), each with only the flags of `SPECS`, and
 //! at most [`MAX_WORDS`] words. These seven are the base tier. The Extended
-//! tier (`cat`, `head`, `tail`, `wc` and `<program> --version` for a fixed
+//! tier (`cat`, `head`, `tail`, `wc`, the git rows and `<program> --version` for a fixed
 //! list of nine) is for cloud engines only: [`parse_for`] with `local` set
 //! refuses it with [`LOCAL_ASKS`]. No verb writes, and no allowed flag runs
 //! another program or writes a file (`find -exec`/`-delete`/`-fprint` and
-//! `rg --pre`/`-z` are not in the lists). `git` is not a safe command: its
-//! repository can make it run a program (L32). A word is unquoted
+//! `rg --pre`/`-z` are not in the lists). `git` is not a safe command (L32:
+//! its repository can make it run a program): only `git status`,
+//! `git --no-pager log -n N` and `git --no-pager diff` with a summary flag
+//! run, and the check refuses them when the repository's config can run one.
+//! A word is unquoted
 //! (ASCII letters and digits, Latin letters U+00C0..=U+024F without the
 //! multiplication and division signs, and ``. _ / @ % + : , = ~ -``; a `~`
 //! only leads a word) or a whole
@@ -80,6 +83,10 @@ pub enum Verb {
     Head,
     Tail,
     Wc,
+    /// `git status`, `git --no-pager log -n N`, `git --no-pager diff --stat`.
+    GitStatus,
+    GitLog,
+    GitDiff,
     /// `<program> --version`.
     Version,
 }
@@ -144,7 +151,14 @@ impl<'a> SafeCommand<'a> {
         let (want, searched) = match self.verb {
             Verb::Cd | Verb::Pwd | Verb::Ls | Verb::Version => (Want::Existing, false),
             Verb::Find => (Want::Existing, true),
-            Verb::Tree | Verb::Cat | Verb::Head | Verb::Tail | Verb::Wc => (Want::Home, false),
+            Verb::Tree
+            | Verb::Cat
+            | Verb::Head
+            | Verb::Tail
+            | Verb::Wc
+            | Verb::GitStatus
+            | Verb::GitLog
+            | Verb::GitDiff => (Want::Home, false),
             Verb::Grep => (Want::Home, recursive),
             Verb::Rg => (Want::Home, true),
         };
@@ -275,6 +289,9 @@ pub const NOT_SAFE: &str = "not a safe command";
 /// The reason of a quoted word that would complete the head of a command: the
 /// quotes are stripped, so `git "status"` would otherwise read as `git status`.
 pub const QUOTED_HEAD: &str = "a quoted word cannot be part of a command's head";
+
+/// The reason of a command that lacks every flag its entry requires.
+pub const NEEDS_ONE: &str = "a required flag is missing";
 
 /// The reason of a command that only a cloud engine runs without a prompt.
 pub const LOCAL_ASKS: &str = "not run alone on a local engine";
@@ -435,6 +452,10 @@ fn finish<'a>(
             roles[k - 1] = Role::Path;
             paths += 1;
         }
+    }
+    let given = |flag: &&str| words[heads..len].contains(flag);
+    if !spec.needs_one_of.is_empty() && !spec.needs_one_of.iter().any(given) {
+        return Err(fallback(at(words[0]), NEEDS_ONE));
     }
     match paths {
         _ if spec.pattern && !pattern => Err(fallback(at(words[0]), "missing argument")),

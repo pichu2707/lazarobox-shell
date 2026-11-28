@@ -226,13 +226,14 @@ fn a_check_outside_the_root_or_under_a_broad_root_asks_and_never_pauses() {
     }
 }
 
-// L32: git always asks, as at the baseline (86cf948): the grammar does not
-// take it, the prompt names `git`, nothing is checked or run, and each one
-// counts toward the pause like any command off the list.
+// L32: a git command off the three read rows asks, as at the baseline
+// (86cf948): the grammar does not take it, the prompt names `git`, nothing is
+// checked or run, and each one counts toward the pause like any command off
+// the list.
 #[test]
 fn git_asks_like_any_command_off_the_list_and_counts_toward_the_pause() {
     let (mut a, turn) = run_live();
-    for (call, command) in [(1, "git status"), (2, "git log --oneline"), (3, "git diff")] {
+    for (call, command) in [(1, "git push"), (2, "git log --oneline"), (3, "git diff")] {
         assert_eq!(
             announce(&mut a, turn, call, run(command)),
             vec![],
